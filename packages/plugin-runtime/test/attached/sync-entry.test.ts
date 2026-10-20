@@ -5,27 +5,37 @@ import { join } from 'node:path';
 import {
   applyOnboarding,
   dataDir as dataDirOf,
+  openLocalDatabase,
   readSightingKeys,
   settingsDir as settingsDirOf,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
 import type * as Remote from '@akasecurity/remote';
 import type { AttachedCredential, ControlPlaneConnection } from '@akasecurity/schema';
+import { HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { SYNC_STATE_FILENAME } from '../../src/attached/sync-state.ts';
 
 const getPolicyBundle = vi.fn();
 const pollCommand = vi.fn();
 const ackCommand = vi.fn();
 const getSightingKey = vi.fn();
+const reportLabels = vi.fn();
 
 // Only the client is faked; the rest of the package — the failure classifier
 // the attached code reads verdicts through — stays real, so a fake that
 // throws a status is classified the way production classifies it.
 vi.mock('@akasecurity/remote', async (importActual) => ({
   ...(await importActual<typeof Remote>()),
-  createRemoteClient: () => ({ getPolicyBundle, pollCommand, ackCommand, getSightingKey }),
+  createRemoteClient: () => ({
+    getPolicyBundle,
+    pollCommand,
+    ackCommand,
+    getSightingKey,
+    reportLabels,
+  }),
 }));
 
 /** What the two jobs did, in the order they did it. */
@@ -62,13 +72,15 @@ beforeEach(() => {
   ackCommand.mockResolvedValue(undefined);
   getSightingKey.mockReset();
   getSightingKey.mockRejectedValue(new Error('ECONNREFUSED'));
+  reportLabels.mockReset();
+  reportLabels.mockResolvedValue({ grants: 0, dismissals: 1 });
   order = [];
   base = mkdtempSync(join(tmpdir(), 'aka-entry-home-'));
   mkdirSync(dataDirOf(base), { recursive: true });
 });
 
 afterEach(() => {
-  rmSync(base, { recursive: true, force: true });
+  removeTree(base);
 });
 
 /**
@@ -327,5 +339,61 @@ describe('runAttachedSync — the sighting-key pass', () => {
     await runAttachedSync(base);
 
     expect(getSightingKey).not.toHaveBeenCalled();
+  });
+});
+
+describe('runAttachedSync — the label pass', () => {
+  /** Attached, with the current history grant, holding one person's dismissal. */
+  function attachWithALabel(): void {
+    applyOnboarding(
+      {
+        runMode: 'attached',
+        controlPlane: CONNECTION,
+        historySyncConsent: {
+          acknowledgedAt: CONNECTION.attachedAt,
+          payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+          endpoint: CONNECTION.endpoint,
+        },
+      },
+      base,
+    );
+    writeControlPlaneCredential(settingsDirOf(base), CREDENTIAL);
+    const db = openLocalDatabase(dataDirOf(base));
+    try {
+      db.resolutions.insertResolution({
+        findingKey: 'fk-entry',
+        status: 'dismissed',
+        method: 'false-positive',
+        resolvedAt: 1000,
+        evidence: '',
+      });
+    } finally {
+      db.close();
+    }
+  }
+
+  it('reports the labels on an attached machine', async () => {
+    attachWithALabel();
+    getPolicyBundle.mockRejectedValue(new Error('ECONNREFUSED'));
+
+    const { runAttachedSync } = await import('../../src/attached/sync-entry.ts');
+    await runAttachedSync(base);
+
+    expect(reportLabels).toHaveBeenCalledTimes(1);
+  });
+
+  it('still runs the command pass when the label pass fails', async () => {
+    attachWithALabel();
+    getPolicyBundle.mockRejectedValue(new Error('ECONNREFUSED'));
+    reportLabels.mockRejectedValue(new Error('ECONNRESET'));
+    pollCommand.mockResolvedValue(null);
+
+    const { runAttachedSync } = await import('../../src/attached/sync-entry.ts');
+    await runAttachedSync(base, {
+      scan: { rootScopeKey: () => undefined, run: () => Promise.resolve({ projects: 1 }) },
+    });
+
+    expect(reportLabels).toHaveBeenCalledTimes(1);
+    expect(pollCommand).toHaveBeenCalledTimes(1);
   });
 });

@@ -22,6 +22,7 @@ import type {
   HarnessEventsResponse,
   HarnessSummary,
   ProjectSummary,
+  SensitiveDataClass,
   TrustLevel,
 } from '@akasecurity/schema';
 import { Card, cn } from '@akasecurity/ui-kit';
@@ -48,6 +49,8 @@ export function InventoryClient({
   assetDetail,
   blocked,
   blockedError,
+  sensitiveData,
+  sensitiveDataError,
   harnessEvents,
   renderedAt,
   locale,
@@ -62,6 +65,10 @@ export function InventoryClient({
   blocked: FileSummary[];
   /** Set when the opened project's withheld files could not be read. */
   blockedError: string | null;
+  /** The opened project's findings in the findings window by category. */
+  sensitiveData: SensitiveDataClass[];
+  /** Set when the opened project's sensitive data could not be read. */
+  sensitiveDataError: string | null;
   harnessEvents: HarnessEventsResponse;
   /**
    * The instant the server rendered against, advanced through useRenderClock —
@@ -186,6 +193,8 @@ export function InventoryClient({
               project={project}
               blocked={blocked}
               blockedError={blockedError}
+              sensitiveData={sensitiveData}
+              sensitiveDataError={sensitiveDataError}
               harnesses={harnesses}
               onBack={back}
               backLabel={backLabel}

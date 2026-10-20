@@ -589,7 +589,7 @@ export async function handleRequest(
           const tools = toToolCallInputs(
             exchange,
             request.sessionId,
-            (text) => scanText(text, ruleVersions, { locate: true }),
+            (text) => scanText(text, ruleVersions, { locate: true, features: {} }),
             account,
           );
           if (tools.length > 0) {

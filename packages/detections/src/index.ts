@@ -36,6 +36,17 @@ export type { WebCaptureSiteReport, WebCaptureState } from './posture/web-captur
 // reads the copy through `webCaptureReport`, so exporting the raw lookup would
 // be a second way to spell a report row.
 export {
+  type CharClass,
+  classifyPath,
+  type EntropyBucket,
+  KNOWN_PREFIXES,
+  type MatchFeatures,
+  matchFeatures,
+  type NameBucket,
+  nameBucket,
+  type PathClass,
+} from './features.ts';
+export {
   deriveWebCaptureState,
   DRIFT_MIN_PARSE_FAILURES,
   reportedCaptureDocumentForSite,

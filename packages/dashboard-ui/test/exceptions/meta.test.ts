@@ -4,6 +4,7 @@ import type {
   FingerprintKeyState,
 } from '@akasecurity/schema';
 import {
+  DismissMethod,
   isMatchableUnder,
   LEDGER_WINDOW_HOURS as SCHEMA_LEDGER_WINDOW_HOURS,
   rotationBlockedLedgerNote as schemaRotationBlockedLedgerNote,
@@ -14,10 +15,12 @@ import { describe, expect, it } from 'vitest';
 import {
   blockedRowBlockReason,
   exceptionState,
+  GRANT_METHODS,
   isBlockedRowApprovable,
   LEDGER_WINDOW_HOURS,
   rotationBlockedLedgerNote,
 } from '../../src/exceptions/meta.ts';
+import { DISMISS_METHODS } from '../../src/security/dismiss-gate.ts';
 
 const NOW = Date.parse('2026-07-03T12:00:00.000Z');
 
@@ -39,6 +42,8 @@ function exception(overrides: Partial<DetectionException>): ExceptionDescriptor 
     useCount: 0,
     lastUsedAt: null,
     justification: 'test fixture',
+    method: null,
+    confirmedBy: 'user',
     conditions: null,
     createdBy: 'tester',
     createdVia: 'web-add',
@@ -248,6 +253,20 @@ describe('rotationBlockedLedgerNote', () => {
     for (const count of CASES) {
       const digits = rotationBlockedLedgerNote(count).match(/\d+/g) ?? [];
       expect(digits).toEqual(count === 0 ? [] : [String(count), String(LEDGER_WINDOW_HOURS)]);
+    }
+  });
+});
+
+describe('GRANT_METHODS', () => {
+  it('offers every human reason, in the dismiss dialog order, under the same labels', () => {
+    expect(GRANT_METHODS.map((m) => m.value)).toEqual(DismissMethod.options);
+    expect(GRANT_METHODS.map((m) => m.label)).toEqual(DISMISS_METHODS.map((m) => m.label));
+  });
+
+  it('describes one value, not every finding of a rule as the dismiss dialog does', () => {
+    for (const m of GRANT_METHODS) {
+      expect(m.description).toMatch(/value/);
+      expect(m.description).not.toMatch(/every match/i);
     }
   });
 });

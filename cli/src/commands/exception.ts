@@ -26,6 +26,7 @@ import {
 import type { DetectionException, FingerprintKeyState, ResolvedScope } from '@akasecurity/schema';
 import {
   DetectionCategory,
+  DismissMethod,
   isMatchableUnder,
   isVaultConsentValid,
   PointerToken,
@@ -78,6 +79,8 @@ Flags:
                       pointer selector; --reveal is accepted as shorthand)
   --once | --for <30m|1h|24h> | --permanent   scope (required, pick one)
   --reason "<why>"    required; prompted on a terminal if omitted
+  --method <m>        the reason as a label: acknowledged, false-positive or
+                      test-or-example (optional)
   --yes               skip confirmations (non-interactive use)
   --home <dir>        alternate AKA home (default: ~/.aka)
 
@@ -95,6 +98,8 @@ Flags:
   --stdin             read the value from stdin (otherwise: hidden prompt)
   --once | --for <30m|1h|24h> | --permanent   scope (required, pick one)
   --reason "<why>"    required; prompted on a terminal if omitted
+  --method <m>        the reason as a label: acknowledged, false-positive or
+                      test-or-example (optional)
   --yes               skip confirmations (non-interactive use)
   --home <dir>        alternate AKA home (default: ~/.aka)
 
@@ -137,6 +142,7 @@ const SCOPE_OPTIONS = {
   for: { type: 'string' },
   permanent: { type: 'boolean' },
   reason: { type: 'string' },
+  method: { type: 'string' },
   yes: { type: 'boolean' },
   help: { type: 'boolean', short: 'h' },
 } as const;
@@ -218,14 +224,27 @@ interface ScopeReasonFlags {
   for?: string | undefined;
   permanent?: boolean | undefined;
   reason?: string | undefined;
+  method?: string | undefined;
 }
 
 // Scope and reason, from flags or (on a terminal) interactive prompts. Scope
 // is an explicit choice — no flag and no TTY is an error, never a default.
+// The label is optional and never prompted for. A bad one is refused before
+// the scope and reason prompts, so a reason is never typed for a grant that
+// will not be written — though a value or ledger row may already have been
+// asked for by then.
 async function resolveScopeAndReason(
   flags: ScopeReasonFlags,
   io: Prompter,
-): Promise<{ scope: ResolvedScope; reason: string }> {
+): Promise<{ scope: ResolvedScope; reason: string; method: DismissMethod | null }> {
+  let method: DismissMethod | null = null;
+  if (flags.method !== undefined) {
+    const parsed = DismissMethod.safeParse(flags.method);
+    if (!parsed.success) {
+      throw new Error(`--method must be one of ${DismissMethod.options.join(', ')}`);
+    }
+    method = parsed.data;
+  }
   let scope = resolveScopeFlags({
     once: flags.once,
     for: flags.for,
@@ -243,7 +262,7 @@ async function resolveScopeAndReason(
     reason = (await io.ask('Reason (recorded in the audit trail): ')).trim();
     if (reason === '') throw new Error('a non-empty reason is required — it is the audit trail');
   }
-  return { scope, reason };
+  return { scope, reason, method };
 }
 
 // The --permanent guard: on a terminal the user types the masked value back
@@ -486,7 +505,7 @@ async function runApproveReveal(
     // Badge data only. A vanished descriptor still never shows raw anything.
     const descriptor = await vault.describePointer(pointer);
     const maskedValue = descriptor?.maskedMatch ?? '···';
-    const { scope, reason } = await resolveScopeAndReason(values, io);
+    const { scope, reason, method } = await resolveScopeAndReason(values, io);
     if (scope.scope === 'permanent') {
       await confirmPermanent(io, maskedValue, values.yes === true);
     }
@@ -499,6 +518,7 @@ async function runApproveReveal(
       capability: 'reveal_to_model',
       ...scope,
       justification: reason,
+      method,
       conditions: null,
       createdBy: resolveCreatedBy(),
       createdVia: 'cli-approve',
@@ -568,7 +588,7 @@ async function runApprove(argv: string[], io: Prompter): Promise<void> {
     // reason first spends the answer on a grant that is never written.
     const grant = grantFieldsFrom(entry, key);
 
-    const { scope, reason } = await resolveScopeAndReason(values, io);
+    const { scope, reason, method } = await resolveScopeAndReason(values, io);
     if (scope.scope === 'permanent') {
       await confirmPermanent(io, entry.maskedValue, values.yes === true);
     }
@@ -582,6 +602,7 @@ async function runApprove(argv: string[], io: Prompter): Promise<void> {
       ...(wantsReveal ? { capability: 'reveal_to_model' as const } : {}),
       ...scope,
       justification: reason,
+      method,
       conditions: null,
       createdBy: resolveCreatedBy(),
       createdVia: 'cli-approve',
@@ -705,7 +726,7 @@ async function runAdd(argv: string[], io: Prompter): Promise<void> {
 
   const dir = dataDir(homeBase(values.home));
   const grant = await fingerprintForRule(ruleId, values.stdin === true, dir, io);
-  const { scope, reason } = await resolveScopeAndReason(values, io);
+  const { scope, reason, method } = await resolveScopeAndReason(values, io);
   if (scope.scope === 'permanent') {
     await confirmPermanent(io, grant.maskedValue, values.yes === true);
   }
@@ -718,6 +739,7 @@ async function runAdd(argv: string[], io: Prompter): Promise<void> {
       ...grant,
       ...scope,
       justification: reason,
+      method,
       conditions: null,
       createdBy: resolveCreatedBy(),
       createdVia: 'cli-add',

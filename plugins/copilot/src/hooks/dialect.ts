@@ -102,11 +102,12 @@ export function readCwd(_dialect: Dialect, input: Record<string, unknown>): stri
  * present name with no args is a call with no scannable field, not a broken
  * envelope.
  *
- * On the CLI `toolArgs` was recorded as an object. The card notes it may also
- * arrive as a JSON **string** on some tools — unobserved, so a string is not
- * parsed here: guessing at an encoding nobody has seen would turn a shape this
- * build does not understand into a silent empty scan. It reads as no args,
- * which scans nothing and says nothing, exactly like any other unknown shape.
+ * On the CLI `toolArgs` was recorded as an object, on 1.0.83 and again on
+ * 1.0.98. It may also arrive as a JSON **string** on some tools — unobserved on
+ * either build, so a string is not parsed here: guessing at an encoding nobody
+ * has seen would turn a shape this build does not understand into a silent
+ * empty scan. It reads as no args, which scans nothing and says nothing,
+ * exactly like any other unknown shape.
  */
 export function readToolCall(
   dialect: Dialect,

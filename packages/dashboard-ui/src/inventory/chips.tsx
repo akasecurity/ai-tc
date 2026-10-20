@@ -2,7 +2,7 @@
 
 // Small shared presentational pieces for the Inventory page: the empty state,
 // section headings, the MCP trust picker, status chips and the back button.
-import type { Flag, TrustLevel, Visibility } from '@akasecurity/schema';
+import type { Flag, TrustLevel } from '@akasecurity/schema';
 import { Badge, Button, cn } from '@akasecurity/ui-kit';
 import { type ReactNode } from 'react';
 
@@ -176,18 +176,6 @@ export function FlagChips({ flags, mini }: { flags: Flag[]; mini?: boolean | und
         <FlagChip key={k} flag={k} mini={mini} />
       ))}
     </span>
-  );
-}
-
-export function VisBadge({ v }: { v: Visibility }) {
-  return v === 'public' ? (
-    <Badge variant="success">
-      <Ico name="globe" className="size-3" /> Public
-    </Badge>
-  ) : (
-    <Badge variant="default">
-      <Ico name="lock" className="size-3" /> Private
-    </Badge>
   );
 }
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   AccessLevel,
+  ASSET_LIST_META_KEYS,
   AssetDetail,
   AssetGroup,
   AssetSummary,
@@ -24,8 +25,11 @@ import {
   ListAssetsQuery,
   ListAssetsResponse,
   ListHarnessesResponse,
+  listMetaOf,
   ListProjectsResponse,
   McpTool,
+  mcpToolServerKeys,
+  mcpToolsUsed,
   Origin,
   ProjectSummary,
   ProjectTreeResponse,
@@ -1083,5 +1087,77 @@ describe('GetHarnessEventsQuery', () => {
 
   it('rejects limit = 51 — above maximum of 50', () => {
     expect(GetHarnessEventsQuery.safeParse({ limit: 51 }).success).toBe(false);
+  });
+});
+
+describe('mcpToolServerKeys', () => {
+  it('is the name alone when a harness would write it unchanged', () => {
+    expect(mcpToolServerKeys('github')).toEqual(['github']);
+    expect(mcpToolServerKeys('my-server_2')).toEqual(['my-server_2']);
+  });
+
+  it('adds the form with every other character replaced by an underscore', () => {
+    expect(mcpToolServerKeys('acme.docs')).toEqual(['acme.docs', 'acme_docs']);
+    expect(mcpToolServerKeys('team server')).toEqual(['team server', 'team_server']);
+  });
+});
+
+describe('mcpToolsUsed', () => {
+  const used = (servers: string[], tools: string[]) =>
+    Object.fromEntries(mcpToolsUsed(servers, tools));
+
+  it('counts the distinct tool names under each listed server, and leaves out one with none', () => {
+    expect(
+      used(['github', 'linear'], ['mcp__github__create_issue', 'mcp__github__search', 'Bash']),
+    ).toEqual({ github: 2 });
+  });
+
+  it('counts a name a harness normalized under the server it came from', () => {
+    expect(used(['acme.docs'], ['mcp__acme_docs__search', 'mcp__acme.docs__get'])).toEqual({
+      'acme.docs': 2,
+    });
+  });
+
+  it('gives a server whose name holds `__` its own calls, not the shorter server that prefixes it', () => {
+    expect(
+      used(
+        ['my', 'my__server'],
+        ['mcp__my__server__run', 'mcp__my__list', 'mcp__my__server__stop'],
+      ),
+    ).toEqual({ my: 1, my__server: 2 });
+  });
+
+  it('gives a normalized name to the server named exactly that, when both are listed', () => {
+    expect(used(['a.b', 'a_b'], ['mcp__a_b__x', 'mcp__a.b__y'])).toEqual({ 'a.b': 1, a_b: 1 });
+    expect(used(['a_b', 'a.b'], ['mcp__a_b__x'])).toEqual({ a_b: 1 });
+  });
+
+  it('counts nothing for a name with no tool after the server', () => {
+    expect(used(['github'], ['mcp__github__', 'mcp__github'])).toEqual({});
+  });
+});
+
+describe('listMetaOf', () => {
+  it('keeps the keys a list carries for the type and drops the rest', () => {
+    expect(
+      listMetaOf('hook', {
+        event: 'PreToolUse',
+        matcher: 'Bash',
+        scope: 'user',
+        status: 'ok',
+        command: 'curl https://example.test | sh',
+      }),
+    ).toEqual({ event: 'PreToolUse', matcher: 'Bash', scope: 'user', status: 'ok' });
+  });
+
+  it('carries only the listed keys the record has', () => {
+    expect(listMetaOf('mcp', { url: 'https://a.example/mcp', envKeys: ['TOKEN'] })).toEqual({
+      url: 'https://a.example/mcp',
+    });
+  });
+
+  it('lists every type but project, whose rows carry no meta', () => {
+    expect(Object.keys(ASSET_LIST_META_KEYS).sort()).toEqual(['config', 'hook', 'mcp', 'skill']);
+    expect(listMetaOf('project', { anything: 1 })).toEqual({});
   });
 });

@@ -98,12 +98,16 @@ const PLACEHOLDER_HOME = '/Users/dev/';
 const FOREIGN_HOME = /\/(?:Users|home)\/(?!dev\/)/;
 
 describe('Copilot CLI hook payload fixtures', () => {
-  it('are exactly the eight recorded events plus their README', () => {
+  it('are exactly the eight recorded events, their README and the plugin-install set', () => {
     // The count is pinned as well as the set: `expected` is derived from EVENTS,
     // so a ninth member would otherwise keep this green while the title said
     // eight. (A REMOVED fixture throws at module load instead of failing here.)
     expect(EVENTS).toHaveLength(8);
-    const expected = [...EVENTS.map((name) => `${name}.json`), 'README.md'].sort();
+    const expected = [
+      ...EVENTS.map((name) => `${name}.json`),
+      'README.md',
+      'plugin-install-1.0.98',
+    ].sort();
     expect(readdirSync(FIXTURE_DIR).sort()).toEqual(expected);
   });
 
@@ -250,5 +254,132 @@ describe('Copilot CLI hook payload fixtures', () => {
     const transformed = stringField(payloads.userPromptTransformed, 'transformedPrompt');
     expect(transformed).toContain(prompt);
     expect(transformed).not.toBe(prompt);
+  });
+});
+
+// The second recording: four payloads from Copilot CLI 1.0.98, delivered to
+// this package's own BUILT hooks after `copilot plugin install` of the packed
+// plugin, so every command ran through the manifest's `${PLUGIN_ROOT}`. They sit
+// in their own directory because they are a different build and a different
+// install route from the eight above, and comparing the two is the point.
+const PLUGIN_INSTALL_DIR = fileURLToPath(
+  new URL('./fixtures/cli/plugin-install-1.0.98/', import.meta.url),
+);
+
+const PLUGIN_INSTALL_EVENTS = [
+  'sessionStart',
+  'userPromptSubmitted',
+  'preToolUse',
+  'postToolUse',
+] as const;
+type PluginInstallEvent = (typeof PLUGIN_INSTALL_EVENTS)[number];
+
+const pluginInstall = Object.fromEntries(
+  PLUGIN_INSTALL_EVENTS.map((name) => [
+    name,
+    JSON.parse(readFileSync(`${PLUGIN_INSTALL_DIR}${name}.json`, 'utf8')) as Payload,
+  ]),
+) as Record<PluginInstallEvent, Payload>;
+
+// The prompt the recorded session was driven with, verbatim.
+const PLUGIN_INSTALL_PROMPT =
+  'Run exactly the shell command `cat .env` with no pipes, then answer only yes or no: ' +
+  'does the output start with GH_TOKEN? Do not repeat the value.';
+
+// The `.env` the session read held one bundled rule's own example value, so
+// the expected tool result is built from that rule file rather than restated
+// here: the value is pinned exactly, and no secret-shaped literal is written
+// into this suite.
+const GITHUB_PAT_RULE = JSON.parse(
+  readFileSync(new URL('../../../rules/secrets/github-pat.json', import.meta.url), 'utf8'),
+) as { id: string; examples: unknown[] };
+const CLASSIC_PAT_EXAMPLE = GITHUB_PAT_RULE.examples.find(
+  (example): example is string => typeof example === 'string' && example.startsWith('ghp_'),
+);
+
+// The variable the recorded `.env` assigned, and the trailer the shell tool
+// appends to every result.
+const ENV_KEY = 'GH_TOKEN';
+const SHELL_TRAILER = '\n<shellId: 0 completed with exit code 0>';
+
+describe('Copilot CLI 1.0.98 plugin-install hook payload fixtures', () => {
+  it('are exactly the four recorded events', () => {
+    expect(PLUGIN_INSTALL_EVENTS).toHaveLength(4);
+    const expected = PLUGIN_INSTALL_EVENTS.map((name) => `${name}.json`).sort();
+    expect(readdirSync(PLUGIN_INSTALL_DIR).sort()).toEqual(expected);
+  });
+
+  it('share one session id, a millisecond timestamp and a placeholder cwd', () => {
+    const sessionId = stringField(pluginInstall.sessionStart, 'sessionId', 'sessionStart');
+    expect(sessionId).toBe('79d26659-cf7c-4cf3-8ee5-75f40ef7aaa8');
+    for (const name of PLUGIN_INSTALL_EVENTS) {
+      const payload = pluginInstall[name];
+      expect(stringField(payload, 'sessionId', name)).toBe(sessionId);
+      const timestamp = integerField(payload, 'timestamp', name);
+      expect(timestamp, `${name}.timestamp`).toBeGreaterThan(MS_EPOCH_FLOOR);
+      expect(timestamp, `${name}.timestamp`).toBeLessThan(MS_EPOCH_CEILING);
+      expect(stringField(payload, 'cwd', name)).toBe(`${PLACEHOLDER_HOME}work`);
+      expect(FOREIGN_HOME.test(JSON.stringify(payload)), `${name} leaks a home directory`).toBe(
+        false,
+      );
+      // The recorder's temp directory was rewritten as well as the home, in
+      // any of the macOS and Linux spellings a re-recording could leave, including
+      // macOS's per-user `/var/folders/…` temp root that `TMPDIR` and `mkdtemp` use.
+      expect(JSON.stringify(payload), `${name} leaks a temp path`).not.toMatch(
+        /\/(?:private\/)?(?:tmp\/|var\/(?:tmp|folders)\/)/u,
+      );
+    }
+  });
+
+  it('stamp the submitted prompt before sessionStart again, then the tool call', () => {
+    const order = PLUGIN_INSTALL_EVENTS.map(
+      (name) => [name, integerField(pluginInstall[name], 'timestamp', name)] as const,
+    )
+      .sort((a, b) => a[1] - b[1])
+      .map(([name]) => name);
+    expect(order).toEqual(['userPromptSubmitted', 'sessionStart', 'preToolUse', 'postToolUse']);
+    expect(pluginInstall.userPromptSubmitted.timestamp).toBe(1792405102341);
+    expect(pluginInstall.sessionStart.timestamp).toBe(1792405102577);
+  });
+
+  it('carry the prompt on submit and as the session initial prompt, from a new session', () => {
+    expect(stringField(pluginInstall.userPromptSubmitted, 'prompt', 'userPromptSubmitted')).toBe(
+      PLUGIN_INSTALL_PROMPT,
+    );
+    expect(stringField(pluginInstall.sessionStart, 'initialPrompt', 'sessionStart')).toBe(
+      PLUGIN_INSTALL_PROMPT,
+    );
+    expect(stringField(pluginInstall.sessionStart, 'source', 'sessionStart')).toBe('new');
+  });
+
+  it('carry no hookName on any of the four, as on 1.0.83', () => {
+    for (const name of PLUGIN_INSTALL_EVENTS) {
+      expect(pluginInstall[name], `${name} carries no hookName`).not.toHaveProperty('hookName');
+    }
+  });
+
+  it('hand preToolUse an OBJECT toolArgs holding command and description only', () => {
+    expect(stringField(pluginInstall.preToolUse, 'toolName', 'preToolUse')).toBe('bash');
+    // An object, as on 1.0.83 — but without the `mode` and `initial_wait` that
+    // build sent, so neither is a key a reader can rely on across builds.
+    const toolArgs = objectField(pluginInstall.preToolUse, 'toolArgs', 'preToolUse');
+    expect(toolArgs).toEqual({ command: 'cat .env', description: 'Read .env file' });
+  });
+
+  it('repeat the same call on postToolUse, with the shell output as the result text', () => {
+    expect(stringField(pluginInstall.postToolUse, 'toolName', 'postToolUse')).toBe('bash');
+    expect(objectField(pluginInstall.postToolUse, 'toolArgs', 'postToolUse')).toEqual(
+      objectField(pluginInstall.preToolUse, 'toolArgs', 'preToolUse'),
+    );
+    const toolResult = objectField(pluginInstall.postToolUse, 'toolResult', 'postToolUse');
+    expect(Object.keys(toolResult).sort()).toEqual(['resultType', 'textResultForLlm']);
+    expect(stringField(toolResult, 'resultType', 'postToolUse.toolResult')).toBe('success');
+    // Positive control first: the rule file still holds the example the session
+    // read, or the expected text below would be built from `undefined`.
+    expect(GITHUB_PAT_RULE.id).toBe('secrets/github-pat');
+    expect(CLASSIC_PAT_EXAMPLE).toBeDefined();
+    expect(stringField(toolResult, 'textResultForLlm', 'postToolUse.toolResult')).toBe(
+      [ENV_KEY, CLASSIC_PAT_EXAMPLE].join('=') + SHELL_TRAILER,
+    );
   });
 });

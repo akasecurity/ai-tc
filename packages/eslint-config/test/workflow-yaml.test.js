@@ -4,7 +4,8 @@
 // decodes to the same structure as the plain spelling, and if what it cannot
 // decode is refused rather than read short.
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { Alias, parseDocument } from 'yaml';
 
 import {
   envOf,
@@ -143,6 +144,46 @@ describe('parseWorkflow', () => {
     expect(writeScopes(jobOf(workflow, 'second').permissions)).toEqual(['packages']);
   });
 
+  it('binds an alias to the last anchor written before it', () => {
+    const workflow = parseWorkflow(
+      ['a: &x one', 'b: *x', 'c: &x two', 'd: *x', 'jobs: {}', ''].join('\n'),
+    );
+
+    expect([workflow.b, workflow.d]).toEqual(['one', 'two']);
+  });
+
+  it('resolves an alias written as a mapping key', () => {
+    const workflow = parseWorkflow(['k: &k name', '*k : value', 'jobs: {}', ''].join('\n'));
+
+    expect(workflow.name).toBe('value');
+  });
+
+  it('resolves an alias to an anchor written on a mapping key', () => {
+    const workflow = parseWorkflow(['&k key: 1', 'other: *k', 'jobs: {}', ''].join('\n'));
+
+    expect(workflow.other).toBe('key');
+  });
+
+  // From yaml 2.9.1 `Alias.resolve(doc, ctx)` reads `anchors` from the context it is
+  // given, and without a context it re-walks the whole document for every alias.
+  // The reader resolves aliases from its own table, so the library is not asked.
+  it('resolves aliases from its own table, never through the library', () => {
+    const resolve = vi.spyOn(Alias.prototype, 'resolve');
+    try {
+      // Control: the library resolving an alias itself is visible to the spy.
+      parseDocument('k: &k name\nv: *k\n').toJS();
+      expect(resolve).toHaveBeenCalled();
+      resolve.mockClear();
+
+      const workflow = parseWorkflow(['k: &k name', '*k : x', 'v: *k', 'jobs: {}', ''].join('\n'));
+
+      expect(workflow).toMatchObject({ v: 'name', name: 'x' });
+      expect(resolve.mock.calls.length, 'calls to Alias#resolve').toBe(0);
+    } finally {
+      resolve.mockRestore();
+    }
+  });
+
   it('reads `on` as a string, as the runner does', () => {
     const workflow = parseWorkflow(['on:', '  push:', '    tags: [v1]', 'jobs: {}', ''].join('\n'));
 
@@ -169,6 +210,11 @@ describe('parseWorkflow', () => {
       ['a boolean key', 'jobs:\n  true: { runs-on: x }\n', /not a plain string/],
       ['a collection key', 'jobs:\n  ? [a, b]\n  : c\n', /not a plain string/],
       ['an alias inside the node it names', 'jobs:\n  a: &x [*x]\n', /node it is inside/],
+      ['an alias to no anchor', 'jobs: {}\nname: *nope\n', /names no anchor/],
+      ['an alias before its anchor', 'jobs: {}\nname: *x\nother: &x y\n', /names no anchor/],
+      ['an alias key that names no anchor', 'jobs: {}\n*nope : v\n', /names no anchor/],
+      ['an alias key before its anchor', 'jobs: {}\n*k : v\nk: &k name\n', /names no anchor/],
+      ['an alias key that names a number', 'n: &n 1\n*n : v\njobs: {}\n', /not a plain string/],
       ['a top level that is not a mapping', '- a\n- b\n', /not a mapping/],
     ];
 

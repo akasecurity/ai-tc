@@ -140,6 +140,8 @@ const consent = (over: Partial<HistorySyncConsent> = {}): HistorySyncConsent => 
   ...over,
 });
 const STALE = { payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION - 1 };
+/** A grant from before the backlog's captured text was covered. */
+const OLDER = { payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION - 2 };
 const ELSEWHERE = { endpoint: OTHER_ENDPOINT };
 
 // The machine-wide wording as it stood before personal devices had their own,
@@ -149,7 +151,9 @@ const MACHINE = {
   usage: [
     'Usage: aka sync-history [--on | --off] [--run]',
     '',
-    'Whether this machine may send the activity it recorded before attaching.',
+    'Whether this machine may send the activity it recorded before attaching, and',
+    'the exceptions you grant and the findings you dismiss here, each with the reason',
+    'you picked from the list (never the reason you type).',
     '',
     '  --on          Send it. Takes effect in the background, over later sessions.',
     '  --off         Do not send it. Stops anything not already sent.',
@@ -168,6 +172,8 @@ const MACHINE = {
     'no detection ships on redact or block. It goes in the background, a little at a time,',
     'starting with your next session. Anything already sent cannot be recalled. Anything a',
     'live send could not deliver is sent later whether or not this is on.',
+    'It also sends the exceptions you grant and the findings you dismiss on this machine,',
+    'each with the reason you picked from the list — never the reason you type.',
     '',
   ].join('\n'),
   revoked: [
@@ -184,10 +190,19 @@ const MACHINE = {
   ].join('\n'),
   stale: [
     "Not sending this machine's unsent activity to Acme: your grant predates a change.",
+    'It now also covers the exceptions you grant and the findings you dismiss on this',
+    'machine, each with the reason you picked from the list — never the reason you type.',
+    'Run `aka sync-history --on` to grant it again.',
+    '',
+  ].join('\n'),
+  staleOlder: [
+    "Not sending this machine's unsent activity to Acme: your grant predates a change.",
     'It now also covers the text of the activity recorded before this machine attached —',
     'not just what a live send failed to deliver afterward — in which a value is masked',
     'only where the detection that flagged it is set to redact or block, and no',
     'detection ships on redact or block.',
+    'It now also covers the exceptions you grant and the findings you dismiss on this',
+    'machine, each with the reason you picked from the list — never the reason you type.',
     'Run `aka sync-history --on` to grant it again.',
     '',
   ].join('\n'),
@@ -260,6 +275,13 @@ const SCOPED = {
   ].join('\n'),
   stale: [
     'Not sending the unsent activity of the repositories and accounts enrolled here to Acme: your grant predates a change.',
+    'The change does not widen what this personal device sends; granting again keeps it',
+    'as it was.',
+    'Run `aka sync-history --on` to grant it again.',
+    '',
+  ].join('\n'),
+  staleOlder: [
+    'Not sending the unsent activity of the repositories and accounts enrolled here to Acme: your grant predates a change.',
     'It now also covers the text of what an enrolled repository or account recorded before you',
     'enrolled it — not just what a live send from one failed to deliver afterward — in',
     'which a value is masked only where the detection that flagged it is set to redact or',
@@ -303,6 +325,11 @@ describe('aka sync-history on a personal device', () => {
   it('describes a grant that predates a change to what is sent', async () => {
     attach('scoped', { consent: consent(STALE) });
     expect((await run([])).output()).toBe(SCOPED.stale);
+  });
+
+  it('names the backlog text to a grant from before it was covered', async () => {
+    attach('scoped', { consent: consent(OLDER) });
+    expect((await run([])).output()).toBe(SCOPED.staleOlder);
   });
 
   it('describes a grant given to another deployment', async () => {
@@ -415,6 +442,11 @@ describe('aka sync-history on a machine-wide attachment keeps its wording', () =
   it('describes a grant that predates a change to what is sent', async () => {
     attach('machine', { consent: consent(STALE) });
     expect((await run([])).output()).toBe(MACHINE.stale);
+  });
+
+  it('names every change since a grant from before the backlog text was covered', async () => {
+    attach('machine', { consent: consent(OLDER) });
+    expect((await run([])).output()).toBe(MACHINE.staleOlder);
   });
 
   it('describes a grant given to another deployment', async () => {

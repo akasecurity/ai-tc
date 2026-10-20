@@ -120,6 +120,26 @@ describe('SqliteExceptionsRepository', () => {
     expect(listed).toEqual([created]);
   });
 
+  it('round-trips the label and its confirmer', async () => {
+    const created = await repo.create(input({ method: 'test-or-example', confirmedBy: 'user' }));
+    expect(created.method).toBe('test-or-example');
+    expect(created.confirmedBy).toBe('user');
+    expect(await repo.getByIdPrefix(created.id)).toEqual(created);
+  });
+
+  it('reads an unlabelled grant as having no method and the local user behind it', async () => {
+    const created = await repo.create(input());
+    expect(created.method).toBeNull();
+    expect(created.confirmedBy).toBe('user');
+  });
+
+  it('reads a row written before the label columns existed', async () => {
+    insertRawException('11111111-1111-4111-8111-111111111111');
+    const [row] = await repo.list({ includeTerminal: true });
+    expect(row?.method).toBeNull();
+    expect(row?.confirmedBy).toBe('user');
+  });
+
   it('lists newest-first and hides terminal rows unless includeTerminal is set', async () => {
     const expired = await repo.create(
       input({ expiresAt: new Date(Date.now() - 1000).toISOString() }),
@@ -922,5 +942,33 @@ describe('SqliteExceptionsRepository', () => {
       // grant and only it.
       expect((await repo.list({ includeTerminal: true })).map((e) => e.id)).toEqual([permanent.id]);
     });
+  });
+});
+
+describe('label reporting', () => {
+  it('offers every grant until it is reported, oldest change first', async () => {
+    const first = await repo.create(input({ method: 'acknowledged' }));
+    clock += 1000;
+    const second = await repo.create(input());
+    expect((await repo.unreportedLabels(10)).map((g) => g.id)).toEqual([first.id, second.id]);
+
+    await repo.markLabelsReported([first.id], clock);
+    expect((await repo.unreportedLabels(10)).map((g) => g.id)).toEqual([second.id]);
+  });
+
+  it('offers a reported grant again once it changes', async () => {
+    const grant = await repo.create(input({ scope: 'once', maxUses: 1 }));
+    await repo.markLabelsReported([grant.id], clock);
+    expect(await repo.unreportedLabels(10)).toEqual([]);
+
+    clock += 1000;
+    await repo.consume(grant.id);
+    expect((await repo.unreportedLabels(10)).map((g) => g.id)).toEqual([grant.id]);
+  });
+
+  it('caps a read at the limit', async () => {
+    await repo.create(input());
+    await repo.create(input());
+    expect(await repo.unreportedLabels(1)).toHaveLength(1);
   });
 });

@@ -1,4 +1,5 @@
 'use client';
+import type { DismissMethod } from '@akasecurity/schema';
 import {
   Button,
   Input,
@@ -10,8 +11,10 @@ import {
 } from '@akasecurity/ui-kit';
 import { useState } from 'react';
 
+import { ChoiceGroup } from '../shared/ChoiceGroup.tsx';
 import { ScopePicker } from './atoms.tsx';
 import type { ScopeAnswer } from './meta.ts';
+import { GRANT_METHODS } from './meta.ts';
 
 export interface AddExceptionRuleOption {
   id: string;
@@ -23,6 +26,8 @@ export interface AddExceptionSubmission {
   value: string;
   scope: ScopeAnswer;
   reason: string;
+  // The reason as a label, when one was picked.
+  method?: DismissMethod;
   // Present when scope is permanent: the value retyped. The server action
   // compares them — a permanent grant is a deliberate, double-entered choice.
   confirmation?: string;
@@ -46,6 +51,7 @@ export function AddExceptionForm({ rules, onSubmit, busy, error }: AddExceptionF
   const [value, setValue] = useState('');
   const [scope, setScope] = useState<ScopeAnswer | null>(null);
   const [reason, setReason] = useState('');
+  const [method, setMethod] = useState<DismissMethod | null>(null);
   const [confirmation, setConfirmation] = useState('');
 
   const needsConfirmation = scope === 'permanent';
@@ -129,6 +135,22 @@ export function AddExceptionForm({ rules, onSubmit, busy, error }: AddExceptionF
         />
       </div>
 
+      <div>
+        <div
+          id="add-exception-method-label"
+          className="mb-1.5 text-label font-semibold uppercase tracking-wider text-text-3"
+        >
+          Label the reason (optional)
+        </div>
+        <ChoiceGroup
+          name="add-exception-method"
+          labelledBy="add-exception-method-label"
+          choices={GRANT_METHODS}
+          value={method}
+          onChange={setMethod}
+        />
+      </div>
+
       {error && <p className="text-xs text-sev-critical-ink">{error}</p>}
 
       <div>
@@ -144,6 +166,7 @@ export function AddExceptionForm({ rules, onSubmit, busy, error }: AddExceptionF
               value,
               scope,
               reason: reason.trim(),
+              ...(method !== null ? { method } : {}),
               ...(needsConfirmation ? { confirmation } : {}),
             });
           }}

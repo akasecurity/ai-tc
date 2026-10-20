@@ -403,6 +403,63 @@ describe('aka exception approve — from the blocked-detections ledger', () => {
     }
   });
 
+  it('records the reason as a label with --method, beside the free text', async () => {
+    await seedBlocked('3f2a92');
+    await runException(
+      [
+        'approve',
+        '3f2a92',
+        '--home',
+        home,
+        '--once',
+        '--reason',
+        'fixture key',
+        '--method',
+        'test-or-example',
+      ],
+      scriptedIo(),
+    );
+    const db = openLocalDatabase(dir);
+    try {
+      const grant = (await db.exceptions.list())[0];
+      expect(grant?.method).toBe('test-or-example');
+      expect(grant?.justification).toBe('fixture key');
+      expect(grant?.confirmedBy).toBe('user');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('leaves a grant unlabelled without --method', async () => {
+    await seedBlocked('3f2a93');
+    await runException(
+      ['approve', '3f2a93', '--home', home, '--once', '--reason', 'no label'],
+      scriptedIo(),
+    );
+    const db = openLocalDatabase(dir);
+    try {
+      expect((await db.exceptions.list())[0]?.method).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('refuses a --method that is not a reason a person gives, writing nothing', async () => {
+    await seedBlocked('3f2a94');
+    await expect(
+      runException(
+        ['approve', '3f2a94', '--home', home, '--once', '--reason', 'x', '--method', 'exception'],
+        scriptedIo(),
+      ),
+    ).rejects.toThrow(/--method must be one of acknowledged, false-positive, test-or-example/);
+    const db = openLocalDatabase(dir);
+    try {
+      expect(await db.exceptions.list()).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
   it('accepts the masked value as the selector (what the block message showed)', async () => {
     await seedBlocked('9c04d7');
     await runException(

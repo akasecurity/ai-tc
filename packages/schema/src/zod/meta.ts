@@ -26,6 +26,7 @@ import {
   Span,
   VariableName,
 } from './finding.ts';
+import { MatchFeatures } from './match-features.ts';
 
 // ── Discriminators ─────────────────────────────────────────────────────────
 
@@ -423,6 +424,16 @@ export const ToolCallInspection = z.object({
   maskedMatch: z.string(),
   actionTaken: ActionTaken,
   confidence: z.number().min(0).max(1),
+  // Content-free features for a false-positive model (see MatchFeatures): classes,
+  // counts and fixed-list members only, never scanned text.
+  features: MatchFeatures.optional(),
+  // A keyed hash of the variable the value is assigned to, under the deployment's
+  // sighting key: equal names hash equal across one deployment's machines, and the
+  // name itself never leaves the machine. `v<keyVersion>.<base64url HMAC>`.
+  nameHash: z
+    .string()
+    .regex(/^v\d+\.[A-Za-z0-9_-]{43}$/)
+    .optional(),
 });
 export type ToolCallInspection = z.infer<typeof ToolCallInspection>;
 

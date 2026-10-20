@@ -22,7 +22,8 @@ import {
   superlinearGrowth,
   worstProbeMs,
 } from '../../src/security/redos-probe.ts';
-import { growthClock } from '../helpers/growth-clock.ts';
+import { growthClock, medianStepMs, threadCpuMs } from '../helpers/growth-clock.ts';
+import { walkInIsolation } from '../helpers/isolated-walk.ts';
 import { discoverBundledRuleFiles, loadRule } from '../helpers/rules.ts';
 
 // CPU time consumed by this process, in ms, as a monotonic clock for the probe
@@ -78,6 +79,75 @@ const growth = growthClock();
 const measuredGrowth = (rule: Rule): GrowthBreach | undefined =>
   superlinearGrowth(rule, growth.now, growth.statistic);
 
+// The per-rule budget, judged so that only a breach that reproduces fails.
+//
+// The in-process walk above is the screen. A walk that crosses the budget is
+// measured again on a fresh worker thread (`walkInIsolation`): a new isolate,
+// so every pattern runs interpreted again exactly as it did the first time,
+// charged with that thread's own CPU, so neither the GC and compiler threads
+// nor anything else in this process is in the reading. Only that second
+// reading decides, and it clears the rule only from at least one clock step
+// under the budget (below). A rule that really backtracks burns the same CPU
+// on any thread and fails both. A first reading that was inflated by work the rule
+// did not do is cleared by the second; benign rules have crossed the budget
+// in-process on the loaded Windows runner, where that clock also advances in
+// whole 16ms ticks.
+//
+// Measuring again on the SAME thread is not an option and is not what this
+// does: the regex would run natively compiled the second time, at a fraction
+// of the interpreted cost a hook process pays (see `worstProbeMs`).
+//
+// The re-measurement clears a rule only when it reads at least one clock step
+// under the budget. A clock that advances in whole steps reads low by up to a
+// step — on a 15.6ms-tick clock a 100-115ms breach can read 93.75ms — so a
+// reading within one step of the budget cannot tell a real breach from a cheap
+// rule, and it stays a breach. `resolutionMs` is that clock's measured step.
+//
+// `screen` and `remeasure` are the two walks, injectable so the wiring between
+// them can be driven with scripted readings; the defaults are the real ones.
+interface ProbeWalks {
+  screen: (rule: Rule) => { ms: number };
+  remeasure: (rule: Rule) => Promise<{ ms: number; probeLength: number; resolutionMs: number }>;
+}
+// Measured once, on the first screened breach. The worker reads the same
+// per-thread CPU clock, so its step is this one. A clock too coarse to measure
+// reads Infinity, which clears nothing.
+let threadCpuStepMs: number | undefined;
+const realProbeWalks: ProbeWalks = {
+  screen: (rule) => worstProbeMs(rule, cpuMs),
+  remeasure: async (rule) => {
+    const walk = await walkInIsolation(rule);
+    threadCpuStepMs ??= medianStepMs(threadCpuMs);
+    return { ms: walk.ms, probeLength: walk.probeLength, resolutionMs: threadCpuStepMs };
+  },
+};
+
+async function probeBudgetBreach(
+  rule: Rule,
+  { screen, remeasure }: ProbeWalks = realProbeWalks,
+): Promise<{ firstMs: number; isolatedMs: number; probeLength: number } | undefined> {
+  const first = screen(rule);
+  if (first.ms < BUDGET_MS) return undefined;
+  const isolated = await remeasure(rule);
+  if (isolated.ms < BUDGET_MS - isolated.resolutionMs) return undefined;
+  return { firstMs: first.ms, isolatedMs: isolated.ms, probeLength: isolated.probeLength };
+}
+
+function describeProbeBreach(
+  id: string,
+  breach: { firstMs: number; isolatedMs: number; probeLength: number },
+): string {
+  return (
+    `Rule "${id}" burned ${breach.firstMs.toFixed(1)}ms of CPU on its worst probe here, and ` +
+    `${breach.isolatedMs.toFixed(1)}ms on a ${String(breach.probeLength)}-char probe measured ` +
+    `again on a fresh thread (budget ${String(BUDGET_MS)}ms). A rule this slow can exhaust the ` +
+    `hook's 10s timeout, which fails open and lets the call through unscanned. Rewrite the ` +
+    `pattern to remove the ambiguity — usually a quantified group whose body can match the same ` +
+    `text more than one way, e.g. (a+)+ or (\\s*\\w+)*. Both readings are CPU time on a cold ` +
+    `regex, so a busy runner cannot produce them: the pattern really did this much work.`
+  );
+}
+
 // scan() is synchronous and runs on the hook path. A rule that backtracks
 // catastrophically cannot be interrupted — the fail-open catch in the plugin
 // runtime only catches throws, and a hook killed at its 10s timeout fails open,
@@ -131,21 +201,128 @@ describe('bundled rules survive adversarial input', () => {
 
   it.each(bundled.map((rule) => [rule.id, rule] as const))(
     '%s stays within the scan budget',
-    (id, rule) => {
-      // CPU time, not wall time — see `cpuMs`. The budget is unchanged and so is
-      // the walk; only the resource being charged for is.
-      const { ms, probe } = worstProbeMs(rule, cpuMs);
-      expect(
-        ms,
-        `Rule "${id}" burned ${ms.toFixed(1)}ms of CPU on a ${String(probe.length)}-char probe ` +
-          `(budget ${String(BUDGET_MS)}ms). A rule this slow can exhaust the hook's 10s timeout, ` +
-          `which fails open and lets the call through unscanned. Rewrite the pattern to ` +
-          `remove the ambiguity — usually a quantified group whose body can match the same ` +
-          `text more than one way, e.g. (a+)+ or (\\s*\\w+)*. This is CPU time, so a busy ` +
-          `runner cannot inflate it: the pattern really did this much work.`,
-      ).toBeLessThan(BUDGET_MS);
+    async (id, rule) => {
+      // CPU time, not wall time — see `cpuMs` — and a breach must reproduce on
+      // a fresh thread — see `probeBudgetBreach`. The budget is unchanged and
+      // so is the walk.
+      const breach = await probeBudgetBreach(rule);
+      expect(breach, breach && describeProbeBreach(id, breach)).toBeUndefined();
     },
   );
+
+  // The re-measurement is only worth having if it still pays what a hook
+  // pays: the pattern's first, interpreted run. So the fresh-thread reading is
+  // compared with what the SAME probe costs on this thread once the pattern is
+  // compiled, rather than with the budget — a ratio of two runs of one probe
+  // on one machine, which faster hardware moves on both sides.
+  //
+  // The pattern is walked on this thread first, which is the state every rule
+  // is in when its in-process walk has just breached. A worker that measured
+  // the compiled tier, or a re-measurement taken on this thread, reads the
+  // compiled cost and a ratio near 1. Measured on an arm64 Mac at 7.4-7.8x
+  // (122-130ms against 16.5-16.8ms), against a bound of 3.
+  //
+  // On a clock that advances in whole steps a reading is low by up to a step,
+  // and the two readings must be read alike. The compiled cost is timed on
+  // this thread's clock as it is, unquantized, so it is exact; under one step
+  // the clock cannot tell the two tiers apart, and three times a cost that
+  // small is a bound a coarse reading clears or misses by chance, so the case
+  // is skipped saying so. The bound is floored at one step for the same
+  // reason. The fresh-thread reading is the worker's, in whole steps, so it
+  // stands for anything up to one step more: it is cold when the reading
+  // itself clears the bound, compiled only when one step more would still sit
+  // under it, and unmeasurable in between.
+  const FRESH_THREAD_RATIO = 3;
+
+  function freshThreadVerdict(
+    isolatedMs: number,
+    compiledMs: number,
+    stepMs: number,
+  ): { verdict: 'cold' | 'compiled' | 'unmeasurable'; boundMs: number } {
+    const boundMs = Math.max(compiledMs, stepMs) * FRESH_THREAD_RATIO;
+    if (isolatedMs > boundMs) return { verdict: 'cold', boundMs };
+    if (compiledMs < stepMs || isolatedMs + stepMs > boundMs) {
+      return { verdict: 'unmeasurable', boundMs };
+    }
+    return { verdict: 'compiled', boundMs };
+  }
+
+  it.each([
+    ['cold against a compiled reading of one step', 125, 16, 16, 'cold'],
+    ['cold against a compiled reading of zero, floored at the step', 125, 0, 16, 'cold'],
+    ['compiled against a compiled reading of zero', 40, 0, 16, 'unmeasurable'],
+    ['compiled against a measured compiled reading', 64, 48, 16, 'compiled'],
+    ['compiled on a fine clock', 70, 65, 0.001, 'compiled'],
+    ['compiled when a compiled-tier walk reads one step on a 16ms clock', 16, 17, 16, 'compiled'],
+    // A 61ms fresh-thread walk floored to 48ms, against 8ms compiled: under one
+    // step, so neither tier can be told apart.
+    ['unmeasurable for a 61ms walk floored to 48 against 8ms compiled', 48, 8, 16, 'unmeasurable'],
+    // The same floored walk against 17ms compiled: 3.6x if the walk took 61ms,
+    // so the floor alone decides whether it clears the 51ms bound.
+    ['unmeasurable for a walk floored to within one step of the bound', 48, 17, 16, 'unmeasurable'],
+  ] as const)(
+    'the fresh-thread verdict reads %s',
+    (_label, isolatedMs, compiledMs, stepMs, verdict) => {
+      expect(freshThreadVerdict(isolatedMs, compiledMs, stepMs).verdict).toBe(verdict);
+    },
+  );
+
+  async function checkFreshThread(
+    skip: (reason: string) => void,
+    stepMs: number,
+    clockName: string,
+  ): Promise<void> {
+    const parsed = parseRegexRule('^(a+)+bc');
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    const stepped: ProbeClock = () =>
+      stepMs > 0 ? Math.floor(threadCpuMs() / stepMs) * stepMs : threadCpuMs();
+    worstProbeMs(parsed.data, stepped);
+    // A fixed step of zero means the clock as it is, measured at its own
+    // resolution; a forced step is the resolution by construction.
+    const isolated = await walkInIsolation(parsed.data, stepMs);
+    expect(isolated.probe.length, 'the fresh-thread walk attributed no probe').toBeGreaterThan(0);
+    // Both readings of each compiled run: the stepped one is reported, the
+    // unquantized one is what the verdict reads.
+    let compiledMs = Infinity;
+    let compiledSteppedMs = Infinity;
+    for (let i = 0; i < 5; i++) {
+      const startRaw = threadCpuMs();
+      const start = stepped();
+      scan(isolated.probe, [parsed.data]);
+      const end = stepped();
+      compiledMs = Math.min(compiledMs, threadCpuMs() - startRaw);
+      compiledSteppedMs = Math.min(compiledSteppedMs, end - start);
+    }
+    const resolutionMs = stepMs > 0 ? stepMs : medianStepMs(threadCpuMs);
+    const { verdict, boundMs } = freshThreadVerdict(isolated.ms, compiledMs, resolutionMs);
+    const readings =
+      `the fresh-thread walk read ${isolated.ms.toFixed(1)}ms of CPU on its ` +
+      `${String(isolated.probeLength)}-char probe, which reads ${compiledMs.toFixed(1)}ms on this ` +
+      `thread compiled (${compiledSteppedMs.toFixed(1)}ms on the stepped clock), on ${clockName} ` +
+      `(step ${resolutionMs.toFixed(3)}ms, bound ${boundMs.toFixed(1)}ms)`;
+    if (verdict === 'unmeasurable') {
+      skip(
+        `${readings}: the compiled run read under one clock step, or the fresh-thread reading within one step of the bound, so this clock cannot tell the two tiers apart`,
+      );
+      return;
+    }
+    expect(
+      verdict,
+      `${readings}; a re-measurement that is not paying the interpreted cost clears every ` +
+        `breach the in-process walk finds.`,
+    ).toBe('cold');
+  }
+
+  it('measures a breach again on a fresh thread at its interpreted cost', async (ctx) => {
+    await checkFreshThread((reason) => ctx.skip(reason), 0, 'thread CPU time');
+  });
+
+  it('measures it so on a CPU clock that advances in 16ms steps', async (ctx) => {
+    // The Windows runner's clock, imposed on both threads, so this case runs
+    // on every machine rather than only where that clock is native.
+    await checkFreshThread((reason) => ctx.skip(reason), 16, 'a 16ms-step thread CPU clock');
+  });
 });
 
 function describeBreach(breach: GrowthBreach): string {
@@ -217,14 +394,15 @@ function describeFailure(id: string, breach: GrowthBreach): string {
 describe('bundled rules scale linearly on adversarial corpora', () => {
   it.each(bundled.map((rule) => [rule.id, rule] as const))(
     '%s grows linearly with its input',
-    (id, rule) => {
+    async (id, rule) => {
       // The growth tier scans thousands of characters per reading, so a pattern
       // that backtracks exponentially would never return from it. The short
       // probes catch that case cheaply, and must pass first.
+      const probeBreach = await probeBudgetBreach(rule);
       expect(
-        worstProbeMs(rule, cpuMs).ms,
-        `Rule "${id}" fails the short-probe walk; the growth tier is not run on it.`,
-      ).toBeLessThan(BUDGET_MS);
+        probeBreach,
+        probeBreach && `${describeProbeBreach(id, probeBreach)} The growth tier is not run on it.`,
+      ).toBeUndefined();
       const breach = measuredGrowth(rule);
       expect(
         breach && describeBreach(breach),
@@ -455,6 +633,79 @@ describe('the probe battery itself', () => {
     ).toBeGreaterThanOrEqual(BUDGET_MS);
   });
 
+  // The fresh-thread re-measurement decides every per-rule verdict, so the
+  // wiring between the screen and it is pinned on scripted readings: a
+  // breach needs the screen over the budget and the re-measurement no more
+  // than one clock step under it, the re-measurement runs only on a
+  // screened breach, and a re-measurement that read nothing clears nothing
+  // into a breach. The live halves are pinned elsewhere: the screen by the case
+  // above, the re-measurement's cost by the fresh-thread control.
+  describe('a per-rule breach is the screen and the fresh-thread re-measurement together', () => {
+    const OVER = BUDGET_MS + 20;
+    const UNDER = BUDGET_MS - 20;
+    const parsed = parseRegexRule('wiring');
+    if (!parsed.success) throw new Error('the scripted rule did not parse');
+    const rule = parsed.data;
+    function walks(screenMs: number, remeasureMs: number, resolutionMs = 1) {
+      const calls = { screen: 0, remeasure: 0 };
+      const scripted: ProbeWalks = {
+        screen: () => {
+          calls.screen++;
+          return { ms: screenMs };
+        },
+        remeasure: () => {
+          calls.remeasure++;
+          return Promise.resolve({ ms: remeasureMs, probeLength: 25, resolutionMs });
+        },
+      };
+      return { calls, scripted };
+    }
+
+    it('is a breach when both walks read over the budget', async () => {
+      const { calls, scripted } = walks(OVER, OVER + 5);
+      expect(await probeBudgetBreach(rule, scripted)).toEqual({
+        firstMs: OVER,
+        isolatedMs: OVER + 5,
+        probeLength: 25,
+      });
+      expect(calls).toEqual({ screen: 1, remeasure: 1 });
+    });
+
+    it('is cleared when the re-measurement reads under the budget', async () => {
+      const { calls, scripted } = walks(OVER, UNDER);
+      expect(await probeBudgetBreach(rule, scripted)).toBeUndefined();
+      expect(calls).toEqual({ screen: 1, remeasure: 1 });
+    });
+
+    it('does not re-measure a rule the screen cleared', async () => {
+      const { calls, scripted } = walks(UNDER, OVER);
+      expect(await probeBudgetBreach(rule, scripted)).toBeUndefined();
+      expect(calls).toEqual({ screen: 1, remeasure: 0 });
+    });
+
+    it('is cleared when the re-measurement reads zero', async () => {
+      const { calls, scripted } = walks(OVER, 0);
+      expect(await probeBudgetBreach(rule, scripted)).toBeUndefined();
+      expect(calls).toEqual({ screen: 1, remeasure: 1 });
+    });
+
+    it('is a breach when the re-measurement reads one step under the budget on a 16ms clock', async () => {
+      // 84ms in 16ms steps can be any cost up to 100ms, so it clears nothing.
+      const { calls, scripted } = walks(OVER, BUDGET_MS - 16, 16);
+      expect(await probeBudgetBreach(rule, scripted)).toEqual({
+        firstMs: OVER,
+        isolatedMs: BUDGET_MS - 16,
+        probeLength: 25,
+      });
+      expect(calls).toEqual({ screen: 1, remeasure: 1 });
+    });
+
+    it('is cleared when the re-measurement reads more than one step under the budget', async () => {
+      const { scripted } = walks(OVER, BUDGET_MS - 17, 16);
+      expect(await probeBudgetBreach(rule, scripted)).toBeUndefined();
+    });
+  });
+
   it('a clock that advances without work would trip the gate, which is why the gate reads CPU', () => {
     // The failure mode this instrument replaced, made deterministic. A
     // descheduled thread's wall clock advances while the thread executes
@@ -535,11 +786,12 @@ describe('the probe battery itself', () => {
       ).toBe(true);
     });
 
-    it.each(superlinear)('the absolute-budget walk alone would miss %s', (_label, rule) => {
+    it.each(superlinear)('the absolute-budget walk alone would miss %s', async (_label, rule) => {
       // Pins why the growth tier exists: every one of these clears the
       // single-probe walk. If that stops being true, the walk has grown a
       // probe that covers this class and the tier can be reconsidered.
-      expect(worstProbeMs(rule, cpuMs).ms).toBeLessThan(BUDGET_MS);
+      const breach = await probeBudgetBreach(rule);
+      expect(breach && describeProbeBreach('test-pack/growth', breach)).toBeUndefined();
     });
 
     it.each([

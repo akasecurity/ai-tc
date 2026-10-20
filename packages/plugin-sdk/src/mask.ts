@@ -9,11 +9,19 @@
 import {
   getLoadedRules,
   maskMatch,
+  matchFeatures,
   redact,
   scan,
   withVariableNames,
 } from '@akasecurity/detections';
-import type { DetectionCategory, FindingLocation, Rule, Severity, Span } from '@akasecurity/schema';
+import type {
+  DetectionCategory,
+  FindingLocation,
+  MatchFeatures,
+  Rule,
+  Severity,
+  Span,
+} from '@akasecurity/schema';
 
 import { createFindingLocator, evidenceLookup } from './finding-context.ts';
 import { dropShieldedFindings, shieldPointers } from './pointer-shield.ts';
@@ -76,6 +84,8 @@ export interface ScanFinding {
 export interface LocatedScanFinding extends ScanFinding {
   location: FindingLocation;
   variableName?: string;
+  /** Content-free features for a false-positive model, when asked for (`features`). */
+  features?: MatchFeatures;
 }
 
 // Scan `text` with the bundled detection packs, returning BOTH the redacted string
@@ -99,6 +109,8 @@ export interface LocatedScanFinding extends ScanFinding {
 //
 // `locate` builds each finding's location and excerpt, which costs a bounded
 // re-scan per finding; only a caller that stores the excerpt asks for it.
+// `features` adds each finding's content-free features (`matchFeatures`), with
+// the path of the scanned file when the caller knows it.
 export function scanText(
   text: string,
   ruleVersions?: Record<string, string>,
@@ -106,12 +118,12 @@ export function scanText(
 export function scanText(
   text: string,
   ruleVersions: Record<string, string> | undefined,
-  options: { locate: true },
+  options: { locate: true; features?: { filePath?: string } },
 ): { masked: string; findings: LocatedScanFinding[] };
 export function scanText(
   text: string,
   ruleVersions?: Record<string, string>,
-  options: { locate?: boolean } = {},
+  options: { locate?: boolean; features?: { filePath?: string } } = {},
 ): { masked: string; findings: ScanFinding[] } {
   // Packs unusable (a malformed bundled pack) → fail-secure without re-paying the parse.
   if (!ensureBundledPacks()) return { masked: '[REDACTED]', findings: [] };
@@ -151,6 +163,16 @@ export function scanText(
         confidence: m.confidence,
         ...(locate === undefined ? {} : { location: locate(m) }),
         ...(m.variableName === undefined ? {} : { variableName: m.variableName }),
+        ...(options.features === undefined || rule === undefined
+          ? {}
+          : {
+              features: matchFeatures(m, rule, {
+                text: shielded.text,
+                ...(options.features.filePath === undefined
+                  ? {}
+                  : { filePath: options.features.filePath }),
+              }),
+            }),
       };
     });
     return { masked: redact(text, matches), findings };

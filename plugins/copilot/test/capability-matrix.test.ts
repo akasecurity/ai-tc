@@ -82,7 +82,7 @@ describe('the capability matrix and the SKILL.md that renders it', () => {
 
   it('verifies exactly the VS Code rows the recordings back, and says so in the prose', () => {
     // Pinned as an exact set: the three capture-only events were recorded,
-    // while the two PreToolUse rows claim a block and a rewrite nobody drove.
+    // while the PreToolUse rows claim a block and rewrites nobody drove.
     // Two halves — the data says it, and the prose says it — because a reader
     // who trusts the table has already read the paragraph above it.
     const verified = capabilitiesFor('vscode')

@@ -125,13 +125,36 @@ describe('canonicalModelId', () => {
       canonicalModelId(
         'projects/p/locations/us-central1/publishers/anthropic/models/claude-sonnet-4-5@20250929',
       ),
-    ).toBe('claude-sonnet-4-5@20250929');
+    ).toBe('claude-sonnet-4-5');
     expect(canonicalModelId('models/gemini-2.5-pro')).toBe('gemini-2.5-pro');
   });
 
-  it('reduces a gateway creator/model id to the model', () => {
-    expect(canonicalModelId('openai/gpt-4o')).toBe('gpt-4o');
-    expect(canonicalModelId('Anthropic/Claude-Sonnet-4-5-20250929')).toBe('claude-sonnet-4-5');
+  it('keeps the creator of a gateway creator/model id, so no namespace approves another', () => {
+    expect(canonicalModelId('openai/gpt-4o')).toBe('openai/gpt-4o');
+    expect(canonicalModelId('Anthropic/Claude-Sonnet-4-5-20250929')).toBe(
+      'anthropic/claude-sonnet-4-5',
+    );
+    expect(canonicalModelId('other/gpt-4o')).not.toBe(canonicalModelId('openai/gpt-4o'));
+    expect(canonicalModelId('openai/gpt-4o')).not.toBe(canonicalModelId('gpt-4o'));
+    expect(canonicalModelId('meta-llama/Llama-3-70b')).toBe('meta-llama/llama-3-70b');
+  });
+
+  it('folds the date out of every spelling of one dated Bedrock model', () => {
+    const spellings = [
+      'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+      'anthropic.claude-haiku-4-5-20251001-v1:0',
+      'arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0',
+      'anthropic.claude-haiku-4-5-v1:0',
+    ];
+    for (const spelling of spellings) {
+      expect(canonicalModelId(spelling)).toBe('anthropic.claude-haiku-4-5-v1:0');
+    }
+  });
+
+  it('folds only a date: a version that is not one stays', () => {
+    expect(canonicalModelId('anthropic.claude-v2:1')).toBe('anthropic.claude-v2:1');
+    expect(canonicalModelId('model-1234567-v1:0')).toBe('model-1234567-v1:0');
+    expect(canonicalModelId('model@001')).toBe('model@001');
   });
 
   it('keeps an opaque endpoint or tuned model whole', () => {

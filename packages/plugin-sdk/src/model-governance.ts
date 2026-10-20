@@ -70,16 +70,22 @@ const BEDROCK_MODEL_ARN =
 /** A Vertex `publishers/{p}/models/{m}` resource, or a Gemini `models/{m}` one. */
 const MODELS_PATH = /(?:^|\/)models\/([^/]+)$/;
 
-/** Prefixes whose id is opaque, kept whole rather than read as `creator/model`. */
-const OPAQUE_PREFIXES: ReadonlySet<string> = new Set(['vertex-endpoint', 'tunedmodels']);
+/** A release date ahead of a Bedrock version (`-20251001-v1:0`) or after a Vertex `@`. */
+const VERSIONED_DATE = /(?:-\d{8}(?=-v\d+(?::\d+)?$)|@\d{8}$)/;
 
 /**
  * A model id in the form an approved-model list compares, whatever surface reported it.
  *
  * Folded as `normalizeModelId` folds, then reduced to the model it names: a Bedrock
  * cross-region prefix (`us.`, `eu.`, `apac.`, `global.`) is stripped, a foundation-model
- * or system inference-profile ARN becomes its model id, `publishers/{p}/models/{m}` and
- * `models/{m}` become `{m}`, and a gateway `creator/model` becomes `model`. Any other ARN, a
+ * or system inference-profile ARN becomes its model id, and `publishers/{p}/models/{m}` and
+ * `models/{m}` become `{m}`. A release date is removed wherever it sits: trailing
+ * (`-20251001`), ahead of a Bedrock version (`-20251001-v1:0`) or after a Vertex `@`, so
+ * the dated and undated spellings of one model compare equal.
+ *
+ * Every other component is kept. A gateway `creator/model` stays `creator/model`, so
+ * `openai/gpt-4o` and `other/gpt-4o` are different ids, and neither equals `gpt-4o`. A
+ * Bedrock id keeps its `provider.` prefix and `-vN:M` version. Any other ARN, a
  * `vertex-endpoint/{id}` and a `tunedModels/{m}` are kept whole.
  */
 export function canonicalModelId(model: string): string {
@@ -90,23 +96,8 @@ export function canonicalModelId(model: string): string {
     id = named;
   }
   const path = MODELS_PATH.exec(id)?.[1];
-  if (path !== undefined) {
-    id = path;
-  } else {
-    const parts = id.split('/');
-    const [creator, name] = parts;
-    if (
-      parts.length === 2 &&
-      creator !== undefined &&
-      name !== undefined &&
-      creator !== '' &&
-      name !== '' &&
-      !OPAQUE_PREFIXES.has(creator)
-    ) {
-      id = name;
-    }
-  }
-  return normalizeModelId(id.replace(BEDROCK_GEO_PREFIX, ''));
+  if (path !== undefined) id = path;
+  return normalizeModelId(id.replace(BEDROCK_GEO_PREFIX, '').replace(VERSIONED_DATE, ''));
 }
 
 /**

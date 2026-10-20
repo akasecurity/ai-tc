@@ -1996,12 +1996,18 @@ and the isolation ceilings in `packages/plugin-sdk`. Keep the two apart — a be
 threw would be a timing gate wearing a different name.
 
 A guard is only a correctness assertion while a loaded runner cannot fail it. The ReDoS
-growth tier reads the scanning thread's CPU time and AVERAGES it wherever that clock's
-measured median step is at most 5 ms — a thread waiting for a core accrues none of it, and
-the minimum of tick-quantized readings sits a tick low — and falls back to the fastest of
-several wall readings where it steps more coarsely (the Windows runner); the clock and the
-statistic are chosen by `packages/detections/test/helpers/growth-clock.ts`, and the pair a
-ratio compares keeps all of its rounds when the next doubling goes over budget. The
+growth tier reads the scanning thread's CPU time on every platform — a thread waiting for a
+core accrues none of it, where elapsed time on a loaded runner grows faster than the input
+and failed linear rules as superlinear and as over budget — and never falls back to the
+wall clock. That clock steps by up to 16 ms (the Windows runner), so each pair reading
+repeats its scan until the clock has advanced by `GROWTH_WINDOW_STEPS` measured steps and
+reads the cost per scan (`windowReadingMs`), which bounds the rounding to one step in that
+many; a pair whose larger text reads under the 5 ms floor beyond one step is cleared after
+a few scans rather than a window. Both sides of a ratio are the FASTEST of their windows,
+taken in the same rounds, since what load adds to work only ever adds. The step is measured
+by `packages/detections/test/helpers/growth-clock.ts`, a step it cannot measure is refused
+rather than read, and the controls run on the native clock and on a forced 16 ms step. The
+pair a ratio compares keeps all of its rounds when the next doubling goes over budget. The
 per-rule walk screens on process-wide CPU, and a breach there is measured again on a fresh
 worker thread charged with that thread's own CPU — a new isolate, so the regex runs
 interpreted again as a hook process does (re-measuring on the same thread would measure
@@ -2012,7 +2018,7 @@ interpreted cost: more than three times the same probe's compiled cost on the ca
 thread, read unquantized and the bound floored at one clock step, on the native clock and
 on a forced 16 ms step; a reading within a step of either line is skipped as unmeasurable
 rather than judged. `packages/detections/test/security/unicode.test.ts`'s
-one-BOM slow-path ratio reads the growth tier's clock and statistic and fails only when
+one-BOM slow-path ratio reads the fastest of the growth tier's windows and fails only when
 three attempts breach. And a guard whose subject has a countable unit counts it rather
 than timing it — `mergeOverlappingSameRule`'s growth guard counts the uses of the span
 bounds it compares, and the browser extension's SSE rescan guard counts the characters the

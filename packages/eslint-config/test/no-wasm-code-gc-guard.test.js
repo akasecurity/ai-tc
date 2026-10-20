@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -129,6 +129,35 @@ describe('the no-wasm-code-gc workaround', () => {
     const listed = spawnSync(process.execPath, ['--v8-options'], { encoding: 'utf8' });
     expect(listed.status).toBe(0);
     expect(listed.stdout).toMatch(new RegExp(String.raw`^\s*--${call[1]}\s`, 'm'));
+  });
+
+  it('stays gated to every Node line the repo pins', () => {
+    // The flag is only set on the gated major, so moving `.nvmrc` or a
+    // workflow's `node-version` past it would switch the workaround off with
+    // every case here still green. Fail instead, until the gate is widened or
+    // the file is deleted because the abort is fixed on the new line.
+    const source = stripComments(readFileSync(SETUP_ABS, 'utf8'));
+    const gate = /process\.versions\.node\.split\('\.'\)\[0\]\s*===\s*'(\d+)'/.exec(source);
+    expect(gate, `${SETUP_REL} no longer gates on a literal Node major`).not.toBe(null);
+    const gated = Number(gate[1]);
+
+    const pins = [['.nvmrc', readFileSync(join(REPO_ROOT, '.nvmrc'), 'utf8')]];
+    const workflows = join(REPO_ROOT, '.github', 'workflows');
+    for (const name of readdirSync(workflows).filter((f) => /\.ya?ml$/.test(f))) {
+      for (const m of readFileSync(join(workflows, name), 'utf8').matchAll(
+        /node-version:\s*['"]?(\d+)/g,
+      )) {
+        pins.push([`.github/workflows/${name}`, m[1]]);
+      }
+    }
+    expect(pins.length).toBeGreaterThan(1);
+    for (const [where, value] of pins) {
+      const major = Number(/\d+/.exec(value)?.[0]);
+      expect(
+        major,
+        `${where} pins Node ${String(major)}, past the Node ${String(gated)} gate in ${SETUP_REL}`,
+      ).toBeLessThanOrEqual(gated);
+    }
   });
 
   it('is owed by the packages that terminate workers', () => {

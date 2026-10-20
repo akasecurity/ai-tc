@@ -14,8 +14,9 @@
 // Gated to the 24 line, the one the abort is reported on. When a 24.x release
 // carries the backport, gate on the releases before it.
 // packages/eslint-config/test/no-wasm-code-gc-guard.test.js fails if an owing
-// package drops this file, or if this Node's V8 no longer knows the flag:
-// `setFlagsFromString` does not throw on an unknown one.
+// package drops this file, if this Node's V8 no longer knows the flag
+// (`setFlagsFromString` does not throw on an unknown one), or if `.nvmrc` or a
+// workflow pins a Node major past this gate.
 import { setFlagsFromString } from 'node:v8';
 
 if (process.versions.node.split('.')[0] === '24') setFlagsFromString('--no-wasm-code-gc');

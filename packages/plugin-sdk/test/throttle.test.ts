@@ -234,6 +234,28 @@ describe('gatePerKey', () => {
     expect(gate.dueAt).toBeLessThanOrEqual(dueOfThatPass + WINDOW + 1);
   });
 
+  it('reads a marker dated a few milliseconds ahead of the clock as a pass that started, not one that is waiting', () => {
+    // A file's timestamp and the clock come from different sources, and on some
+    // platforms the first leads the second.
+    gatePerKey(dir, 'p', 'a', WINDOW);
+    const ahead = (Date.now() + 50) / 1000;
+    utimesSync(join(dir, 'p-a'), ahead, ahead);
+
+    const gate = gatePerKey(dir, 'p', 'a', WINDOW);
+
+    expect(gate.kind).toBe('trail');
+    if (gate.kind !== 'trail') return;
+    expect(gate.dueAt).toBeGreaterThanOrEqual(ahead * 1000 + WINDOW);
+  });
+
+  it('still reads a marker dated well ahead of the clock as a waiting pass', () => {
+    gatePerKey(dir, 'p', 'a', WINDOW);
+    const ahead = (Date.now() + WINDOW / 2) / 1000;
+    utimesSync(join(dir, 'p-a'), ahead, ahead);
+
+    expect(gatePerKey(dir, 'p', 'a', WINDOW)).toEqual({ kind: 'covered' });
+  });
+
   it('lets a call run once a whole window has passed since the last pass', () => {
     gatePerKey(dir, 'p', 'a', WINDOW);
     backdate('p-a', WINDOW + 1_000);

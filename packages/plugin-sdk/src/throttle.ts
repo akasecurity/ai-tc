@@ -77,6 +77,12 @@ export function throttledPerKey(
 }
 
 /**
+ * How far ahead of the clock a marker's timestamp may read before `gatePerKey`
+ * takes it for a waiting pass rather than for the time a pass started.
+ */
+const CLOCK_SLACK_MS = 2_000;
+
+/**
  * What `gatePerKey` tells a caller to do with one request.
  *
  * - `run`: no pass has been started for the key in the last window; start one now.
@@ -104,6 +110,12 @@ export type PerKeyGate =
  * is not pruned, and the next window is counted from the pass that ended this
  * one. At most one pass starts per window, as with the bare throttle.
  *
+ * A marker dated ahead of the clock by less than `CLOCK_SLACK_MS` is read as the
+ * time a pass started, because a file's timestamp and the clock come from
+ * different sources and the first can lead the second by a few milliseconds. One
+ * that far ahead holds a waiting pass that is due within the slack, and is read as
+ * a pass that started too, which at worst schedules one more trailing pass.
+ *
  * The same fail-open rules hold: an unreadable marker or data dir answers `run`,
  * and a marker that cannot be moved still answers `trail`, so a request is never
  * dropped for a filesystem error; at worst a later request schedules another pass.
@@ -123,8 +135,7 @@ export function gatePerKey(
   } catch {
     return { kind: 'run' };
   }
-  // `mtimeMs` carries a fraction of a millisecond that the clock does not.
-  if (Math.floor(stampedAt) > nowMs) return { kind: 'covered' };
+  if (stampedAt > nowMs + Math.min(CLOCK_SLACK_MS, windowMs / 2)) return { kind: 'covered' };
   const dueAt = Math.ceil(stampedAt + windowMs);
   try {
     utimesSync(marker, dueAt / 1000, dueAt / 1000);

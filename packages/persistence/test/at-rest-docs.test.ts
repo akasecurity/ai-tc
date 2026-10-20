@@ -240,7 +240,7 @@ describe('SECURITY.md "Data at rest" enumerates the store', () => {
   });
 });
 
-// Every shipped front door. All three describe the same local store, and a
+// Every shipped front door. All four describe the same local store, and a
 // reader who meets `~/.aka` on one of them should be one link from what protects
 // it. The plugin and CLI pages are published to npm, where a relative link does
 // not resolve, so they carry the absolute URL — the pattern accepts either form,
@@ -253,6 +253,7 @@ const READMES = [
   ['README.md', '../../../README.md'],
   ['cli/README.md', '../../../cli/README.md'],
   ['plugins/claude-code/README.md', '../../../plugins/claude-code/README.md'],
+  ['plugins/copilot/README.md', '../../../plugins/copilot/README.md'],
 ] as const;
 
 describe.each(READMES)('%s at-rest discoverability', (_name, relative) => {

@@ -37,6 +37,7 @@ import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from '../../src/hooks/large-in
 import { runPostToolUse } from '../../src/hooks/post-tool-use-run.ts';
 import { openGatewayOrNull } from '../../src/hooks/store-health.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
+import { ruleExample } from '../helpers/rule-example.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(HERE, '..', 'fixtures');
@@ -46,17 +47,7 @@ function fixture(dir: string, name: string): Record<string, unknown> {
 }
 
 const RULE_ID = 'secrets/twilio-key';
-function secretFixture(): { namespace: string; packId: string; example: string } {
-  // Taken from the rule's own examples rather than written here: this
-  // repository is public, and a credential-shaped literal does not belong in it.
-  const pack = bundledDetections().find((p) => p.rules.some((r) => r.id === RULE_ID));
-  const example = pack?.rules.find((r) => r.id === RULE_ID)?.examples?.[0];
-  if (pack === undefined || example === undefined) {
-    throw new Error(`bundled rule ${RULE_ID} is missing from the pack registry or has no example`);
-  }
-  return { namespace: pack.namespace, packId: pack.packId, example };
-}
-const FIXTURE = secretFixture();
+const FIXTURE = ruleExample(RULE_ID);
 
 // The userinfo in an scp-style remote reads as an email address to a scanner,
 // so the remote is built from parts.

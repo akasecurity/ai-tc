@@ -127,6 +127,14 @@ export const CAPABILITY_MATRIX: readonly Capability[] = [
   {
     surface: 'vscode',
     event: 'PreToolUse',
+    subject: 'run_in_terminal.explanation, goal',
+    channel: 'rewrite',
+    verified: false,
+    note: "Model-authored prose that rides along with the call; both fields were recorded in test/fixtures/vscode/plugin-load-1.141/. They do not execute, so a redact rewrites them in place through updatedInput, which was never driven. This host takes updatedInput only alongside permissionDecision allow, so a redact here also APPROVES the call, suppressing any prompt the user's own settings would have raised. updatedInput is validated against the tool input schema and LAST HOOK WINS, so a user or repo hook returning one discards this.",
+  },
+  {
+    surface: 'vscode',
+    event: 'PreToolUse',
     subject: 'file-write content',
     channel: 'rewrite',
     verified: false,

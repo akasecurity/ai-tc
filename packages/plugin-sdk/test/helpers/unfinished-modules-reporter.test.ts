@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import type { TestModule } from 'vitest/node';
+import type { TestModule, VitestPluginContext } from 'vitest/node';
 
-import { UnfinishedModulesReporter } from '../../../../test/vitest/unfinished-modules-reporter.ts';
+import {
+  UnfinishedModulesReporter,
+  unfinishedModulesReporter,
+} from '../../../../test/vitest/unfinished-modules-reporter.ts';
 
 const mod = (relativeModuleId: string): TestModule =>
   ({ moduleId: `/repo/${relativeModuleId}`, relativeModuleId }) as unknown as TestModule;
@@ -32,5 +35,34 @@ describe('UnfinishedModulesReporter', () => {
         r.onTestModuleEnd(mod('test/a.test.ts'));
       }),
     ).toEqual([]);
+  });
+});
+
+describe('unfinishedModulesReporter', () => {
+  const configure = (reporters: unknown[]): unknown[] => {
+    const context = { vitest: { config: { reporters } } } as unknown as VitestPluginContext;
+    unfinishedModulesReporter().configureVitest(context);
+    return reporters;
+  };
+
+  it('appends to the reporters vitest resolved, keeping every one of them', () => {
+    const reporters = configure([
+      ['default', {}],
+      ['github-actions', {}],
+    ]);
+    expect(reporters.slice(0, 2)).toEqual([
+      ['default', {}],
+      ['github-actions', {}],
+    ]);
+    expect(reporters).toHaveLength(3);
+    expect(reporters[2]).toBeInstanceOf(UnfinishedModulesReporter);
+  });
+
+  it('adds itself once when the hook runs again', () => {
+    const reporters = configure([['agent', {}]]);
+    unfinishedModulesReporter().configureVitest({
+      vitest: { config: { reporters } },
+    } as unknown as VitestPluginContext);
+    expect(reporters.filter((r) => r instanceof UnfinishedModulesReporter)).toHaveLength(1);
   });
 });

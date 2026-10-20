@@ -1,0 +1,14 @@
+{
+  "sessionId": "79d26659-cf7c-4cf3-8ee5-75f40ef7aaa8",
+  "timestamp": 1792405107256,
+  "cwd": "/Users/dev/work",
+  "toolName": "bash",
+  "toolArgs": {
+    "command": "cat .env",
+    "description": "Read .env file"
+  },
+  "toolResult": {
+    "resultType": "success",
+    "textResultForLlm": "GH_TOKEN=ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ1234567890\n<shellId: 0 completed with exit code 0>"
+  }
+}

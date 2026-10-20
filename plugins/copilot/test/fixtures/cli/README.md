@@ -6,7 +6,9 @@ one authenticated session run under an isolated `$COPILOT_HOME`. Auth was
 `gh auth token | copilot login --with-token`, which the CLI accepts with no
 browser step. The session was one turn — `run the shell command: false`,
 executed through the `bash` tool under `--allow-all` — so the eight files
-describe one prompt and the single tool call it produced.
+describe one prompt and the single tool call it produced. A second, smaller set
+from Copilot CLI 1.0.98 and an installed plugin sits in `plugin-install-1.0.98/`;
+its own section at the end says how it was made.
 
 `test/cli-fixture-shapes.test.ts` in this package pins the exact set of files
 and the field shapes this note calls out; where it pins something weaker than
@@ -218,3 +220,110 @@ any invocation partway through, before a prompt was sent, with
 budget.` — unchanged by a fresh `$COPILOT_HOME`, a fresh login or
 `--disable-builtin-mcps`, so it reads as a condition of the account or its
 model tier rather than of anything a hooks file did.
+
+## Plugin-install recordings — Copilot CLI 1.0.98
+
+`plugin-install-1.0.98/` holds four more recordings, of a different kind from
+the eight above: what Copilot CLI **1.0.98** handed to this package's own
+**built** hooks after the packed plugin was installed with
+`copilot plugin install`, so every hook ran through the manifest's commands as
+shipped. They are `sessionStart`, `userPromptSubmitted`, `preToolUse` and
+`postToolUse`, all from one session. `test/cli-fixture-shapes.test.ts` pins
+them in a group of their own.
+
+### How they were recorded
+
+- **The CLI.** `npm install -g @github/copilot@1.0.98`, run from the home
+  directory. Run inside this repository, the same install omitted the CLI's
+  platform binary, because the repository's `.npmrc` was picked up; from `~` it
+  installed whole.
+- **Isolation.** `HOME` and `COPILOT_HOME` both pointed at throwaway
+  directories, so AKA's store was a fresh `~/.aka` and the CLI's state was
+  isolated too. `COPILOT_HOME` was honoured: the login and the installed plugin
+  both landed under it.
+- **Auth.** `copilot login`, through the browser OAuth flow. Under the
+  redirected `HOME` the CLI reported `System keychain unavailable` and offered
+  to store the token in **plaintext** under `COPILOT_HOME` instead; that was
+  accepted. Anyone repeating this leaves a usable token on disk in that
+  directory and should delete it afterwards.
+- **The install.** `npm pack` of the built plugin (0.9.19), `tar -xzf`, then
+  `copilot plugin install ./package`. The CLI printed
+  `Plugin "aka-copilot" installed successfully. Installed 1 skill.` together
+  with a warning that direct plugin installs (repositories, URLs, local paths)
+  are deprecated and that only `plugin@marketplace` installs will be supported
+  in a future release. The plugin landed under
+  `$COPILOT_HOME/installed-plugins/_direct/package/`, and `copilot plugin list`
+  showed `aka-copilot (v0.9.19)`.
+- **The sessions.** `copilot -p … --allow-tool 'shell(cat)'`, in a git
+  repository with no remote whose `.env` assigned `GH_TOKEN` the bundled
+  `secrets/github-pat` rule's own example value. The prompt, recorded verbatim
+  in `userPromptSubmitted`, asked for `cat .env` and a yes-or-no answer.
+- **The capture.** Each installed hook command was temporarily prefixed with a
+  `tee` into a file named for its event, so the hook still received the same
+  bytes. The prefix was removed afterwards; the manifest in this package was
+  never changed.
+
+### What was rewritten before commit
+
+The same rule as above: the recorder's temporary directory became the
+`/Users/dev` placeholder, so `cwd` reads `/Users/dev/work`. Nothing else was
+changed — the session id, the timestamps, the prompt, the tool arguments and
+the tool result, including the rule example value in it, are as received. The
+files were re-indented; their content was not.
+
+### Recorded
+
+- **`${PLUGIN_ROOT}` expands in hook commands.** All four built scripts ran
+  from the installed directory, through the manifest's
+  `node "${PLUGIN_ROOT}/scripts/…"` commands unchanged.
+- **All four wired events fire from an installed plugin.** The throwaway store
+  recorded a session root with `harness_interface` `cli`, prompt captures, a
+  `tool_use` finding `command-risk/credential-file-read` (warn) on `cat .env`,
+  `response` findings `secrets/github-pat` (warn), `secrets-infra/env-key-value`
+  (log) and `secrets-infra/secret-config-value` (log) on the tool result, and a
+  prompt finding `secrets/github-pat` from a session whose prompt carried the
+  value. The project was recorded with no scope key, as expected for a
+  repository with no remote.
+- **In `-p` mode, a successful hook's stderr was not shown by the CLI.** Every
+  notice the hooks wrote appeared in none of the CLI's own output in `-p` mode. It appeared
+  only in the debug log (`--log-level debug --log-dir <dir>`), one line per
+  write, in this form:
+
+  ```
+  [DEBUG] [rust:hooks] [hook stderr] AKA flagged sensitive content in bash input (command-risk/credential-file-read).
+  ```
+
+  The other lines seen there were the session-start notice that AKA is active
+  and monitoring prompts, `AKA flagged sensitive content in this prompt
+(secrets/github-pat) — sent unchanged.`, and the tool-result notice naming
+  the three response rules, ending `— the output reached the model unchanged.`
+  So on this host a warn reaches the debug log and not the user, which
+  `skills/setup/SKILL.md` states on the user-facing side.
+
+- **The prompt is stamped BEFORE `sessionStart` again.** `userPromptSubmitted`
+  is at `1792405102341` and `sessionStart` at `1792405102577`, 236 ms later —
+  the same order the 1.0.83 recording showed.
+- **`sessionStart` carries `source: "new"` and `initialPrompt`**, which repeats
+  the submitted prompt verbatim, as on 1.0.83. No payload carries `hookName`.
+- **`preToolUse.toolArgs` is an OBJECT**, `{ command, description }`. That is
+  the encoding 1.0.83 sent too, and the one `readToolCall` in
+  `src/hooks/dialect.ts` reads; the JSON-string encoding it declines to parse
+  was not seen on either build. What differs is the key set: 1.0.83's `bash`
+  arguments also carried `mode` and `initial_wait`, and this build's carry
+  neither, so no reader can rely on those two across builds.
+- **`postToolUse.toolResult` is `{ resultType, textResultForLlm }`**, the same
+  two keys as on 1.0.83: `resultType` was `"success"`, and the text is the
+  shell output followed by `<shellId: 0 completed with exit code 0>` on its own
+  line. `postToolUse` repeats `toolArgs` exactly as `preToolUse` sent them.
+- **Asked to `echo` the value directly, the model refused.** That was the
+  model's own choice, not anything a hook did, which is why the recorded
+  session reads the file with `cat` instead.
+
+### Not measured by this install
+
+- Whether the CLI shows a successful hook's stderr in an **interactive**
+  session; only `-p` mode was observed.
+- A `plugin@marketplace` install, the route the deprecation warning points at.
+- Whether `${PLUGIN_ROOT}` expands anywhere other than a hook's `command`.
+- `postToolUse.modifiedResult` and `userPromptSubmitted.modifiedPrompt`, as
+  above: neither was exercised.

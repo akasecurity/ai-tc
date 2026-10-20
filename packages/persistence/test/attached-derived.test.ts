@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  ATTACHED_CONFIG_INVENTORY_FILENAME,
+  ATTACHED_CONFIG_INVENTORY_STATE_FILENAME,
   ATTACHED_DERIVED_FILENAMES,
   ATTACHED_FORWARD_DROPS_FILENAME,
   ATTACHED_FORWARD_STATE_FILENAME,
@@ -24,8 +26,8 @@ describe('ATTACHED_DERIVED_FILENAMES', () => {
   // the clear, never the membership. This pins the membership, EXACTLY: an
   // entry dropped would leave a file describing a deployment the machine has
   // left, and an entry added would clear something detach must leave alone.
-  it('names exactly the eight files an attachment leaves behind', () => {
-    expect(ATTACHED_DERIVED_FILENAMES).toHaveLength(8);
+  it('names exactly the ten files an attachment leaves behind', () => {
+    expect(ATTACHED_DERIVED_FILENAMES).toHaveLength(10);
     expect(new Set(ATTACHED_DERIVED_FILENAMES)).toEqual(
       new Set([
         POLICY_CACHE_FILENAME,
@@ -36,6 +38,8 @@ describe('ATTACHED_DERIVED_FILENAMES', () => {
         ATTACHED_HISTORY_SYNC_STATE_FILENAME,
         ATTACHED_LABEL_SYNC_FILENAME,
         ATTACHED_IDENTITY_FILENAME,
+        ATTACHED_CONFIG_INVENTORY_FILENAME,
+        ATTACHED_CONFIG_INVENTORY_STATE_FILENAME,
       ]),
     );
   });

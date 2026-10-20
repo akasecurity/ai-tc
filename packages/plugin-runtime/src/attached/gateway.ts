@@ -69,6 +69,7 @@ import type { AccountScope, AccountScopeReader } from '../account-scope.ts';
 import type { GovernanceScope } from '../governance-scope.ts';
 import type { StoredRootKeyReader } from '../session-root-key.ts';
 import { sessionToolIsKeyed } from '../session-root-key.ts';
+import { stageConfigInventory } from './config-inventory-sync.ts';
 import { recordForwardDrops } from './forward-drops.ts';
 import type { ForwardPolicy } from './forward-policy.ts';
 import { DECISION_PATH_BUDGET_MS } from './forward-policy.ts';
@@ -90,7 +91,7 @@ import { REQUEST_TIMEOUT_MS, withTimeout } from './with-timeout.ts';
  *
  * WRITE-ONLY, plus the posture self-report. There are deliberately no reads:
  * every read is served from the local store, and the credential a machine holds
- * is scoped to the five writes plus the policy bundle and whoami — nothing
+ * is scoped to the writes below plus the policy bundle and whoami — nothing
  * else. A read added here would be a method that cannot work against the
  * credential this gateway actually holds.
  */
@@ -1174,27 +1175,10 @@ export class AttachedDataGateway
     );
   }
 
-  // Forwarded as a `config_scan` audit event: there is no dedicated
-  // config-scan ingest endpoint, and the audit-event door is the one the
-  // control plane already opens for client-minted, idempotent records.
-  //
-  // ONLY `scanEvent` CROSSES, and unlike `recordCapture` the plane cannot
-  // re-derive the rest. A `ConfigScanRecord` is four things committed together
-  // locally — the inventory `items`, this audit event, and the posture
-  // `definitions`/`findings` that reference it — and three of them stay on the
-  // device. Say that plainly rather than let the asymmetry with `recordCapture`
-  // read as the same argument: there, findings are omitted BECAUSE the plane
-  // re-derives them from `Event.content`; here there is no content to re-derive
-  // from, so what is omitted is simply not sent.
-  //
-  // That is the wire contract as it stands rather than an oversight to patch
-  // here. `items` has no route at all, and `RecordAuditEventRequest.inspections`
-  // is documented as tool-call findings — widening it to carry config-scan
-  // findings is an egress change (a posture finding's `maskedMatch` holds the
-  // matched command) and a decision about what an attached deployment is
-  // entitled to, not a bug fix. An attached machine's config posture therefore
-  // reaches the plane as the event only; the dashboard's own view of it is the
-  // local store.
+  // The `config_scan` audit event is forwarded here. The inventory `items` are
+  // staged for the detached sync child, which sends them to the config-items
+  // route (`runConfigInventorySync`). The posture `definitions`/`findings` stay
+  // on the device.
   async recordConfigScan(record: ConfigScanRecord): Promise<void> {
     await this.deps.local.recordConfigScan(record);
     // NO KEY, BY DESIGN, so a scoped attachment keeps every config scan local.
@@ -1203,6 +1187,7 @@ export class AttachedDataGateway
     // owns. The key is passed as absent rather than read off the event, so a
     // scan event that ever did carry one would still stay local.
     if (this.verdictFor(() => undefined) === 'local') return;
+    stageConfigInventory(this.deps.dataDir, record);
     const forwarded = await this.deps.forward.run(() =>
       this.deps.client.recordAuditEvent(reKeyForForward(record.scanEvent, this.remoteInventory)),
     );

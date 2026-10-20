@@ -94,10 +94,11 @@ const paragraphs = (text: string): string[] =>
  * reader into the calibration. The CLI page ships no judge and points at the
  * plugin page for that payload instead, and the Copilot page ships none at all.
  *
- * `describesClaudeCode` selects the pages that owe the Claude Code
- * work-subscription sentences. The Copilot plugin page describes that plugin
- * only: a Copilot session forwards from enrolled repositories alone, so the
- * Claude Code rule would be a claim about a harness the page does not cover.
+ * `describesClaudeCode` selects the pages that owe the Claude Code sentences: the
+ * work-subscription rule and what a Claude Code session start sends of its
+ * configuration. The Copilot plugin page describes that plugin only: a Copilot
+ * session forwards from enrolled repositories alone, so the Claude Code rule
+ * would be a claim about a harness the page does not cover.
  */
 const CLASSIFIED_READMES = [
   { name: 'README.md', describesJudge: true, describesClaudeCode: true },
@@ -209,6 +210,23 @@ const REPORT_SENTENCE =
   'machine is attached as a personal device, the fact that it is one. Where a scan is available ' +
   '(the coding-agent plugins, not a browser chat), the same session start also checks it for ' +
   'device commands.';
+// What a machine attached machine-wide sends of the Claude Code configuration a session start
+// scanned, and when.
+const CONFIG_INVENTORY_SENTENCE =
+  'A machine attached machine-wide also sends the Claude Code configuration a Claude Code ' +
+  "session start's scan found, with the next policy pull rather than during the session " +
+  'start, and only when it differs from what was last sent, or was last sent an hour or more ' +
+  'ago and a session start has scanned it again since: each skill, hook, MCP server and ' +
+  'configuration file, with its name, scope, file path and the plugin or marketplace it ' +
+  "came from; a skill's description, version and modification time; a hook's event, " +
+  "matcher, command and timeout, and an MCP server's transport and command or URL, each " +
+  'description, command and URL with any secret the bundled detection rules find masked, ' +
+  "and an MCP server's URL also stripped of its credentials and query values; the names of " +
+  "an MCP server's environment variables, never their values; a configuration file's kind, " +
+  'modification time and a summary of its shape (key names, line and entry counts), never ' +
+  "its contents; and the repository's remote URL with any credentials and query removed, or " +
+  "the working directory where it has none, that the project's own items belong to. A " +
+  'machine attached with `--scoped` keeps this configuration on the machine.';
 // The sentence as it stood before the report said whether the machine is a personal device.
 // A page that kept it beside the new one would say two different things about the report.
 const PREVIOUS_REPORT_SENTENCE =
@@ -700,6 +718,27 @@ describe('README.md scoped attachment lists', () => {
     expect(footnote).toContain(
       'under a key the deployment issues (the machine fetches that key over the same connection, whether or not sharing is on)',
     );
+  });
+});
+
+const CLAUDE_CODE_READMES = READMES.filter(
+  ({ describesClaudeCode }: { describesClaudeCode: boolean }) => describesClaudeCode,
+);
+
+describe('config inventory disclosure', () => {
+  it('has pages to check', () => {
+    expect(CLAUDE_CODE_READMES.length).toBeGreaterThan(0);
+  });
+
+  it.each(CLAUDE_CODE_READMES)(
+    '$name names what is sent of the scanned configuration, and when',
+    ({ text }) => {
+      expect(flat(footnoteOf(text))).toContain(CONFIG_INVENTORY_SENTENCE);
+    },
+  );
+
+  it('SECURITY.md names it under Data in transit', () => {
+    expect(flat(SECURITY_DATA_IN_TRANSIT ?? '')).toContain(CONFIG_INVENTORY_SENTENCE);
   });
 });
 

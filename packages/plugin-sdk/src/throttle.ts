@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { DATA_DIR_MODE, DATA_FILE_MODE } from './data-dir.ts';
@@ -74,6 +74,64 @@ export function throttledPerKey(
   const olderThanMs = Math.max(windowMs, PER_KEY_MARKER_RETAIN_MS);
   pruneStaleMarkers(dataDir, `${prefix}-`, markerName, olderThanMs, nowMs);
   return false;
+}
+
+/**
+ * What `gatePerKey` tells a caller to do with one request.
+ *
+ * - `run`: no pass has been started for the key in the last window; start one now.
+ * - `trail`: a pass started inside the window; start one that waits until `dueAt`
+ *   (epoch milliseconds, the end of that window) and then runs.
+ * - `covered`: a trailing pass is already waiting for its due time; do nothing.
+ */
+export type PerKeyGate =
+  | { readonly kind: 'run' }
+  | { readonly kind: 'trail'; readonly dueAt: number }
+  | { readonly kind: 'covered' };
+
+/**
+ * `throttledPerKey` for a job whose last request in a window must still run.
+ *
+ * A bare throttle runs the first request of a window and drops the rest, so the
+ * request that arrives last, with nothing after it to run, is lost. This gate
+ * answers such a request with a trailing pass due when the window closes, and
+ * gives the one trailing pass to every request that arrives before it is due.
+ *
+ * The marker's time is the time of the key's latest pass, started or waiting: a
+ * trailing pass is recorded by moving the marker to its due time, which lies in
+ * the future until then. Both are read the way `throttledPerKey` reads the
+ * marker, so a marker holding a waiting pass throttles for its whole window and
+ * is not pruned, and the next window is counted from the pass that ended this
+ * one. At most one pass starts per window, as with the bare throttle.
+ *
+ * The same fail-open rules hold: an unreadable marker or data dir answers `run`,
+ * and a marker that cannot be moved still answers `trail`, so a request is never
+ * dropped for a filesystem error; at worst a later request schedules another pass.
+ */
+export function gatePerKey(
+  dataDir: string,
+  prefix: string,
+  key: string,
+  windowMs: number,
+  nowMs: number = Date.now(),
+): PerKeyGate {
+  if (!throttledPerKey(dataDir, prefix, key, windowMs, nowMs)) return { kind: 'run' };
+  const marker = join(dataDir, `${prefix}-${key}`);
+  let stampedAt: number;
+  try {
+    stampedAt = statSync(marker).mtimeMs;
+  } catch {
+    return { kind: 'run' };
+  }
+  // `mtimeMs` carries a fraction of a millisecond that the clock does not.
+  if (Math.floor(stampedAt) > nowMs) return { kind: 'covered' };
+  const dueAt = Math.ceil(stampedAt + windowMs);
+  try {
+    utimesSync(marker, dueAt / 1000, dueAt / 1000);
+  } catch {
+    // The pass is not recorded; a later request schedules another.
+  }
+  return { kind: 'trail', dueAt };
 }
 
 function pruneStaleMarkers(

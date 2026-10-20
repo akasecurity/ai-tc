@@ -8,14 +8,15 @@
  * This hook does NOT reconcile inline — it only TRIGGERS the background worker, so the
  * reconcile is never on the turn's critical path. It reads `session_id` +
  * `transcript_path` STRAIGHT from the payload (no path reconstruction),
- * throttle-checks, and if not throttled spawns `scripts/reconcile.js` detached +
- * unref, forwarding both via argv, then returns immediately. The work it does itself
- * before the spawn is synchronous, in the process the host waits on: loading the
- * configuration, the store and host-version notices, and, on a scoped attachment
- * whose identity record holds and whose Claude gate is open (work subscriptions on,
- * or a Claude account enrolled by hand), reading the login and appending the
- * session's login view to the session's account log. Fully fail-open: any error →
- * no output, exit 0.
+ * throttle-checks, and spawns `scripts/reconcile.js` detached + unref, forwarding
+ * both via argv, then returns immediately. A Stop the throttle holds back spawns
+ * the one worker that runs when the window closes, so the last Stop of a session
+ * is reconciled too. The work it does itself before the spawn is synchronous, in
+ * the process the host waits on: loading the configuration, the store and
+ * host-version notices, and, on a scoped attachment whose identity record holds
+ * and whose Claude gate is open (work subscriptions on, or a Claude account
+ * enrolled by hand), reading the login and appending the session's login view to
+ * the session's account log. Fully fail-open: any error → no output, exit 0.
  */
 import { loadConfig } from '@akasecurity/plugin-sdk';
 

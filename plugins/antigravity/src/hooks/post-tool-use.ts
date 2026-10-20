@@ -27,9 +27,9 @@
  * parser there first. Firing the trigger here as well as on Stop keeps the
  * reconciled tail current mid-turn on a long multi-tool turn. It costs nothing
  * on the hot path:
- * `triggerReconcile` is throttled to one spawn per 30s per session and the
+ * `triggerReconcile` is throttled to one pass per 30s per session and the
  * child is detached + unref, so a burst of tool calls produces at most one
- * background pass.
+ * background pass plus the one worker that runs when the window closes.
  *
  * Fail-open on a fail-closed host: `runHookFailOpen` always writes `{}` and
  * exits 0 — see shared.ts.

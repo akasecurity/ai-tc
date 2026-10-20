@@ -1,5 +1,13 @@
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
@@ -47,15 +55,20 @@ describe('triggerReconcile — per-session throttle', () => {
   it('throttles per session, not globally — concurrent sessions each get their own spawn', () => {
     // First turn of session A → spawns (no marker yet).
     triggerReconcile(dir, 'sess-A', '/t/a.jsonl');
-    // A second turn of session A within the 30s window is batched (throttled).
-    triggerReconcile(dir, 'sess-A', '/t/a.jsonl');
     expect(spawnSpy).toHaveBeenCalledTimes(1);
+    // A second turn of session A within the 30s window is batched: it spawns no
+    // pass of its own, only the one trailing worker that waits for the window to
+    // close, and a third turn adds nothing to it.
+    triggerReconcile(dir, 'sess-A', '/t/a.jsonl');
+    triggerReconcile(dir, 'sess-A', '/t/a.jsonl');
+    expect(spawnSpy).toHaveBeenCalledTimes(2);
 
     // A DIFFERENT concurrent session (another tab/project) must NOT be starved by
     // session A's marker — with a global marker it would be throttled and its live
     // capture delayed; with the per-session marker it spawns immediately.
     triggerReconcile(dir, 'sess-B', '/t/b.jsonl');
-    expect(spawnSpy).toHaveBeenCalledTimes(2);
+    expect(spawnSpy).toHaveBeenCalledTimes(3);
+    expect(spawnSpy.mock.calls[2]?.[1]).toHaveLength(3);
   });
 
   it('removes markers of sessions idle past a day, and keeps every recent one', () => {
@@ -78,6 +91,96 @@ describe('triggerReconcile — per-session throttle', () => {
     expect(existsSync(recent)).toBe(true);
     expect(existsSync(unrelated)).toBe(true);
     expect(existsSync(join(dir, 'reconcile-last-attempt-sess-new'))).toBe(true);
+  });
+});
+
+describe('triggerReconcile — the last call of a throttle window', () => {
+  const WINDOW_MS = 30_000;
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'aka-reconcile-trail-'));
+    spawnSpy.mockReset();
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const markerMtime = (): number => statSync(join(dir, 'reconcile-last-attempt-sess-A')).mtimeMs;
+
+  it('spawns a worker for a call the throttle holds back, due when the window closes, and marks it a trailing pass', () => {
+    triggerReconcile(dir, 'sess-A', '/t/a.jsonl');
+    const windowStart = markerMtime();
+
+    triggerReconcile(dir, 'sess-A', '/t/a.jsonl');
+
+    expect(spawnSpy).toHaveBeenCalledTimes(2);
+    const [command, args, options] = spawnSpy.mock.calls[1] ?? [];
+    expect(command).toBe(process.execPath);
+    expect(basename(args?.[0] ?? '')).toBe('reconcile.js');
+    const [sessionId, transcript, due, mode, ...rest] = args?.slice(1) ?? [];
+    expect([sessionId, transcript, mode, rest]).toEqual(['sess-A', '/t/a.jsonl', 'trailing', []]);
+    expect(Number(due)).toBeGreaterThanOrEqual(windowStart + WINDOW_MS);
+    expect(Number(due)).toBeLessThanOrEqual(windowStart + WINDOW_MS + 1);
+    expect(options).toEqual({ detached: true, stdio: 'ignore' });
+  });
+
+  it('spawns one trailing worker per window, however many calls the window holds back', () => {
+    for (let call = 0; call < 6; call += 1) triggerReconcile(dir, 'sess-A', '/t/a.jsonl');
+
+    expect(spawnSpy).toHaveBeenCalledTimes(2);
+    expect(spawnSpy.mock.calls[0]?.[1]).toHaveLength(3);
+    expect(spawnSpy.mock.calls[1]?.[1]).toHaveLength(5);
+  });
+
+  it('spawns the next trailing worker from the due time of the last, for a call that lands after it', () => {
+    triggerReconcile(dir, 'sess-A', '/t/a.jsonl');
+    triggerReconcile(dir, 'sess-A', '/t/a.jsonl');
+    // The marker now holds the due time of the trailing worker just spawned. Put
+    // that time ten seconds in the past.
+    const pastDue = new Date(Date.now() - 10_000);
+    utimesSync(join(dir, 'reconcile-last-attempt-sess-A'), pastDue, pastDue);
+
+    triggerReconcile(dir, 'sess-A', '/t/a.jsonl');
+
+    expect(spawnSpy).toHaveBeenCalledTimes(3);
+    const due = Number(spawnSpy.mock.calls[2]?.[1]?.[3]);
+    expect(due).toBeGreaterThanOrEqual(pastDue.getTime() + WINDOW_MS);
+    expect(due).toBeLessThanOrEqual(pastDue.getTime() + WINDOW_MS + 1);
+  });
+
+  it('gives each session its own trailing worker', () => {
+    triggerReconcile(dir, 'sess-A', '/t/a.jsonl');
+    triggerReconcile(dir, 'sess-A', '/t/a.jsonl');
+    triggerReconcile(dir, 'sess-B', '/t/b.jsonl');
+    triggerReconcile(dir, 'sess-B', '/t/b.jsonl');
+
+    expect(spawnSpy.mock.calls.map((call) => call[1][1])).toEqual([
+      'sess-A',
+      'sess-A',
+      'sess-B',
+      'sess-B',
+    ]);
+    expect(spawnSpy.mock.calls.map((call) => call[1].length)).toEqual([3, 5, 3, 5]);
+  });
+
+  it('leaves the error event of a trailing worker that cannot start handled', () => {
+    const child = fakeChild();
+    spawnSpy.mockReturnValueOnce(fakeChild()).mockReturnValueOnce(child);
+    triggerReconcile(dir, 'sess-A', '/t/a.jsonl');
+    expect(() => {
+      triggerReconcile(dir, 'sess-A', '/t/a.jsonl');
+    }).not.toThrow();
+    expect(child.listenerCount('error')).toBe(1);
+  });
+
+  it('swallows a failure to spawn the trailing worker', () => {
+    triggerReconcile(dir, 'sess-A', '/t/a.jsonl');
+    spawnSpy.mockImplementationOnce(() => {
+      throw new Error('the worker cannot be started');
+    });
+    expect(() => {
+      triggerReconcile(dir, 'sess-A', '/t/a.jsonl');
+    }).not.toThrow();
   });
 });
 

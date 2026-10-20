@@ -156,6 +156,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'fingerprintValue',
   'formatCostTotal',
   'formatUsd',
+  'gatePerKey',
   'hasLocalStoreMaintenance',
   'hasPointer',
   'healthScore',

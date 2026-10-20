@@ -33,6 +33,7 @@ import {
   unscannedWorkerUnavailableMessage,
 } from '../../src/exception-guidance.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
+import { ruleExample } from '../helpers/rule-example.ts';
 import { withTempHome } from '../helpers/run-hook.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -259,17 +260,7 @@ describe.each(DIALECTS)(
 // import — the exact failures an absence check cannot tell apart from success.
 
 const RULE_ID = 'secrets/twilio-key';
-function secretFixture(): { namespace: string; packId: string; example: string } {
-  // Taken from the rule's own examples rather than written here: this
-  // repository is public, and a credential-shaped literal does not belong in it.
-  const pack = bundledDetections().find((p) => p.rules.some((r) => r.id === RULE_ID));
-  const example = pack?.rules.find((r) => r.id === RULE_ID)?.examples?.[0];
-  if (pack === undefined || example === undefined) {
-    throw new Error(`bundled rule ${RULE_ID} is missing from the pack registry or has no example`);
-  }
-  return { namespace: pack.namespace, packId: pack.packId, example };
-}
-const FIXTURE = secretFixture();
+const FIXTURE = ruleExample(RULE_ID);
 
 function seedPolicy(home: string, policy: BuiltinPolicyId): void {
   const db = openLocalDatabase(join(home, '.aka', 'data'));
@@ -906,7 +897,9 @@ describe('post-tool-use [vscode] — an object-shaped result is walked, not drop
 // input, a terminal-text STRING `tool_response`, and `create_file`'s EMPTY one.
 // Each is read from the fixture directory and driven through the built hook:
 // broken, it must say nothing; well-formed, the recorded call must still be
-// warned and a secret in any scanned field named.
+// warned. What a secret in each scanned field produces is driven in-process by
+// test/hooks/vscode-recorded-run.test.ts; this tier owns only what a built
+// script alone can show, which is exit 0 and at most one JSON object out.
 const RECORDED_DIR = join(PLUGIN_ROOT, 'test', 'fixtures', 'vscode', 'plugin-load-1.141');
 
 function recordedPayload(name: string): Record<string, unknown> {
@@ -917,18 +910,20 @@ function recordedPayload(name: string): Record<string, unknown> {
 }
 
 describe('the recorded VS Code shapes through the built hooks', () => {
+  // The event token rides on each row rather than being derived from the
+  // script: a script handed a token it does not own declines without parsing
+  // the payload, so a derived token that was wrong for a new row would make
+  // that row's silence pass for the wrong reason.
   const RECORDED = [
-    { script: 'pre-tool-use.js', name: 'preToolUse-run_in_terminal' },
-    { script: 'post-tool-use.js', name: 'postToolUse-run_in_terminal' },
-    { script: 'post-tool-use.js', name: 'postToolUse-create_file' },
+    { script: 'pre-tool-use.js', event: 'PreToolUse', name: 'preToolUse-run_in_terminal' },
+    { script: 'post-tool-use.js', event: 'PostToolUse', name: 'postToolUse-run_in_terminal' },
+    { script: 'post-tool-use.js', event: 'PostToolUse', name: 'postToolUse-create_file' },
   ] as const;
-  const eventFor = (script: string): string =>
-    script === 'pre-tool-use.js' ? 'PreToolUse' : 'PostToolUse';
 
   it.each(RECORDED)('$name: says nothing when the recording arrives truncated', (r) => {
     const whole = JSON.stringify(recordedPayload(r.name));
     const run = withTempHome(
-      (home) => runScript(r.script, eventFor(r.script), home, whole.slice(0, whole.length / 2)),
+      (home) => runScript(r.script, r.event, home, whole.slice(0, whole.length / 2)),
       'aka-copilot-recorded-truncated-',
     );
     noObject(run);
@@ -940,7 +935,7 @@ describe('the recorded VS Code shapes through the built hooks', () => {
     for (const key of Object.keys(input)) input[key] = { not: ['a', 'string'] };
     if ('tool_response' in payload) payload.tool_response = 42;
     const run = withTempHome(
-      (home) => runScript(r.script, eventFor(r.script), home, JSON.stringify(payload)),
+      (home) => runScript(r.script, r.event, home, JSON.stringify(payload)),
       'aka-copilot-recorded-wrong-types-',
     );
     noObject(run);
@@ -993,20 +988,4 @@ describe('the recorded VS Code shapes through the built hooks', () => {
     );
     expect(JSON.stringify(decided)).not.toContain('permissionDecision');
   });
-
-  it.each(['explanation', 'goal'])('names the rule for a secret in the recorded %s', (field) => {
-    const payload = recordedPayload('preToolUse-run_in_terminal');
-    const input = payload.tool_input as Record<string, unknown>;
-    expect(typeof input[field]).toBe('string');
-    input.command = 'ls';
-    input[field] = `${String(input[field])} ${FIXTURE.example}`;
-    const run = withTempHome((home) => {
-      seedPolicy(home, 'warn');
-      return runScript('pre-tool-use.js', 'PreToolUse', home, JSON.stringify(payload));
-    }, `aka-copilot-recorded-${field}-`);
-    const text = String((soleObject(run) as Record<string, unknown>).systemMessage);
-    expect(text).toContain(RULE_ID);
-    expectNoEchoOf(run.stdout, FIXTURE.example);
-    expectNoEchoOf(run.stderr, FIXTURE.example);
-  });
-}, 120_000);
+});

@@ -92,6 +92,16 @@ export const runPreToolUse: HookHandler = async (event, stdin, options = {}) => 
   // process start and nothing else, and writes nothing at all.
   if (!fields) return undefined;
 
+  const toolInput = { ...call.args };
+
+  // A model-echoed vault pointer in text that EXECUTES is decided before the
+  // secret scan AND before the store is opened: this plugin never substitutes
+  // pointers, so an ungranted pointer must deny outright rather than run as
+  // literal text, and that decision reads only the call itself, so an
+  // unopenable store cannot turn it into a let-through.
+  const pointerDeny = decideInputPointerDeny(dialect, call.name, toolInput, fields);
+  if (pointerDeny) return pointerDeny;
+
   const config = loadConfig(options.akaHome);
   const sessionId = readSessionId(dialect, input);
   // A symlinked store path redirects the corpus without failing anything; say
@@ -111,14 +121,6 @@ export const runPreToolUse: HookHandler = async (event, stdin, options = {}) => 
     }
     return undefined;
   }
-
-  const toolInput = { ...call.args };
-
-  // A model-echoed vault pointer in text that EXECUTES is decided before the
-  // secret scan: this plugin never substitutes pointers, so an ungranted
-  // pointer must deny outright rather than run as literal text.
-  const pointerDeny = decideInputPointerDeny(dialect, call.name, toolInput, fields);
-  if (pointerDeny) return pointerDeny;
 
   // A field at or above the large-input threshold is scanned under a deadline
   // shared by every field of this call, and refused if that scan does not

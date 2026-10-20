@@ -1,6 +1,8 @@
 // Tests the pure pre-tool-use decision module directly — NEVER via the hook
-// entry file (src/hooks/pre-tool-use.ts runs main() on import and would hang
-// vitest collection).
+// entry file (src/hooks/pre-tool-use.ts awaits `runHookEntry` at the top level,
+// which reads stdin on import and would hang vitest collection). The handler
+// it feeds, src/hooks/pre-tool-use-run.ts, is driven in-process by
+// ./pre-tool-use-run.test.ts.
 //
 // Every case is driven in BOTH dialects, because the two differ in shape and in
 // one place in capability, and a suite that drove only the CLI would leave the

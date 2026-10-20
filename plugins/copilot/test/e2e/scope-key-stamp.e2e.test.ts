@@ -26,6 +26,7 @@ import { openLocalDatabase } from '@akasecurity/persistence';
 import { bundledDetections } from '@akasecurity/plugin-sdk';
 import { describe, expect, it } from 'vitest';
 
+import { ruleExample } from '../helpers/rule-example.ts';
 import { withTempHome } from '../helpers/run-hook.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -47,17 +48,7 @@ const PERSONAL_KEY = 'github.com/someone/dotfiles';
 const SESSION_ID = 'c1779e76-9889-419b-ab12-f7bb8a957e15';
 const RULE_ID = 'secrets/twilio-key';
 
-function secretFixture(): { namespace: string; packId: string; example: string } {
-  // Taken from the rule's own examples: this repository is public, and a
-  // credential-shaped literal does not belong in it.
-  const pack = bundledDetections().find((p) => p.rules.some((r) => r.id === RULE_ID));
-  const example = pack?.rules.find((r) => r.id === RULE_ID)?.examples?.[0];
-  if (pack === undefined || example === undefined) {
-    throw new Error(`bundled rule ${RULE_ID} is missing from the pack registry or has no example`);
-  }
-  return { namespace: pack.namespace, packId: pack.packId, example };
-}
-const FIXTURE = secretFixture();
+const FIXTURE = ruleExample(RULE_ID);
 
 // Monitor records every finding and enforces none, so the `with-findings`
 // tool_use capture writes its row.

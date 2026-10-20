@@ -16,14 +16,14 @@
  * flagged variant that does, so its silence is a decision rather than a scan
  * that never ran.
  */
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
-import { bundledDetections } from '@akasecurity/plugin-sdk';
+import { bundledDetections, LARGE_INPUT_THRESHOLD_CHARS } from '@akasecurity/plugin-sdk';
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -34,6 +34,7 @@ import { runSessionStart } from '../../src/hooks/session-start-run.ts';
 import type { HookHandler } from '../../src/hooks/shared.ts';
 import { runUserPromptSubmit } from '../../src/hooks/user-prompt-submit-run.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
+import { ruleExample } from '../helpers/rule-example.ts';
 
 const FIXTURE_DIR = fileURLToPath(
   new URL('../fixtures/vscode/plugin-load-1.141/', import.meta.url),
@@ -55,30 +56,23 @@ const HANDLERS: Record<string, HookHandler> = {
   postToolUse: runPostToolUse,
 };
 
-// In the order the session fired them.
-const SESSION = [
-  'sessionStart',
-  'userPromptSubmitted-cat-env',
-  'preToolUse-run_in_terminal',
-  'postToolUse-run_in_terminal',
-  'userPromptSubmitted-create-notes',
-  'preToolUse-create_file',
-  'postToolUse-create_file',
-] as const;
+// Every recording in the directory, in the order the session fired them: the
+// host stamped each payload with its own `timestamp`, so the order is read off
+// the recordings rather than restated. Derived, so a recording added to the
+// directory is replayed here without an edit.
+const SESSION: readonly string[] = readdirSync(FIXTURE_DIR)
+  .filter((file) => file !== 'README.md')
+  .map((file) => {
+    if (!file.endsWith('.json')) throw new Error(`unexpected fixture file ${file}`);
+    return file.slice(0, -'.json'.length);
+  })
+  .map((name) => ({ name, at: Date.parse(String(recorded(name).timestamp)) }))
+  .sort((a, b) => a.at - b.at)
+  .map((entry) => entry.name);
 
 const SESSION_ID = String(recorded('sessionStart').session_id);
 const RECORDED_CWD = String(recorded('sessionStart').cwd);
 
-function ruleExample(ruleId: string): { namespace: string; packId: string; example: string } {
-  // Taken from the rule's own examples rather than written here: this
-  // repository is public, and a credential-shaped literal does not belong in it.
-  const pack = bundledDetections().find((p) => p.rules.some((r) => r.id === ruleId));
-  const example = pack?.rules.find((r) => r.id === ruleId)?.examples?.[0];
-  if (pack === undefined || example === undefined) {
-    throw new Error(`bundled rule ${ruleId} is missing from the pack registry or has no example`);
-  }
-  return { namespace: pack.namespace, packId: pack.packId, example };
-}
 const SAMPLE_RULE = 'secrets/twilio-key';
 const SAMPLE = ruleExample(SAMPLE_RULE);
 
@@ -95,6 +89,9 @@ let root: string;
 let akaHome: string;
 let home: string;
 let cwd: string;
+let stderr: string[];
+// `(node:1234) ExperimentalWarning: …` and the `--trace-warnings` hint after it.
+const NODE_WARNING = /^\(node:\d+\) |--trace-warnings/u;
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'aka-copilot-vscode-recorded-'));
@@ -104,8 +101,20 @@ beforeEach(() => {
   cwd = join(root, 'work');
   mkdirSync(join(cwd, '.git'), { recursive: true });
   writeFileSync(join(cwd, '.git', 'config'), `[remote "origin"]\n\turl = ${WORK_REMOTE}\n`);
-  vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  stderr = [];
+  vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
+    stderr.push(String(chunk));
+    return true;
+  });
 });
+
+/**
+ * Everything written to stderr except node's own runtime warnings — the hook's
+ * notices AND the SDK's `[aka]` lines.
+ */
+function akaStderr(): string {
+  return stderr.filter((line) => !NODE_WARNING.test(line)).join('');
+}
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -191,6 +200,20 @@ function systemMessage(output: unknown): string {
 }
 
 describe('the recorded VS Code 1.141.0 session, replayed through the handlers', () => {
+  it('replays every recording, in the order the host fired them', () => {
+    // A guard on the derivation itself: an empty or reordered directory read
+    // would otherwise let the replay below assert over fewer hooks than exist.
+    expect(SESSION).toEqual([
+      'sessionStart',
+      'userPromptSubmitted-cat-env',
+      'preToolUse-run_in_terminal',
+      'postToolUse-run_in_terminal',
+      'userPromptSubmitted-create-notes',
+      'preToolUse-create_file',
+      'postToolUse-create_file',
+    ]);
+  });
+
   it('stores what the recorded host stored and writes what it wrote', async () => {
     const outputs: Record<string, unknown> = {};
     for (const name of SESSION) outputs[name] = await drive(name);
@@ -343,6 +366,39 @@ describe('run_in_terminal explanation and goal', () => {
     expect(await drive('sessionStart')).toBeUndefined();
   });
 
+  /**
+   * Stderr carries no run of the raw value. On this dialect the message rides
+   * stdout, so these paths write nothing to stderr at all, and that is asserted
+   * exactly: an empty read satisfies every run-by-run check, so the run-by-run
+   * check alone would be vacuous here. The case below is the control that the
+   * capture really observes what a handler writes there.
+   */
+  function expectStderrCarriesNoRaw(): void {
+    const written = akaStderr();
+    expect(written).toBe('');
+    expectNoEchoOf(written, SAMPLE.example);
+  }
+
+  it('captures what the handler writes to stderr (the control for the checks above)', async () => {
+    seedPolicy(SAMPLE.namespace, SAMPLE.packId, 'redact');
+    const payload = withSecretIn('goal');
+    const input = payload.tool_input as Payload;
+    input.goal = `${String(input.goal)} ${'lorem ipsum dolor sit amet '.repeat(
+      Math.ceil(LARGE_INPUT_THRESHOLD_CHARS / 27),
+    )}`;
+    const absent = pathToFileURL(join(root, 'no-worker-here', 'scan-worker.js'));
+    await runPreToolUse('preToolUse', JSON.stringify(payload), {
+      akaHome,
+      homeDir: home,
+      scanWorkerUrl: absent,
+    });
+    const written = akaStderr();
+    // Positive control: the SDK's refusal line for the field it could not scan
+    // reached the capture, so the capture is live on this path.
+    expect(written).toMatch(/\[aka\] a large input could not be scanned.* and was refused/u);
+    expectNoEchoOf(written, SAMPLE.example);
+  });
+
   /** The recorded call with its command cleaned and one field carrying a secret. */
   function withSecretIn(field: 'command' | 'explanation' | 'goal'): Payload {
     const payload = repointed('preToolUse-run_in_terminal');
@@ -364,6 +420,7 @@ describe('run_in_terminal explanation and goal', () => {
       { rule_id: SAMPLE_RULE, action_taken: 'warn', event_type: 'tool_use' },
     ]);
     expectNoEchoOf(text, SAMPLE.example);
+    expectStderrCarriesNoRaw();
   });
 
   it.each(['explanation', 'goal'] as const)(
@@ -386,17 +443,24 @@ describe('run_in_terminal explanation and goal', () => {
       expect(findings()).toEqual([
         { rule_id: SAMPLE_RULE, action_taken: 'redact', event_type: 'tool_use' },
       ]);
+      expectStderrCarriesNoRaw();
     },
   );
 
   it('keeps the command on the executable-field fallback under redact, never rewritten', async () => {
     seedPolicy(SAMPLE.namespace, SAMPLE.packId, 'redact');
-    const text = systemMessage(await drive('preToolUse-run_in_terminal', withSecretIn('command')));
+    const output = await drive('preToolUse-run_in_terminal', withSecretIn('command'));
+    const text = systemMessage(output);
+    // No rewrite came back: the fallback is a decision, not an `updatedInput`,
+    // and the ledger cannot stand in for this, since the runtime records the
+    // fallback whatever the hook wrote.
+    expect(output).toEqual({ systemMessage: text });
     // The shipped redactFallback is `warn`: no rewrite, and the ledger agrees.
     expect(text).toContain(SAMPLE_RULE);
     expect(findings()).toEqual([
       { rule_id: SAMPLE_RULE, action_taken: 'warn', event_type: 'tool_use' },
     ]);
     expectNoEchoOf(text, SAMPLE.example);
+    expectStderrCarriesNoRaw();
   });
 });

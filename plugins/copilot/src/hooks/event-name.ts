@@ -53,10 +53,12 @@ export const CLI_EVENTS = [
 /**
  * The eight PascalCase event names VS Code's agent mode fires.
  *
- * Doc-derived, not recorded — no live VS Code session produced any of these.
- * They are a deliberately separate vocabulary rather than aliases: the two
- * hosts' payload dialects differ too (see `./dialect.ts`), and collapsing the
- * names would hide which one a given token came from.
+ * Doc-derived. VS Code 1.141.0 was recorded firing the first four (see
+ * `test/fixtures/vscode/plugin-load-1.141/README.md`), dispatched from this
+ * package's camelCase `hooks.json` keys; the other four were not registered
+ * and are unrecorded. They are a deliberately separate vocabulary rather than
+ * aliases: the two hosts' payload dialects differ too (see `./dialect.ts`), and
+ * collapsing the names would hide which one a given token came from.
  */
 export const VSCODE_EVENTS = [
   'SessionStart',

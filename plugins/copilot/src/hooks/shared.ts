@@ -496,11 +496,13 @@ export async function runHookEntry(handler: HookHandler, failOpen?: HookOutput):
  * id and the repo slug.
  *
  * The repo is resolved from the payload's own `cwd`. On the CLI that is the
- * workspace and the hook process's own cwd is an acceptable fallback; under VS
- * Code the spawn's cwd defaults to the HOME DIRECTORY unless the hook entry
- * declared one, so falling back there would resolve a repo from `~` and stamp
- * every capture with whatever happens to live in the user's home. That host
- * therefore gets no fallback, and the metadata simply carries no repo.
+ * workspace and the hook process's own cwd is an acceptable fallback. VS Code
+ * documents the spawn's cwd as the home directory unless the hook entry
+ * declares one, so falling back there could resolve a repo from `~` and stamp
+ * every capture with whatever happens to live in the user's home. The recorded
+ * VS Code 1.141 session sent `cwd` on every event and ran the hooks in the
+ * workspace, but that host still gets no fallback, and a payload without `cwd`
+ * yields metadata that simply carries no repo.
  *
  * The slug is read through `resolveRepoAttribution`, the memoised walk
  * `captureScopeKey` shares, so a payload cwd is walked once for both. `repo` is
@@ -550,14 +552,16 @@ export function baseMetadata(
  * - The slug's CLI fallback is a display guess, and a wrong one only mislabels
  *   a row. A scoped attachment's verdict is decided by the key, so it must come
  *   from the event itself.
- * - Under VS Code the process cwd is the home directory anyway.
+ * - Under VS Code the process cwd is documented as the home directory when the
+ *   hook entry declares none, though the recorded session ran hooks in the
+ *   workspace.
  * - The session root is keyed from the same source: `sessionStart` declines a
  *   payload with no cwd rather than reading the process's, so its root's key
  *   comes only from a payload cwd too. A process-cwd fallback here could only
  *   produce a key no root on this host carries.
  *
- * A VS Code payload that does carry a cwd (its hook entry declared one) is keyed
- * like a CLI one: the dialect is a payload format, not a host.
+ * A VS Code payload that does carry a cwd (every one did in the recording) is
+ * keyed like a CLI one: the dialect is a payload format, not a host.
  *
  * TOTAL. A key that cannot be resolved is absent, never a throw that would
  * cost the capture. The key rides beside the event (`CaptureInput.scopeKey`),

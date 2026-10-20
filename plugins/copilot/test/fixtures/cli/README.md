@@ -355,13 +355,27 @@ outcomes and file states, not hook payloads, so **no file here backs them**.
   (`v0.9.20, already at latest`). It follows the source in either direction —
   with the source back at `0.9.19` it reported `v0.9.20 → v0.9.19`.
   `copilot plugin update --all` behaves the same.
+- **The update sequence the setup skill documents works with a newer
+  package.** With the plugin installed from `<folder>/package`, a newer package
+  archive was made: 0.9.20, with one file added and one script removed relative
+  to 0.9.19. In `<folder>`, `rm -rf package`, then `tar -xzf` of that archive,
+  then `copilot plugin update aka-copilot` exited 0 and printed
+  `Plugin "aka-copilot" updated successfully (v0.9.19 → v0.9.20). Updated 1 skill.`
+  `copilot plugin list` then showed `aka-copilot (v0.9.20)`, and the installed
+  copy had gained the added file and lost the removed script. The same sequence
+  with the 0.9.19 archive took it back (`v0.9.20 → v0.9.19`). `npm pack` was
+  not part of this run: `@akasecurity/ai-tc-copilot` is not published to npm
+  yet, so the 0.9.20 archive was built locally from the 0.9.19 package. No file
+  here backs this.
 - **Update fails, and changes nothing, once the source folder is gone.** With
   the unpacked folder moved away, `copilot plugin update aka-copilot` exited 1
   with `Local plugin path does not exist: <path>`, and the installed copy was
   left as it was. Deleting the unpacked folder after installing therefore
-  leaves AKA running and makes `copilot plugin update` unusable for it; a
-  newer version is installed by unpacking it again and running
-  `copilot plugin install ./package`.
+  leaves AKA running and makes `copilot plugin update` unusable for it. The
+  route `skills/setup/SKILL.md` documents keeps that folder and updates from it,
+  as recorded in the bullet above. Recovering once the folder is gone, by
+  unpacking a newer package again and running `copilot plugin install ./package`
+  over the existing install, has not been measured.
 - **`copilot plugin uninstall aka-copilot` removes the install, and it can be
   installed again.** It exited 0 and printed
   `Plugin "aka-copilot" uninstalled successfully.`; `copilot plugin list`

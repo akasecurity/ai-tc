@@ -19,17 +19,18 @@ calibration step to the user as though it exists here.
 
 The plugin is installed from an unpacked copy of its npm package. There is no
 marketplace entry for it yet. Run these from a folder of their own, and keep
-that folder: updates are taken from it.
+that folder: updates are taken from it. The first line is safe to run again: it
+reuses an existing `aka-copilot` folder rather than failing.
 
 ```sh
-mkdir aka-copilot && cd aka-copilot
+mkdir -p aka-copilot && cd aka-copilot
 tar -xzf "$(npm pack @akasecurity/ai-tc-copilot --silent)"
 copilot plugin install ./package
 copilot plugin list
 aka init
 ```
 
-To update, from that same folder:
+To update, from inside that same `aka-copilot` folder:
 
 ```sh
 rm -rf package
@@ -69,8 +70,9 @@ Limits of this install:
   installed copy with whatever the folder holds, an older version included. It
   does not fetch from npm; the update steps above put the newer version in the
   folder first. If that folder has been deleted, update fails and changes
-  nothing; AKA keeps running from the installed copy. A session start does not
-  update the plugin.
+  nothing; AKA keeps running from the installed copy. A `-p` session start was
+  observed not to update the plugin; an interactive session has not been
+  measured.
 - **The cloud coding agent is not covered by this install.** It does not load
   installed plugins; it reads only the repository's `.github/hooks/*.json`.
 
@@ -230,11 +232,13 @@ row marked `yes` as working, and describe every row marked `no` as what the
 vendor documents, not as what was seen to happen.
 
 **Load the package from a local directory.** There is no marketplace install for
-VS Code. Pack and unpack the npm package, then point VS Code at the unpacked
-folder in your user settings:
+VS Code. If the Copilot CLI install above has already been done, reuse its
+`aka-copilot` folder and skip these two lines, so VS Code loads the same folder
+the update steps refresh. Otherwise pack and unpack the npm package, then point
+VS Code at the unpacked folder in your user settings:
 
 ```sh
-mkdir aka-copilot && cd aka-copilot
+mkdir -p aka-copilot && cd aka-copilot
 tar -xzf "$(npm pack @akasecurity/ai-tc-copilot --silent)"
 ```
 

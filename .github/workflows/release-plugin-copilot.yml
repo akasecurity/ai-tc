@@ -247,7 +247,7 @@ jobs:
             Install into the Copilot CLI from a local directory; there is no marketplace install for this plugin yet. Run these from a folder of their own, and keep it:
 
             ```sh
-            mkdir aka-copilot && cd aka-copilot
+            mkdir -p aka-copilot && cd aka-copilot
             tar -xzf "$(npm pack @akasecurity/ai-tc-copilot@${{ steps.manifest.outputs.version }} --silent)"
             copilot plugin install ./package
             copilot plugin list

@@ -13,9 +13,14 @@ const ts = require('typescript');
 
 // The Copilot plugin has no marketplace, so a user installs and updates it by
 // typing shell commands copied from whichever page they read first. The setup
-// skill's "Install — Copilot CLI" section is the reference for those commands;
-// five other places carry a copy. Each copy is reduced to its command lines and
-// required to equal the reference's, so a copy edited on its own goes red here.
+// skill's "Install — Copilot CLI" section is the reference for those commands,
+// and six copies of them are compared against it. Four carry the whole install
+// and update list: the README's Copilot CLI section, llms.txt, the registry
+// hint and the Release body. Two carry only the opening lines that create the
+// folder and unpack the package: the skill's own VS Code section and the
+// README's. Each copy is reduced to its command lines and required to equal the
+// reference's lines (or, for the VS Code copies, the reference's install lines
+// up to `copilot plugin install`), so a copy edited on its own goes red here.
 //
 // Only commands are compared, never the prose around them: the copies explain
 // the steps at different lengths on purpose, and the commands are what a user
@@ -36,7 +41,7 @@ const RELEASE_PIN = '@${{ steps.manifest.outputs.version }}';
  * prose and omits the first, and neither moves a file.
  */
 const COMMAND_MARKERS = Object.freeze([
-  'mkdir aka-copilot',
+  'mkdir ',
   'rm -rf package',
   'npm pack @akasecurity/ai-tc-copilot',
   'tar -xzf',
@@ -161,6 +166,34 @@ function skillCommands() {
   );
 }
 
+/**
+ * The reference's install lines before `copilot plugin install`: the lines that
+ * create the folder and unpack the package, which is all a VS Code copy carries.
+ * @returns {string[]}
+ */
+function vscodeReference() {
+  const reference = skillCommands();
+  const install = reference.findIndex((line) => line.includes('copilot plugin install'));
+  expect(install, `${SKILL}'s CLI section has no \`copilot plugin install\` line`).toBeGreaterThan(
+    0,
+  );
+  return reference.slice(0, install);
+}
+
+/** @returns {string[]} */
+function skillVscodeCommands() {
+  return commandsIn(
+    fencedLines(sectionOf(read(SKILL), '## Install — VS Code agent mode (beta)', /^## /u, SKILL)),
+  );
+}
+
+/** @returns {string[]} */
+function readmeVscodeCommands() {
+  return commandsIn(
+    fencedLines(sectionOf(read(README), '### VS Code agent mode (beta)', /^#{2,3} /u, README)),
+  );
+}
+
 /** @returns {string[]} */
 function readmeCommands() {
   return commandsIn(fencedLines(sectionOf(read(README), '### Copilot CLI', /^#{2,3} /u, README)));
@@ -220,6 +253,15 @@ const COPIES = {
   [RELEASE]: () => unpin(releaseCommandsPinned()),
 };
 
+/**
+ * The copies that carry only the reference's opening lines.
+ * @type {Record<string, () => string[]>}
+ */
+const VSCODE_COPIES = {
+  [`${SKILL} (VS Code)`]: skillVscodeCommands,
+  [`${README} (VS Code)`]: readmeVscodeCommands,
+};
+
 describe('Copilot install copies agree with the setup skill', () => {
   it('reads install AND update commands out of the reference (positive control)', () => {
     const reference = skillCommands();
@@ -239,10 +281,32 @@ describe('Copilot install copies agree with the setup skill', () => {
     expect(COPIES[copy](), `${copy} has drifted from ${SKILL}`).toEqual(skillCommands());
   });
 
+  it('reads a folder and an unpack line as the VS Code reference (positive control)', () => {
+    const reference = vscodeReference();
+    expect(reference.some((line) => line.includes('mkdir '))).toBe(true);
+    expect(reference.some((line) => line.includes('tar -xzf'))).toBe(true);
+  });
+
+  it.each(Object.keys(VSCODE_COPIES))('%s yields command lines (positive control)', (copy) => {
+    expect(VSCODE_COPIES[copy]().length, `${copy} yielded no install command`).toBeGreaterThan(0);
+  });
+
+  it.each(Object.keys(VSCODE_COPIES))('%s carries exactly the reference opening lines', (copy) => {
+    expect(VSCODE_COPIES[copy](), `${copy} has drifted from ${SKILL}`).toEqual(vscodeReference());
+  });
+
   it('pins only the Release body to a version', () => {
     expect(releaseCommandsPinned().some((line) => line.includes(RELEASE_PIN))).toBe(true);
-    for (const copy of [SKILL, README, LLMS, REGISTRY]) {
-      const lines = copy === SKILL ? skillCommands() : COPIES[copy]();
+    /** @type {Record<string, () => string[]>} */
+    const unpinned = {
+      [SKILL]: skillCommands,
+      [README]: readmeCommands,
+      [LLMS]: llmsCommands,
+      [REGISTRY]: registryCommands,
+      ...VSCODE_COPIES,
+    };
+    for (const [copy, commands] of Object.entries(unpinned)) {
+      const lines = commands();
       expect(
         lines.filter((line) => /ai-tc-copilot@/u.test(line)),
         `${copy} pins a version; only the Release body should`,

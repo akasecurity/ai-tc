@@ -28,7 +28,7 @@ The plugin is installed from an unpacked copy of its npm package. There is no ma
 ### Copilot CLI
 
 ```sh
-mkdir aka-copilot && cd aka-copilot
+mkdir -p aka-copilot && cd aka-copilot
 tar -xzf "$(npm pack @akasecurity/ai-tc-copilot --silent)"
 copilot plugin install ./package
 copilot plugin list
@@ -37,7 +37,7 @@ aka init
 
 `copilot plugin list` shows `aka-copilot` once the install has landed. To remove it, run `copilot plugin uninstall aka-copilot`. The Copilot CLI warns that installing from a local path is deprecated in favour of marketplace installs.
 
-Keep the `aka-copilot` folder. To update, from that same folder:
+Keep the `aka-copilot` folder; the first line is safe to run again and reuses it. To update, from inside that same folder:
 
 ```sh
 rm -rf package
@@ -49,7 +49,14 @@ copilot plugin update aka-copilot
 
 ### VS Code agent mode (beta)
 
-Pack and unpack the package the same way (`mkdir aka-copilot && cd aka-copilot`, then `tar -xzf "$(npm pack @akasecurity/ai-tc-copilot --silent)"`), then point VS Code at the unpacked folder in your user settings:
+If you have already installed into the Copilot CLI, reuse that `aka-copilot` folder and skip this step, so VS Code loads the same folder the update steps refresh. Otherwise pack and unpack the package the same way:
+
+```sh
+mkdir -p aka-copilot && cd aka-copilot
+tar -xzf "$(npm pack @akasecurity/ai-tc-copilot --silent)"
+```
+
+Then point VS Code at the unpacked folder in your user settings:
 
 ```json
 {

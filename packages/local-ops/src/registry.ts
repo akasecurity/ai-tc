@@ -101,7 +101,7 @@ export const AGENT_PLUGINS: readonly AgentPlugin[] = [
     // with no ref is skipped by the update notice's `npm view` lookups.
     installHint:
       'Copilot installs this plugin from a local directory rather than a marketplace:\n' +
-      '  mkdir aka-copilot && cd aka-copilot\n' +
+      '  mkdir -p aka-copilot && cd aka-copilot\n' +
       '  tar -xzf "$(npm pack @akasecurity/ai-tc-copilot --silent)"\n' +
       '  copilot plugin install ./package\n' +
       'Then run `aka init` to set up the local store.\n' +

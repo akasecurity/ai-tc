@@ -13,7 +13,7 @@ Detection and enforcement run locally. A handful of narrow paths do reach the ne
 - GitHub Copilot: a separate plugin package, also with no marketplace. From a folder of its own, which is kept for updates:
 
   ```sh
-  mkdir aka-copilot && cd aka-copilot
+  mkdir -p aka-copilot && cd aka-copilot
   tar -xzf "$(npm pack @akasecurity/ai-tc-copilot --silent)"
   copilot plugin install ./package
   copilot plugin list
@@ -28,7 +28,7 @@ Detection and enforcement run locally. A handful of narrow paths do reach the ne
   copilot plugin update aka-copilot
   ```
 
-  The Copilot CLI warns that local-path installs are deprecated, Windows is unconfirmed, and VS Code agent mode is beta, not yet confirmed against a live install.
+  The Copilot CLI warns that local-path installs are deprecated, Windows is unconfirmed, and VS Code agent mode is beta: capture was observed in one VS Code 1.141.0 session, and enforcement is unverified.
 - Browser extension (ChatGPT + Claude.ai web chat): `aka extension install`, bridged to Chrome over native messaging.
 - Standalone CLI (binary `aka`, no coding agent required): `brew install akasecurity/tap/aka` (macOS, Linux), `scoop bucket add akasecurity https://github.com/akasecurity/scoop-bucket` then `scoop install aka` (Windows), the `install.sh`/`install.ps1` one-liner, or a direct download from the `bin-latest` release; then `aka init` — it detects whether a plugin is present and offers to add it.
 

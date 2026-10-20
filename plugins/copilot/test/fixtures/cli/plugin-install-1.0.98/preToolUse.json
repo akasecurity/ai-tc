@@ -1,0 +1,10 @@
+{
+  "sessionId": "79d26659-cf7c-4cf3-8ee5-75f40ef7aaa8",
+  "timestamp": 1792405106868,
+  "cwd": "/Users/dev/work",
+  "toolName": "bash",
+  "toolArgs": {
+    "command": "cat .env",
+    "description": "Read .env file"
+  }
+}

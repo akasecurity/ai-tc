@@ -117,8 +117,8 @@ function matrixValues(source, key) {
 //
 // That is safe because of WHERE this is pointed, not because the repo avoids the
 // shape: every caller passes `ci.yml`, which carries no `#`-leading line inside
-// any `run:` block. Four other workflows do — `dependabot-major-guard.yml` and
-// the three `release-plugin-*.yml` — so pointing `jobBlock` at one of those
+// any `run:` block. Five other workflows do — `dependabot-major-guard.yml` and
+// the four `release-plugin-*.yml` — so pointing `jobBlock` at one of those
 // makes this sentence false. It stays harmless while those lines are shell
 // comments, since dropping them changes no flag matched below; it stops being
 // harmless the first time a check wants to see something a `run:` block states
@@ -186,7 +186,7 @@ const turboTestFilters = (block) =>
  * Every workspace package npm actually publishes — `private` absent or false.
  * Derived from pnpm-workspace.yaml and the manifests themselves rather than
  * listed, because a list is exactly what let the CLI and the plugin sit outside
- * the Windows job while its name claimed the shipped surface: a fifth artifact
+ * the Windows job while its name claimed the shipped surface: a sixth artifact
  * added tomorrow would not be on it either.
  */
 const publishedPackageNames = () =>
@@ -826,7 +826,7 @@ describe('the Windows legs', () => {
   });
 
   // THE assertion this job exists for. Derived from the workspace rather than
-  // listed, so a fifth published artifact is caught the day it lands; the
+  // listed, so a sixth published artifact is caught the day it lands; the
   // count check first is what stops a broken derivation satisfying the loop
   // with an empty set.
   it('runs every package npm publishes', () => {
@@ -913,28 +913,6 @@ describe('the Windows legs', () => {
     // not another Worker the suite constructs. Without this the assertion above
     // is satisfied by a case renamed to match and rewritten to do anything.
     expect(suite).toMatch(/spawnSync\(process\.execPath, \[join\(HOST_DIR, HOST_SCRIPT\)\]/);
-  });
-
-  // The third entry the derived check cannot reach, and the one whose exclusion
-  // is TEMPORARY. `plugins/copilot` is `private: true` only while it is a
-  // scaffold with no build and nothing to publish, so `private !== true` drops
-  // it from the derived set exactly as it drops the two above — and the filter
-  // line is then removable with nothing going red. Phase B unsets `private` and
-  // the derived check resumes covering this entry; until then this pin is the
-  // only thing carrying the Windows leg across that gap.
-  //
-  // Losing it silently is what makes it worth pinning rather than re-adding
-  // later: the plugin hosts differ most on Windows — PATHEXT resolution, the
-  // working directory searched ahead of PATH, and the shell re-parse the
-  // bare-command planner exists for — so a copilot hook landing without a
-  // Windows run is a gap nothing else here reports.
-  it('tests the copilot plugin, which is private only while it is a scaffold', () => {
-    const block = jobBlock(ci, 'windows');
-    expect(block).toMatch(/turbo run test/);
-    // `(?![\w-])` for the same reason as the two pins above: `\b` would also
-    // accept a rename to `--filter=@akasecurity/ai-tc-copilot-ide`, taking this
-    // package's Windows coverage away while this test stayed green.
-    expect(block).toMatch(/--filter=@akasecurity\/ai-tc-copilot(?![\w-])/);
   });
 
   // A filter is only a filter while there is something to filter. `turbo run

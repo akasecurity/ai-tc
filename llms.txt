@@ -1,6 +1,6 @@
 # ai-tc — AI Traffic Control
 
-> An open-source, local-first control plane for coding agents. Every event in an agent session — prompt, response, tool call, file read — passes one control point: the detection engine scans it against rule packs for secrets and regulated data (PCI, PHI, PII), and policy decides what happens next (monitor, warn, redact, block, or a manual exception). Runs entirely on the developer's machine with no backend and no account. Apache-2.0. Installs as a plugin for Claude Code (and Claude Desktop, the same package), Codex CLI or Antigravity; as a browser extension for ChatGPT and Claude.ai web chat; or as the standalone `aka` CLI.
+> An open-source, local-first control plane for coding agents. Every event in an agent session — prompt, response, tool call, file read — passes one control point: the detection engine scans it against rule packs for secrets and regulated data (PCI, PHI, PII), and policy decides what happens next (monitor, warn, redact, block, or a manual exception). Runs entirely on the developer's machine with no backend and no account. Apache-2.0. Installs as a plugin for Claude Code (and Claude Desktop, the same package), Codex CLI, Antigravity or GitHub Copilot (the Copilot CLI; VS Code agent mode in beta); as a browser extension for ChatGPT and Claude.ai web chat; or as the standalone `aka` CLI.
 
 Detection and enforcement run locally. A handful of narrow paths do reach the network. Most are child processes — the default-on update notice's `npm view` lookups, package-manager installs, the plugin's `npm audit signatures` supply-chain check, git-style external `aka <name>` dispatch to a program on your own `PATH` this project doesn't bundle or control, and the **opt-in** `/aka:setup` calibration each host plugin ships. One is not: `aka attach` registers a machine against an AKA deployment your own organization runs, and from then on the plugin forwards that deployment the activity it is entitled to see and pulls the policy it sets — over `@akasecurity/remote`, the one package in the tree permitted to open a socket. It is opt-in and inert until an endpoint and an access key are both on disk, and `aka detach` ends it. Two paths carry your data: the calibration (to a model, behind two separate, separately-revocable grants) and an attached connection (to your organization's deployment). The README's `[^egress]` footnote is the guarded, up-to-date list of every path and exactly what the calibration payload contains — read it rather than this paragraph for the current count.
 
@@ -10,6 +10,7 @@ Detection and enforcement run locally. A handful of narrow paths do reach the ne
 - Claude Desktop: supported through the same plugin package; see the installation guide.
 - Codex CLI: `codex plugin marketplace add akasecurity/ai-tc` then `codex plugin add aka-codex@ai-tc` — a separate plugin package, served from this repository's own `ai-tc` marketplace rather than the `akasecurity` marketplace Claude Code installs from.
 - Antigravity: a separate plugin package with no marketplace at all — `agy plugin install` takes a local directory, so unpack `@akasecurity/ai-tc-antigravity` and install it from that path; see the installation guide.
+- GitHub Copilot: a separate plugin package, also with no marketplace — unpack `@akasecurity/ai-tc-copilot` (`npm pack @akasecurity/ai-tc-copilot`) and run `copilot plugin install ./package`. The Copilot CLI warns that local-path installs are deprecated, Windows is unconfirmed, and VS Code agent mode is beta, not yet confirmed against a live install.
 - Browser extension (ChatGPT + Claude.ai web chat): `aka extension install`, bridged to Chrome over native messaging.
 - Standalone CLI (binary `aka`, no coding agent required): `brew install akasecurity/tap/aka` (macOS, Linux), `scoop bucket add akasecurity https://github.com/akasecurity/scoop-bucket` then `scoop install aka` (Windows), the `install.sh`/`install.ps1` one-liner, or a direct download from the `bin-latest` release; then `aka init` — it detects whether a plugin is present and offers to add it.
 
@@ -20,7 +21,7 @@ Detection and enforcement run locally. A handful of narrow paths do reach the ne
 - **Rule** — a JSON file describing what to detect: a keyword list, a regex pattern, or a validator.
 - **Rule pack** — a directory of rules and their fixtures with a `manifest.json`. Eight ship built in: `secrets`, `secrets-infra`, `core-pii`, `core-financial`, `core-phi`, `core-code-context`, `code-flaws`, `command-risk`.
 - **Policy** — the decision taken when a rule or category fires.
-- **Plugin** — the harness extension that intercepts sessions. One package serves Claude Code and Claude Desktop; separate packages ship for Codex CLI and Antigravity, plus a browser extension for ChatGPT and Claude.ai web chat.
+- **Plugin** — the harness extension that intercepts sessions. One package serves Claude Code and Claude Desktop; separate packages ship for Codex CLI, Antigravity and GitHub Copilot, plus a browser extension for ChatGPT and Claude.ai web chat.
 
 ## Where your data lives
 
@@ -39,7 +40,7 @@ A local SQLite store at `~/.aka/data/aka.db`, settings beside it under `~/.aka/s
 ## Repository layout
 
 - `packages/` — the workspace: `detections` (rule engine), `scanner`, `extract`, `persistence` (SQLite store), `schema`, `plugin-runtime`, `plugin-sdk`, `local-ops`, `dashboard-ui`, `ui-kit`, `setup-wizard`.
-- `plugins/claude-code/`, `plugins/codex/`, `plugins/antigravity/` — the harness plugins, one per host, published as `@akasecurity/ai-tc-claude-code`, `@akasecurity/ai-tc-codex` and `@akasecurity/ai-tc-antigravity`.
+- `plugins/claude-code/`, `plugins/codex/`, `plugins/antigravity/`, `plugins/copilot/` — the harness plugins, one per host, published as `@akasecurity/ai-tc-claude-code`, `@akasecurity/ai-tc-codex`, `@akasecurity/ai-tc-antigravity` and `@akasecurity/ai-tc-copilot`.
 - `plugins/browser-extension/` — the Chrome extension for ChatGPT and Claude.ai web chat (MV3 content scripts + a native-messaging host).
 - `cli/` — the standalone CLI published as `@akasecurity/cli`, binary `aka`.
 - `rules/` — the eight built-in rule packs and their fixtures.

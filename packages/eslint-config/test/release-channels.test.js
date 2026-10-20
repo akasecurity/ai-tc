@@ -28,17 +28,17 @@ import {
 const STEPS = publishSteps();
 const RAW = publishCommandsByWorkflow();
 
-// Seven today: one CLI publish, plus an npm and a GitHub Packages publish for
-// each of the three plugins. Asserted as a FLOOR because a fourth plugin would
+// Nine today: one CLI publish, plus an npm and a GitHub Packages publish for
+// each of the four plugins. Asserted as a FLOOR because a fifth plugin would
 // add two more, and asserted at all because every case below is per-step — with
 // no steps found, an empty loop reports green.
 //
-// A floor alone stops being a non-vacuity check the day a fifth workflow lands:
-// nine invocations clear a floor of seven while two of them are attributed to
+// A floor alone stops being a non-vacuity check the day a sixth workflow lands:
+// eleven invocations clear a floor of nine while two of them are attributed to
 // nothing. So the floor sits beside an EQUALITY against the same invocations
 // counted over the raw text, which pins whatever the current number happens to
 // be without anybody maintaining it.
-const MIN_PUBLISH_STEPS = 7;
+const MIN_PUBLISH_STEPS = 9;
 
 describe('a commented-out publish does not count as one', () => {
   // Measured against the un-fixed `PUBLISH` regex: it carries no notion of `#`,
@@ -227,7 +227,7 @@ describe('every release publish routes a version to a dist-tag', () => {
     // the body asserts nothing, and a body that asserts nothing must not report
     // as a pass.
     requirePosixShell(ctx);
-    // The refinement had to land in all seven steps, and a partial edit is the
+    // The refinement had to land in all nine steps, and a partial edit is the
     // likely mistake: one workflow keeping the old two-arm block still publishes
     // a beta under `rc`, and the per-step cases above name it while this names
     // the DISAGREEMENT, which is the thing a reader acts on.

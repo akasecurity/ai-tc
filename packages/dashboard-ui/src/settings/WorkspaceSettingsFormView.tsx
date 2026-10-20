@@ -2,6 +2,7 @@
 import type {
   AttachmentMode,
   CredentialState,
+  HistorySyncChange,
   HistorySyncConsentChoice,
   ManagedContext,
   ManagedSettingKey,
@@ -13,6 +14,7 @@ import type {
 } from '@akasecurity/schema';
 import {
   controlPlaneName,
+  historySyncChangesSince,
   isAttached,
   isFieldManaged,
   isHistorySyncConsentStale,
@@ -184,8 +186,9 @@ export const HISTORY_SYNC_SECTION_DESCRIPTION =
   'a flagged span. No detection ships on redact or block, so on a default install nothing in that ' +
   'text is masked. Live sending is part of being attached and this setting does not change ' +
   'it: anything a live send could not deliver is kept and sent later either way. Sending ' +
-  'happens in the background over later sessions. Revoking stops what has not been sent; it ' +
-  'cannot recall what has.';
+  'happens in the background over later sessions. It also sends the exceptions you grant and ' +
+  'the findings you dismiss on this machine, each with the reason you picked from the list — ' +
+  'never the reason you type. Revoking stops what has not been sent; it cannot recall what has.';
 
 export const HISTORY_SYNC_CHOICES: Choice<HistorySyncChoice>[] = [
   {
@@ -198,7 +201,7 @@ export const HISTORY_SYNC_CHOICES: Choice<HistorySyncChoice>[] = [
     value: 'granted',
     label: 'Shared',
     description:
-      'Activity from before this machine attached may be sent later — including the text of prompts, replies and tool results, in which a value is masked only where the detection that flagged it is set to redact or block.',
+      'Activity from before this machine attached may be sent later — including the text of prompts, replies and tool results, in which a value is masked only where the detection that flagged it is set to redact or block — and so are the exceptions you grant and the findings you dismiss, with the reason you picked.',
   },
 ];
 
@@ -207,11 +210,46 @@ export const HISTORY_SYNC_CHOICES: Choice<HistorySyncChoice>[] = [
 // which is not what is happening, so the summary carries the contradiction.
 export const HISTORY_SYNC_STALE_BADGE = 'Paused';
 
-export const HISTORY_SYNC_STALE_NOTICE =
-  'Your grant was recorded against an older version of this setting, which did not cover the ' +
-  'text of the activity recorded before this machine attached — only what a live send failed ' +
-  'to deliver afterward — sending is paused until you re-consent. Saving with "Shared" ' +
-  'selected re-consents to the current version.';
+/**
+ * The notice for a paused grant, worded from what THIS grant did not cover
+ * (historySyncChangesSince), so it agrees with `aka sync-history` and `aka status`.
+ */
+export function historySyncStaleNotice(
+  changes: readonly HistorySyncChange[],
+  scoped: boolean,
+): string {
+  const tail =
+    ' Sending is paused until you re-consent. Saving with "Shared" selected re-consents to the current version.';
+  if (changes.includes('newer')) {
+    return (
+      'Your grant was recorded by a newer release of AKA than this one, which cannot vouch for what it covered.' +
+      tail
+    );
+  }
+  if (changes.length === 0) {
+    return (
+      'Your grant was recorded against an older version of this setting; the change sends nothing new from what is enrolled here.' +
+      tail
+    );
+  }
+  const parts = changes.map((c) =>
+    c === 'backlog-text'
+      ? scoped
+        ? 'the text of what an enrolled repository recorded before you enrolled it, not only what a live send from one failed to deliver afterward'
+        : 'the text of the activity recorded before this machine attached, not only what a live send failed to deliver afterward'
+      : 'the exceptions you grant and the findings you dismiss, with the reason you picked',
+  );
+  return (
+    `Your grant was recorded against an older version of this setting, which did not cover ${parts.join(', or ')}.` +
+    tail
+  );
+}
+
+/** The notice for a grant one version behind on a machine-wide attachment. */
+export const HISTORY_SYNC_STALE_NOTICE = historySyncStaleNotice(['labels'], false);
+
+/** The notice for a grant one version behind on a personal device. */
+export const HISTORY_SYNC_STALE_NOTICE_SCOPED = historySyncStaleNotice([], true);
 
 // The same row on a machine attached as a personal device, picked when the host
 // reports `attachmentMode: 'scoped'`. Such a machine sends activity only from
@@ -261,12 +299,6 @@ export const HISTORY_SYNC_CHOICES_SCOPED: Choice<HistorySyncChoice>[] = [
       'Some of what the repositories and accounts enrolled here recorded before you enrolled them may be sent later — including the text of prompts, replies and tool results, in which a value is masked only where the detection that flagged it is set to redact or block. Activity anywhere else is not sent by this setting.',
   },
 ];
-
-export const HISTORY_SYNC_STALE_NOTICE_SCOPED =
-  'Your grant was recorded against an older version of this setting, which did not cover the ' +
-  'text of what an enrolled repository recorded before you enrolled it — only what a live send ' +
-  'from one failed to deliver afterward — sending is paused until you re-consent. Saving with ' +
-  '"Shared" selected re-consents to the current version.';
 
 // The grant covering what the browser extension may write down from a web chat.
 // Its own consent rather than a corner of an existing one, because it records a
@@ -1117,7 +1149,13 @@ export function WorkspaceSettingsFormView({
                     className="mb-3 text-xs text-sev-high-ink"
                     data-slot="history-sync-stale-notice"
                   >
-                    {historyScoped ? HISTORY_SYNC_STALE_NOTICE_SCOPED : HISTORY_SYNC_STALE_NOTICE}
+                    {historySyncStaleNotice(
+                      historySyncChangesSince(
+                        settings.historySyncConsent?.payloadVersion ?? 0,
+                        historyScoped ? 'scoped' : 'machine',
+                      ),
+                      historyScoped,
+                    )}
                   </p>
                 )}
                 <p className="mb-3 text-xs text-text-3" data-slot="history-sync-disclosure">

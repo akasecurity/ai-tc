@@ -77,6 +77,17 @@ describe('rebuildAuditEvent', () => {
 
   // Local inventory ids name rows the receiving side does not have. They are
   // real foreign keys there, so sending one wrong costs the whole session.
+  // Pins the replay lane's known gap: a change that starts carrying either
+  // field, or one that the live lane and this one come to disagree about,
+  // has to change this test on purpose.
+  it('rebuilds an inspection without the live lane\u2019s features and name hash', () => {
+    const rebuilt = rebuildAuditEvent(row({ eventType: 'tool_call' }), [inspection()]);
+    const [only] = rebuilt?.inspections ?? [];
+    expect(only).toBeDefined();
+    expect(only).not.toHaveProperty('features');
+    expect(only).not.toHaveProperty('nameHash');
+  });
+
   it('drops every inventory id', () => {
     const built = rebuildAuditEvent(
       row({ hostId: 'host-local', harnessId: 'harness-local', sourceProjectId: 'proj-local' }),

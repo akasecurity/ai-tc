@@ -191,12 +191,15 @@ export interface VsCodeBlockOutput {
  * payload the host drops. On the CLI a warn is WRITTEN to stderr instead, and
  * stdout stays empty, which is the no-opinion the header describes.
  *
- * Whether stderr reaches a human on that host is UNOBSERVED, and this comment
- * used to claim it did. The reference documents stderr surfacing only for a
- * FAILING hook ("logged as a hook failure") and says nothing about an exit-0
- * one, so what is stated here is the channel the notice is written to, never
- * that anyone reads it. `skills/setup/SKILL.md` carries the same caveat on the
- * user-facing side, and the two must not drift apart again.
+ * That stderr was not seen to reach a human on that host. The reference documents
+ * stderr surfacing only for a FAILING hook ("logged as a hook failure"), and a
+ * recorded Copilot CLI 1.0.98 `-p` session showed an exit-0 hook's stderr in
+ * none of the CLI's own output — only in its debug log, as
+ * `[rust:hooks] [hook stderr] …` lines with debug logging enabled; an
+ * interactive session is unmeasured. So what is stated here is the channel
+ * the notice is written to, never that anyone reads it.
+ * `skills/setup/SKILL.md` carries the same caveat on the user-facing side, and
+ * the two must not drift apart.
  */
 export interface SystemMessageOutput {
   systemMessage: string;
@@ -493,11 +496,13 @@ export async function runHookEntry(handler: HookHandler, failOpen?: HookOutput):
  * id and the repo slug.
  *
  * The repo is resolved from the payload's own `cwd`. On the CLI that is the
- * workspace and the hook process's own cwd is an acceptable fallback; under VS
- * Code the spawn's cwd defaults to the HOME DIRECTORY unless the hook entry
- * declared one, so falling back there would resolve a repo from `~` and stamp
- * every capture with whatever happens to live in the user's home. That host
- * therefore gets no fallback, and the metadata simply carries no repo.
+ * workspace and the hook process's own cwd is an acceptable fallback. VS Code
+ * documents the spawn's cwd as the home directory unless the hook entry
+ * declares one, so falling back there could resolve a repo from `~` and stamp
+ * every capture with whatever happens to live in the user's home. The recorded
+ * VS Code 1.141 session sent `cwd` on every event and ran the hooks in the
+ * workspace, but that host still gets no fallback, and a payload without `cwd`
+ * yields metadata that simply carries no repo.
  *
  * The slug is read through `resolveRepoAttribution`, the memoised walk
  * `captureScopeKey` shares, so a payload cwd is walked once for both. `repo` is
@@ -547,14 +552,16 @@ export function baseMetadata(
  * - The slug's CLI fallback is a display guess, and a wrong one only mislabels
  *   a row. A scoped attachment's verdict is decided by the key, so it must come
  *   from the event itself.
- * - Under VS Code the process cwd is the home directory anyway.
+ * - Under VS Code the process cwd is documented as the home directory when the
+ *   hook entry declares none, though the recorded session ran hooks in the
+ *   workspace.
  * - The session root is keyed from the same source: `sessionStart` declines a
  *   payload with no cwd rather than reading the process's, so its root's key
  *   comes only from a payload cwd too. A process-cwd fallback here could only
  *   produce a key no root on this host carries.
  *
- * A VS Code payload that does carry a cwd (its hook entry declared one) is keyed
- * like a CLI one: the dialect is a payload format, not a host.
+ * A VS Code payload that does carry a cwd (every one did in the recording) is
+ * keyed like a CLI one: the dialect is a payload format, not a host.
  *
  * TOTAL. A key that cannot be resolved is absent, never a throw that would
  * cost the capture. The key rides beside the event (`CaptureInput.scopeKey`),

@@ -85,22 +85,26 @@ const paragraphs = (text: string): string[] =>
     .filter((p) => p.trim() !== '');
 
 /**
- * Every shipped front door, and whether it describes the judge.
+ * Every shipped front door, whether it describes the judge, and whether it
+ * describes Claude Code sessions.
  *
  * `describesJudge` is the tier split, and it is a property of the page rather
  * than a convenience: the root README introduces the whole product and the
  * plugin README documents the harness that runs `/aka:setup`, so both send a
  * reader into the calibration. The CLI page ships no judge and points at the
- * plugin page for that payload instead.
+ * plugin page for that payload instead, and the Copilot page ships none at all.
  *
- * `describesClaudeCode` selects the pages that owe the sentences about what a
- * Claude Code session sends, such as its configuration inventory. A page for
- * another harness describes that harness only.
+ * `describesClaudeCode` selects the pages that owe the Claude Code sentences: the
+ * work-subscription rule and what a Claude Code session start sends of its
+ * configuration. The Copilot plugin page describes that plugin only: a Copilot
+ * session forwards from enrolled repositories alone, so the Claude Code rule
+ * would be a claim about a harness the page does not cover.
  */
 const CLASSIFIED_READMES = [
   { name: 'README.md', describesJudge: true, describesClaudeCode: true },
   { name: 'cli/README.md', describesJudge: false, describesClaudeCode: true },
   { name: 'plugins/claude-code/README.md', describesJudge: true, describesClaudeCode: true },
+  { name: 'plugins/copilot/README.md', describesJudge: false, describesClaudeCode: false },
 ] as const;
 
 // `name` IS the location — there is deliberately no second field holding the
@@ -246,6 +250,7 @@ describe('scoped attachment claims', () => {
       'README.md',
       'cli/README.md',
       'plugins/claude-code/README.md',
+      'plugins/copilot/README.md',
     ]);
     expect(SECURITY_DATA_IN_TRANSIT).toBeDefined();
   });
@@ -401,8 +406,20 @@ const LOGIN_FILE_WORDING = /login file shows? the (?:plan|account)/;
 const HAND_ENROLLED_LIST =
   /signed in to a recognised work subscription or to an account (?:you enroll|enrolled) by hand with `aka enroll --account`/;
 
+// The scoped pages that describe Claude Code sessions. Never empty: every page
+// but the Copilot one does, and the case below refuses a filter that drops them.
+const CLAUDE_CODE_SCOPED_READMES = SCOPED_READMES.filter((r) => r.describesClaudeCode);
+
 describe('Claude Code work-subscription claims', () => {
-  describe.each(SCOPED_READMES)('$name', ({ text }) => {
+  it('runs over every scoped page that describes Claude Code', () => {
+    expect(CLAUDE_CODE_SCOPED_READMES.map((r) => r.name)).toEqual([
+      'README.md',
+      'cli/README.md',
+      'plugins/claude-code/README.md',
+    ]);
+  });
+
+  describe.each(CLAUDE_CODE_SCOPED_READMES)('$name', ({ text }) => {
     // Where the page describes a personal device: its body paragraphs, or its
     // egress footnote when that is the only place it does, as the plugin page.
     const body = paragraphs(text).filter((p) => SCOPED_CLAIM.test(p));
@@ -500,6 +517,30 @@ describe('Claude Code work-subscription claims', () => {
     expect(footnote).not.toContain('opens with that local-only line too');
     expect(footnote).not.toContain('its first prompt stays on the machine');
     expect(footnote).not.toMatch(LOGIN_FILE_WORDING);
+  });
+});
+
+/**
+ * The Copilot plugin page sits outside the Claude Code tier above, so it owes
+ * its own statement of what a personal device forwards from a Copilot session:
+ * the repository rule, with no work-subscription recognition beside it. Without
+ * this the page could drop the sentence and every scoped case would still pass,
+ * since each of them reads only the device-wide sentences.
+ */
+describe('plugins/copilot/README.md personal-device claims', () => {
+  const footnote = flat(footnoteOf(repoFile('plugins/copilot/README.md')));
+
+  it('says a Copilot session forwards only from enrolled repositories', () => {
+    expect(footnote).toContain(
+      'On a machine attached as a personal device, a Copilot session forwards activity only from ' +
+        'the repositories enrolled with `aka enroll`; Copilot sign-ins are not recognised as work ' +
+        'subscriptions, and everything else stays on the machine.',
+    );
+  });
+
+  it('does not borrow the Claude Code or Codex work-subscription rule', () => {
+    expect(footnote).not.toContain('counts as a work subscription');
+    expect(footnote).not.toMatch(/from any folder/i);
   });
 });
 

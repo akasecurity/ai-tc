@@ -4,6 +4,7 @@ import type { CommandScan } from './command-sync.ts';
 import { runCommandSync } from './command-sync.ts';
 import { runConfigInventorySync } from './config-inventory-sync.ts';
 import { refreshAttachedIdentity } from './identity-refresh.ts';
+import { runLabelSync } from './label-sync.ts';
 import type { PolicySyncOutcome } from './policy-sync.ts';
 import { runPolicySync } from './policy-sync.ts';
 import { runSightingKeySync } from './sighting-key-sync.ts';
@@ -82,6 +83,10 @@ export async function runAttachedSync(
   // Fetches the sighting key only when none is stored or it is a day old.
   // `runSightingKeySync` never throws.
   await runSightingKeySync({ base, settingsDir: settingsDir(base) });
+
+  // One batch of the labels a person gave (grants and dismissals, with the
+  // reason picked), under the history grant. `runLabelSync` never throws.
+  await runLabelSync({ base, settingsDir: settingsDir(base) });
 
   // AFTER the policy pull, and in its own try. Ordered that way because the
   // scan the command triggers reads the policy the pull just cached, so a

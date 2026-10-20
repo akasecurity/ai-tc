@@ -1,11 +1,12 @@
 /**
  * The files an attachment LEAVES BEHIND, and the one way to clear them.
  *
- * Eight of these are written by the attached runtime rather than by the attach
+ * Nine of these are written by the attached runtime rather than by the attach
  * itself — a cached policy bundle, the sync outcome, the forward breaker's state,
  * its drop tally, the posture self-report's last outcome, the history drain's
- * progress, and the config inventory reports staged for the sync child with
- * what it last delivered of them. The ninth, the record of who attached the machine, is
+ * progress, the tally of labels too large to report, and the config inventory
+ * reports staged for the sync child with what it last delivered of them. The
+ * tenth, the record of who attached the machine, is
  * written by the attach and kept current by the sync child and by the hooks that
  * validate a work account, all through attached-identity.ts in this package.
  * None of them is the attachment; all of them describe one. Each session's
@@ -56,6 +57,9 @@ export const ATTACHED_POSTURE_REPORT_FILENAME = 'attached-posture-report.json';
 /** How far the background drain of already-recorded activity has got. */
 export const ATTACHED_HISTORY_SYNC_STATE_FILENAME = 'attached-history-sync.json';
 
+/** How many labels were too large to report (label-drops.ts in plugin-runtime). */
+export const ATTACHED_LABEL_SYNC_FILENAME = 'attached-label-sync.json';
+
 /** Who attached this machine, as digests beside its credential (attached-identity.ts). */
 export const ATTACHED_IDENTITY_FILENAME = 'attached-identity.json';
 
@@ -78,6 +82,7 @@ export const ATTACHED_DERIVED_FILENAMES: readonly string[] = [
   ATTACHED_FORWARD_DROPS_FILENAME,
   ATTACHED_POSTURE_REPORT_FILENAME,
   ATTACHED_HISTORY_SYNC_STATE_FILENAME,
+  ATTACHED_LABEL_SYNC_FILENAME,
   ATTACHED_IDENTITY_FILENAME,
   ATTACHED_CONFIG_INVENTORY_FILENAME,
   ATTACHED_CONFIG_INVENTORY_STATE_FILENAME,

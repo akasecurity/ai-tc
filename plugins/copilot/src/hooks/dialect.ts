@@ -80,10 +80,13 @@ export function readSessionId(
 /**
  * The working directory the event happened in.
  *
- * Both dialects spell it `cwd`, but VS Code sends it **only when the hook entry
- * declared one** — the spawn's own cwd defaults to the home directory there, so
- * the hook process's `process.cwd()` is not a usable fallback on that host and
- * the caller gets `undefined` rather than a repo resolved from `~`.
+ * Both dialects spell it `cwd`. VS Code's documentation says it is sent only
+ * when the hook entry declares one, and that the spawn's own cwd otherwise
+ * defaults to the home directory. In the recorded VS Code 1.141 session it was
+ * sent on every event, though no entry declared one, and the hooks ran in the
+ * workspace. The hook process's `process.cwd()` is still not used as a
+ * fallback on that host, so a payload without `cwd` gives the caller
+ * `undefined` rather than a repo resolved from wherever the hook was spawned.
  */
 export function readCwd(_dialect: Dialect, input: Record<string, unknown>): string | undefined {
   return str(input, 'cwd');
@@ -99,11 +102,12 @@ export function readCwd(_dialect: Dialect, input: Record<string, unknown>): stri
  * present name with no args is a call with no scannable field, not a broken
  * envelope.
  *
- * On the CLI `toolArgs` was recorded as an object. The card notes it may also
- * arrive as a JSON **string** on some tools — unobserved, so a string is not
- * parsed here: guessing at an encoding nobody has seen would turn a shape this
- * build does not understand into a silent empty scan. It reads as no args,
- * which scans nothing and says nothing, exactly like any other unknown shape.
+ * On the CLI `toolArgs` was recorded as an object, on 1.0.83 and again on
+ * 1.0.98. It may also arrive as a JSON **string** on some tools — unobserved on
+ * either build, so a string is not parsed here: guessing at an encoding nobody
+ * has seen would turn a shape this build does not understand into a silent
+ * empty scan. It reads as no args, which scans nothing and says nothing,
+ * exactly like any other unknown shape.
  */
 export function readToolCall(
   dialect: Dialect,

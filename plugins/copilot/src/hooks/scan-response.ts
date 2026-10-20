@@ -9,8 +9,9 @@
 //    and listed under "Not measured" in `test/fixtures/cli/README.md` — never
 //    observed replacing what the model sees.
 //  - **VS Code agent mode.** Its only lever on a result is
-//    `{"decision":"block"}`, and no live VS Code session has driven any event
-//    in this package (`test/fixtures/vscode-provisional/README.md`).
+//    `{"decision":"block"}`, and a live VS Code 1.141.0 session drove the
+//    four events (`test/fixtures/vscode/plugin-load-1.141/`) but never a block
+//    or a flagged result.
 //
 // The tool has ALREADY RUN by the time this event fires, so what is at stake is
 // not whether the command executed but whether its output reaches the model.

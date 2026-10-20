@@ -31,20 +31,21 @@ export function resolveRepo(cwd: string): string | undefined {
 
 /**
  * `remote` without the credentials or query a remote URL can carry. An http(s)
- * URL loses its userinfo, query and fragment; an ssh URL keeps its login user and
- * loses a password, query and fragment. A userinfo holding a `#` or `?` runs to
- * the last `@` before the first `/` and is removed before the URL is parsed.
- * Anything else that does not parse as a URL (an scp-style remote, a path) is
- * returned as given, and so is a URL with nothing to remove, character for
- * character.
+ * URL loses its userinfo, query and fragment; an ssh URL keeps a plain login
+ * user and loses a password, query and fragment. The userinfo runs to the last
+ * `@` before the first `/` and is removed before the URL is parsed, whatever it
+ * holds. A URL-form remote the parser still refuses is rebuilt from the text
+ * after its last `@`, without a query or fragment. Anything else that does not
+ * parse as a URL (an scp-style remote, a path) is returned as given, and so is
+ * a URL with nothing to remove, character for character.
  */
 export function remoteWithoutCredentials(remote: string): string {
-  const parseable = withoutUnparseableUserinfo(remote);
+  const withoutInfo = withoutUserinfo(remote);
   let url: URL;
   try {
-    url = new URL(parseable);
+    url = new URL(withoutInfo);
   } catch {
-    return parseable;
+    return unparsedWithoutCredentials(withoutInfo);
   }
   const keepsUser = url.protocol === 'ssh:' || url.protocol === 'git+ssh:';
   const carries =
@@ -52,26 +53,37 @@ export function remoteWithoutCredentials(remote: string): string {
     (!keepsUser && url.username !== '') ||
     url.search !== '' ||
     url.hash !== '';
-  if (!carries) return parseable;
+  if (!carries) return withoutInfo;
   const user = keepsUser && url.username !== '' ? `${url.username}@` : '';
   return `${url.protocol}//${user}${url.host}${url.pathname}`;
 }
 
 /**
- * `remote` with a userinfo that holds a `#` or `?` removed, keeping an ssh
- * login user that holds neither. The URL parser ends the host at either
- * character, so it would read part of such a userinfo as the host, or refuse the
- * remote outright.
+ * `remote` with the userinfo of a URL-form remote removed: everything after
+ * `://` up to the last `@` before the first `/`. An ssh login user made only of
+ * letters, digits and `._~%+-` is kept.
  */
-function withoutUnparseableUserinfo(remote: string): string {
+function withoutUserinfo(remote: string): string {
   const match = /^([a-z][a-z0-9+.-]*):\/\/([^/]*)@/i.exec(remote);
   const scheme = match?.[1];
   const userinfo = match?.[2];
   if (match === null || scheme === undefined || userinfo === undefined) return remote;
-  if (!/[?#]/.test(userinfo)) return remote;
   const login = /^(?:git\+)?ssh$/i.test(scheme) ? (userinfo.split(':')[0] ?? '') : '';
-  const kept = login !== '' && !/[?#]/.test(login) ? `${login}@` : '';
+  const kept = /^[\w.~%+-]+$/.test(login) ? `${login}@` : '';
   return `${scheme}://${kept}${remote.slice(match[0].length)}`;
+}
+
+/**
+ * A URL-form `remote` the URL parser refused, rebuilt from the text after its
+ * last `@` without a query or fragment. Anything not URL-form is returned as
+ * given.
+ */
+function unparsedWithoutCredentials(remote: string): string {
+  const scheme = /^[a-z][a-z0-9+.-]*:\/\//i.exec(remote)?.[0];
+  if (scheme === undefined) return remote;
+  const rest = remote.slice(scheme.length);
+  const tail = rest.slice(rest.lastIndexOf('@') + 1);
+  return `${scheme}${tail.split(/[?#]/, 1)[0] ?? ''}`;
 }
 
 /**

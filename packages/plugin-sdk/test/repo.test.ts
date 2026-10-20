@@ -166,10 +166,28 @@ describe('remoteWithoutCredentials', () => {
     expect(remoteWithoutCredentials(remote)).toBe(expected);
   });
 
+  // A backslash ends the host for the URL parser on http(s), and a `/` ends the
+  // userinfo before its `@`; git still connects with the first.
+  const BACKSLASH = String.fromCharCode(92);
+  it.each([
+    [`https://ci:not-a${BACKSLASH}real@github.com/acme/app.git`, 'https://github.com/acme/app.git'],
+    [`https://not-a${BACKSLASH}real@github.com/acme/app.git`, 'https://github.com/acme/app.git'],
+    ['https://ci:not-a/real+token@github.com/acme/app.git', 'https://github.com/acme/app.git'],
+    ['https://ci:not-a/real@github.com/acme/app.git?t=x#f', 'https://github.com/acme/app.git'],
+    [
+      `ssh://git:not-a${BACKSLASH}real@git.example.test/acme/app.git`,
+      'ssh://git@git.example.test/acme/app.git',
+    ],
+  ])('removes a userinfo the URL parser would misread from %s', (remote, expected) => {
+    expect(remoteWithoutCredentials(remote)).toBe(expected);
+  });
+
   it.each([
     'https://GitHub.com/acme/app.git',
     'ssh://git@git.example.test:2222/acme/app.git',
     'git@github.com:acme/app.git',
+    'https://github.com/acme/app@2.git',
+    'ssh://first.last@git.example.test/acme/app.git',
     '/home/dev/checkouts/app',
     'C:/Users/dev/app',
   ])('returns %s unchanged when there is nothing to remove', (remote) => {

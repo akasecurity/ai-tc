@@ -81,7 +81,11 @@ export const MatchFeatures = z
     pathClass: PathClass,
     /** The bucket of the name the value is assigned to, or `null` when it has none. */
     name: NameBucket.nullable(),
-    /** The buckets of the words on the match's line, apart from the value and its name. */
+    /**
+     * The buckets of the words within 200 characters either side of the match
+     * (`NEARBY_WINDOW` in @akasecurity/detections), never past a line break,
+     * apart from the value and its name.
+     */
     nearby: z.array(NameBucket),
   })
   .strict();

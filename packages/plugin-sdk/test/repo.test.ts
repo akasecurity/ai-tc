@@ -188,6 +188,8 @@ describe('remoteWithoutCredentials', () => {
     'git@github.com:acme/app.git',
     'https://github.com/acme/app@2.git',
     'ssh://first.last@git.example.test/acme/app.git',
+    // Host `ci`, port 1234, path `/rest@github.com/acme/app.git`, as git reads it too.
+    `https://ci:1234/rest${String.fromCharCode(64)}github.com/acme/app.git`,
     '/home/dev/checkouts/app',
     'C:/Users/dev/app',
   ])('returns %s unchanged when there is nothing to remove', (remote) => {

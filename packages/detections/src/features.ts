@@ -66,11 +66,12 @@ export const KNOWN_PREFIXES = [
 
 // A whole word from the list, with the inflections that mean the same thing:
 // anchored at both ends, so `attestation`, `keyboard` and `testify` say
-// nothing, while `tests`, `mocked` and `passwords` still do.
+// nothing, while `tests`, `mocked` and `passwords` still do. A trailing
+// number stays part of the word (`password1`, `key2`).
 const TEST_WORDS =
-  /^(tests?|testing|testdata|specs?|mocks?|mocked|fakes?|dummy|dummies|stubs?|samples?|examples?|placeholders?|fixtures?)$/;
+  /^(tests?|testing|testdata|specs?|mocks?|mocked|fakes?|dummy|dummies|stubs?|samples?|examples?|placeholders?|fixtures?)\d*$/;
 const SECRET_WORDS =
-  /^(secrets?|tokens?|passwords?|passwd|passphrase|pwd|apikeys?|auth|credentials?|private|privkey|keys?)$/;
+  /^(secrets?|tokens?|passwords?|passwd|passphrase|pwd|apikeys?|auth|credentials?|private|privkey|privatekey|secretkey|keys?)\d*$/;
 
 /** A name's words: split on separators and at each lower-to-upper camelCase step. */
 function wordsOf(name: string): string[] {

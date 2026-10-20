@@ -147,6 +147,17 @@ describe('nameBucket', () => {
     ['testify', 'other'],
     ['dbPassphrase', 'secret_like'],
     ['mockedCredentials', 'test_like'],
+    // A trailing number is part of the same word; so are the two common
+    // unseparated compounds. Leetspeak and other run-together words are not
+    // matched, deliberately: the list is whole words, not a fuzzy match.
+    ['password1', 'secret_like'],
+    ['key2', 'secret_like'],
+    ['secret123', 'secret_like'],
+    ['test2', 'test_like'],
+    ['secretkey', 'secret_like'],
+    ['PRIVATEKEY', 'secret_like'],
+    ['Passw0rd', 'other'],
+    ['dbpassword', 'other'],
   ])('%s is %s', (name, bucket) => {
     expect(nameBucket(name)).toBe(bucket);
   });

@@ -5,13 +5,15 @@ name: Release plugin (Copilot)
 # Release. The plugin's hook scripts are a build artifact
 # (plugins/copilot/scripts/, git-ignored) — they are generated here and shipped
 # inside the package, never committed. There is no marketplace for this plugin:
-# end users unpack the public npm package (`npm pack @akasecurity/ai-tc-copilot`)
-# and install it from that local directory with `copilot plugin install ./package`.
-# The Copilot CLI warns that a direct local-path install is deprecated; that path
-# is still the only one it documents for a package that is not in a marketplace.
-# Windows has not been confirmed against a real Copilot CLI install. GitHub
-# Packages requires auth even for public reads, so it is a secondary artifact, not
-# the install source.
+# end users unpack the public npm package and install it from that local
+# directory. The install and update steps, and what is and is not confirmed
+# about them (the deprecation warning, Windows, updating), have one reference:
+# plugins/copilot/skills/setup/SKILL.md under "Install — Copilot CLI". The
+# README, the registry's installHint, the Release body below (pinned to the
+# version being released) and llms.txt carry copies of those commands, held to
+# the reference by packages/eslint-config/test/copilot-install-copies.test.js.
+# GitHub Packages requires auth even for public reads, so it is a secondary
+# artifact, not the install source.
 #
 # Release flow: bump version in package.json + plugin.json (Copilot reads its
 # manifest from the plugin ROOT, not a dotted dir), then push a tag
@@ -105,6 +107,7 @@ jobs:
         run: pnpm turbo run build --filter=@akasecurity/ai-tc-copilot
 
       - name: Verify tag matches manifest versions
+        id: manifest
         if: github.event_name == 'push'
         run: |
           tag="${GITHUB_REF_NAME#plugin-copilot-v}"
@@ -115,6 +118,7 @@ jobs:
             echo "::error::Version mismatch — tag plugin-copilot-v$tag must equal package.json ($pkg) and plugin.json ($manifest)"
             exit 1
           fi
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
 
       # Packed BEFORE the smoke test, because the smoke test reads the tarball
       # rather than the build directory: a script the build emitted and the
@@ -240,9 +244,25 @@ jobs:
           generate_release_notes: true
           prerelease: ${{ startsWith(github.ref_name, 'plugin-copilot-v0.') }}
           body: |
-            Install from a local directory: `npm pack @akasecurity/ai-tc-copilot`, unpack the tarball, then run `copilot plugin install ./package`. The Copilot CLI warns that direct local-path installs are deprecated; there is no marketplace install for this plugin yet.
+            Install into the Copilot CLI from a local directory; there is no marketplace install for this plugin yet. Run these from a folder of their own, and keep it:
 
-            Windows has not been confirmed against a real Copilot CLI install.
+            ```sh
+            mkdir -p aka-copilot && cd aka-copilot
+            tar -xzf "$(npm pack @akasecurity/ai-tc-copilot@${{ steps.manifest.outputs.version }} --silent)"
+            copilot plugin install ./package
+            copilot plugin list
+            aka init
+            ```
+
+            To update, from that same folder:
+
+            ```sh
+            rm -rf package
+            tar -xzf "$(npm pack @akasecurity/ai-tc-copilot@${{ steps.manifest.outputs.version }} --silent)"
+            copilot plugin update aka-copilot
+            ```
+
+            `copilot plugin update` re-copies that folder into the installed plugin; it does not fetch a newer version itself. The Copilot CLI warns that direct local-path installs are deprecated. Windows is unconfirmed. See the "Install — Copilot CLI" section of `plugins/copilot/skills/setup/SKILL.md` for the full notes.
 
   # Publish the same package to the repo's GitHub Packages registry (requirement:
   # packages land in the org's GitHub registry). Kept a separate job so its GitHub

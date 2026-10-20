@@ -336,6 +336,25 @@ describe('AGENT_PLUGINS coordinates are whole or absent', () => {
       ).not.toBe(true);
     },
   );
+
+  it('covers every published plugins/* package, and names no other', () => {
+    const published = PLUGIN_PACKAGES.filter((p) => p.private !== true)
+      .map((p) => p.name)
+      .sort();
+    expect(published.length, 'no published plugins/* package to compare against').toBeGreaterThan(
+      0,
+    );
+    const named = ENTRIES.map((e) => str(e, 'npmPackage'))
+      .filter((n) => n !== undefined)
+      .sort();
+    expect(
+      named,
+      'the AGENT_PLUGINS npmPackage set differs from the published plugins/* packages — a ' +
+        'published plugin missing from the registry is absent from `aka plugins list` and ' +
+        '`aka plugins install`. (Membership alone does not reach the update notice, ' +
+        '`aka check-updates` or the dashboard Updates page: gatherReport also needs a pluginRef.)',
+    ).toEqual(published);
+  });
 });
 
 describe("this repo's marketplace and the registry agree", () => {

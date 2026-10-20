@@ -554,3 +554,18 @@ describe('who owns the exit code when the organization already manages the plugi
     expect(process.exitCode).toBe(1);
   });
 });
+
+describe('aka plugins install of a hint-only agent', () => {
+  it('copilot: prints the install hint and spawns no host CLI', async () => {
+    const agent = AGENT_PLUGINS.find((a) => a.id === 'copilot');
+    expect(agent?.installHint).toBeDefined();
+
+    const out = await captureAsync(() => runPlugins(['install', 'copilot'], NO_HOST_VERSION));
+
+    expect(out).toBe((agent?.installHint ?? '') + '\n');
+    expect(out).toContain('copilot plugin install ./package');
+    expect(out).toContain('aka init');
+    expect(spawned.calls).toEqual([]);
+    expect(process.exitCode).toBeUndefined();
+  });
+});

@@ -227,3 +227,33 @@ describe('fixtures/cli/plugin-install-1.0.98 — recordings from an installed pl
     expect(overlap).toEqual([]);
   });
 });
+
+describe('skills/setup/SKILL.md — the CLI version it cites is the one recorded', () => {
+  const SETUP_SKILL = new URL('../skills/setup/SKILL.md', import.meta.url);
+
+  /**
+   * The version in the one `plugin-install-<version>` directory under `dir`.
+   * Derived from the tree rather than retyped, so a re-recording against a new
+   * build moves this case's expectation with it.
+   */
+  function recordedInstallVersion(dir: URL): string {
+    const versions = readdirSync(dir)
+      .map((name) => /^plugin-install-(\d+\.\d+\.\d+)$/u.exec(name)?.[1])
+      .filter((version): version is string => version !== undefined);
+    expect(versions, 'exactly one plugin-install-<version> recording directory').toHaveLength(1);
+    return String(versions[0]);
+  }
+
+  it('names only the build the plugin-install recordings were taken on', () => {
+    const recorded = recordedInstallVersion(CLI_DIR);
+    // Every mention in the skill describes the install route or a behaviour
+    // observed through it; none refers to the 1.0.83 payload recordings, so the
+    // whole file is held to the install recordings' build.
+    const mentioned = [
+      ...readFileSync(SETUP_SKILL, 'utf8').matchAll(/\bCLI\s+(\d+\.\d+\.\d+)/gu),
+    ].map((match) => match[1]);
+    // The positive control: with no mention at all, the check below is vacuous.
+    expect(mentioned.length).toBeGreaterThan(0);
+    expect(mentioned.filter((version) => version !== recorded)).toEqual([]);
+  });
+});

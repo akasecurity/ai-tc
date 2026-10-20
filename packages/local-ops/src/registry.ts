@@ -89,6 +89,28 @@ export const AGENT_PLUGINS: readonly AgentPlugin[] = [
       '  agy plugin install ./package\n' +
       'Then run `aka init` to set up the local store.',
   },
+  {
+    id: 'copilot',
+    name: 'GitHub Copilot',
+    sourceTool: SOURCE_TOOL.Copilot,
+    description:
+      'Hooks GitHub Copilot CLI sessions to record and scan prompts, tool calls, and tool results, and to block shell commands.',
+    npmPackage: '@akasecurity/ai-tc-copilot',
+    // NO pluginName/marketplace/cliBin, for the same reason as Antigravity:
+    // `copilot plugin install` is given a LOCAL DIRECTORY here, and an entry
+    // with no ref is skipped by the update notice's `npm view` lookups.
+    installHint:
+      'Copilot installs this plugin from a local directory rather than a marketplace:\n' +
+      '  mkdir -p aka-copilot && cd aka-copilot\n' +
+      '  tar -xzf "$(npm pack @akasecurity/ai-tc-copilot --silent)"\n' +
+      '  copilot plugin install ./package\n' +
+      'Then run `aka init` to set up the local store.\n' +
+      'To update, from that same folder (`copilot plugin update` re-copies it and fetches nothing):\n' +
+      '  rm -rf package\n' +
+      '  tar -xzf "$(npm pack @akasecurity/ai-tc-copilot --silent)"\n' +
+      '  copilot plugin update aka-copilot\n' +
+      'VS Code agent mode can load the same folder via its `chat.pluginLocations` setting (beta).',
+  },
 ];
 
 export function findAgent(id: string): AgentPlugin | undefined {

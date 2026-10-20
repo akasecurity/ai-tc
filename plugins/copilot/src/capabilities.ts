@@ -122,7 +122,15 @@ export const CAPABILITY_MATRIX: readonly Capability[] = [
     subject: 'run_in_terminal.command',
     channel: 'block',
     verified: false,
-    note: 'The capture and the warn were recorded in test/fixtures/vscode/plugin-load-1.141/: the call was stored with its finding, and the warn systemMessage reached only the hooks output channel, never the chat. A deny through hookSpecificOutput was never driven, so the block itself is unverified. explanation, the model’s prose beside the command, is scanned for secrets and PII only, never against the command-risk rules.',
+    note: 'The capture and the warn were recorded in test/fixtures/vscode/plugin-load-1.141/: the call was stored with its finding, and the warn systemMessage reached only the hooks output channel, never the chat. A deny through hookSpecificOutput was never driven, so the block itself is unverified.',
+  },
+  {
+    surface: 'vscode',
+    event: 'PreToolUse',
+    subject: 'run_in_terminal.explanation, goal',
+    channel: 'rewrite',
+    verified: false,
+    note: "Model-authored prose that rides along with the call; both fields were recorded in test/fixtures/vscode/plugin-load-1.141/. They do not execute, so a redact rewrites them in place through updatedInput, which was never driven. This host takes updatedInput only alongside permissionDecision allow, so a redact here also APPROVES the call, suppressing any prompt the user's own settings would have raised. updatedInput is validated against the tool input schema and LAST HOOK WINS, so a user or repo hook returning one discards this. Scanned for secrets and PII only: the command-risk rules judge run_in_terminal.command, never this prose.",
   },
   {
     surface: 'vscode',

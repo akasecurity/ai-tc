@@ -167,16 +167,18 @@ these files:
   `cwd`.
 - Each prompt is read under the camelCase argv token its hook command passed.
 - Every field the VS Code table scans for `run_in_terminal` (`command`,
-  `explanation`) and `create_file` (`content`) is present under that name.
+  `explanation`, `goal`) and `create_file` (`content`) is present under that
+  name.
 - The string `tool_response` is read as one field, and the empty one as none.
 
 Where the recordings and the adapter do not line up:
 
-- **`run_in_terminal`'s `goal`** is model-authored prose the VS Code table does
-  not scan.
 - **`timestamp`, `transcript_path`, `tool_use_id` and `SessionStart.model`** are
   read by nothing. That costs nothing today: the store stamps each capture
   with the hook's own clock, and there is no backfill to read a transcript.
+- **`run_in_terminal.mode`** is the one recorded `tool_input` field the adapter
+  does not scan. It is the tool's own execution dial and carries no user text,
+  so there is nothing in it to find.
 
 ## Unmeasured
 
@@ -184,7 +186,9 @@ Nothing in this session reached any of these, so none of them is measured:
 
 - a `PreToolUse` deny, through `hookSpecificOutput.permissionDecision` or
   through exit 2;
-- an `updatedInput` rewrite of a file-write tool's content;
+- an `updatedInput` rewrite of a file-write tool's content, or of
+  `run_in_terminal`'s `explanation` or `goal`, including whether the
+  `permissionDecision: 'allow'` it rides with is honoured;
 - the large-input refusal;
 - an object-shaped or array-shaped `tool_response`;
 - a flagged tool result;

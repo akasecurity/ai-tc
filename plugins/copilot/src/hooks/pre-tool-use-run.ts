@@ -2,17 +2,17 @@
  * preToolUse (Copilot CLI, cloud coding agent) / PreToolUse (VS Code agent
  * mode) — fires before a tool call executes.
  *
- * argv[2]: the event token. argv[3] (optional): the plugin manifest path.
+ * event:   the token argv carried.
  * stdin:   the host's payload, in either dialect (see ./dialect.ts).
- * stdout (exit 0), CLI:
+ * output, CLI:
  *   {"permissionDecision":"deny","permissionDecisionReason":"…"}  → blocked
  *     (also when a field is too large to scan in time, on both dialects)
  *   {"modifiedArgs":{…}}                                          → redacted
- *   (nothing)                                                     → no opinion
- * stdout (exit 0), VS Code:
+ *   undefined                                                     → no opinion
+ * output, VS Code:
  *   {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":…}}
  *   {"systemMessage":"…"}                                         → warned
- *   (nothing)                                                     → no opinion
+ *   undefined                                                     → no opinion
  *
  * THIS HOOK NEVER EXITS NON-ZERO — and that, rather than a payload, is what
  * keeps it fail-open. On the Copilot CLI `preToolUse` is the one fail-closed
@@ -32,12 +32,10 @@
  * to narrow. `CliPermissionDecisionOutput` carries `'deny'` alone so that is a
  * compile error rather than a rule someone has to remember.
  *
- * `runHookFailOpen` is what guarantees the exit code; see ./shared.ts for the
- * limit of that guarantee, which is everything that yields.
- *
  * This module is the handler and nothing else: it reads neither argv's event
- * token nor stdin, and never exits. `./pre-tool-use.ts` is the entry that
- * feeds it, and `runHookFailOpen` there is what guarantees the exit 0.
+ * token nor stdin, and never exits. `./pre-tool-use.ts` is the entry that feeds
+ * it, and `runHookFailOpen` there is what guarantees the exit code — see
+ * ./shared.ts for the limit of that guarantee, which is everything that yields.
  */
 import { createPluginRuntime, loadConfig } from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
@@ -60,7 +58,7 @@ import {
 } from './store-health.ts';
 
 /**
- * The two events this entry is registered for, one per dialect.
+ * The two events this handler is registered for, one per dialect.
  *
  * Checked rather than assumed: the hook command carries the token, and a
  * manifest that wired this script to some other event would otherwise have it
@@ -94,6 +92,16 @@ export const runPreToolUse: HookHandler = async (event, stdin, options = {}) => 
   // process start and nothing else, and writes nothing at all.
   if (!fields) return undefined;
 
+  const toolInput = { ...call.args };
+
+  // A model-echoed vault pointer in text that EXECUTES is decided before the
+  // secret scan AND before the store is opened: this plugin never substitutes
+  // pointers, so an ungranted pointer must deny outright rather than run as
+  // literal text, and that decision reads only the call itself, so an
+  // unopenable store cannot turn it into a let-through.
+  const pointerDeny = decideInputPointerDeny(dialect, call.name, toolInput, fields);
+  if (pointerDeny) return pointerDeny;
+
   const config = loadConfig(options.akaHome);
   const sessionId = readSessionId(dialect, input);
   // A symlinked store path redirects the corpus without failing anything; say
@@ -113,14 +121,6 @@ export const runPreToolUse: HookHandler = async (event, stdin, options = {}) => 
     }
     return undefined;
   }
-
-  const toolInput = { ...call.args };
-
-  // A model-echoed vault pointer in text that EXECUTES is decided before the
-  // secret scan: this plugin never substitutes pointers, so an ungranted
-  // pointer must deny outright rather than run as literal text.
-  const pointerDeny = decideInputPointerDeny(dialect, call.name, toolInput, fields);
-  if (pointerDeny) return pointerDeny;
 
   // A field at or above the large-input threshold is scanned under a deadline
   // shared by every field of this call, and refused if that scan does not

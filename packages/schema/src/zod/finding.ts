@@ -40,7 +40,8 @@ export const VariableName = z.string().max(MAX_VARIABLE_NAME_LENGTH);
 // Consumed directly by @akasecurity/persistence and the web-ui.
 export const Finding = z
   .object({
-    id: z.guid(),
+    // A random UUID or a content-addressed sha256 hex digest, depending on the writer.
+    id: z.string(),
     eventId: z.guid(),
     ruleId: z.string(),
     category: DetectionCategory,

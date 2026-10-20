@@ -89,7 +89,7 @@ export const TYPE_COLUMNS: Record<AssetType, Column[]> = {
     projectColumn(
       'findings',
       `Findings · ${String(PROJECT_FINDINGS_WINDOW_DAYS)}d`,
-      (p) => p.findingsCount,
+      (p) => p.findingsCount ?? null,
       { num: true },
     ),
     projectColumn('updatedAt', 'Updated', (p) => p.updatedAt, { display: relative }),

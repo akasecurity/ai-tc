@@ -466,7 +466,7 @@ describe('Inventory page surfaces real scanned MCP servers', () => {
     expect(stats.mcpTrust).toEqual({ 'known-good': 0, risky: 0, unapproved: 2 });
   });
 
-  it('counts the distinct tools called through each server over the last 30 days', async () => {
+  it('counts the distinct tools called through each server over the last 30 days, and none for an unused one', async () => {
     seedRealHarness();
     db.recordConfigScan(record(mcpScan(), 'scan-1'));
     const call = (toolName: string, daysAgo: number) => {
@@ -488,12 +488,8 @@ describe('Inventory page surfaces real scanned MCP servers', () => {
     const { groups } = await db.inventoryAssets.listAssets({ type: ['mcp'] });
     const items = groups.find((g) => g.type === 'mcp')?.items ?? [];
 
-    expect(items.map((i) => [i.name, i.toolsUsed])).toEqual(
-      expect.arrayContaining([
-        ['github', 2],
-        ['sentry', 0],
-      ]),
-    );
+    expect(items.find((i) => i.name === 'github')?.toolsUsed).toBe(2);
+    expect(items.find((i) => i.name === 'sentry')).not.toHaveProperty('toolsUsed');
   });
 
   it('detail omits the tools list (needs a live handshake) and carries env-key names', async () => {

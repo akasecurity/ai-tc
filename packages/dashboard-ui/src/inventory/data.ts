@@ -247,7 +247,7 @@ export const rowType = (row: InventoryRow): AssetType => (isProjectRow(row) ? 'p
 
 /** The row's attention reasons, most severe first; empty when the row is OK. */
 export function statusKeys(row: InventoryRow): StatusKey[] {
-  if (isProjectRow(row)) return row.findingsCount > 0 ? ['findings'] : [];
+  if (isProjectRow(row)) return (row.findingsCount ?? 0) > 0 ? ['findings'] : [];
   const keys = new Set<StatusKey>(row.flags);
   if (row.type === 'mcp' && (row.trust === 'unapproved' || row.trust === 'risky')) {
     keys.add(row.trust);

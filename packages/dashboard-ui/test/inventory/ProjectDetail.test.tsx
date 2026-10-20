@@ -107,6 +107,26 @@ describe('ProjectDetail', () => {
     expect(html).not.toContain('Public');
   });
 
+  it('shows no findings stat for a reader the count is withheld from', () => {
+    const withheld: ProjectSummary = { ...project(0) };
+    delete withheld.findingsCount;
+    const html = renderToStaticMarkup(
+      <ProjectDetail
+        project={withheld}
+        blocked={[]}
+        sensitiveData={[]}
+        harnesses={[]}
+        onBack={() => undefined}
+        backLabel="Projects"
+        renderedAt={NOW}
+        locale="en-US"
+      />,
+    );
+    expect(html).not.toContain('Findings · 30d');
+    expect(html).toContain('Files withheld from models');
+    expect(html).toContain('grid-cols-1');
+  });
+
   it('labels the findings stat with its 30-day window', () => {
     expect(render(0, [])).toContain('Findings · 30d');
   });

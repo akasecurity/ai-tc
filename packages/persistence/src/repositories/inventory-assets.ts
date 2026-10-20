@@ -34,7 +34,7 @@ import {
   HarnessId as HarnessIdSchema,
   listMetaOf,
   MCP_TOOLS_USED_WINDOW_DAYS,
-  mcpToolsUsedOf,
+  mcpToolsUsed,
   PROJECT_FINDINGS_WINDOW_DAYS,
   Severity,
   SEVERITY_RANK,
@@ -557,7 +557,6 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
       else grouped.set(a.assetType, [a]);
     }
 
-    const toolsByServer = grouped.has('mcp') ? this.mcpToolsByServer() : new Map<string, number>();
     const groups: AssetGroup[] = [...grouped.entries()].map(([type, rows]) => {
       const flagMap = new Map<string, number>();
       for (const r of rows) {
@@ -572,7 +571,14 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
         items: rows.map(toAssetSummary),
       };
       if (type === 'mcp') {
-        for (const item of group.items) item.toolsUsed = mcpToolsUsedOf(item.name, toolsByServer);
+        const used = mcpToolsUsed(
+          group.items.map((i) => i.name),
+          this.mcpToolNames(),
+        );
+        for (const item of group.items) {
+          const tools = used.get(item.name);
+          if (tools !== undefined) item.toolsUsed = tools;
+        }
         const trustMap = new Map<TrustLevel, number>();
         for (const r of rows) {
           if (r.effectiveTrust)
@@ -808,23 +814,19 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
     return this.now() - PROJECT_FINDINGS_WINDOW_MS;
   }
 
-  // The distinct MCP tools called in the window, per server segment of the tool
-  // name `mcp__<server>__<tool>`: the text between `mcp__` and the next `__`.
-  // GLOB matches case-sensitively and takes `_` literally.
-  private mcpToolsByServer(): Map<string, number> {
-    const rows = allRows<{ server: string; tools: number }>(
+  // The distinct MCP tool names called in the window. GLOB matches
+  // case-sensitively and takes `_` literally.
+  private mcpToolNames(): string[] {
+    return allRows<{ toolName: string }>(
       this.db.prepare(
-        `SELECT substr(tool_name, 6, instr(substr(tool_name, 6), '__') - 1) AS server,
-                count(DISTINCT tool_name) AS tools
+        `SELECT DISTINCT tool_name AS toolName
          FROM audit_events
          WHERE event_type = 'tool_call'
            AND started_at >= ?
-           AND tool_name GLOB 'mcp__?*__*'
-         GROUP BY 1`,
+           AND tool_name GLOB 'mcp__?*__?*'`,
       ),
       [this.now() - MCP_TOOLS_USED_WINDOW_MS],
-    );
-    return new Map(rows.map((r) => [r.server, r.tools]));
+    ).map((r) => r.toolName);
   }
 
   // Every harness's assets in ONE grouped query, keyed by harness inventory id —

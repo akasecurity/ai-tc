@@ -87,14 +87,31 @@ export function mcpToolServerKeys(serverName: string): string[] {
 }
 
 /**
- * An MCP server's `toolsUsed`, from the distinct tool names counted per server
- * segment: the keys' tool names are disjoint, so their counts add up.
+ * Each listed MCP server's `toolsUsed`, from the distinct tool names called in the
+ * window. A name `mcp__<segment>__<tool>` counts toward the one listed server
+ * whose key (`mcpToolServerKeys`) is the longest `<segment>` it starts with, a
+ * server named exactly that key before one whose name only normalizes to it, and
+ * otherwise the first listed. A server no name counts toward is absent.
  */
-export function mcpToolsUsedOf(
-  serverName: string,
-  toolsByServer: ReadonlyMap<string, number>,
-): number {
-  return mcpToolServerKeys(serverName).reduce((n, key) => n + (toolsByServer.get(key) ?? 0), 0);
+export function mcpToolsUsed(
+  serverNames: readonly string[],
+  toolNames: readonly string[],
+): Map<string, number> {
+  const keys = serverNames.flatMap((name) =>
+    mcpToolServerKeys(name).map((key) => ({ name, prefix: `mcp__${key}__`, exact: key === name })),
+  );
+  const used = new Map<string, number>();
+  for (const tool of toolNames) {
+    let best: (typeof keys)[number] | undefined;
+    for (const key of keys) {
+      if (tool.length <= key.prefix.length || !tool.startsWith(key.prefix)) continue;
+      const longer = best === undefined || key.prefix.length > best.prefix.length;
+      const exactTie = best?.prefix.length === key.prefix.length && key.exact && !best.exact;
+      if (longer || exactTie) best = key;
+    }
+    if (best) used.set(best.name, (used.get(best.name) ?? 0) + 1);
+  }
+  return used;
 }
 
 /** Shared by harness categories and asset group lists. */
@@ -132,9 +149,10 @@ export const AssetSummary = z
     /**
      * MCP servers in an asset list only: the distinct tools the agent called
      * through a server of this name over the last `MCP_TOOLS_USED_WINDOW_DAYS`
-     * (30) days, counted from the `mcp__<server>__<tool>` names of the recorded
-     * tool calls. Two servers with the same name in different scopes share one
-     * count. Not the tools a server exposes.
+     * (30) days, from the `mcp__<server>__<tool>` names of the recorded tool calls
+     * (`mcpToolsUsed`). Two servers with the same name in different scopes share
+     * one count. Omitted for a server no recorded call names, so a store that
+     * records no tool calls gives none. Not the tools a server exposes.
      */
     toolsUsed: z.number().int().nonnegative().optional(),
   })
@@ -185,9 +203,10 @@ export const ProjectSummary = z
     accessCounts: AccessCounts,
     /**
      * Findings recorded in the project's sessions over the last
-     * `PROJECT_FINDINGS_WINDOW_DAYS` (30) days.
+     * `PROJECT_FINDINGS_WINDOW_DAYS` (30) days, not all time. Omitted for a reader
+     * who may not see detections.
      */
-    findingsCount: z.number().int().nonnegative(),
+    findingsCount: z.number().int().nonnegative().optional(),
     /**
      * The distinct endpoints that have recently run a session in the project; in a
      * harness card's `projects`, under that harness. Omitted by a store that does

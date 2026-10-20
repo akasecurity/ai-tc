@@ -29,7 +29,7 @@ import {
   ListProjectsResponse,
   McpTool,
   mcpToolServerKeys,
-  mcpToolsUsedOf,
+  mcpToolsUsed,
   Origin,
   ProjectSummary,
   ProjectTreeResponse,
@@ -1102,16 +1102,38 @@ describe('mcpToolServerKeys', () => {
   });
 });
 
-describe('mcpToolsUsedOf', () => {
-  it('adds the counts under both spellings of the name, and is 0 for a server with none', () => {
-    const byServer = new Map([
-      ['acme.docs', 2],
-      ['acme_docs', 3],
-      ['github', 4],
-    ]);
-    expect(mcpToolsUsedOf('acme.docs', byServer)).toBe(5);
-    expect(mcpToolsUsedOf('github', byServer)).toBe(4);
-    expect(mcpToolsUsedOf('linear', byServer)).toBe(0);
+describe('mcpToolsUsed', () => {
+  const used = (servers: string[], tools: string[]) =>
+    Object.fromEntries(mcpToolsUsed(servers, tools));
+
+  it('counts the distinct tool names under each listed server, and leaves out one with none', () => {
+    expect(
+      used(['github', 'linear'], ['mcp__github__create_issue', 'mcp__github__search', 'Bash']),
+    ).toEqual({ github: 2 });
+  });
+
+  it('counts a name a harness normalized under the server it came from', () => {
+    expect(used(['acme.docs'], ['mcp__acme_docs__search', 'mcp__acme.docs__get'])).toEqual({
+      'acme.docs': 2,
+    });
+  });
+
+  it('gives a server whose name holds `__` its own calls, not the shorter server that prefixes it', () => {
+    expect(
+      used(
+        ['my', 'my__server'],
+        ['mcp__my__server__run', 'mcp__my__list', 'mcp__my__server__stop'],
+      ),
+    ).toEqual({ my: 1, my__server: 2 });
+  });
+
+  it('gives a normalized name to the server named exactly that, when both are listed', () => {
+    expect(used(['a.b', 'a_b'], ['mcp__a_b__x', 'mcp__a.b__y'])).toEqual({ 'a.b': 1, a_b: 1 });
+    expect(used(['a_b', 'a.b'], ['mcp__a_b__x'])).toEqual({ a_b: 1 });
+  });
+
+  it('counts nothing for a name with no tool after the server', () => {
+    expect(used(['github'], ['mcp__github__', 'mcp__github'])).toEqual({});
   });
 });
 

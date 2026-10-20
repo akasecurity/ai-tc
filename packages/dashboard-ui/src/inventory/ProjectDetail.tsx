@@ -61,6 +61,31 @@ export function ProjectDetail({
   const tile = assetTile('project');
   const withheld = project.accessCounts.blocked;
   const otherWithheld = Math.max(0, withheld - blocked.length);
+  const stats: StatProps[] = [
+    ...(project.machines === undefined
+      ? []
+      : [
+          {
+            value: endpointCountText(project.machines, true),
+            label: 'Endpoints seen on',
+            tone: 'text-text',
+          },
+        ]),
+    ...(project.findingsCount === undefined
+      ? []
+      : [
+          {
+            value: project.findingsCount,
+            label: `Findings · ${String(PROJECT_FINDINGS_WINDOW_DAYS)}d`,
+            tone: project.findingsCount > 0 ? 'text-sev-high-ink' : 'text-ok-ink',
+          },
+        ]),
+    {
+      value: withheld,
+      label: 'Files withheld from models',
+      tone: withheld > 0 ? 'text-sev-critical-ink' : 'text-ok-ink',
+    },
+  ];
   const loadedBy = harnesses.filter((h) => h.projects.some((p) => p.id === project.id));
   const updated = relativeTime(project.updatedAt, renderedAt);
 
@@ -88,31 +113,10 @@ export function ProjectDetail({
         </div>
       </div>
 
-      <div
-        className={cn(
-          'grid border-b border-border',
-          project.machines === undefined ? 'grid-cols-2' : 'grid-cols-3',
-        )}
-      >
-        {project.machines !== undefined && (
-          <Stat
-            value={endpointCountText(project.machines, true)}
-            label="Endpoints seen on"
-            tone="text-text"
-          />
-        )}
-        <Stat
-          value={project.findingsCount}
-          label={`Findings · ${String(PROJECT_FINDINGS_WINDOW_DAYS)}d`}
-          tone={project.findingsCount > 0 ? 'text-sev-high-ink' : 'text-ok-ink'}
-          className={cn(project.machines !== undefined && 'border-l border-border')}
-        />
-        <Stat
-          value={withheld}
-          label="Files withheld from models"
-          tone={withheld > 0 ? 'text-sev-critical-ink' : 'text-ok-ink'}
-          className="border-l border-border"
-        />
+      <div className={cn('grid border-b border-border', STAT_COLUMNS[stats.length])}>
+        {stats.map((stat, i) => (
+          <Stat key={stat.label} {...stat} className={cn(i > 0 && 'border-l border-border')} />
+        ))}
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto p-5">
@@ -227,17 +231,20 @@ function SensitiveDataRow({ item, renderedAt }: { item: SensitiveDataClass; rend
   );
 }
 
-function Stat({
-  value,
-  label,
-  tone,
-  className,
-}: {
+interface StatProps {
   value: number | string;
   label: string;
   tone: string;
-  className?: string | undefined;
-}) {
+}
+
+/** The grid class for the number of stats the header shows. */
+const STAT_COLUMNS: Record<number, string> = {
+  1: 'grid-cols-1',
+  2: 'grid-cols-2',
+  3: 'grid-cols-3',
+};
+
+function Stat({ value, label, tone, className }: StatProps & { className?: string | undefined }) {
   return (
     <div className={cn('px-5 py-4', className)}>
       <div className={cn('font-display text-2xl font-semibold tabular-nums', tone)}>{value}</div>

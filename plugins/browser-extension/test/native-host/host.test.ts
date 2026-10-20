@@ -1505,4 +1505,17 @@ describe('captureLargeInput (the bound every capture is scanned under)', () => {
     expect(CAPTURE_SCAN_DEADLINE_MS).toBeLessThanOrEqual(Number(relay) - 1_000);
     expect(CAPTURE_START_BUDGET_MS).toBeLessThan(CAPTURE_SCAN_DEADLINE_MS);
   });
+
+  // The two budgets as literals, not only against each other and the relay.
+  // The relay answers at RELAY_TIMEOUT_MS (3 s); the scan deadline is 2 s of
+  // it, leaving one second for the store write and the reply; the worker's
+  // start is 500ms of the deadline, leaving the scan itself 1.5 s. A start
+  // budget raised toward the deadline still sits under it, and a deadline
+  // raised with the relay still sits a second inside it, so a relation alone
+  // passes either. The built-host suite runs under test-only budgets, so it
+  // cannot see a raise. Raising either fails here and has to be argued.
+  it('keeps the start budget at or under 500ms and the scan deadline at or under 2s', () => {
+    expect(CAPTURE_START_BUDGET_MS).toBeLessThanOrEqual(500);
+    expect(CAPTURE_SCAN_DEADLINE_MS).toBeLessThanOrEqual(2_000);
+  });
 });

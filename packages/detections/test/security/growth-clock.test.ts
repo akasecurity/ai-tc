@@ -53,6 +53,17 @@ describe('the growth tier clock', () => {
     expect(growthClock(() => 0, wall).now).toBe(wall);
   });
 
+  it('thread CPU time advances while this thread works', () => {
+    // A clock stuck at a constant would pass the case below, measure as
+    // infinitely coarse, and quietly move the growth tier to wall time. The
+    // fresh-thread re-measurement in redos.test.ts reads it too.
+    const before = threadCpuMs();
+    let spun = 0;
+    for (let i = 0; i < 100_000_000; i++) spun += i % 7;
+    expect(spun).toBeGreaterThan(0);
+    expect(threadCpuMs()).toBeGreaterThan(before);
+  });
+
   it('thread CPU time does not count time spent waiting', () => {
     const before = threadCpuMs();
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60);

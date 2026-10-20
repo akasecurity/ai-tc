@@ -24,12 +24,17 @@ import * as z from 'zod';
 // object that coerces to the expected string cannot stand in for it.
 const confirmation = z.string().optional();
 
+// The reason as a label, optional. Text here like every field; whether it is
+// one of the human dismiss reasons is the caller's domain check.
+const method = z.string().optional();
+
 /** `approveBlocked` — grant from a blocked-ledger row, keyed by its reference. */
 export const ApproveBlockedInput = z.object({
   reference: z.string(),
   scope: z.string(),
   reason: z.string(),
   confirmation,
+  method,
 });
 export type ApproveBlockedInput = z.infer<typeof ApproveBlockedInput>;
 
@@ -40,6 +45,7 @@ export const AddExceptionInput = z.object({
   scope: z.string(),
   reason: z.string(),
   confirmation,
+  method,
 });
 export type AddExceptionInput = z.infer<typeof AddExceptionInput>;
 

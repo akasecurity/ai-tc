@@ -61,6 +61,8 @@ const exceptionRow: DetectionException = {
   useCount: 2,
   lastUsedAt: '2026-07-01T00:00:00.000Z',
   justification: 'sandbox key used in integration-test fixtures',
+  method: null,
+  confirmedBy: 'user',
   conditions: null,
   createdBy: 'tester',
   createdVia: 'web-add',

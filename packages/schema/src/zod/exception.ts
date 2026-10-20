@@ -7,6 +7,7 @@
 import * as z from 'zod';
 
 import { DetectionCategory } from './finding.ts';
+import { ConfirmedBy, DismissMethod } from './recommendation-action.ts';
 
 // How long a grant lives. Stored for reporting only — evaluation reads the
 // derived state off expiresAt / maxUses / revokedAt, so a future scope (e.g.
@@ -71,6 +72,11 @@ export const DetectionException = z.object({
   lastUsedAt: z.iso.datetime().nullable(),
   // Mandatory: every grant carries the human reason it exists.
   justification: z.string().min(1),
+  // The same reason as a label, beside the free text: one of the human
+  // dismiss reasons, never a machine verdict. Null on a grant made before it
+  // existed, or when the person picked none.
+  method: DismissMethod.nullable().default(null),
+  confirmedBy: ConfirmedBy.default('user'),
   conditions: ExceptionConditions.nullable(),
   createdBy: z.string(),
   createdVia: z.enum(['cli-approve', 'cli-add', 'web-approve', 'web-add', 'api', 'setup-triage']),

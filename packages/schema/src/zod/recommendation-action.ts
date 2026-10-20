@@ -41,6 +41,15 @@ export const DismissMethod = ResolutionMethod.extract([
 export type DismissMethod = z.infer<typeof DismissMethod>;
 
 /**
+ * Who stands behind a human label (a {@link DismissMethod} on a dismissal or a
+ * grant). On this machine it is always 'user': there is one local person and
+ * no roles. 'admin' is a deployment's confirmation of that label, which only a
+ * deployment can make.
+ */
+export const ConfirmedBy = z.enum(['user', 'admin']).meta({ id: 'ConfirmedBy' });
+export type ConfirmedBy = z.infer<typeof ConfirmedBy>;
+
+/**
  * `dismissRecommendation` — close out every open finding of ONE rule.
  *
  * Keyed by rule rather than by the card's category bucket deliberately. A row

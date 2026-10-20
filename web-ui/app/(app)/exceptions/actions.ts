@@ -33,6 +33,7 @@ import {
   AddExceptionInput as AddExceptionInputSchema,
   ApproveBlockedInput as ApproveBlockedInputSchema,
   DetectionCategory,
+  DismissMethod,
   GrantRevealInput as GrantRevealInputSchema,
   isVaultConsentValid,
   parseActionInput,
@@ -140,6 +141,16 @@ function resolveScope(answer: string): ResolvedScope | { error: string } {
   }
 }
 
+// The optional label, checked against the human dismiss reasons. A machine
+// verdict ('exception', 'redetected', …) is nobody's to claim.
+function resolveMethod(raw: string | undefined): DismissMethod | null | { error: string } {
+  if (raw === undefined) return null;
+  const parsed = DismissMethod.safeParse(raw);
+  return parsed.success
+    ? parsed.data
+    : { error: `The reason must be one of ${DismissMethod.options.join(', ')}.` };
+}
+
 function createGrant(input: CreateExceptionInput): Promise<ActionResult> {
   return db()
     .exceptions.create(input)
@@ -175,6 +186,8 @@ export async function approveBlocked(raw: ApproveBlockedInput): Promise<ActionRe
   if (reason === '') return { ok: false, error: 'A reason is required — it is the audit trail.' };
   const scope = resolveScope(input.scope);
   if ('error' in scope) return { ok: false, error: scope.error };
+  const method = resolveMethod(input.method);
+  if (method !== null && typeof method === 'object') return { ok: false, error: method.error };
 
   // Looked up against the full retention window, not just the UI's currently
   // selected lookback — approving a row the user can see must not depend on
@@ -235,6 +248,7 @@ export async function approveBlocked(raw: ApproveBlockedInput): Promise<ActionRe
     maskedValue: entry.maskedValue,
     ...scope,
     justification: reason,
+    method,
     conditions: null,
     createdBy: resolveCreatedBy(),
     createdVia: 'web-approve',
@@ -264,6 +278,8 @@ export async function addException(raw: AddExceptionInput): Promise<ActionResult
   if (reason === '') return { ok: false, error: 'A reason is required — it is the audit trail.' };
   const scope = resolveScope(input.scope);
   if ('error' in scope) return { ok: false, error: scope.error };
+  const method = resolveMethod(input.method);
+  if (method !== null && typeof method === 'object') return { ok: false, error: method.error };
   if (input.value === '') return { ok: false, error: 'No value supplied — nothing to except.' };
   if (scope.scope === 'permanent' && input.confirmation !== input.value) {
     return { ok: false, error: 'Permanent grants require retyping the value exactly.' };
@@ -328,6 +344,7 @@ export async function addException(raw: AddExceptionInput): Promise<ActionResult
     ...grant,
     ...scope,
     justification: reason,
+    method,
     conditions: null,
     createdBy: resolveCreatedBy(),
     createdVia: 'web-add',

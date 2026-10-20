@@ -15,6 +15,7 @@ import { hookFailOpensPath, recordHookFailOpen } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { recordForwardDrops } from '../../src/attached/forward-drops.ts';
+import { recordUnsendableLabels } from '../../src/attached/label-drops.ts';
 import { createPolicyStore } from '../../src/attached/policy-store.ts';
 import {
   postureReportStatePath,
@@ -252,6 +253,15 @@ describe('renderAttachedStatus — the forward half', () => {
     expect(out).toContain('at least');
   });
 
+  it('counts the labels too large to report, apart from the event drops', () => {
+    attach();
+    writeBreaker(0, null);
+    recordUnsendableLabels(dataDir, 2, 900_000);
+    const out = renderAttachedStatus({ base: root, settingsDir, dataDir, now: () => 1_000_000 });
+    expect(out).toContain('2 labels too large to report');
+    expect(out).not.toContain('events dropped');
+  });
+
   it('shows no drop row when nothing was dropped', () => {
     // Otherwise the row is permanent furniture and the assertion above proves
     // nothing about when it appears.
@@ -260,6 +270,7 @@ describe('renderAttachedStatus — the forward half', () => {
     const out = renderAttachedStatus({ base: root, settingsDir, dataDir, now: () => 1_000_000 });
     expect(out).toContain('reporting normally');
     expect(out).not.toContain('events dropped');
+    expect(out).not.toContain('too large to report');
   });
 
   it('reports health only when a success actually cleared the failures', () => {

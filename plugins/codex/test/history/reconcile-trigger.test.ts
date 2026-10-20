@@ -1,18 +1,24 @@
 // The reconcile trigger's tests, as in the Claude Code plugin's, without the
 // follow-up cases that exist only there — no harness-specific logic here.
+import { EventEmitter } from 'node:events';
 import { mkdtempSync, rmSync, statSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+type FakeChild = EventEmitter & { unref: () => void };
+
+// A child process is an EventEmitter: a spawn that cannot start reports through it.
+function fakeChild(unref: () => void = vi.fn()): FakeChild {
+  return Object.assign(new EventEmitter(), { unref });
+}
+
 // Mock the detached spawn so the test never launches a real worker — we only assert
 // HOW OFTEN it would fire and with what. `vi.hoisted` makes the spy exist before
 // the mock factory.
 const { spawnSpy } = vi.hoisted(() => ({
-  spawnSpy: vi.fn<(command: string, args: readonly string[], options: object) => object>(() => ({
-    unref: vi.fn(),
-  })),
+  spawnSpy: vi.fn<(command: string, args: readonly string[], options: object) => FakeChild>(),
 }));
 vi.mock('node:child_process', () => ({ spawn: spawnSpy }));
 
@@ -26,7 +32,8 @@ describe('triggerReconcile — per-session throttle', () => {
   let dir: string;
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'aka-reconcile-'));
-    spawnSpy.mockClear();
+    spawnSpy.mockReset();
+    spawnSpy.mockImplementation(() => fakeChild());
   });
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
@@ -54,7 +61,8 @@ describe('triggerReconcile — the last call of a throttle window', () => {
   let dir: string;
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'aka-reconcile-trail-'));
-    spawnSpy.mockClear();
+    spawnSpy.mockReset();
+    spawnSpy.mockImplementation(() => fakeChild());
   });
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
@@ -101,7 +109,7 @@ describe('triggerReconcile — the last call of a throttle window', () => {
     expect(due).toBeLessThanOrEqual(pastDue.getTime() + WINDOW_MS + 1);
   });
 
-  it('swallows a failure to spawn the trailing worker', () => {
+  it('swallows a failure to spawn the trailing worker, and schedules another once its window has closed', () => {
     triggerReconcile(dir, 'sess-A', '/t/a.jsonl');
     spawnSpy.mockImplementationOnce(() => {
       throw new Error('the worker cannot be started');
@@ -109,5 +117,55 @@ describe('triggerReconcile — the last call of a throttle window', () => {
     expect(() => {
       triggerReconcile(dir, 'sess-A', '/t/a.jsonl');
     }).not.toThrow();
+    expect(spawnSpy).toHaveBeenCalledTimes(2);
+
+    // The rest of that window is answered as if the worker were waiting.
+    triggerReconcile(dir, 'sess-A', '/t/a.jsonl');
+    expect(spawnSpy).toHaveBeenCalledTimes(2);
+
+    // Past the due time the marker records, the next call schedules again.
+    const pastDue = new Date(Date.now() - 10_000);
+    utimesSync(join(dir, 'reconcile-last-attempt-sess-A'), pastDue, pastDue);
+    triggerReconcile(dir, 'sess-A', '/t/a.jsonl');
+    expect(spawnSpy).toHaveBeenCalledTimes(3);
+    expect(spawnSpy.mock.calls[2]?.[1]).toHaveLength(4);
+  });
+});
+
+describe('a worker that cannot be started', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'aka-spawn-error-'));
+    spawnSpy.mockReset();
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Node reports a spawn failure (ENOENT, EACCES, EAGAIN, EMFILE) as an 'error' event on the
+  // child after spawn has returned, and an emitter with no listener throws from emit.
+  function failToStart(child: EventEmitter): Promise<unknown> {
+    return new Promise((resolve) => {
+      process.nextTick(() => {
+        try {
+          child.emit('error', Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' }));
+          resolve(undefined);
+        } catch (thrown) {
+          resolve(thrown);
+        }
+      });
+    });
+  }
+
+  it.each([
+    ['the pass of a window', 0],
+    ['the trailing pass of a window', 1],
+  ])('leaves the error event of a failed spawn handled for %s', async (_label, held) => {
+    const children = [fakeChild(), fakeChild()];
+    for (const child of children) spawnSpy.mockReturnValueOnce(child);
+    for (let call = 0; call <= held; call += 1) triggerReconcile(dir, 'sess-A', '/t/a.jsonl');
+    expect(spawnSpy).toHaveBeenCalledTimes(held + 1);
+
+    await expect(failToStart(children[held] ?? fakeChild())).resolves.toBeUndefined();
   });
 });

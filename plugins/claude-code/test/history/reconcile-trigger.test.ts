@@ -173,7 +173,7 @@ describe('triggerReconcile — the last call of a throttle window', () => {
     expect(child.listenerCount('error')).toBe(1);
   });
 
-  it('swallows a failure to spawn the trailing worker', () => {
+  it('swallows a failure to spawn the trailing worker, and schedules another once its window has closed', () => {
     triggerReconcile(dir, 'sess-A', '/t/a.jsonl');
     spawnSpy.mockImplementationOnce(() => {
       throw new Error('the worker cannot be started');
@@ -181,6 +181,18 @@ describe('triggerReconcile — the last call of a throttle window', () => {
     expect(() => {
       triggerReconcile(dir, 'sess-A', '/t/a.jsonl');
     }).not.toThrow();
+    expect(spawnSpy).toHaveBeenCalledTimes(2);
+
+    // The rest of that window is answered as if the worker were waiting.
+    triggerReconcile(dir, 'sess-A', '/t/a.jsonl');
+    expect(spawnSpy).toHaveBeenCalledTimes(2);
+
+    // Past the due time the marker records, the next call schedules again.
+    const pastDue = new Date(Date.now() - 10_000);
+    utimesSync(join(dir, 'reconcile-last-attempt-sess-A'), pastDue, pastDue);
+    triggerReconcile(dir, 'sess-A', '/t/a.jsonl');
+    expect(spawnSpy).toHaveBeenCalledTimes(3);
+    expect(spawnSpy.mock.calls[2]?.[1]).toHaveLength(5);
   });
 });
 

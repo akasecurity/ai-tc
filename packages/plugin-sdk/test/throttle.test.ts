@@ -12,7 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   gatePerKey,
@@ -293,5 +293,54 @@ describe('gatePerKey', () => {
     expect(() => gatePerKey(nested, 'p', 'a', WINDOW)).not.toThrow();
     expect(gatePerKey(nested, 'p', 'a', WINDOW)).toEqual({ kind: 'run' });
     expect(gatePerKey(nested, 'p', 'a', WINDOW)).toEqual({ kind: 'run' });
+  });
+});
+
+describe('gatePerKey — how far ahead of the clock a marker may read', () => {
+  const NOW = 1_700_000_000_000;
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'aka-gate-slack-'));
+    // Only the clock is held still: the marker's own time comes from the file.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // A marker whose time is `aheadMs` after the clock, then the gate's answer.
+  function gateWithMarkerAhead(aheadMs: number, windowMs: number) {
+    writeFileSync(join(dir, 'p-a'), '0');
+    const at = (NOW + aheadMs) / 1000;
+    utimesSync(join(dir, 'p-a'), at, at);
+    return gatePerKey(dir, 'p', 'a', windowMs);
+  }
+
+  it.each([
+    { label: 'just under two seconds', aheadMs: 1_999, kind: 'trail' },
+    { label: 'just over two seconds', aheadMs: 2_001, kind: 'covered' },
+  ])('with a 30 s window, a marker $label ahead is read as $kind', ({ aheadMs, kind }) => {
+    expect(gateWithMarkerAhead(aheadMs, 30_000).kind).toBe(kind);
+  });
+
+  it.each([
+    { label: 'just under half the window', aheadMs: 499, kind: 'trail' },
+    { label: 'just over half the window', aheadMs: 501, kind: 'covered' },
+    // 1,999 ms is inside the two-second slack, but the slack never exceeds half
+    // the window, so a one-second window does not take it as a pass that started.
+    { label: 'inside two seconds but past half the window', aheadMs: 1_999, kind: 'covered' },
+  ])('with a 1 s window, a marker $label ahead is read as $kind', ({ aheadMs, kind }) => {
+    expect(gateWithMarkerAhead(aheadMs, 1_000).kind).toBe(kind);
+  });
+
+  it('puts the trailing pass of a marker read as a pass that started a full window after it', () => {
+    const gate = gateWithMarkerAhead(1_999, 30_000);
+
+    expect(gate.kind).toBe('trail');
+    if (gate.kind !== 'trail') return;
+    expect(gate.dueAt).toBeGreaterThanOrEqual(NOW + 1_999 + 30_000);
+    expect(gate.dueAt).toBeLessThanOrEqual(NOW + 1_999 + 30_000 + 1);
   });
 });

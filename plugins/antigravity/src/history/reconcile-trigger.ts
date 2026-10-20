@@ -54,5 +54,7 @@ function spawnWorker(args: readonly string[]): void {
     detached: true,
     stdio: 'ignore',
   });
+  // A spawn that cannot start reports an 'error' event; unhandled, it ends the process.
+  child.on('error', () => undefined);
   child.unref();
 }

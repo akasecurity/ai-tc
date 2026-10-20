@@ -34,10 +34,11 @@ export function resolveRepo(cwd: string): string | undefined {
  * URL loses its userinfo, query and fragment; an ssh URL keeps a plain login
  * user and loses a password, query and fragment. The userinfo runs to the last
  * `@` before the first `/` and is removed before the URL is parsed, whatever it
- * holds. A URL-form remote the parser still refuses is rebuilt from the text
- * after its last `@`, without a query or fragment. Anything else that does not
- * parse as a URL (an scp-style remote, a path) is returned as given, and so is
- * a URL with nothing to remove, character for character.
+ * holds; when the first `/` comes before every `@`, the text before it is the
+ * host and is kept. A URL-form remote the parser still refuses is rebuilt from
+ * the text after its last `@`, without a query or fragment. Anything else that
+ * does not parse as a URL (an scp-style remote, a path) is returned as given,
+ * and so is a URL with nothing to remove, character for character.
  */
 export function remoteWithoutCredentials(remote: string): string {
   const withoutInfo = withoutUserinfo(remote);

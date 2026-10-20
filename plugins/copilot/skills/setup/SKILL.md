@@ -44,9 +44,13 @@ These steps were recorded against Copilot CLI 1.0.98.
 - **Windows is unconfirmed.** The plugin has not been installed and run against
   a real Copilot CLI on Windows, so whether its hook commands survive that
   platform's shell is untested.
-- **Updating is unconfirmed.** How an installed copy is moved to a newer
-  package version, including whether `copilot plugin update` works on a
-  directory install, has not been measured. Do not tell the user it does.
+- **Updating re-copies the folder the plugin was installed from.** The install
+  remembers that folder, and `copilot plugin update aka-copilot` replaces the
+  installed copy with whatever the folder holds, an older version included.
+  To move to a newer version, delete the old `package` folder, unpack the new
+  package in the same place, then run `copilot plugin update aka-copilot`. If
+  that folder has been deleted, update fails and changes nothing; AKA keeps
+  running from the installed copy. A session start does not update the plugin.
 - **The cloud coding agent is not covered by this install.** It does not load
   installed plugins; it reads only the repository's `.github/hooks/*.json`.
 

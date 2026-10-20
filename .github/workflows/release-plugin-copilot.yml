@@ -249,7 +249,7 @@ jobs:
             aka init
             ```
 
-            The Copilot CLI warns that direct local-path installs are deprecated. Windows and updating are unconfirmed. See the "Install — Copilot CLI" section of `plugins/copilot/skills/setup/SKILL.md` for the full notes.
+            The Copilot CLI warns that direct local-path installs are deprecated. Windows is unconfirmed. To update, unpack the new package in the folder you installed from and run `copilot plugin update aka-copilot`. See the "Install — Copilot CLI" section of `plugins/copilot/skills/setup/SKILL.md` for the full notes.
 
   # Publish the same package to the repo's GitHub Packages registry (requirement:
   # packages land in the org's GitHub registry). Kept a separate job so its GitHub

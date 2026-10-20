@@ -352,9 +352,9 @@ export function decidePreToolUse(
     // with NO stdout payload at all: there is no verdict to emit (the call is
     // being let through) and no field to carry the reason, so stdout stays
     // empty and the reason goes to stderr. The finding is recorded either way;
-    // what varies is the CHANNEL the reason is written to — and on the CLI it is
-    // unobserved whether that channel reaches a human at all, so this is not two
-    // ways of telling the user. See `SystemMessageOutput` in ./shared.ts.
+    // what varies is the CHANNEL the reason is written to — and on the CLI that
+    // channel was seen only in the debug log (in `-p` mode), not in front of a human, so this is
+    // not two ways of telling the user. See `SystemMessageOutput` in ./shared.ts.
     const message = `AKA flagged sensitive content in ${toolName} input (${[...warnedRules].join(', ')}).`;
     return dialect === 'cli'
       ? { output: null, notice: message }

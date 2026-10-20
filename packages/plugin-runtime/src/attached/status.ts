@@ -37,6 +37,7 @@ import {
   ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH,
   attachmentModeOf,
   controlPlaneName,
+  historySyncChangesSince,
   isAttached,
   isAttachmentScopeValid,
   isHistorySyncConsentStale,
@@ -53,6 +54,7 @@ import { readForwardDrops } from './forward-drops.ts';
 import type { ForwardFailureReason } from './forward-policy.ts';
 import { readForwardHealth } from './forward-policy.ts';
 import { readHistorySyncState } from './history-state.ts';
+import { readUnsendableLabels } from './label-drops.ts';
 import { createPolicyStore } from './policy-store.ts';
 import type { PolicySyncOutcome } from './policy-sync.ts';
 import { readPostureReportState } from './posture-report-state.ts';
@@ -1050,10 +1052,22 @@ function policyLines(dataDir: string, nowMs: number): string[] {
  */
 function dropLines(dataDir: string, nowMs: number): string[] {
   const drops = readForwardDrops(dataDir);
-  if (!drops) return [];
+  const labels = readUnsendableLabels(dataDir);
   return [
-    `             at least ${String(drops.droppedForwards)} events dropped by the ` +
-      `live forward, last ${ageLine(drops.lastDropAtMs, nowMs)}`,
+    ...(drops
+      ? [
+          `             at least ${String(drops.droppedForwards)} events dropped by the ` +
+            `live forward, last ${ageLine(drops.lastDropAtMs, nowMs)}`,
+        ]
+      : []),
+    // A grant or dismissal the wire contract refuses, stamped so it stops
+    // holding the queue: counted here so that is not silent.
+    ...(labels
+      ? [
+          `             at least ${String(labels.unsendable)} labels too large to report, ` +
+            `last ${ageLine(labels.lastAtMs, nowMs)}`,
+        ]
+      : []),
   ];
 }
 
@@ -1116,8 +1130,24 @@ function historyLines(
   // stale grant, so a bare "not shared" tells a user who did opt in that they
   // did not — with no hint that a real grant exists or what widened it.
   if (isHistorySyncConsentStale(settings.historySyncConsent, endpoint)) {
+    const changes = historySyncChangesSince(
+      settings.historySyncConsent?.payloadVersion ?? 0,
+      scoped ? 'scoped' : 'machine',
+    );
+    const what = changes.includes('newer')
+      ? 'it was recorded by a newer release of aka'
+      : changes.length === 0
+        ? 'the change sends nothing new from this device'
+        : `it now also covers ${changes
+            .map((c) =>
+              c === 'backlog-text'
+                ? 'the text of what was recorded before'
+                : 'the exceptions you grant and the findings you dismiss',
+            )
+            .join(', and ')}`;
     return [
-      '  history    paused — your grant predates a change to what is sent',
+      '  history    paused — your grant predates a change to what is sent:',
+      `             ${what}`,
       '             (run `aka sync-history --on` to grant it again)',
     ];
   }

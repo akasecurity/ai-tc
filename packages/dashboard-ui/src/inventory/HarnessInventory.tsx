@@ -9,7 +9,13 @@ import { useMemo } from 'react';
 import { dayLabel } from '../activity/format.ts';
 import { formatDateTime } from '../lib/dateFormat.ts';
 import { Provider } from '../shared/Provider.tsx';
-import { EVENT_KIND, harnessRows, type InventoryRow, needsAttention } from './data.ts';
+import {
+  endpointsText,
+  EVENT_KIND,
+  harnessRows,
+  type InventoryRow,
+  needsAttention,
+} from './data.ts';
 import { Ico } from './Ico.tsx';
 import { InventoryTable } from './InventoryTable.tsx';
 
@@ -46,6 +52,7 @@ export function HarnessInventory({
   const subtitle = [
     harness.version,
     plural(harness.sessions, 'session', 'sessions'),
+    harness.machines === undefined ? null : endpointsText(harness.machines, false),
     plural(rows.length, 'asset', 'assets'),
     `${attention > 0 ? String(attention) : 'none'} need attention`,
   ]

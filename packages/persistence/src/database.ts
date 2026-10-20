@@ -754,6 +754,8 @@ export function openLocalDatabase(
             method: disposition.method,
             resolvedAt: disposition.resolvedAt,
             evidence: disposition.evidence,
+            // A dashboard dismissal is a person's, and locally that is the user.
+            confirmedBy: 'user' as const,
           })),
         );
         dismissed = keys.length;

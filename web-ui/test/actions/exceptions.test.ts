@@ -747,6 +747,36 @@ describe('addException — the only web code touching a raw secret', () => {
   });
 });
 
+describe('addException — the reason as a label', () => {
+  beforeEach(() => {
+    resetSingleton();
+  });
+
+  it('records the picked method on the grant', async () => {
+    const res = await addException({
+      ruleId: RULE_ID,
+      value: VALUE,
+      scope: 'once',
+      reason: 'x',
+      method: 'false-positive',
+    });
+    expect(res.ok).toBe(true);
+    expect((await grants())[0]?.method).toBe('false-positive');
+  });
+
+  it('refuses a method outside the human reasons, writing nothing', async () => {
+    const res = await addException({
+      ruleId: RULE_ID,
+      value: VALUE,
+      scope: 'once',
+      reason: 'x',
+      method: 'redetected',
+    });
+    expect(res.ok).toBe(false);
+    expect(await grants()).toHaveLength(0);
+  });
+});
+
 describe('rotateKey — one string compare from invalidating every grant', () => {
   // A grant under the current key, created through the real add path, so the
   // "stops matching" assertions run against a grant a live detection would
@@ -968,6 +998,40 @@ describe('approveBlocked — granting from the ledger, no value in play', () => 
 
   // The preview the dialog shows and the confirmation box asks for.
   const MASKED = maskMatch(VALUE);
+
+  describe('the reason as a label', () => {
+    it('records the picked method beside the free text, confirmed by the user', async () => {
+      const res = await approveBlocked({
+        reference: REFERENCE,
+        scope: 'once',
+        reason: 'fixture key',
+        method: 'test-or-example',
+      });
+      expect(res.ok).toBe(true);
+      const [grant] = await grants();
+      expect(grant?.method).toBe('test-or-example');
+      expect(grant?.justification).toBe('fixture key');
+      expect(grant?.confirmedBy).toBe('user');
+    });
+
+    it('leaves the grant unlabelled when no method is sent', async () => {
+      expect((await approveBlocked({ reference: REFERENCE, scope: 'once', reason: 'x' })).ok).toBe(
+        true,
+      );
+      expect((await grants())[0]?.method).toBeNull();
+    });
+
+    it('refuses a machine verdict as the method, writing nothing', async () => {
+      const res = await approveBlocked({
+        reference: REFERENCE,
+        scope: 'once',
+        reason: 'x',
+        method: 'exception',
+      });
+      expect(res.ok).toBe(false);
+      expect(await grants()).toHaveLength(0);
+    });
+  });
 
   describe('input validation rejects before any grant is written', () => {
     it('rejects an empty reason — the reason is the audit trail', async () => {

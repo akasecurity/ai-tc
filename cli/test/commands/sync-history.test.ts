@@ -260,13 +260,16 @@ describe('aka sync-history', () => {
   // one a user meets when their grant is paused and being re-asked — so it
   // carries the same masking claim and needs the same guard. Nothing reached
   // this branch before, which is how the copy it replaced went unnoticed.
+  // A grant from before the backlog's captured text was covered: the one
+  // re-ask that names text, and so the one that owes the masking condition. A
+  // grant one version behind is re-asked about labels, which carry no text.
   it('states the masking condition when re-asking for a grant that predates the change', async () => {
     attach();
     applyOnboarding(
       {
         historySyncConsent: {
           acknowledgedAt: new Date().toISOString(),
-          payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION - 1,
+          payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION - 2,
           endpoint: ENDPOINT,
         },
       },

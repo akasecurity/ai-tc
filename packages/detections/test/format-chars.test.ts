@@ -251,127 +251,109 @@ describe('mergeOverlappingSameRule', () => {
     expect(merged[0]?.confidence).toBe(0.99);
   });
 
-  it('scales close to n log n, not n², on a single rule with many overlapping pairs', () => {
+  describe('scales close to n log n, not n², on a single rule with many overlapping pairs', () => {
     // A pairwise "check the candidate against every finding kept so far"
     // merge costs O(n²) in the FINDING COUNT, not in how many of them
     // overlap: the inner loop scans from index 0 every time regardless of
     // where (or whether) a match turns up, so its cost is driven by how
     // long the kept list has grown, which for one rule grows close to n
     // even when most pairs merge down to one entry. Spreading findings
-    // across many DIFFERENT rules (as an earlier version of this test did)
-    // keeps each rule's kept list short and so stays close to the old
-    // algorithm's CHEAPEST case — 20,000 findings over 50 rules merged in
-    // 598.5ms against a 2000ms ceiling with the old algorithm restored, more
-    // than 3x of headroom that never actually exercises the bug. One rule,
-    // with findings that overlap in ADJACENT PAIRS (not one giant run, and
-    // not the artificial best case of no overlaps at all — the shape a
+    // across many DIFFERENT rules keeps each rule's kept list short and so
+    // stays close to the old algorithm's CHEAPEST case. One rule, with
+    // findings that overlap in ADJACENT PAIRS (not one giant run, and not
+    // the artificial best case of no overlaps at all — the shape a
     // cross-pass duplicate from scan() actually produces), does.
     //
-    // A RATIO, not a fixed ceiling, for the same reason as the scan()-level
-    // sibling check in unicode.test.ts: this must hold on a runner tens of
-    // times slower than a dev machine. O(n log n) costs a 10x-larger input
-    // roughly 10x-15x as long (the log factor); O(n²) costs it roughly
-    // 100x. 30x sits with real margin on both sides. That makes this a check
-    // on growth only: a merge that got equally slower at both sizes passes.
+    // The cost is COUNTED rather than timed, so it is the same number on any
+    // machine however busy it is — the timed form of this check went red on a
+    // loaded runner with the merge unchanged. Every span bound is a number
+    // that counts each time it is USED as one: compared, subtracted, passed to
+    // Math.max or to slice. Copying a span, or the bound itself, into an object
+    // of the merge's own carries the counter along, so what is counted is the
+    // comparisons the merge makes on whatever it compares. Sorting uses each
+    // bound a bounded number of times per comparison and the sweep a bounded
+    // number of times per finding, so 10x the findings costs ~10x the uses; a
+    // pairwise merge uses the candidate's bounds once per finding it is
+    // compared with, so 10x the findings costs ~100x. 30x sits with margin on
+    // both sides (counts in the cases below).
     //
-    // The ratio is only as good as the two readings behind it, so each one is
-    // taken the way the unicode.test.ts sibling takes its own:
-    // - One full window at each size runs before any sample and its reading
-    //   is discarded, so no timed sample includes the merge's first,
-    //   unoptimized calls.
-    // - Each sample merges WINDOW findings in total at either size, as
-    //   back-to-back merges of one input, and divides by the number of
-    //   merges. Both timed windows then last about as long under O(n log n);
-    //   a lone warm small merge is a fraction of a millisecond, too short a
-    //   window to read reliably.
-    // - LARGE stays well under 15,000 findings. Past about that size the
-    //   merge's per-rule arrays are too big for V8's regular heap objects and
-    //   go to its large-object space, which can fault in fresh pages on every
-    //   call. On macOS arm64 (Node 24, warm merges in a plain process) that
-    //   was about 33 page faults per 20,000-finding merge and none per small
-    //   one, and on the virtualized macOS CI runner, where a fault is costly,
-    //   it put a healthy merge at 34x. How many faults a large-object
-    //   allocation takes depends on the platform and the state of the heap.
-    // - The two sizes alternate, and each keeps the fastest of SAMPLES. A GC
-    //   pause or a descheduled thread only ever adds time, so the fastest
-    //   sample is the one with the least of it, and alternating exposes both
-    //   sizes to the same machine state rather than timing one after the
-    //   other.
-    // - After each sample, sampling stops if it has taken MIN_SAMPLES and run
-    //   past SAMPLING_BUDGET_MS, so it can overrun the budget by one sample.
-    //   A healthy merge finishes every sample well inside the budget; a
-    //   quadratic one takes hundreds of times longer per sample, and the
-    //   fastest of its first few is already far past the bound.
-    function buildOverlappingPairs(n: number, text: string): MatchResult[] {
+    // What the counter cannot follow is a bound converted to a plain number
+    // (`Number(x)`, `+x`) and worked on from there. A merge that did that reads
+    // each bound about once, and that is what the floor case refuses: the
+    // merge has to compare the values it was given, at least a few uses per
+    // finding, or this guard cannot see what it does after converting them.
+    function countedPairs(n: number, text: string, uses: { count: number }): MatchResult[] {
+      const counted = (value: number): number =>
+        ({
+          valueOf: () => {
+            uses.count += 1;
+            return value;
+          },
+        }) as unknown as number;
       const findings: MatchResult[] = [];
       for (let i = 0; i < n; i += 2) {
         // Pair i occupies [3i, 3i+6); the next pair starts exactly where
         // this one ends, so pairs merge internally but never into each
         // other — n/2 disjoint two-member groups, not one giant region.
         const base = i * 3;
-        findings.push({
-          ruleId: 'r',
-          category: 'secret',
-          severity: 'high',
-          span: { start: base, end: base + 4 },
-          rawMatch: text.slice(base, base + 4),
-          confidence: 1,
-        });
-        findings.push({
-          ruleId: 'r',
-          category: 'secret',
-          severity: 'high',
-          span: { start: base + 2, end: base + 6 },
-          rawMatch: text.slice(base + 2, base + 6),
-          confidence: 1,
-        });
+        for (const [start, end] of [
+          [base, base + 4],
+          [base + 2, base + 6],
+        ] as const) {
+          findings.push({
+            ruleId: 'r',
+            category: 'secret',
+            severity: 'high',
+            span: { start: counted(start), end: counted(end) },
+            rawMatch: text.slice(start, end),
+            confidence: 1,
+          });
+        }
       }
       return findings;
     }
 
+    // The uses of span bounds one merge of n findings makes.
+    function usesToMerge(n: number): number {
+      const text = 'x'.repeat(n * 3 + 10);
+      const uses = { count: 0 };
+      const findings = countedPairs(n, text, uses);
+      uses.count = 0;
+      const merged = mergeOverlappingSameRule(findings, text);
+      const counted = uses.count;
+      expect(merged).toHaveLength(n / 2);
+      const first = merged[0]?.span;
+      expect([Number(first?.start), Number(first?.end)]).toEqual([0, 6]);
+      expect(merged[0]?.rawMatch).toBe('xxxxxx');
+      return counted;
+    }
+
     const SMALL = 1_000;
     const LARGE = 10_000; // 10x the input
-    const WINDOW = 20_000; // findings merged per timed sample, at either size
-    const SAMPLES = 7;
-    const MIN_SAMPLES = 3;
-    const SAMPLING_BUDGET_MS = 2_000;
 
-    // Builds one input of n findings and returns a timer over it: the mean
-    // milliseconds per merge across WINDOW / n back-to-back merges. The input
-    // is built once and reused, since the merge sorts a copy and never
-    // mutates it.
-    function mergeTimer(n: number): () => number {
-      const bigText = 'x'.repeat(n * 3 + 10);
-      const findings = buildOverlappingPairs(n, bigText);
-      expect(WINDOW % n, 'WINDOW must be a whole multiple of each size').toBe(0);
-      const calls = WINDOW / n;
-      return () => {
-        let merged: MatchResult[] = [];
-        const start = performance.now();
-        for (let i = 0; i < calls; i++) merged = mergeOverlappingSameRule(findings, bigText);
-        const ms = (performance.now() - start) / calls;
-        expect(merged).toHaveLength(n / 2);
-        return ms;
-      };
-    }
+    it('compares the bounds it was given, a few times per finding', () => {
+      // The positive control and the floor. A counter that never moved would
+      // make the ratio below 0/0, and a merge that converted every bound once
+      // and then compared plain numbers would read two uses per finding and
+      // pass any ratio. Counted: 4,997 uses for 1,000 findings and 49,997 for
+      // 10,000 (10.0x), against exactly two per finding for that conversion.
+      // The honest merge uses ~5 per finding on this already-sorted input, so a
+      // legitimate change that uses fewer — skipping the sort for sorted input,
+      // a comparator that reads only `start` — can approach this floor; revisit
+      // the floor then rather than deleting the case.
+      expect(usesToMerge(SMALL)).toBeGreaterThanOrEqual(SMALL * 3);
+      expect(usesToMerge(LARGE)).toBeGreaterThanOrEqual(LARGE * 3);
+    });
 
-    const timeSmall = mergeTimer(SMALL);
-    const timeLarge = mergeTimer(LARGE);
-    timeSmall(); // warm-up; readings discarded
-    timeLarge();
-    let small = Infinity;
-    let large = Infinity;
-    let samples = 0;
-    const sampling = performance.now();
-    while (samples < SAMPLES) {
-      small = Math.min(small, timeSmall());
-      large = Math.min(large, timeLarge());
-      samples++;
-      if (samples >= MIN_SAMPLES && performance.now() - sampling > SAMPLING_BUDGET_MS) break;
-    }
-    expect(
-      large,
-      `fastest of ${String(samples)} samples, per merge: ${String(SMALL)} findings ${small.toFixed(3)}ms; ${String(LARGE)} findings ${large.toFixed(3)}ms`,
-    ).toBeLessThan(small * 30);
+    it('uses ten times the findings about ten times as often', () => {
+      // Counted with the pairwise merge put back: 503,000 then 50,030,000
+      // (99.5x), the same whether it compares the input spans or copies of them.
+      const small = usesToMerge(SMALL);
+      const large = usesToMerge(LARGE);
+      expect(
+        large,
+        `${String(small)} uses of span bounds to merge ${String(SMALL)} findings, ${String(large)} to merge ${String(LARGE)}`,
+      ).toBeLessThan(small * 30);
+    });
   });
 });

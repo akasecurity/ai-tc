@@ -4,7 +4,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import { DB_FILENAME, llmCallId, toolCallId } from '@akasecurity/persistence';
+import {
+  applyOnboarding,
+  createSightingKeyStore,
+  dataDir as dataDirOf,
+  DB_FILENAME,
+  keysDir,
+  llmCallId,
+  toolCallId,
+} from '@akasecurity/persistence';
 import type {
   CaptureRecord,
   CaptureStatusReader,
@@ -38,6 +46,7 @@ import type { ForwardPolicy, ForwardResult } from '../../src/attached/forward-po
 import { createForwardPolicy, FORWARD_STATE_FILENAME } from '../../src/attached/forward-policy.ts';
 import type { AttachedClient, AttachedDataGatewayDeps } from '../../src/attached/gateway.ts';
 import { AttachedDataGateway } from '../../src/attached/gateway.ts';
+import { endpointFingerprint } from '../../src/attached/history-sync.ts';
 import type { StoredRootKeyReader } from '../../src/session-root-key.ts';
 import { StandaloneDataGateway } from '../../src/standalone-gateway.ts';
 import { migratedStore } from '../helpers/store-templates.ts';
@@ -391,6 +400,7 @@ function build(overrides: Partial<AttachedDataGatewayDeps> = {}) {
     forward: overrides.forward ?? passthroughForward(calls),
     attachment: overrides.attachment ?? MACHINE,
     ...(overrides.posture ? { posture: overrides.posture } : {}),
+    ...(overrides.readNameKey ? { readNameKey: overrides.readNameKey } : {}),
     ...(overrides.shareCredentialRefs
       ? { shareCredentialRefs: overrides.shareCredentialRefs }
       : {}),
@@ -1756,6 +1766,121 @@ describe("a finding's location never reaches the client", () => {
     expect(seen).toHaveLength(1);
     const sent = (seen[0] as { inspections?: unknown[] }).inspections ?? [];
     expect(sent).toEqual([inspection]);
+  });
+
+  it('forwards the features and a keyed name hash, and still never the name', async () => {
+    const inspection = {
+      ruleId: 'code-flaws/xss-inner-html',
+      ruleName: 'innerHTML assignment',
+      ruleVersion: '1',
+      category: 'code_flaw' as const,
+      severity: 'high' as const,
+      span: { start: 4, end: 15 },
+      maskedMatch: 'i*********=',
+      actionTaken: 'log' as const,
+      confidence: 0.8,
+    };
+    const seen: unknown[] = [];
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const client = {
+      ...makeClient(calls),
+      recordAuditEvents: vi.fn((events: readonly unknown[]) => {
+        seen.push(...events);
+        return Promise.resolve({ accepted: events.length });
+      }),
+    } as unknown as AttachedClient;
+    const { gateway } = build({
+      client,
+      readNameKey: () => ({ keyVersion: 2, key: new Uint8Array(32).fill(5) }),
+    });
+    const features = {
+      ruleId: inspection.ruleId,
+      category: inspection.category,
+      validators: [],
+      corroborated: false,
+      shape: {
+        length: 11,
+        classes: ['lower' as const],
+        knownPrefix: null,
+        entropyBucket: 'low' as const,
+      },
+      placeholder: false,
+      pathClass: 'unknown' as const,
+      name: 'other' as const,
+      nearby: [],
+    };
+    await gateway.recordToolCalls([
+      {
+        ...toolCallInput('hashed'),
+        inspections: [{ ...inspection, variableName: 'PAGE_BODY', features }],
+      },
+    ]);
+    const sent = (seen[0] as { inspections?: Record<string, unknown>[] }).inspections ?? [];
+    expect(sent[0]?.features).toEqual(features);
+    expect(sent[0]?.nameHash).toMatch(/^v2\./);
+    expect(JSON.stringify(seen)).not.toContain('PAGE_BODY');
+  });
+
+  // The DEFAULT key read, with nothing injected: the sighting key lives under
+  // the ~/.aka base (settings/ and keys/), while the gateway is handed the data
+  // leaf beneath it. Reading from the leaf finds no key on any real machine.
+  it('reads the name key from the ~/.aka base it was attached under', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'aka-gateway-base-'));
+    try {
+      const endpoint = 'https://aka.example-org.internal';
+      applyOnboarding(
+        { runMode: 'attached', controlPlane: { endpoint, attachedAt: '2026-10-01T10:00:00.000Z' } },
+        base,
+        null,
+      );
+      createSightingKeyStore('file', keysDir(base)).replace({
+        keyVersion: 7,
+        algorithm: 'hmac-sha256',
+        key: Buffer.alloc(32, 7).toString('base64url'),
+        previous: [],
+        fetchedAtMs: Date.now(),
+        endpointFingerprint: endpointFingerprint(endpoint),
+      });
+      const seen: unknown[] = [];
+      const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+      const gateway = new AttachedDataGateway({
+        dataDir: dataDirOf(base),
+        local: makeLocal(calls),
+        client: {
+          ...makeClient(calls),
+          recordAuditEvents: vi.fn((events: readonly unknown[]) => {
+            seen.push(...events);
+            return Promise.resolve({ accepted: events.length });
+          }),
+        },
+        readCachedBundle: () => Promise.resolve(null),
+        forward: passthroughForward(calls),
+        attachment: MACHINE,
+      });
+      await gateway.recordToolCalls([
+        {
+          ...toolCallInput('default-key'),
+          inspections: [
+            {
+              ruleId: 'aka/xss-innerhtml',
+              ruleName: 'innerHTML assignment',
+              ruleVersion: '1',
+              category: 'code_flaw',
+              severity: 'high',
+              span: { start: 4, end: 15 },
+              maskedMatch: 'i*********=',
+              actionTaken: 'log',
+              confidence: 0.8,
+              variableName: 'PAGE_BODY',
+            },
+          ],
+        },
+      ]);
+      const sent = (seen[0] as { inspections?: Record<string, unknown>[] }).inspections ?? [];
+      expect(sent[0]?.nameHash).toMatch(/^v7\./);
+    } finally {
+      removeTree(base);
+    }
   });
 });
 

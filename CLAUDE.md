@@ -187,8 +187,10 @@ gated, by `packages/eslint-config/test/release-identity.test.js` — `pluginName
 `marketplace` and `cliBin` are all present or all absent, `installHint` is present
 exactly when they are absent (Antigravity's permanent state: that host has no
 marketplace and installs from a local directory), every `npmPackage` names a tracked
-non-private workspace package, and an entry whose marketplace is this repository
-agrees with `.claude-plugin/marketplace.json`.
+non-private workspace package, the entries' `npmPackage` set equals the set of
+tracked non-private `plugins/*` packages, so a published plugin cannot ship missing
+from the registry, and an entry whose marketplace is this repository agrees with
+`.claude-plugin/marketplace.json`.
 `src/zod/harness-map.ts` holds both spellings as named-member const objects —
 `SOURCE_TOOL` (the wire id a plugin stamps on a capture, `'claude-code'`) and `HARNESS` (the
 display id the dashboard renders, `'claudecode'`). Four rules keep them from re-multiplying,
@@ -1989,6 +1991,29 @@ What DOES gate a PR is the timing **guards**, which are correctness assertions r
 measurements: the adversarial-rule bound in `packages/detections/test/security/redos.test.ts`
 and the isolation ceilings in `packages/plugin-sdk`. Keep the two apart — a benchmark that
 threw would be a timing gate wearing a different name.
+
+A guard is only a correctness assertion while a loaded runner cannot fail it. The ReDoS
+growth tier reads the scanning thread's CPU time and AVERAGES it wherever that clock's
+measured median step is at most 5 ms — a thread waiting for a core accrues none of it, and
+the minimum of tick-quantized readings sits a tick low — and falls back to the fastest of
+several wall readings where it steps more coarsely (the Windows runner); the clock and the
+statistic are chosen by `packages/detections/test/helpers/growth-clock.ts`, and the pair a
+ratio compares keeps all of its rounds when the next doubling goes over budget. The
+per-rule walk screens on process-wide CPU, and a breach there is measured again on a fresh
+worker thread charged with that thread's own CPU — a new isolate, so the regex runs
+interpreted again as a hook process does (re-measuring on the same thread would measure
+the compiled tier, see `worstProbeMs`) — and only that second reading decides, clearing
+the rule only when it reads at least one measured clock step under the budget, since a
+stepped clock reads low by up to a step. A control case holds the re-measurement to the
+interpreted cost: more than three times the same probe's compiled cost on the calling
+thread, read unquantized and the bound floored at one clock step, on the native clock and
+on a forced 16 ms step; a reading within a step of either line is skipped as unmeasurable
+rather than judged. `packages/detections/test/security/unicode.test.ts`'s
+one-BOM slow-path ratio reads the growth tier's clock and statistic and fails only when
+three attempts breach. And a guard whose subject has a countable unit counts it rather
+than timing it — `mergeOverlappingSameRule`'s growth guard counts the uses of the span
+bounds it compares, and the browser extension's SSE rescan guard counts the characters the
+string builtins examine (`plugins/browser-extension/test/helpers/scan-meter.ts`).
 
 Six properties are load-bearing, and each is enforced by
 `packages/eslint-config/test/bench-harness.test.js` rather than remembered:

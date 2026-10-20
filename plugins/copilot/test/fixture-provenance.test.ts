@@ -3,9 +3,10 @@
  * value of the distinction is that a reader can tell them apart without asking.
  *
  * `fixtures/cli/` is **recordings** — bytes a real Copilot CLI 1.0.83 session
- * handed to a real hook's stdin. `fixtures/vscode/` is **recordings** too —
- * bytes VS Code handed to this plugin's own hooks, one subdirectory per
- * recorded session, each with a README of its own.
+ * handed to a real hook's stdin, plus, under `plugin-install-1.0.98/`, bytes a
+ * 1.0.98 session handed to this plugin's own installed hooks. `fixtures/vscode/`
+ * is **recordings** too — bytes VS Code handed to this plugin's own hooks, one
+ * subdirectory per recorded session, each with a README of its own.
  * `fixtures/vscode-provisional/` is **doc-derived** — written from vendor
  * documentation before any VS Code session was recorded, and kept so a reader
  * can see which of its claims the recordings confirmed and which they did not.
@@ -28,6 +29,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const CLI_DIR = new URL('./fixtures/cli/', import.meta.url);
+const PLUGIN_INSTALL_DIR = new URL('./fixtures/cli/plugin-install-1.0.98/', import.meta.url);
 const PROVISIONAL_DIR = new URL('./fixtures/vscode-provisional/', import.meta.url);
 const VSCODE_PLUGIN_LOAD_DIR = new URL('./fixtures/vscode/plugin-load-1.141/', import.meta.url);
 
@@ -180,5 +182,48 @@ describe('fixtures/vscode/plugin-load-1.141 — recordings from a loaded plugin'
     // A recording nobody links from the specimens it replaces is one a reader
     // of those specimens never finds.
     expect(PROVISIONAL_README).toContain('../vscode/plugin-load-1.141/');
+  });
+});
+
+describe('fixtures/cli/plugin-install-1.0.98 — recordings from an installed plugin', () => {
+  const SECTION_HEADING = '## Plugin-install recordings — Copilot CLI 1.0.98';
+
+  /** The README section about this directory, up to the next `## ` heading. */
+  function section(): string {
+    const start = CLI_README.indexOf(SECTION_HEADING);
+    expect(start, 'the README carries the plugin-install section').toBeGreaterThanOrEqual(0);
+    const rest = CLI_README.slice(start + SECTION_HEADING.length);
+    const end = rest.search(/^## /mu);
+    return end === -1 ? rest : rest.slice(0, end);
+  }
+
+  it('has recordings to describe', () => {
+    expect(fixtureNames(PLUGIN_INSTALL_DIR)).toEqual([
+      'postToolUse',
+      'preToolUse',
+      'sessionStart',
+      'userPromptSubmitted',
+    ]);
+  });
+
+  it('describes the directory, the build and the install route in a section of its own', () => {
+    const text = section();
+    expect(text).toContain('plugin-install-1.0.98/');
+    expect(text).toMatch(/1\.0\.98/u);
+    expect(text).toMatch(/copilot plugin install/u);
+    expect(text).toMatch(/recorded/iu);
+  });
+
+  it('names every recording in that section', () => {
+    const text = section();
+    const undescribed = fixtureNames(PLUGIN_INSTALL_DIR).filter((name) => !text.includes(name));
+    expect(undescribed).toEqual([]);
+  });
+
+  it('carries no file that the provisional directory also carries', () => {
+    const overlap = fixtureNames(PLUGIN_INSTALL_DIR).filter((name) =>
+      fixtureNames(PROVISIONAL_DIR).includes(name),
+    );
+    expect(overlap).toEqual([]);
   });
 });

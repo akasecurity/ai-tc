@@ -1306,6 +1306,17 @@ const MASKING_RULE_LINES: readonly string[] = [
 ];
 
 /**
+ * What else the history grant sends (payload v4): the labels a person gives on
+ * this machine. Said in the machine-wide question only, because a scoped
+ * attachment does not send them.
+ */
+const LABELS_DISCLOSURE_LINES: readonly string[] = [
+  'Saying yes also sends the exceptions you grant and the findings you',
+  'dismiss on this machine, each with the reason you picked from the list —',
+  'never the reason you type.',
+];
+
+/**
  * Whether this machine may also send the activity it recorded before attaching.
  *
  * Never throws and never blocks the attach: a store that cannot be read costs
@@ -1395,6 +1406,8 @@ async function askAboutHistory(
       // promotes one. Saying so is the point of asking.
       'For that history, what was captured, which for a',
       ...MASKING_RULE_LINES,
+      '',
+      ...LABELS_DISCLOSURE_LINES,
       '',
       'Saying no does not stop live sending — that is part of being attached.',
       'It means nothing recorded before now is sent. Anything a live send could',

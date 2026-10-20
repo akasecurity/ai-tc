@@ -1,6 +1,7 @@
 import type {
   CredentialSightingsRequest,
   EgressIngestRequest,
+  LabelReportRequest,
   StorePostureSnapshot,
 } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
@@ -583,7 +584,7 @@ describe('the shares-ingest submission', () => {
 describe('routes', () => {
   const server = useLoopbackServer();
 
-  it('addresses each of the twelve, and tolerates trailing slashes on the endpoint', async () => {
+  it('addresses each of the thirteen, and tolerates trailing slashes on the endpoint', async () => {
     // SEVERAL slashes, not one. The normalization is a scan rather than a
     // `replace(/\/+$/, '')` — that regex is quadratic on an all-slash string,
     // since the engine retries from every position and each attempt walks to the
@@ -611,7 +612,9 @@ describe('routes', () => {
                   ? json({ command: null })
                   : req.url === '/v1/sighting-key'
                     ? json(sightingKeyBody)
-                    : json({ accepted: 1, duplicates: 0, ok: true }),
+                    : req.url === '/v1/plugin/labels'
+                      ? json({ grants: 0, dismissals: 1 })
+                      : json({ accepted: 1, duplicates: 0, ok: true }),
       );
     });
 
@@ -639,6 +642,7 @@ describe('routes', () => {
     await client.ackCommand('cmd_1', { outcome: 'reported', projectsScanned: 0 });
     await client.getSightingKey();
     await client.recordCredentialSightings(sightingsRequest);
+    await client.reportLabels(labelsRequest);
 
     expect(server.received.map((r) => `${r.method ?? ''} ${r.url ?? ''}`)).toEqual([
       'POST /v1/events',
@@ -653,6 +657,7 @@ describe('routes', () => {
       'POST /v1/plugin/commands/cmd_1/ack',
       'GET /v1/sighting-key',
       'POST /v1/credential-sightings',
+      'POST /v1/plugin/labels',
     ]);
   });
 
@@ -1090,6 +1095,63 @@ describe('the sighting-key fetch', () => {
     expect(error).toBeInstanceOf(RemoteRequestError);
     expect(error?.message).toContain('403');
     expectNoEchoOf(error?.message, sightingKeyBody.key);
+  });
+});
+
+const labelsRequest: LabelReportRequest = {
+  grants: [],
+  dismissals: [
+    {
+      id: '00000000-0000-4000-8000-000000000002',
+      findingKey: 'fk-1',
+      method: 'false-positive',
+      confirmedBy: 'user',
+      resolvedAt: 1_766_000_000_000,
+    },
+  ],
+};
+
+describe('the labels route', () => {
+  const server = useLoopbackServer();
+
+  it('issues exactly POST /v1/plugin/labels with the credential and the body', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(json({ grants: 0, dismissals: 1 }));
+    });
+
+    const ack = await client.reportLabels(labelsRequest);
+
+    const seen = server.received.at(-1);
+    expect(`${seen?.method ?? ''} ${seen?.url ?? ''}`).toBe('POST /v1/plugin/labels');
+    expect(seen?.headers['x-api-key']).toBe(API_KEY);
+    expect(JSON.parse(seen?.body ?? '')).toEqual(labelsRequest);
+    expect(ack).toEqual({ grants: 0, dismissals: 1 });
+  });
+
+  it('refuses a body carrying typed text before it reaches the wire', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    const before = server.received.length;
+    const withText = {
+      ...labelsRequest,
+      dismissals: [{ ...labelsRequest.dismissals[0], evidence: 'typed by a person' }],
+    } as unknown as LabelReportRequest;
+
+    await expect(client.reportLabels(withText)).rejects.toMatchObject({
+      name: 'RemoteRequestInvalid',
+    });
+    expect(server.received).toHaveLength(before);
+  });
+
+  it('names a deployment that predates the route', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((_req, res) => {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(json({ error: { code: 'NOT_FOUND' } }));
+    });
+
+    await expect(client.reportLabels(labelsRequest)).rejects.toBeInstanceOf(RemoteRouteAbsent);
   });
 });
 

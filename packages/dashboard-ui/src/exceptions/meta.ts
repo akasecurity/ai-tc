@@ -3,11 +3,14 @@
 // identical state/scope/provenance labelling.
 import type {
   BlockedDetectionDescriptor,
+  DismissMethod,
   ExceptionDescriptor,
   FingerprintKeyState,
 } from '@akasecurity/schema';
 import { isMatchableUnder } from '@akasecurity/schema';
 import type { BadgeProps } from '@akasecurity/ui-kit';
+
+import type { Choice } from '../shared/ChoiceGroup.tsx';
 
 // The rotate-key disclosure is stated by two surfaces — this package's
 // RotateKeyDialog and `aka exception rotate-key` — so it lives in the one
@@ -117,6 +120,30 @@ export const VIA_LABEL: Record<ExceptionDescriptor['createdVia'], string> = {
 /** The scope answers the grant forms offer; resolved server-side via scopeFromAnswer. */
 export const SCOPE_ANSWERS = ['once', '30m', '1h', '24h', 'permanent'] as const;
 export type ScopeAnswer = (typeof SCOPE_ANSWERS)[number];
+
+/**
+ * The reasons a grant form offers as a label, beside the free-text reason.
+ * The same three answers and labels as the dismiss dialog's DISMISS_METHODS,
+ * worded for the one value a grant covers rather than every finding of a rule.
+ */
+export const GRANT_METHODS: readonly Choice<DismissMethod>[] = [
+  {
+    value: 'acknowledged',
+    label: 'Accepted risk',
+    description: 'The value is real and sensitive, and you are choosing to let it through.',
+  },
+  {
+    value: 'false-positive',
+    label: 'Not a real finding',
+    description: 'The rule is wrong: this value is not sensitive.',
+  },
+  {
+    value: 'test-or-example',
+    label: 'Test or example data',
+    description:
+      'The rule is right about the shape, but this value is a test fixture or an example, not a live one.',
+  },
+];
 
 export const SCOPE_ANSWER_LABEL: Record<ScopeAnswer, string> = {
   once: 'Once',

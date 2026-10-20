@@ -10,6 +10,7 @@ import {
   toExceptionDescriptor,
 } from '../../src/zod/exception.ts';
 import { PolicyBundle } from '../../src/zod/policy.ts';
+import { DismissMethod } from '../../src/zod/recommendation-action.ts';
 
 // A fully-populated active grant. The fingerprint is a keyed HMAC-SHA256 hex
 // digest of the approved value — the raw value never appears in any shape.
@@ -89,6 +90,41 @@ describe('DetectionException', () => {
         DetectionException.safeParse({ ...validException, valueFingerprint: bad }).success,
       ).toBe(false);
     }
+  });
+
+  it('reads a grant written before the label fields as unlabelled and user-confirmed', () => {
+    const parsed = DetectionException.parse(validException);
+    expect(parsed.method).toBeNull();
+    expect(parsed.confirmedBy).toBe('user');
+  });
+
+  it.each(DismissMethod.options)('accepts %s as the label of a grant', (method) => {
+    expect(DetectionException.parse({ ...validException, method }).method).toBe(method);
+  });
+
+  it('rejects a machine verdict as the label of a grant', () => {
+    for (const method of ['exception', 'redetected', 'fixed-at-source', 'enforced-in-flight']) {
+      expect(DetectionException.safeParse({ ...validException, method }).success).toBe(false);
+    }
+  });
+
+  it('accepts an admin confirmation and nothing outside user or admin', () => {
+    expect(DetectionException.parse({ ...validException, confirmedBy: 'admin' }).confirmedBy).toBe(
+      'admin',
+    );
+    expect(DetectionException.safeParse({ ...validException, confirmedBy: 'model' }).success).toBe(
+      false,
+    );
+  });
+
+  it('keeps the free-text justification required beside the label', () => {
+    expect(
+      DetectionException.safeParse({
+        ...validException,
+        method: 'test-or-example',
+        justification: '',
+      }).success,
+    ).toBe(false);
   });
 });
 

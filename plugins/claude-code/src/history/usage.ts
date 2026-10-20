@@ -316,7 +316,10 @@ export async function reconcileSessionToolCalls(
     // straddle the cap and leak an unmasked prefix.
     let inspections: ToolCallInspectionInput[] = [];
     if (tc.target !== undefined) {
-      const { masked, findings } = scanText(tc.target, ruleVersions, { locate: true });
+      const { masked, findings } = scanText(tc.target, ruleVersions, {
+        locate: true,
+        features: {},
+      });
       if (masked !== '') attributes.target = truncateTarget(masked);
       // actionTaken = 'log': these are observed post-hoc from the transcript, not
       // enforced at the time (the tool already ran) — an audit record, not a block.
@@ -334,6 +337,7 @@ export async function reconcileSessionToolCalls(
         col: f.location.col,
         context: f.location.context,
         ...(f.variableName === undefined ? {} : { variableName: f.variableName }),
+        ...(f.features === undefined ? {} : { features: f.features }),
       }));
     }
     if (tc.isError !== undefined) attributes.is_error = tc.isError;

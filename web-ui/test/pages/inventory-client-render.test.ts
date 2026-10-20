@@ -1,5 +1,5 @@
 import type { InventorySelection } from '@akasecurity/dashboard-ui';
-import type { ProjectSummary } from '@akasecurity/schema';
+import type { ProjectSummary, SensitiveDataClass } from '@akasecurity/schema';
 import type React from 'react';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -35,7 +35,7 @@ const OPEN_PROJECT: InventorySelection = {
   item: { type: 'project', id: PROJECT.id },
 };
 
-function render(blockedError: string | null): string {
+function render(blockedError: string | null, sensitiveData: SensitiveDataClass[] = []): string {
   const client = createElement(InventoryClient, {
     harnesses: [],
     assetGroups: [],
@@ -44,6 +44,8 @@ function render(blockedError: string | null): string {
     assetDetail: null,
     blocked: [],
     blockedError,
+    sensitiveData,
+    sensitiveDataError: null,
     harnessEvents: { counts: { block: 0, redact: 0, warn: 0 }, items: [] },
     renderedAt: Date.parse('2026-10-15T12:00:00.000Z'),
     locale: 'en-US',
@@ -64,5 +66,20 @@ describe('the opened project’s withheld files', () => {
 
   it('attributes withheld files the list does not show to policy when the read succeeded', () => {
     expect(render(null)).toContain('2 files are withheld by the project&#x27;s policy');
+  });
+});
+
+describe('the opened project’s sensitive data', () => {
+  it('lists the categories the read returned', () => {
+    const html = render(null, [
+      {
+        category: 'secret',
+        files: 3,
+        severity: 'high',
+        lastDetectedAt: '2026-10-15T11:00:00.000Z',
+      },
+    ]);
+    expect(html).toContain('Sensitive data present');
+    expect(html).toContain('3 files');
   });
 });

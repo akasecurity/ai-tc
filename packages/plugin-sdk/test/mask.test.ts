@@ -117,3 +117,28 @@ describe('scanText — the variable a secret is assigned to', () => {
     for (const finding of findings) expect(finding).not.toHaveProperty('variableName');
   });
 });
+
+describe('scanText features', () => {
+  it('attaches content-free features to each located finding, with the path it is given', () => {
+    const text = ['const AWS_ACCESS_KEY_ID = "', AWS_KEY, '"; // example config'].join('');
+    const { findings } = scanText(text, undefined, {
+      locate: true,
+      features: { filePath: 'examples/aws/config.ts' },
+    });
+    const aws = findings.find((f) => f.category === 'secret');
+    expect(aws?.features).toMatchObject({
+      category: 'secret',
+      shape: { knownPrefix: 'AKIA' },
+      pathClass: 'example',
+      name: 'secret_like',
+    });
+    expect(aws?.features?.nearby).toContain('test_like');
+    expect(JSON.stringify(aws?.features)).not.toContain(AWS_KEY);
+    expect(JSON.stringify(aws?.features)).not.toContain('AWS_ACCESS_KEY_ID');
+  });
+
+  it('attaches none unless asked', () => {
+    const { findings } = scanText(AWS_KEY, undefined, { locate: true });
+    expect(findings[0]?.features).toBeUndefined();
+  });
+});

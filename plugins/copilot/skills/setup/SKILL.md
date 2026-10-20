@@ -50,8 +50,10 @@ finding on the dashboard; **neither can be withheld or masked.** A `block` or
 the model unchanged. Under VS Code AKA returns the notice as a hook message,
 and it appears only in VS Code's "GitHub Copilot Chat Hooks" output channel: in
 the recorded session the chat showed nothing from AKA. On the CLI it writes the
-notice to stderr, and whether the CLI shows a successful hook's stderr to you
-has not been confirmed (see below). It never pretends it enforced.
+notice to stderr. In `-p` mode, the only mode observed, the CLI did not show a
+successful hook's stderr: it appeared only in Copilot's debug log, and only
+because debug logging was enabled (`--log-level debug`). Whether an interactive
+session shows it has not been measured. It never pretends it enforced.
 
 The reason is that neither host has a channel for it that has been seen to
 work: the CLI's `modifiedPrompt` and `modifiedResult` are documented and were
@@ -121,12 +123,15 @@ verdict only to deny, rewrites arguments only through `modifiedArgs`, and
 otherwise stays out of the way. A warning it has is written to stderr, because
 the CLI documents no message field on this event.
 
-**A warn may reach only the CLI's log, not your screen.** The hooks reference
-describes stderr surfacing for a FAILING hook ("logged as a hook failure"); what
-a CLI that exits 0 does with a hook's stderr is not documented and was not
-observed here. So under `redactFallback: warn` — the shipped default — the call
-goes through and the notice may end up in the debug log rather than in front of
-you, which makes a warn hard to tell from `monitor` on this host. Set
+**In `-p` mode a warn reached only the CLI's debug log, not the screen.** The
+hooks reference describes stderr surfacing for a FAILING hook ("logged as a
+hook failure") and says nothing about one that exits 0. Observed on Copilot
+CLI 1.0.98 in `-p` mode: a successful hook's stderr appears nowhere in the
+CLI's own output, and only in the debug log (`--log-level debug --log-dir
+<dir>`), as `[rust:hooks] [hook stderr] …` lines. So under `redactFallback:
+warn` — the shipped default — the call goes through and the notice is in that
+log rather than in front of you, which makes a warn hard to tell from
+`monitor` on this host. An interactive session has not been measured. Set
 `redactFallback` to `block` if a redact on command text has to be visible.
 
 **The cloud coding agent is captured only where the repository asks for it.**
@@ -141,11 +146,11 @@ session-start hook has no message field on either surface, so it writes that
 line to **stderr**, together with its other once-per-session notices: that a
 newer AKA binary is on the machine than this plugin, that a warn-era store's
 block and redact categories were kept at warn, and that the store path is
-redirected. Its stdout stays empty. Whether the CLI shows a successful hook's
-stderr to you has not been confirmed (see above), so these lines may reach only
-the debug log. `aka status` shows whether this machine is attached, whether it
-sends everything or only enrolled repositories, and which repositories are
-enrolled.
+redirected. Its stdout stays empty. In `-p` mode the CLI did not show a
+successful hook's stderr (see above), so these lines were seen only in the
+debug log, with debug logging enabled; an interactive session is unmeasured.
+`aka status` shows whether this machine is attached, whether it sends
+everything or only enrolled repositories, and which repositories are enrolled.
 
 ### Capability matrix
 

@@ -1,10 +1,12 @@
+import { createHmac } from 'node:crypto';
 import { dirname } from 'node:path';
 
-import type { BlockedDetectionInput, ResolutionInput } from '@akasecurity/persistence';
+import type { BlockedDetectionInput, ResolutionInput, SightingKey } from '@akasecurity/persistence';
 import {
   canonicalRepoUrl,
   llmCallId,
   planSightingShare,
+  readSightingKeys,
   readSightingSharing,
   scopeKeyOfProjectKey,
   toEgressIngestRequest,
@@ -164,6 +166,13 @@ export interface AttachedDataGatewayDeps {
    */
   dataDir: string;
   /**
+   * The key a forwarded variable name is hashed under: the deployment's current
+   * sighting key. Defaults to reading it from the ~/.aka base above `dataDir`
+   * (`dirname(dataDir)`); `undefined` (not attached,
+   * no key yet, unreadable custody) forwards the inspection without a name hash.
+   */
+  readNameKey?: () => SightingKey | undefined;
+  /**
    * What this gateway may forward: the attachment's mode, and for a scoped
    * attachment the enrolled keys. The factory resolves it ONCE per gateway,
    * from the credential it just read and the settings already in hand.
@@ -316,6 +325,19 @@ export class AttachedDataGateway
         readSharing: () => readSightingSharing(dirname(deps.dataDir)).sharing,
         ...(deps.scanBound === undefined ? {} : { scanBound: deps.scanBound }),
       });
+  }
+  // Read once per forwarded batch, never on the hook's decision path. A failure
+  // to read the key drops only the name hash, never the inspection.
+  private nameKey(): SightingKey | undefined {
+    try {
+      return this.deps.readNameKey
+        ? this.deps.readNameKey()
+        : // The key lives under the ~/.aka BASE (settings/, keys/); dataDir is
+          // the data leaf beneath it, as every sibling default here assumes.
+          readSightingKeys(dirname(this.deps.dataDir))?.current;
+    } catch {
+      return undefined;
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -1146,7 +1168,10 @@ export class AttachedDataGateway
   // way — this only stops the FINDING row itself from being dropped.
   async recordToolCalls(inputs: readonly ToolCallInput[]): Promise<void> {
     await this.deps.local.recordToolCalls(inputs);
-    await this.forwardBatch(this.forwardableLeaves(inputs), (input) => toolAuditEvent(input));
+    const nameKey = this.nameKey();
+    await this.forwardBatch(this.forwardableLeaves(inputs), (input) =>
+      toolAuditEvent(input, nameKey),
+    );
   }
 
   // Forwarded as a `config_scan` audit event: there is no dedicated
@@ -1773,6 +1798,7 @@ function llmAuditEvent(input: LlmCallInput): AuditEventInput {
 
 function toolAuditEvent(
   input: ToolCallInput,
+  nameKey: SightingKey | undefined,
 ): AuditEventInput & { inspections?: ToolCallInspection[] } {
   return {
     id: toolCallId(input.sessionId, input.toolUseId),
@@ -1781,15 +1807,31 @@ function toolAuditEvent(
     parentId: input.parentId,
     rootSessionId: input.rootSessionId,
     attributes: input.attributes,
-    inspections: input.inspections.map(toWireInspection),
+    inspections: input.inspections.map((insp) => toWireInspection(insp, nameKey)),
   };
 }
 
+/** The domain string prefixed to a variable name before it is hashed for the wire. */
+export const NAME_HASH_DOMAIN = 'aka:feature:name:v1';
+
+/** `v<keyVersion>.<base64url(HMAC-SHA256(key, domain ‖ name))>`. */
+function nameHash(key: SightingKey, name: string): string {
+  const mac = createHmac('sha256', key.key)
+    .update(NAME_HASH_DOMAIN, 'utf8')
+    .update(name, 'utf8')
+    .digest('base64url');
+  return `v${String(key.keyVersion)}.${mac}`;
+}
+
 // The wire inspection, named field by field. A local inspection also carries
-// where the hit sits and its masked excerpt (ToolCallInspectionInput); those
-// stay on this machine, so they are left out here rather than relying on the
-// client's schema to strip them.
-export function toWireInspection(insp: ToolCallInspectionInput): ToolCallInspection {
+// where the hit sits, its masked excerpt and the variable name
+// (ToolCallInspectionInput); those stay on this machine, so they are left out
+// here rather than relying on the client's schema to strip them. The name goes
+// out only as a keyed hash, and only when the machine holds the deployment's key.
+export function toWireInspection(
+  insp: ToolCallInspectionInput,
+  nameKey: SightingKey | undefined,
+): ToolCallInspection {
   return {
     ruleId: insp.ruleId,
     ruleName: insp.ruleName,
@@ -1800,5 +1842,9 @@ export function toWireInspection(insp: ToolCallInspectionInput): ToolCallInspect
     maskedMatch: insp.maskedMatch,
     actionTaken: insp.actionTaken,
     confidence: insp.confidence,
+    ...(insp.features === undefined ? {} : { features: insp.features }),
+    ...(insp.variableName === undefined || nameKey === undefined
+      ? {}
+      : { nameHash: nameHash(nameKey, insp.variableName) }),
   };
 }

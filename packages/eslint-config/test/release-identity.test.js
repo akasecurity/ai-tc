@@ -336,6 +336,23 @@ describe('AGENT_PLUGINS coordinates are whole or absent', () => {
       ).not.toBe(true);
     },
   );
+
+  it('covers every published plugins/* package, and names no other', () => {
+    const published = PLUGIN_PACKAGES.filter((p) => p.private !== true)
+      .map((p) => p.name)
+      .sort();
+    expect(published.length, 'no published plugins/* package to compare against').toBeGreaterThan(
+      0,
+    );
+    const named = ENTRIES.map((e) => str(e, 'npmPackage'))
+      .filter((n) => n !== undefined)
+      .sort();
+    expect(
+      named,
+      'the AGENT_PLUGINS npmPackage set differs from the published plugins/* packages — a ' +
+        'published plugin missing from the registry is one no update surface can see',
+    ).toEqual(published);
+  });
 });
 
 describe("this repo's marketplace and the registry agree", () => {

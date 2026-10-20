@@ -187,8 +187,10 @@ gated, by `packages/eslint-config/test/release-identity.test.js` — `pluginName
 `marketplace` and `cliBin` are all present or all absent, `installHint` is present
 exactly when they are absent (Antigravity's permanent state: that host has no
 marketplace and installs from a local directory), every `npmPackage` names a tracked
-non-private workspace package, and an entry whose marketplace is this repository
-agrees with `.claude-plugin/marketplace.json`.
+non-private workspace package, the entries' `npmPackage` set equals the set of
+tracked non-private `plugins/*` packages, so a published plugin cannot ship missing
+from the registry, and an entry whose marketplace is this repository agrees with
+`.claude-plugin/marketplace.json`.
 `src/zod/harness-map.ts` holds both spellings as named-member const objects —
 `SOURCE_TOOL` (the wire id a plugin stamps on a capture, `'claude-code'`) and `HARNESS` (the
 display id the dashboard renders, `'claudecode'`). Four rules keep them from re-multiplying,

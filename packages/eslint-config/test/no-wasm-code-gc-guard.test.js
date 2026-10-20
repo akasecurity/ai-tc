@@ -145,14 +145,22 @@ describe('the no-wasm-code-gc workaround', () => {
     const workflows = join(REPO_ROOT, '.github', 'workflows');
     for (const name of readdirSync(workflows).filter((f) => /\.ya?ml$/.test(f))) {
       for (const m of readFileSync(join(workflows, name), 'utf8').matchAll(
-        /node-version:\s*['"]?(\d+)/g,
+        /^\s*node-version:\s*(.*?)\s*(?:#.*)?$/gm,
       )) {
         pins.push([`.github/workflows/${name}`, m[1]]);
       }
     }
     expect(pins.length).toBeGreaterThan(1);
     for (const [where, value] of pins) {
-      const major = Number(/\d+/.exec(value)?.[0]);
+      // Every pin must name a major: an alias (`lts/*`) or an expression
+      // (`${{ matrix.node }}`) floats to whatever it resolves to, which is
+      // the move past the gate this case exists to catch.
+      const literal = /^['"]?(\d+)(?:\.[\dx*]+)*['"]?$/.exec(value.trim());
+      expect(
+        literal,
+        `${where} pins Node as ${JSON.stringify(value.trim())}, not a numeric major`,
+      ).not.toBe(null);
+      const major = Number(literal[1]);
       expect(
         major,
         `${where} pins Node ${String(major)}, past the Node ${String(gated)} gate in ${SETUP_REL}`,

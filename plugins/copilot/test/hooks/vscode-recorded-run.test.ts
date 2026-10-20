@@ -35,6 +35,8 @@ import type { HookHandler } from '../../src/hooks/shared.ts';
 import { runUserPromptSubmit } from '../../src/hooks/user-prompt-submit-run.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { ruleExample } from '../helpers/rule-example.ts';
+import type { StderrCapture } from '../helpers/stderr-capture.ts';
+import { captureStderr } from '../helpers/stderr-capture.ts';
 
 const FIXTURE_DIR = fileURLToPath(
   new URL('../fixtures/vscode/plugin-load-1.141/', import.meta.url),
@@ -90,9 +92,7 @@ let root: string;
 let akaHome: string;
 let home: string;
 let cwd: string;
-let stderr: string[];
-// `(node:1234) ExperimentalWarning: …` and the `--trace-warnings` hint after it.
-const NODE_WARNING = /^\(node:\d+\) |--trace-warnings/u;
+let stderr: StderrCapture;
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'aka-copilot-vscode-recorded-'));
@@ -102,20 +102,8 @@ beforeEach(() => {
   cwd = join(root, 'work');
   mkdirSync(join(cwd, '.git'), { recursive: true });
   writeFileSync(join(cwd, '.git', 'config'), `[remote "origin"]\n\turl = ${WORK_REMOTE}\n`);
-  stderr = [];
-  vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
-    stderr.push(String(chunk));
-    return true;
-  });
+  stderr = captureStderr();
 });
-
-/**
- * Everything written to stderr except node's own runtime warnings — the hook's
- * notices AND the SDK's `[aka]` lines.
- */
-function akaStderr(): string {
-  return stderr.filter((line) => !NODE_WARNING.test(line)).join('');
-}
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -376,9 +364,9 @@ describe('run_in_terminal explanation and goal', () => {
    * capture really observes what a handler writes there.
    */
   function expectStderrCarriesNoRaw(): void {
-    const written = akaStderr();
+    const written = stderr.filtered();
     expect(written).toBe('');
-    expectNoEchoOf(written, SAMPLE.example);
+    expectNoEchoOf(stderr.raw(), SAMPLE.example);
   }
 
   it('captures what the handler writes to stderr (the control for the checks above)', async () => {
@@ -394,11 +382,11 @@ describe('run_in_terminal explanation and goal', () => {
       homeDir: home,
       scanWorkerUrl: absent,
     });
-    const written = akaStderr();
+    const written = stderr.filtered();
     // Positive control: the SDK's refusal line for the field it could not scan
     // reached the capture, so the capture is live on this path.
     expect(written).toMatch(/\[aka\] a large input could not be scanned.* and was refused/u);
-    expectNoEchoOf(written, SAMPLE.example);
+    expectNoEchoOf(stderr.raw(), SAMPLE.example);
   });
 
   /** The recorded call with its command cleaned and one field carrying a secret. */

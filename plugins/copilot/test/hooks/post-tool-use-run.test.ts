@@ -38,6 +38,8 @@ import { runPostToolUse } from '../../src/hooks/post-tool-use-run.ts';
 import { openGatewayOrNull } from '../../src/hooks/store-health.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { ruleExample } from '../helpers/rule-example.ts';
+import type { StderrCapture } from '../helpers/stderr-capture.ts';
+import { captureStderr } from '../helpers/stderr-capture.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(HERE, '..', 'fixtures');
@@ -90,9 +92,7 @@ const DIALECTS = [
 let root: string;
 let akaHome: string;
 let cwd: string;
-let stderr: string[];
-// `(node:1234) ExperimentalWarning: …` and the `--trace-warnings` hint after it.
-const NODE_WARNING = /^\(node:\d+\) |--trace-warnings/u;
+let stderr: StderrCapture;
 
 function checkout(name: string, remote: string): string {
   const dir = join(root, name);
@@ -107,11 +107,7 @@ beforeEach(() => {
   // that must not open the store can assert the directory never appeared.
   akaHome = join(root, 'aka-home');
   cwd = checkout('checkout', WORK_REMOTE);
-  stderr = [];
-  vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
-    stderr.push(String(chunk));
-    return true;
-  });
+  stderr = captureStderr();
 });
 
 afterEach(() => {
@@ -153,15 +149,6 @@ function findingRows(): Record<string, unknown>[] {
   );
 }
 
-/**
- * Everything written to stderr except node's own runtime warnings — the hook's
- * notices AND the SDK's `[aka]` lines, so a line the SDK writes on the hook's
- * behalf is read like any other.
- */
-function akaStderr(): string {
-  return stderr.filter((line) => !NODE_WARNING.test(line)).join('');
-}
-
 describe.each(DIALECTS)('runPostToolUse on the $kind dialect', (d) => {
   const isCli = d.kind === 'cli';
 
@@ -170,9 +157,9 @@ describe.each(DIALECTS)('runPostToolUse on the $kind dialect', (d) => {
     if (isCli) {
       // The CLI documents no message field on this event: stdout stays empty.
       expect(output).toBeUndefined();
-      return akaStderr().trimEnd();
+      return stderr.filtered().trimEnd();
     }
-    expect(akaStderr()).toBe('');
+    expect(stderr.filtered()).toBe('');
     return String((output as { systemMessage?: unknown } | undefined)?.systemMessage);
   }
 
@@ -219,7 +206,7 @@ describe.each(DIALECTS)('runPostToolUse on the $kind dialect', (d) => {
   it('records nothing and says nothing for a clean result', async () => {
     seedPolicy('block');
     expect(await run(d.payload('nothing to see here', cwd))).toBeUndefined();
-    expect(akaStderr()).toBe('');
+    expect(stderr.filtered()).toBe('');
     expect(responseRows()).toEqual([]);
     // The control: the store was opened, so the silence is a decision.
     expect(existsSync(join(akaHome, 'data', 'aka.db'))).toBe(true);
@@ -262,7 +249,7 @@ describe.each(DIALECTS)('runPostToolUse on the $kind dialect', (d) => {
     // Nothing on stderr claims the result was refused: this hook cannot refuse
     // it, so the SDK's refusal line is not written. The case below is the
     // control that the same bounded scan does write it for a refusing caller.
-    expect(stderr.join('')).not.toMatch(/refus/iu);
+    expect(stderr.raw()).not.toMatch(/refus/iu);
   });
 
   it('writes the SDK refusal line for a refusing caller over the same absent worker', async () => {
@@ -290,9 +277,7 @@ describe.each(DIALECTS)('runPostToolUse on the $kind dialect', (d) => {
     } finally {
       await runtime.close();
     }
-    expect(stderr.join('')).toMatch(
-      /\[aka\] a large input could not be scanned.* and was refused/u,
-    );
+    expect(stderr.raw()).toMatch(/\[aka\] a large input could not be scanned.* and was refused/u);
   });
 
   it('warns once per session when the store cannot be opened', async () => {
@@ -306,9 +291,9 @@ describe.each(DIALECTS)('runPostToolUse on the $kind dialect', (d) => {
     const first = notice(await run(d.payload('some output', cwd)));
     expect(first).toContain('could not open its local store');
 
-    stderr = [];
+    stderr.reset();
     expect(await run(d.payload('some output', cwd))).toBeUndefined();
-    expect(akaStderr()).toBe('');
+    expect(stderr.filtered()).toBe('');
   });
 });
 
@@ -402,11 +387,11 @@ describe('runPostToolUse on a CLI result without textResultForLlm', () => {
     );
     // The CLI has no message field on this event: the notice is on stderr.
     expect(output).toBeUndefined();
-    const text = akaStderr();
+    const text = stderr.filtered();
     expect(text).toContain(RULE_ID);
     expect(findingRows().map((r) => r.rule_id)).toEqual([RULE_ID]);
     expect(responseRows()).toHaveLength(1);
-    expectNoEchoOf(text, FIXTURE.example);
+    expectNoEchoOf(stderr.raw(), FIXTURE.example);
   });
 
   it('says part of it went unscanned when the walk bounds cut a leaf out', async () => {
@@ -419,11 +404,11 @@ describe('runPostToolUse on a CLI result without textResultForLlm', () => {
       { akaHome },
     );
     expect(output).toBeUndefined();
-    const text = akaStderr().trimEnd();
+    const text = stderr.filtered().trimEnd();
     // Positive control: the walk-limits sentence, which is not the timeout one.
     expect(text).toBe(unscannedPastWalkLimitsMessage('bash result', DELIVERED));
     expect(findingRows()).toEqual([]);
-    expectNoEchoOf(text, FIXTURE.example);
+    expectNoEchoOf(stderr.raw(), FIXTURE.example);
   });
 });
 
@@ -453,7 +438,7 @@ describe('runPostToolUse declines without opening the store', () => {
   ])('on %s', async (_label, event, stdin) => {
     expect(await runPostToolUse(event, stdin, { akaHome })).toBeUndefined();
     expect(existsSync(akaHome)).toBe(false);
-    expect(akaStderr()).toBe('');
+    expect(stderr.filtered()).toBe('');
   });
 
   it('opens it for a result with text under its own token (the control)', async () => {

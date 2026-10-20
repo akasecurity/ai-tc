@@ -35,6 +35,8 @@ import { denyPointerMessage } from '../../src/hooks/pre-tool-use-decision.ts';
 import { runPreToolUse } from '../../src/hooks/pre-tool-use-run.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { ruleExample } from '../helpers/rule-example.ts';
+import type { StderrCapture } from '../helpers/stderr-capture.ts';
+import { captureStderr } from '../helpers/stderr-capture.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(HERE, '..', 'fixtures');
@@ -89,9 +91,7 @@ const DIALECTS = [
 let root: string;
 let akaHome: string;
 let cwd: string;
-let stderr: string[];
-// `(node:1234) ExperimentalWarning: …` and the `--trace-warnings` hint after it.
-const NODE_WARNING = /^\(node:\d+\) |--trace-warnings/u;
+let stderr: StderrCapture;
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'aka-copilot-call-run-'));
@@ -100,11 +100,7 @@ beforeEach(() => {
   akaHome = join(root, 'aka-home');
   cwd = join(root, 'checkout');
   mkdirSync(cwd);
-  stderr = [];
-  vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
-    stderr.push(String(chunk));
-    return true;
-  });
+  stderr = captureStderr();
 });
 
 afterEach(() => {
@@ -143,11 +139,6 @@ function findingRules(): unknown[] {
   }
 }
 
-/** Everything written to stderr except node's own runtime warnings. */
-function akaStderr(): string {
-  return stderr.filter((line) => !NODE_WARNING.test(line)).join('');
-}
-
 function reasonOf(output: unknown): string {
   const flat = output as { permissionDecisionReason?: unknown } | undefined;
   const nested = output as
@@ -172,7 +163,7 @@ describe.each(DIALECTS)('runPreToolUse on the $kind dialect', (d) => {
   it('writes nothing for a clean call of ordinary size', async () => {
     seedPolicy('block');
     expect(await run('ls -la')).toBeUndefined();
-    expect(akaStderr()).toBe('');
+    expect(stderr.filtered()).toBe('');
     // The control: the store was opened, so the silence is a decision.
     expect(existsSync(join(akaHome, 'data', 'aka.db'))).toBe(true);
   });
@@ -186,7 +177,7 @@ describe.each(DIALECTS)('runPreToolUse on the $kind dialect', (d) => {
     expect(reason).toContain(RULE_ID);
     expect(findingRules()).toContain(RULE_ID);
     expectNoEchoOf(reason, FIXTURE.example);
-    expectNoEchoOf(akaStderr(), FIXTURE.example);
+    expectNoEchoOf(stderr.raw(), FIXTURE.example);
   });
 
   // The worker is pointed at a location with nothing in it — an install that
@@ -206,9 +197,9 @@ describe.each(DIALECTS)('runPreToolUse on the $kind dialect', (d) => {
     expect(findingRules()).toEqual([]);
     expectNoEchoOf(reasonOf(output), FIXTURE.example);
     // The SDK says on stderr that it refused, and carries none of the field.
-    const written = akaStderr();
+    const written = stderr.filtered();
     expect(written).toMatch(/\[aka\] a large input could not be scanned.* and was refused/u);
-    expectNoEchoOf(written, FIXTURE.example);
+    expectNoEchoOf(stderr.raw(), FIXTURE.example);
     expect(written).not.toContain('lorem ipsum');
   });
 
@@ -218,7 +209,7 @@ describe.each(DIALECTS)('runPreToolUse on the $kind dialect', (d) => {
     // worker is needed, so the absent one cannot decide anything.
     const absent = pathToFileURL(join(root, 'no-worker-here', 'scan-worker.js'));
     expect(await run(`echo ${LARGE.slice(0, 1000)}`, { scanWorkerUrl: absent })).toBeUndefined();
-    expect(akaStderr()).toBe('');
+    expect(stderr.filtered()).toBe('');
   });
 
   it('denies a vault pointer in the command without reaching the store', async () => {
@@ -227,7 +218,7 @@ describe.each(DIALECTS)('runPreToolUse on the $kind dialect', (d) => {
     // Decided from the call alone: the config load that creates the home never
     // ran, so no store was opened and none can be left open.
     expect(existsSync(akaHome)).toBe(false);
-    expect(akaStderr()).toBe('');
+    expect(stderr.filtered()).toBe('');
   });
 
   it('denies a vault pointer in the command even when the store cannot be opened', async () => {
@@ -247,7 +238,7 @@ describe.each(DIALECTS)('runPreToolUse on the $kind dialect', (d) => {
       );
     } else {
       expect(output).toBeUndefined();
-      expect(akaStderr()).toContain('could not open its local store');
+      expect(stderr.filtered()).toContain('could not open its local store');
     }
   });
 });

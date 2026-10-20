@@ -5,13 +5,12 @@ name: Release plugin (Copilot)
 # Release. The plugin's hook scripts are a build artifact
 # (plugins/copilot/scripts/, git-ignored) — they are generated here and shipped
 # inside the package, never committed. There is no marketplace for this plugin:
-# end users unpack the public npm package (`npm pack @akasecurity/ai-tc-copilot`)
-# and install it from that local directory with `copilot plugin install ./package`.
-# The Copilot CLI warns that a direct local-path install is deprecated; that path
-# is still the only one it documents for a package that is not in a marketplace.
-# Windows has not been confirmed against a real Copilot CLI install. GitHub
-# Packages requires auth even for public reads, so it is a secondary artifact, not
-# the install source.
+# end users unpack the public npm package and install it from that local
+# directory. The install steps, and what is and is not confirmed about them
+# (the deprecation warning, Windows, updating), are written once, in
+# plugins/copilot/skills/setup/SKILL.md under "Install — Copilot CLI"; the
+# Release body below carries the same commands. GitHub Packages requires auth
+# even for public reads, so it is a secondary artifact, not the install source.
 #
 # Release flow: bump version in package.json + plugin.json (Copilot reads its
 # manifest from the plugin ROOT, not a dotted dir), then push a tag
@@ -240,9 +239,17 @@ jobs:
           generate_release_notes: true
           prerelease: ${{ startsWith(github.ref_name, 'plugin-copilot-v0.') }}
           body: |
-            Install from a local directory: `npm pack @akasecurity/ai-tc-copilot`, unpack the tarball, then run `copilot plugin install ./package`. The Copilot CLI warns that direct local-path installs are deprecated; there is no marketplace install for this plugin yet.
+            Install into the Copilot CLI from a local directory; there is no marketplace install for this plugin yet:
 
-            Windows has not been confirmed against a real Copilot CLI install.
+            ```sh
+            npm pack @akasecurity/ai-tc-copilot
+            tar -xzf akasecurity-ai-tc-copilot-*.tgz
+            copilot plugin install ./package
+            copilot plugin list
+            aka init
+            ```
+
+            The Copilot CLI warns that direct local-path installs are deprecated. Windows and updating are unconfirmed. See the "Install — Copilot CLI" section of `plugins/copilot/skills/setup/SKILL.md` for the full notes.
 
   # Publish the same package to the repo's GitHub Packages registry (requirement:
   # packages land in the org's GitHub registry). Kept a separate job so its GitHub

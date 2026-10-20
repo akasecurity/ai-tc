@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
 import { coverageOptions } from '../../test/vitest/coverage.ts';
+import { unfinishedModulesReporter } from '../../test/vitest/unfinished-modules-reporter.ts';
 
 // Every test file runs behind the no-network guard: it refuses any outbound
 // connection that is not loopback and names the call site that made it. Wired
@@ -11,9 +12,15 @@ import { coverageOptions } from '../../test/vitest/coverage.ts';
 // if a package drops the entry or points it at the wrong path.
 const noNetworkGuard = fileURLToPath(new URL('../../test/setup/no-network.ts', import.meta.url));
 
+// And with wasm code GC off on Node 24: this suite can terminate a worker, and
+// on that line freeing code after a termination can abort the test process.
+// See the setup file; no-wasm-code-gc-guard.test.js derives which packages owe it.
+const noWasmCodeGc = fileURLToPath(new URL('../../test/setup/no-wasm-code-gc.ts', import.meta.url));
+
 export default defineConfig({
+  plugins: [unfinishedModulesReporter()],
   test: {
-    setupFiles: [noNetworkGuard],
+    setupFiles: [noNetworkGuard, noWasmCodeGc],
     coverage: coverageOptions(import.meta.url),
     environment: 'node',
     // The ReDoS gate deliberately runs patterns that are slow by design: a

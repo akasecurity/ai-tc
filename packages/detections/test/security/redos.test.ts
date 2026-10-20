@@ -1155,7 +1155,7 @@ describe('the probe battery itself', () => {
         if (++runs > 10_000) throw new Error('the window ran past its deadline');
       };
       expect(() => windowReadingMs(run, now, 16, undefined, wallNow)).toThrow(
-        /clock that has stopped/,
+        /the clock is starved or stopped/,
       );
       expect(runs).toBeLessThanOrEqual(GROWTH_WINDOW_DEADLINE_MS / 1_000);
     });

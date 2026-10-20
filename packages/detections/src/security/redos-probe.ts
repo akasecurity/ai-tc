@@ -399,10 +399,11 @@ export const GROWTH_WINDOW_STEPS = 8;
 /**
  * How long, in elapsed time, one pair reading may take to fill its window. A
  * window spans `GROWTH_WINDOW_STEPS` steps of its clock, at most 128ms of work
- * on a 16ms step, so this is far past what any reading on a working clock
- * takes, loaded or not. A clock that stops advancing never fills a window, and
- * this is what ends the reading: it is refused, as a clock whose step was not
- * measured is.
+ * on a 16ms step, so a reading needs about 1.3% of one core across this window
+ * to finish in time. That is far below an ordinarily busy runner's share, but
+ * not below every one: a thread starved past it never fills a window, exactly
+ * as a clock that stops advancing does, and the two cannot be told apart here.
+ * Either way the reading is refused, as a clock whose step was not measured is.
  */
 export const GROWTH_WINDOW_DEADLINE_MS = 10_000;
 
@@ -534,8 +535,8 @@ export interface GrowthBreach {
  * `cleared` says that this is how the window ended.
  *
  * A window still short of its steps after `GROWTH_WINDOW_DEADLINE_MS` of
- * `wallNow` throws: the clock has stopped advancing, and a reading cannot be
- * taken on it.
+ * `wallNow` throws: the clock is starved or has stopped, and a reading cannot
+ * be taken on it.
  */
 export function windowReadingMs(
   run: () => void,
@@ -566,7 +567,7 @@ export function windowReadingMs(
       throw new Error(
         `the growth tier's clock advanced ${String(elapsed)}ms of a ${String(windowMs)}ms ` +
           `window over ${String(runs)} runs in ${String(GROWTH_WINDOW_DEADLINE_MS)}ms of ` +
-          `elapsed time; a reading cannot be windowed on a clock that has stopped`,
+          `elapsed time; the clock is starved or stopped, so no growth tier is read`,
       );
     }
   } while (elapsed < windowMs);

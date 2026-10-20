@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { resolveInventoryContext } from '../src/inventory-resolver.ts';
 import {
+  remoteWithoutCredentials,
   resolveGitBranch,
   resolveHeadRoot,
   resolveRepo,
@@ -119,6 +120,36 @@ describe('resolveRepo', () => {
     const nested = join(root, 'apps', 'backend', 'src');
     mkdirSync(nested, { recursive: true });
     expect(resolveRepo(nested)).toBe('payments-api');
+  });
+});
+
+describe('remoteWithoutCredentials', () => {
+  it('removes userinfo, query and fragment from an https remote', () => {
+    expect(
+      remoteWithoutCredentials('https://build-bot:not-a-real-token@github.com/acme/app.git?t=x#f'),
+    ).toBe('https://github.com/acme/app.git');
+  });
+
+  it('removes a token given as the user alone', () => {
+    expect(remoteWithoutCredentials('https://not-a-real-token@github.com/acme/app.git')).toBe(
+      'https://github.com/acme/app.git',
+    );
+  });
+
+  it('keeps the login user of an ssh remote and removes a password', () => {
+    expect(
+      remoteWithoutCredentials('ssh://git:not-a-real-password@git.example.test/acme/app.git'),
+    ).toBe('ssh://git@git.example.test/acme/app.git');
+  });
+
+  it.each([
+    'https://GitHub.com/acme/app.git',
+    'ssh://git@git.example.test:2222/acme/app.git',
+    'git@github.com:acme/app.git',
+    '/home/dev/checkouts/app',
+    'C:/Users/dev/app',
+  ])('returns %s unchanged when there is nothing to remove', (remote) => {
+    expect(remoteWithoutCredentials(remote)).toBe(remote);
   });
 });
 

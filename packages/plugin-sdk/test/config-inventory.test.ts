@@ -2,10 +2,12 @@ import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { SOURCE_TOOL } from '@akasecurity/schema';
+import { configInventoryInputs, SOURCE_TOOL } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { resolveConfigInventory } from '../src/config-inventory.ts';
+import { bundledDetections } from '../src/index.ts';
+import { maskText } from '../src/mask.ts';
 
 let home: string;
 let project: string;
@@ -107,6 +109,25 @@ describe('resolveConfigInventory — project key', () => {
     expect(scan.mcpServers.find((s) => s.name === 'local')?.project).toBe(scan.projectKey);
   });
 
+  it('carries no credentials or query from the remote into the project key or items', () => {
+    const remote = 'https://build-bot:not-a-real-token-840@github.com/acme/app.git?t=q-840';
+    write(join(project, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    write(join(project, '.git', 'config'), `[remote "origin"]\n\turl = ${remote}\n`);
+    writeJson(join(project, '.mcp.json'), { mcpServers: { local: { command: 'mcp-local' } } });
+    write(join(project, '.claude', 'skills', 'deploy', 'SKILL.md'), '---\nname: deploy\n---\n');
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+
+    expect(scan.projectKey).toBe('https://github.com/acme/app.git');
+    expect(scan.mcpServers.find((s) => s.name === 'local')?.project).toBe(scan.projectKey);
+    expect(scan.skills.find((s) => s.name === 'deploy')?.source).toBe(
+      'project:https://github.com/acme/app.git',
+    );
+    const sent = JSON.stringify(configInventoryInputs(scan));
+    expect(sent).not.toContain('not-a-real-token-840');
+    expect(sent).not.toContain('q-840');
+  });
+
   it("is the repository's remote url inside a repository", () => {
     write(join(project, '.git', 'HEAD'), 'ref: refs/heads/main\n');
     write(
@@ -161,6 +182,28 @@ describe('resolveConfigInventory — sources it could not read', () => {
     } finally {
       chmodSync(skills, 0o755);
     }
+  });
+});
+
+describe('resolveConfigInventory — skill descriptions', () => {
+  it('masks a secret in a description, as it does in a command', () => {
+    const rule = bundledDetections()
+      .flatMap((pack) => pack.rules)
+      .find((r) => r.id === 'secrets/github-pat');
+    const example = rule?.examples?.[0];
+    expect(example).toBeDefined();
+    const description = `deploy key ${example ?? ''}`;
+    write(
+      join(home, '.claude', 'skills', 'deploy', 'SKILL.md'),
+      `---\nname: deploy\ndescription: ${description}\n---\n`,
+    );
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+
+    const stored = scan.skills.find((s) => s.name === 'deploy')?.description;
+    expect(stored).toBe(maskText(description));
+    expect(stored).not.toBe(description);
+    expect(stored).not.toContain(example);
   });
 });
 

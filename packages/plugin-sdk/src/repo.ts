@@ -30,6 +30,31 @@ export function resolveRepo(cwd: string): string | undefined {
 }
 
 /**
+ * `remote` without the credentials or query a remote URL can carry. An http(s)
+ * URL loses its userinfo, query and fragment; an ssh URL keeps its login user and
+ * loses a password, query and fragment. Anything that does not parse as a URL (an
+ * scp-style remote, a path) is returned as given, and so is a URL with nothing
+ * to remove, character for character.
+ */
+export function remoteWithoutCredentials(remote: string): string {
+  let url: URL;
+  try {
+    url = new URL(remote);
+  } catch {
+    return remote;
+  }
+  const keepsUser = url.protocol === 'ssh:' || url.protocol === 'git+ssh:';
+  const carries =
+    url.password !== '' ||
+    (!keepsUser && url.username !== '') ||
+    url.search !== '' ||
+    url.hash !== '';
+  if (!carries) return remote;
+  const user = keepsUser && url.username !== '' ? `${url.username}@` : '';
+  return `${url.protocol}//${user}${url.host}${url.pathname}`;
+}
+
+/**
  * Resolve a Source/Project identity for `cwd`: the content-addressing `url`
  * (the `origin` remote URL, so two machines cloning the same repo collapse to
  * one `source_project` row; the HEAD worktree root path is the fallback for a

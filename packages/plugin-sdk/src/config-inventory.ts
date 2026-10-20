@@ -13,7 +13,7 @@ import type {
 import { mcpServerIdentityKey, skillIdentityKey, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { maskText } from './mask.ts';
-import { resolveRepoIdentity } from './repo.ts';
+import { remoteWithoutCredentials, resolveRepoIdentity } from './repo.ts';
 
 /**
  * Inputs for one config-inventory scan. `homeDir` is injectable for tests;
@@ -61,7 +61,12 @@ export interface ResolveConfigInventoryInput {
  *   plus every known marketplace's skills (root + `plugins/*` + `external_plugins/*`)
  *   EXCEPT Anthropic's built-in `claude-plugins-official` catalog. Skills are
  *   de-duplicated by inventory identity (source + name), so distinct sources that
- *   share a name (personal `pdf` vs a marketplace `pdf`) stay separate.
+ *   share a name (personal `pdf` vs a marketplace `pdf`) stay separate. A skill's
+ *   description is masked through the bundled detection packs.
+ *
+ * The repo identity folded into project and local scope (and set as
+ * `projectKey`) is the remote URL with its credentials and query removed
+ * (`remoteWithoutCredentials`), else the working directory.
  *
  * Installed plugins come from `~/.claude/plugins/installed_plugins.json`
  * (version 2: `plugins: { "<name>@<marketplace>": [{ installPath, version }] }`)
@@ -89,7 +94,7 @@ export function resolveConfigInventory(input: ResolveConfigInventoryInput): Conf
     // (an MCP row carries a trust decision; sharing would let a cloned repo
     // inherit it).
     const repo = resolveRepoIdentity(input.cwd);
-    const repoIdentity = repo?.url ?? input.cwd;
+    const repoIdentity = repo === undefined ? input.cwd : remoteWithoutCredentials(repo.url);
     if (repoIdentity !== '') scan.projectKey = repoIdentity;
     const projectSource = `project:${repoIdentity}`;
 
@@ -586,7 +591,7 @@ function collectSkillsDir(scan: ConfigScanResult, dir: string, origin: SkillOrig
       };
       const version = front.version ?? origin.defaultVersion;
       if (version !== undefined) entry.version = version;
-      if (front.description !== undefined) entry.description = front.description;
+      if (front.description !== undefined) entry.description = maskText(front.description);
       if (origin.pluginName !== undefined) entry.pluginName = origin.pluginName;
       scan.skills.push(entry);
     } catch (err) {

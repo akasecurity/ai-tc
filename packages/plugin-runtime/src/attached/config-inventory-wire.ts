@@ -57,8 +57,9 @@ export function configInventoryRequests(record: ConfigScanRecord): ConfigInvento
 // CONFIG_INVENTORY_BATCH_MAX_BYTES of JSON. Always at least one part.
 function splitItems(items: readonly ConfigInventoryRequestItem[]): ConfigInventoryRequestItem[][] {
   const parts: ConfigInventoryRequestItem[][] = [];
+  // `[` opens a part; each item adds itself and then a `,` or the closing `]`.
   let part: ConfigInventoryRequestItem[] = [];
-  let bytes = 0;
+  let bytes = 1;
   for (const item of items) {
     const size = Buffer.byteLength(JSON.stringify(item), 'utf8') + 1;
     if (
@@ -68,7 +69,7 @@ function splitItems(items: readonly ConfigInventoryRequestItem[]): ConfigInvento
     ) {
       parts.push(part);
       part = [];
-      bytes = 0;
+      bytes = 1;
     }
     part.push(item);
     bytes += size;

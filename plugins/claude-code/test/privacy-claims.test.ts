@@ -92,11 +92,15 @@ const paragraphs = (text: string): string[] =>
  * plugin README documents the harness that runs `/aka:setup`, so both send a
  * reader into the calibration. The CLI page ships no judge and points at the
  * plugin page for that payload instead.
+ *
+ * `describesClaudeCode` selects the pages that owe the sentences about what a
+ * Claude Code session sends, such as its configuration inventory. A page for
+ * another harness describes that harness only.
  */
 const CLASSIFIED_READMES = [
-  { name: 'README.md', describesJudge: true },
-  { name: 'cli/README.md', describesJudge: false },
-  { name: 'plugins/claude-code/README.md', describesJudge: true },
+  { name: 'README.md', describesJudge: true, describesClaudeCode: true },
+  { name: 'cli/README.md', describesJudge: false, describesClaudeCode: true },
+  { name: 'plugins/claude-code/README.md', describesJudge: true, describesClaudeCode: true },
 ] as const;
 
 // `name` IS the location — there is deliberately no second field holding the
@@ -209,13 +213,13 @@ const CONFIG_INVENTORY_SENTENCE =
   'configuration file, with its name, scope, file path and the plugin or marketplace it ' +
   "came from; a skill's description, version and modification time; a hook's event, " +
   "matcher, command and timeout, and an MCP server's transport and command or URL, each " +
-  'command and URL with any secret the bundled detection rules find masked, and an MCP ' +
-  "server's URL also stripped of its credentials and query values; the names of an MCP " +
-  "server's environment variables, never their values; a configuration file's kind, " +
+  'description, command and URL with any secret the bundled detection rules find masked, ' +
+  "and an MCP server's URL also stripped of its credentials and query values; the names of " +
+  "an MCP server's environment variables, never their values; a configuration file's kind, " +
   'modification time and a summary of its shape (key names, line and entry counts), never ' +
-  "its contents; and the repository's remote URL, or the working directory where it has " +
-  "none, that the project's own items belong to. A machine attached with `--scoped` keeps " +
-  'this configuration on the machine.';
+  "its contents; and the repository's remote URL with any credentials and query removed, or " +
+  "the working directory where it has none, that the project's own items belong to. A " +
+  'machine attached with `--scoped` keeps this configuration on the machine.';
 // The sentence as it stood before the report said whether the machine is a personal device.
 // A page that kept it beside the new one would say two different things about the report.
 const PREVIOUS_REPORT_SENTENCE =
@@ -673,8 +677,16 @@ describe('README.md scoped attachment lists', () => {
   });
 });
 
+const CLAUDE_CODE_READMES = READMES.filter(
+  ({ describesClaudeCode }: { describesClaudeCode: boolean }) => describesClaudeCode,
+);
+
 describe('config inventory disclosure', () => {
-  it.each(READMES)(
+  it('has pages to check', () => {
+    expect(CLAUDE_CODE_READMES.length).toBeGreaterThan(0);
+  });
+
+  it.each(CLAUDE_CODE_READMES)(
     '$name names what a session start sends of the scanned configuration',
     ({ text }) => {
       expect(flat(footnoteOf(text))).toContain(CONFIG_INVENTORY_SENTENCE);

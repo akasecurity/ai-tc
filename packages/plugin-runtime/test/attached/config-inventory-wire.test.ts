@@ -146,6 +146,33 @@ describe('configInventoryRequests', () => {
     }
   });
 
+  it('fills a part to exactly the byte cap, and splits one byte past it', () => {
+    // An item whose JSON is exactly `bytes` long (ASCII, so characters and bytes agree).
+    const itemOf = (bytes: number, i: number): InventoryInput => {
+      const blank = { ...skill, identityKey: `local|fill-${String(i)}`, attributes: { d: '' } };
+      const pad = bytes - Buffer.byteLength(JSON.stringify(blank), 'utf8');
+      return { ...blank, attributes: { d: 'd'.repeat(pad) } };
+    };
+    // `[`, then each item and its `,` or `]`: 262 items of 16000 bytes leave 2040 for the last.
+    const items = (last: number) => [
+      ...Array.from({ length: 262 }, (_, i) => itemOf(16_000, i)),
+      itemOf(last, 262),
+    ];
+    const serialized = (list: readonly InventoryInput[]) =>
+      Buffer.byteLength(JSON.stringify(list), 'utf8');
+    expect(serialized(items(2040))).toBe(CONFIG_INVENTORY_BATCH_MAX_BYTES);
+
+    const exact = configInventoryRequests(record({ items: items(2040) }));
+    expect(exact).toHaveLength(1);
+    expect(exact[0]?.complete).toBe(true);
+
+    const over = configInventoryRequests(record({ items: items(2041) }));
+    expect(over).toHaveLength(2);
+    for (const request of over) {
+      expect(serialized(request.items)).toBeLessThanOrEqual(CONFIG_INVENTORY_BATCH_MAX_BYTES);
+    }
+  });
+
   it('sends one empty complete request for a complete scan that found nothing', () => {
     expect(configInventoryRequests(record({ items: [] }))).toEqual([
       { harness: HARNESS, items: [], projectKey: PROJECT_KEY, complete: true },

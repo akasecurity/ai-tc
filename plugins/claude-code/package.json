@@ -44,9 +44,9 @@
     "@vitest/coverage-v8": "^4.1.11",
     "esbuild": "^0.28.2",
     "eslint": "^9.39.5",
-    "tsup": "^8.0.0",
+    "tsup": "^9.0.0",
     "typescript": "^5.8.0",
     "vitest": "^4.1.11",
-    "zod": "^4.6.5"
+    "zod": "^4.6.7"
   }
 }

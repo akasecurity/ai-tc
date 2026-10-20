@@ -8,7 +8,7 @@ name: Release plugin (Copilot)
 # end users unpack the public npm package and install it from that local
 # directory. The install steps, and what is and is not confirmed about them
 # (the deprecation warning, Windows, updating), are written once, in
-# plugins/copilot/skills/setup/SKILL.md under "Install - Copilot CLI"; the
+# plugins/copilot/skills/setup/SKILL.md under "Install — Copilot CLI"; the
 # Release body below carries the same commands. GitHub Packages requires auth
 # even for public reads, so it is a secondary artifact, not the install source.
 #
@@ -249,7 +249,7 @@ jobs:
             aka init
             ```
 
-            The Copilot CLI warns that direct local-path installs are deprecated. Windows and updating are unconfirmed. See the "Install - Copilot CLI" section of `plugins/copilot/skills/setup/SKILL.md` for the full notes.
+            The Copilot CLI warns that direct local-path installs are deprecated. Windows and updating are unconfirmed. See the "Install — Copilot CLI" section of `plugins/copilot/skills/setup/SKILL.md` for the full notes.
 
   # Publish the same package to the repo's GitHub Packages registry (requirement:
   # packages land in the org's GitHub registry). Kept a separate job so its GitHub

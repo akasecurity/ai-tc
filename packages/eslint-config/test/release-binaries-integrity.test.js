@@ -1399,7 +1399,7 @@ describe('the rolling bin-latest release is published only by a real tag push', 
   });
 
   // `prerelease` keeps this out of the repository's latest-release election,
-  // which six tag prefixes share here; `make_latest: false` says the same thing
+  // which seven tag prefixes share here; `make_latest: false` says the same thing
   // a second way and is what still holds if `prerelease` is ever flipped.
   // `overwrite_files` is what makes the second release of the same tag replace
   // the assets rather than fail.

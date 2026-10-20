@@ -1,0 +1,297 @@
+name: Release plugin (Copilot)
+
+# Publishes the GitHub Copilot plugin package to the public npm registry AND to
+# the repo's GitHub Packages registry, and attaches the packed tarball to a GitHub
+# Release. The plugin's hook scripts are a build artifact
+# (plugins/copilot/scripts/, git-ignored) — they are generated here and shipped
+# inside the package, never committed. There is no marketplace for this plugin:
+# end users unpack the public npm package (`npm pack @akasecurity/ai-tc-copilot`)
+# and install it from that local directory with `copilot plugin install ./package`.
+# The Copilot CLI warns that a direct local-path install is deprecated; that path
+# is still the only one it documents for a package that is not in a marketplace.
+# Windows has not been confirmed against a real Copilot CLI install. GitHub
+# Packages requires auth even for public reads, so it is a secondary artifact, not
+# the install source.
+#
+# Release flow: bump version in package.json + plugin.json (Copilot reads its
+# manifest from the plugin ROOT, not a dotted dir), then push a tag
+# `plugin-copilot-v<version>` (e.g. plugin-copilot-v0.9.19).
+
+on:
+  push:
+    tags:
+      - 'plugin-copilot-v*'
+  # A manual run is a dry run and nothing else: it builds, packs and smoke-tests
+  # the packed package. There is deliberately no input that turns a dispatch into
+  # a publish. A dispatch can start from any branch, and it skips the
+  # tag-matches-manifest check, which only a tag push has a tag for, so every
+  # publish below is gated on the tag push alone.
+  workflow_dispatch:
+
+# One release per tag at a time. A single tag push can start more than one run.
+# A duplicate is already self-limiting here: npm and GitHub Packages both reject a
+# re-publish of the same (name, version), so the losing run fails at its publish step
+# and never reaches the Release. That safety is a consequence of publish running
+# before the Release step — this group holds whatever the step order, and stops two
+# runs overlapping. It does not make a duplicate disappear: the queued run still
+# executes afterward and still fails at publish. cancel-in-progress is false so a run
+# is never interrupted midway through publishing to either registry.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Tag pushes get no run of the main CI workflow (it triggers only on main
+  # pushes/PRs), so the release re-verifies the tagged commit itself — nothing
+  # publishes from a commit that would fail CI.
+  verify:
+    name: Lint · Typecheck · Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 10.30.1
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      # --concurrency: see the Test step in ci.yml's lint job. Bounded here for
+      # the same reason, and spelled on the turbo call rather than through
+      # `pnpm test` — `pnpm test -- --concurrency=2` would forward the flag to
+      # each TASK's own command (`vitest run --concurrency=2`), not to turbo.
+      - name: Test
+        run: pnpm turbo run test --concurrency=2
+
+  release:
+    name: Build · Verify · Publish
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub Release
+      id-token: write # OIDC trusted publishing to npm (provenance attestation)
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 10.30.1
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build plugin (Turbo)
+        run: pnpm turbo run build --filter=@akasecurity/ai-tc-copilot
+
+      - name: Verify tag matches manifest versions
+        if: github.event_name == 'push'
+        run: |
+          tag="${GITHUB_REF_NAME#plugin-copilot-v}"
+          pkg=$(node -p "require('./plugins/copilot/package.json').version")
+          manifest=$(node -p "require('./plugins/copilot/plugin.json').version")
+          echo "tag=$tag  package.json=$pkg  plugin.json=$manifest"
+          if [ "$tag" != "$pkg" ] || [ "$tag" != "$manifest" ]; then
+            echo "::error::Version mismatch — tag plugin-copilot-v$tag must equal package.json ($pkg) and plugin.json ($manifest)"
+            exit 1
+          fi
+
+      # Packed BEFORE the smoke test, because the smoke test reads the tarball
+      # rather than the build directory: a script the build emitted and the
+      # package `files` list left out is present in one and absent from the
+      # other, and only the tarball is what a user installs.
+      - name: Pack tarball (release asset)
+        run: pnpm --filter @akasecurity/ai-tc-copilot pack --pack-destination "$RUNNER_TEMP"
+
+      - name: Smoke-test the packed package (self-contained, fail-open)
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          tarballs=("$RUNNER_TEMP"/akasecurity-ai-tc-copilot-*.tgz)
+          if [ "${#tarballs[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one packed akasecurity-ai-tc-copilot tarball in $RUNNER_TEMP, found ${#tarballs[@]}"
+            exit 1
+          fi
+          smoke="$RUNNER_TEMP/copilot-smoke"
+          rm -rf "$smoke"
+          mkdir -p "$smoke/home"
+          tar -xzf "${tarballs[0]}" -C "$smoke"
+          package="$smoke/package"
+
+          # Started by path from a running hook rather than named by hooks.json:
+          # the isolated scan's worker, the fail-open counter, and the three
+          # detached children SessionStart spawns. Each is resolved as a sibling
+          # of the running script, so a missing one is a spawn of a file that
+          # does not exist.
+          for f in scan-worker fail-open-count sync history-sync content-retention; do
+            test -f "$package/scripts/$f.js" || { echo "::error::packed package is missing scripts/$f.js"; exit 1; }
+          done
+
+          # Every script hooks.json names must exist in the PACKED package, or the
+          # host silently runs nothing. Derived from the manifest rather than a
+          # list, so a hooks.json edit cannot drift past this gate. It also writes
+          # each hook command out, one per line, for the fail-open drive below.
+          # shellcheck disable=SC2016 # the JS template literals inside must reach node unexpanded
+          node -e '
+            const fs = require("node:fs");
+            const path = require("node:path");
+            const root = process.argv[1];
+            const manifest = JSON.parse(fs.readFileSync(path.join(root, "hooks.json"), "utf8"));
+            const missing = [];
+            const commands = [];
+            for (const [event, entries] of Object.entries(manifest.hooks ?? {})) {
+              if (!Array.isArray(entries)) continue;
+              for (const entry of entries) {
+                for (const h of entry.hooks ?? []) {
+                  const command = h.command ?? h.bash;
+                  const m = /scripts\/([a-z-]+\.js)/.exec(command ?? "");
+                  if (!m) { missing.push(`${event}: no scripts/*.js in command`); continue; }
+                  if (!fs.existsSync(path.join(root, "scripts", m[1]))) missing.push(`${event}: scripts/${m[1]}`);
+                  commands.push(command);
+                }
+              }
+            }
+            if (missing.length) {
+              console.error(`::error::hooks.json references scripts the packed package does not carry: ${missing.join(", ")}`);
+              process.exit(1);
+            }
+            if (commands.length === 0) {
+              console.error("::error::hooks.json names no hook commands, so the fail-open drive below would assert nothing");
+              process.exit(1);
+            }
+            fs.writeFileSync(process.argv[2], commands.join("\n") + "\n");
+            console.log(`hooks.json -> scripts OK (${commands.length} hooks)`);
+          ' "$package" "$smoke/commands.txt"
+
+          # THE FAIL-OPEN CONTRACT HERE IS SILENCE. On the Copilot CLI an empty
+          # stdout hands the call to the host's own permission flow, while an
+          # explicit allow PRE-APPROVES it — so unlike Antigravity's smoke test,
+          # a hook fed junk must print NOTHING and exit 0. Each command runs as
+          # hooks.json spells it, with PLUGIN_ROOT pointing at the unpacked
+          # package and HOME at a throwaway directory, so the drive exercises
+          # the placeholder expansion and never touches the runner's own home.
+          driven=0
+          while IFS= read -r command; do
+            for input in 'not json' '{"toolName":'; do
+              if ! out=$(printf '%s' "$input" | PLUGIN_ROOT="$package" HOME="$smoke/home" USERPROFILE="$smoke/home" sh -c "$command"); then
+                echo "::error::hook exited non-zero on junk input ($input): $command"
+                exit 1
+              fi
+              if [ -n "$out" ]; then
+                echo "::error::hook printed to stdout on junk input ($input): $command"
+                echo "$out"
+                exit 1
+              fi
+              driven=$((driven + 1))
+            done
+          done < "$smoke/commands.txt"
+          if [ "$driven" -eq 0 ]; then
+            echo "::error::no hook was driven"
+            exit 1
+          fi
+          echo "fail-open OK ($driven runs, all silent)"
+
+      # OIDC trusted publishing: the id-token: write permission above lets npm
+      # exchange this job's OIDC token for a short-lived publish credential — no
+      # NPM_TOKEN needed. NPM_CONFIG_PROVENANCE has npm attach a Sigstore
+      # attestation binding the published package to this repository and workflow.
+      # A `-beta.*` version publishes under the `beta` dist-tag, a `-nightly.*`
+      # version under `nightly`, any other pre-release under `rc`, and a bare
+      # X.Y.Z under `latest`.
+      - name: Publish to npm
+        if: github.event_name == 'push'
+        run: |
+          version=$(node -p "require('./plugins/copilot/package.json').version")
+          case "$version" in
+            *-beta.*)    dist_tag="beta" ;;
+            *-nightly.*) dist_tag="nightly" ;;
+            *-*)         dist_tag="rc" ;;
+            *)           dist_tag="latest" ;;
+          esac
+          pnpm --filter @akasecurity/ai-tc-copilot publish --no-git-checks --tag "$dist_tag"
+        env:
+          NPM_CONFIG_PROVENANCE: 'true'
+
+      - name: Create GitHub Release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          files: ${{ runner.temp }}/*.tgz
+          generate_release_notes: true
+          prerelease: ${{ startsWith(github.ref_name, 'plugin-copilot-v0.') }}
+          body: |
+            Install from a local directory: `npm pack @akasecurity/ai-tc-copilot`, unpack the tarball, then run `copilot plugin install ./package`. The Copilot CLI warns that direct local-path installs are deprecated; there is no marketplace install for this plugin yet.
+
+            Windows has not been confirmed against a real Copilot CLI install.
+
+  # Publish the same package to the repo's GitHub Packages registry (requirement:
+  # packages land in the org's GitHub registry). Kept a separate job so its GitHub
+  # Packages .npmrc/auth never collides with the public-npm publish above. The
+  # @akasecurity scope must match the akasecurity org that owns this repo.
+  #
+  # It waits for `release`, so it runs only after that job's tag-matches-manifest
+  # check, its smoke test and its npm publish have passed: GitHub Packages never
+  # receives a version the tag does not name, or one npm does not also hold.
+  github-packages:
+    name: Publish to GitHub Packages
+    needs: [verify, release]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 10.30.1
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://npm.pkg.github.com
+          scope: '@akasecurity'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build plugin (Turbo)
+        run: pnpm turbo run build --filter=@akasecurity/ai-tc-copilot
+
+      # publishConfig.registry pins public npm, so override the target here. The
+      # built-in GITHUB_TOKEN can publish to this repo's Packages; setup-node wrote
+      # the matching auth token into .npmrc.
+      - name: Publish to GitHub Packages
+        run: |
+          version=$(node -p "require('./plugins/copilot/package.json').version")
+          case "$version" in
+            *-beta.*)    dist_tag="beta" ;;
+            *-nightly.*) dist_tag="nightly" ;;
+            *-*)         dist_tag="rc" ;;
+            *)           dist_tag="latest" ;;
+          esac
+          pnpm --filter @akasecurity/ai-tc-copilot publish --registry https://npm.pkg.github.com --no-git-checks --tag "$dist_tag"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

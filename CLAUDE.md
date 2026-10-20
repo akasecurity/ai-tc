@@ -394,7 +394,7 @@ which is how "enforced by ESLint and CI" becomes a claim nobody has checked:
 | The ESLint ban (`@akasecurity/eslint-config`) | A network primitive **written** into source                                                                                                                | A transitive dependency, a non-literal `import()` or `getBuiltinModule()`; a network global reached through a parameter, an alias or a structural type — the ban matches one only bare or hung off `globalThis`/`window`/`self`/`global`, so `win.fetch` on a `Window` parameter passes with no opt-out; a file no lint pass targets; **itself** — an inline `eslint-disable` takes the ban off the line below it, which is why the directives are inventoried separately (above) |
 | `test/setup/no-network.ts` (every vitest run) | A non-loopback connect **called** at test time, on this thread and in any **worker** spawned from it                                                       | A child process — it has its own copy of `node:net` — and therefore any worker that child starts                                                                                                                                                                                                                                                                                                                                                                                  |
 | The `No-network` CI job (`ci.yml`)            | Anything in the process tree, subprocesses included                                                                                                        | A path the suite never executes; it is Linux-only                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| The `Packaged artifact` CI job (`ci.yml`)     | A PUBLISHED-tarball path that DEPENDS on reaching the network — while `npm ci` installs it, and while `aka init`, `aka scan` and the bundled dashboard run | A call the artifact makes and SWALLOWS: a namespace makes the connect fail, and this product fails open by design, so only a path that needs the answer reports here. Also a packaged path those commands never reach; the three PLUGIN tarballs and the extension, which nothing packs here; and it is Linux-only                                                                                                                                                                |
+| The `Packaged artifact` CI job (`ci.yml`)     | A PUBLISHED-tarball path that DEPENDS on reaching the network — while `npm ci` installs it, and while `aka init`, `aka scan` and the bundled dashboard run | A call the artifact makes and SWALLOWS: a namespace makes the connect fail, and this product fails open by design, so only a path that needs the answer reports here. Also a packaged path those commands never reach; the four PLUGIN tarballs and the extension, which nothing packs here; and it is Linux-only                                                                                                                                                                 |
 
 The first one is only as wide as the files something points ESLint at, which is why
 coverage is derived and guarded rather than remembered — every package's source dirs and
@@ -426,7 +426,7 @@ run even when a fail-open `catch` swallows it. A namespace records nothing — i
 the connect fail — and this product fails open everywhere, so a packaged path that reaches
 out and shrugs stays green here. What this leg proves is that the published artifact does
 its work with no route off the host, not that it asked for none. It also covers the **CLI**
-tarball only; the three plugin tarballs and the browser extension are still packed by
+tarball only; the four plugin tarballs and the browser extension are still packed by
 nothing that runs under a block.
 
 That leg carries its own control, and it is a different one from the wrapper's. The
@@ -1480,26 +1480,27 @@ Follow Conventional Commits: `feat:`, `fix:`, `chore:`, `test:`, `docs:`, `refac
 
 ## Releasing (CLI / plugin versioning)
 
-All four shippable artifacts are **self-contained bundles of the workspace** — their `tsup.config.ts`
+All five shippable artifacts are **self-contained bundles of the workspace** — their `tsup.config.ts`
 sets `noExternal: [/^@akasecurity\//]`, so every `@akasecurity/*` package they use is inlined into
 the published output (the user's machine has no `node_modules`). So a change to a _bundled_ package
 changes the shipped artifact **even when the app's own `src/` is untouched**:
 
-- **`plugins/claude-code`**, **`plugins/codex`** and **`plugins/antigravity`** each bundle
-  `@akasecurity/plugin-runtime` + `plugin-sdk` and everything they pull in —
-  `@akasecurity/schema`, `persistence`, `detections`. A change to any of those changes ALL
-  THREE plugins' `scripts/*.js`.
+- **`plugins/claude-code`**, **`plugins/codex`**, **`plugins/antigravity`** and
+  **`plugins/copilot`** each bundle `@akasecurity/plugin-runtime` + `plugin-sdk` and
+  everything they pull in — `@akasecurity/schema`, `persistence`, `detections`. A change to
+  any of those changes ALL FOUR plugins' `scripts/*.js`.
 - **`cli`** bundles the same `@akasecurity/*` packages **and** ships the OSS web-ui
   (`web-ui` is `external` to the CLI JS but copied in by `prepack`'s `bundle:web-ui` and
   spawned as a separate Next server). So a web-ui change — or any bundled-package change — changes the CLI.
-- **`plugins/copilot` bundles the same core and is NOT one of the four published artifacts.**
-  It builds `scripts/*.js` through the same `tsup` config and inlines the same
-  `@akasecurity/*` packages. It is still `"private": true` and publishes nowhere, but it
-  sits on the shared version line: every CLI bump moves `plugins/copilot/package.json` and
-  `plugins/copilot/plugin.json` to the same version, and its `test/identity-consistency.test.ts`
-  fails when either differs from the CLI's. Unsetting `private` is what moves
-  `required-checks.test.js`'s temporary Windows pin and the `ci.yml` prose that justifies
-  it, so all three change together or `main` reds on a diff that looks innocent.
+- **`plugins/copilot` is the fifth published artifact.** It publishes to npm from
+  `release-plugin-copilot.yml` on a `plugin-copilot-v*` tag, and its `test/identity-consistency.test.ts`
+  fails when `plugins/copilot/package.json` or `plugins/copilot/plugin.json` differs from the
+  CLI's version. It has no marketplace: a user unpacks the npm package and installs it with
+  `copilot plugin install ./package`, a local-path install the Copilot CLI warns is
+  deprecated, and Windows has not been confirmed against a real Copilot CLI install. Its
+  Windows CI coverage comes from the derived "every package npm publishes" check in
+  `required-checks.test.js`, so the `ci.yml` filter line that names it is required rather than
+  pinned by hand.
 
 When a change touches the web-ui or any bundled package and the user wants to publish:
 
@@ -1507,11 +1508,13 @@ When a change touches the web-ui or any bundled package and the user wants to pu
    - web-ui / `local-ops` / `dashboard-ui` / `ui-kit` change → `cli` (bundled into the CLI JS
      and/or the web-ui it ships; the plugins bundle none of these).
    - `schema` / `persistence` / `plugin-runtime` / `plugin-sdk` / `detections`
-     change → **all four** of `cli`, `plugins/claude-code`, `plugins/codex` **and**
-     `plugins/antigravity` (all bundle them).
+     change → **all five** of `cli`, `plugins/claude-code`, `plugins/codex`,
+     `plugins/antigravity` **and** `plugins/copilot` (all bundle them).
    - `setup-wizard` change → `plugins/claude-code`, `plugins/codex` **and**
-     `plugins/antigravity` (all three bundle it; the CLI does not).
-   - The CLI and all three plugins normally move together on one shared version line.
+     `plugins/antigravity` (all three bundle it; the CLI does not). `plugins/copilot` bundles
+     none of its code but its build copies `setup-wizard`'s `assets/triage-rubric.md` into
+     `scripts/`, so a change to that asset moves `plugins/copilot` too.
+   - The CLI and all four plugins normally move together on one shared version line.
    - **Any `cli` bump → `plugins/browser-extension` too, to the SAME version.** The extension
      ships inside the CLI tarball, its `package.json` is the one place its version lives
      (`scripts/build.mjs` stamps it into `dist/manifest.json`, and the native host records it as
@@ -1533,7 +1536,8 @@ When a change touches the web-ui or any bundled package and the user wants to pu
    its manifest from the plugin ROOT, not a dotted dir) in sync with
    `plugins/antigravity/package.json`, and `plugins/copilot/plugin.json` (also at the plugin
    root) in sync with `plugins/copilot/package.json` (identical version within each pair)
-   whenever that plugin is bumped.
+   whenever that plugin is bumped. `release-identity.test.js`'s `HOST_MANIFESTS` names all four
+   pairs.
 
 **The bump is not a decision to surface during feature work, because it is not made there.**
 Pre-1.0.0 the version numbers are chosen **ad hoc**, at the **scheduled release** (twice a week)
@@ -1545,11 +1549,11 @@ cuts it.
 
 Versions are bumped by hand in a `chore(release):` commit (no changesets). A stable release is
 a bare `X.Y.Z` on the one shared version line; a pre-release carries a suffix and is routed by
-it (below). The CLI and all three plugins currently share the `0.9.x` line.
+it (below). The CLI and all four plugins currently share the `0.9.x` line.
 
 ### Release channels — the suffix decides the dist-tag
 
-Every npm publish step in `release-cli.yml` and the three `release-plugin-*.yml` routes on the
+Every npm publish step in `release-cli.yml` and the four `release-plugin-*.yml` routes on the
 version it is publishing, with one shell `case`: a `-beta.*` version goes to the `beta` dist-tag,
 `-nightly.*` to `nightly`, any other suffixed version to `rc`, and a bare `X.Y.Z` to `latest`.
 **On npm, only a bare version moves `latest`** — and only a bare `cli-v*` tag moves the
@@ -1568,11 +1572,11 @@ and only running it shows that. It reaches the workflows through one shared read
 `test/helpers/release-workflows.js`, which `release-identity.test.js` uses too: two readers of
 one shell string are free to disagree about what a workflow publishes.
 
-**A pre-release moves the whole shared line.** `release-identity.test.js` puts the four
+**A pre-release moves the whole shared line.** `release-identity.test.js` puts the five
 published artifacts on one version and each plugin's identity suite pins it to the CLI's; the
 extension is private, so it is outside that audit's set and is pinned to `cli/package.json` by
 its own `test/manifest.test.ts`. So `0.10.0-beta.1` is a `chore(release):` commit
-moving all four published manifests, the three host manifests, the Copilot plugin's two manifests and the extension together. Cut
+moving all five published manifests, the four host manifests and the extension together. Cut
 that commit on a release branch: on `main` it would sit in front of the next stable cut until the
 matching stable shipped.
 
@@ -1719,7 +1723,7 @@ release channel** from the `cli-v*` npm publish:
   `aka-win32-x64.zip`), a `SHA256SUMS` naming those aliases, and the three rendered files. That
   is what makes `https://github.com/akasecurity/ai-tc/releases/download/bin-latest/<alias>` a
   stable one-click URL: GitHub's own `/releases/latest` is unusable here — every release is
-  flagged pre-release, and six tag prefixes share one Releases list, so its election could land
+  flagged pre-release, and seven tag prefixes share one Releases list, so its election could land
   on a plugin release. The aliases are staged in `dist-latest/`, never in `dist/`, because the
   versioned release's `dist/aka-*` globs would otherwise sweep them in under names it never
   promised. The rolling release stays `prerelease: true` and `make_latest: false`.

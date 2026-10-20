@@ -48,11 +48,13 @@
  * string; it never forks the harness dimension.
  *
  * A PAYLOAD WITH NO `cwd` DECLINES WITHOUT OPENING THE STORE. `cwd` is required
- * by `handleSessionStart` and there is no safe default here: under VS Code the
- * hook process's own cwd is the HOME DIRECTORY unless the hook entry declared
- * one, so `process.cwd()` would resolve a repo from `~` and stamp the session
- * root — a durable row — with whatever happens to live there. The CLI sends
- * `cwd` on every recorded payload, so this costs that host nothing.
+ * by `handleSessionStart` and there is no safe default here: VS Code documents
+ * the hook process's own cwd as the home directory unless the hook entry
+ * declares one, so `process.cwd()` could resolve a repo from `~` and stamp the
+ * session root — a durable row — with whatever happens to live there. The CLI
+ * sends `cwd` on every recorded payload, and so did the recorded VS Code 1.141
+ * session, which also ran the hooks in the workspace, so this costs neither
+ * recorded host anything.
  *
  * This module is the handler and nothing else: it reads neither argv's event
  * token nor stdin, and never exits. `./session-start.ts` is the entry that

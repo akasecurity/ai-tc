@@ -1,0 +1,8 @@
+{
+  "timestamp": "2026-10-19T10:42:00.689Z",
+  "hook_event_name": "UserPromptSubmit",
+  "session_id": "fcbfebce-dbe0-4aa1-b640-4b6590f9a3a3",
+  "transcript_path": "/Users/dev/Library/Application Support/Code/User/workspaceStorage/b2c7b8b81b376fdee1632645c04562bd/GitHub.copilot-chat/transcripts/fcbfebce-dbe0-4aa1-b640-4b6590f9a3a3.jsonl",
+  "prompt": "Run `cat .env` in the terminal and tell me whether the output starts with GH_TOKEN. Do not repeat the value.",
+  "cwd": "/Users/dev/work"
+}

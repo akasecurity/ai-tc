@@ -3,7 +3,7 @@
  * as prose.
  *
  * It exists because this plugin covers **three** surfaces whose contracts
- * genuinely differ, and only one of them has ever been observed. A sentence in
+ * genuinely differ, and none of them has been observed in full. A sentence in
  * a SKILL.md saying "prompts cannot be blocked on VS Code" is unfalsifiable
  * once it has been written; a row here is checked against the code that
  * implements it and rendered into that SKILL.md by a test that fails when the
@@ -19,11 +19,12 @@
  *    reason: they capture, scan and record, and no host channel this repository
  *    has confirmed lets them stop or rewrite anything. The `note` is what
  *    separates the two cases, and it has to.
- *  - **`verified`** is whether a live recording backs it. Every VS Code row is
- *    `false` and stays `false` until a fixture under
- *    `test/fixtures/vscode-provisional/` is replaced by a recording. The value
- *    of that column is that it decays honestly: shipping code has a way of
- *    reading as observed simply because it is shipping.
+ *  - **`verified`** is whether a live recording backs it. A VS Code row is
+ *    `true` only where a recording under `test/fixtures/vscode/` shows the
+ *    row's claim, and a row whose channel was never driven stays `false` even
+ *    where its capture was recorded. The value of that column is that it
+ *    decays honestly: shipping code has a way of reading as observed simply
+ *    because it is shipping.
  */
 
 /** The three surfaces this one package covers. */
@@ -56,7 +57,7 @@ export interface Capability {
 }
 
 export const CAPABILITY_MATRIX: readonly Capability[] = [
-  // ── Copilot CLI — the one surface with recordings ────────────────────────
+  // ── Copilot CLI — recorded ───────────────────────────────────────────────
   {
     surface: 'cli',
     event: 'preToolUse',
@@ -114,14 +115,14 @@ export const CAPABILITY_MATRIX: readonly Capability[] = [
     note: 'Deliberately not a scan point: it fires for the same call as preToolUse and carries a strict subset of its arguments, so scanning here would double-count and still miss description.',
   },
 
-  // ── VS Code agent mode — doc-derived, every row ──────────────────────────
+  // ── VS Code agent mode — recorded where a row says so ───────────────────
   {
     surface: 'vscode',
     event: 'PreToolUse',
     subject: 'run_in_terminal.command',
     channel: 'block',
     verified: false,
-    note: 'Built to the published hookSpecificOutput contract; confirmed against no live install.',
+    note: 'The capture and the warn were recorded in test/fixtures/vscode/plugin-load-1.141/: the call was stored with its finding, and the warn systemMessage reached only the hooks output channel, never the chat. A deny through hookSpecificOutput was never driven, so the block itself is unverified.',
   },
   {
     surface: 'vscode',
@@ -129,31 +130,31 @@ export const CAPABILITY_MATRIX: readonly Capability[] = [
     subject: 'file-write content',
     channel: 'rewrite',
     verified: false,
-    note: 'updatedInput is validated against the tool input schema and LAST HOOK WINS, so a user or repo hook returning one discards this.',
+    note: 'create_file content was recorded as captured, in test/fixtures/vscode/plugin-load-1.141/. No updatedInput was ever driven; it is validated against the tool input schema and LAST HOOK WINS, so a user or repo hook returning one discards this.',
   },
   {
     surface: 'vscode',
     event: 'SessionStart',
     subject: 'session',
     channel: 'none',
-    verified: false,
-    note: 'Opens the session root, as on the CLI. A payload carrying no cwd declines without opening the store, because this host spawns a hook from the home directory unless the entry declared one.',
+    verified: true,
+    note: 'Opens the session root as the vscode interface, recorded in test/fixtures/vscode/plugin-load-1.141/. A payload carrying no cwd declines without opening the store; the recorded host sent cwd on every event.',
   },
   {
     surface: 'vscode',
     event: 'UserPromptSubmit',
     subject: 'prompt',
     channel: 'none',
-    verified: false,
-    note: 'Captured and scanned; nothing can be stopped or rewritten. This host blocks through exit 2, which no path in this adapter takes, so a block or redact policy is recorded and the prompt is sent unchanged.',
+    verified: true,
+    note: 'Captured and scanned, recorded in test/fixtures/vscode/plugin-load-1.141/; nothing can be stopped or rewritten. This host blocks through exit 2, which no path in this adapter takes, so a block or redact policy is recorded and the prompt is sent unchanged.',
   },
   {
     surface: 'vscode',
     event: 'PostToolUse',
     subject: 'tool_response',
     channel: 'none',
-    verified: false,
-    note: 'Captured and scanned; nothing can be withheld. This host has no output-rewrite field at all, and its whole-result block has never been driven, so a finding is recorded and the output reaches the model unchanged.',
+    verified: true,
+    note: 'Captured and scanned, recorded in test/fixtures/vscode/plugin-load-1.141/ as a string response; nothing can be withheld. This host has no output-rewrite field at all, and its whole-result block has never been driven, so a finding is recorded and the output reaches the model unchanged.',
   },
 
   // ── Cloud coding agent — the CLI's protocol, no local store ──────────────

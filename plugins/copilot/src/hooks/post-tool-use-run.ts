@@ -13,8 +13,9 @@
  * run, so what is at stake is whether its output reaches the model — and
  * neither host offers a channel for that which this repository has confirmed:
  * `postToolUse.modifiedResult` is under "Not measured" in
- * `test/fixtures/cli/README.md`, and no live VS Code session has driven any
- * event in this package. Emitting a withhold on an unconfirmed channel would
+ * `test/fixtures/cli/README.md`, and a live VS Code 1.141.0 session
+ * (`test/fixtures/vscode/plugin-load-1.141/`) drove the four events but never
+ * a whole-result block. Emitting a withhold on an unconfirmed channel would
  * record an enforcement that may not have happened.
  *
  * So every capture passes `rewritable: false`, which resolves a `redact` policy

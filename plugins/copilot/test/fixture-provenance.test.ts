@@ -4,11 +4,15 @@
  *
  * `fixtures/cli/` is **recordings** — bytes a real Copilot CLI 1.0.83 session
  * handed to a real hook's stdin, plus, under `plugin-install-1.0.98/`, bytes a
- * 1.0.98 session handed to this plugin's own installed hooks.
- * `fixtures/vscode-provisional/` is **doc-derived** — nobody has run the VS Code
- * half, and every capability claim built on it is marked unverified.
+ * 1.0.98 session handed to this plugin's own installed hooks. `fixtures/vscode/`
+ * is **recordings** too — bytes VS Code handed to this plugin's own hooks, one
+ * subdirectory per recorded session, each with a README of its own.
+ * `fixtures/vscode-provisional/` is **doc-derived** — written from vendor
+ * documentation before any VS Code session was recorded, and kept so a reader
+ * can see which of its claims the recordings confirmed and which they did not.
  *
- * The failure this guards is a doc-derived specimen being dropped into `cli/`,
+ * The failure this guards is a doc-derived specimen being dropped into `cli/`
+ * or `vscode/`,
  * at which point it reads as a recording and every claim resting on it silently
  * upgrades from "believed" to "observed". That cannot be caught by looking at
  * the JSON, which is identical in either case. What CAN be caught is the
@@ -27,6 +31,7 @@ import { describe, expect, it } from 'vitest';
 const CLI_DIR = new URL('./fixtures/cli/', import.meta.url);
 const PLUGIN_INSTALL_DIR = new URL('./fixtures/cli/plugin-install-1.0.98/', import.meta.url);
 const PROVISIONAL_DIR = new URL('./fixtures/vscode-provisional/', import.meta.url);
+const VSCODE_PLUGIN_LOAD_DIR = new URL('./fixtures/vscode/plugin-load-1.141/', import.meta.url);
 
 /** The `.json` basenames in a fixture directory, without their extension. */
 function fixtureNames(dir: URL): string[] {
@@ -107,6 +112,76 @@ describe('fixtures/vscode-provisional — doc-derived, and saying so', () => {
     // added to the adapter without a fixture is a gap that reports itself.
     const { VSCODE_EVENTS } = await import('../src/hooks/event-name.ts');
     expect(fixtureNames(PROVISIONAL_DIR)).toEqual([...VSCODE_EVENTS].sort());
+  });
+});
+
+describe('fixtures/vscode — only described session directories', () => {
+  const VSCODE_DIR = new URL('./fixtures/vscode/', import.meta.url);
+  const entries = readdirSync(VSCODE_DIR, { withFileTypes: true });
+  const sessions = entries.filter((e) => e.isDirectory()).map((e) => e.name);
+
+  it('holds nothing but session directories', () => {
+    expect(entries.filter((e) => !e.isDirectory()).map((e) => e.name)).toEqual([]);
+  });
+
+  it('holds exactly the pinned sessions', () => {
+    expect(sessions.sort()).toEqual(['plugin-load-1.141']);
+  });
+
+  it('gives every session a README that names each of its files', () => {
+    for (const session of sessions) {
+      const dir = new URL(`./fixtures/vscode/${session}/`, import.meta.url);
+      const readme = readmeOf(dir);
+      expect(readme.length, session).toBeGreaterThan(0);
+      const undescribed = readdirSync(dir)
+        .filter((name) => name !== 'README.md')
+        .filter((name) => !readme.includes(name));
+      expect(undescribed, session).toEqual([]);
+    }
+  });
+});
+
+describe('fixtures/vscode/plugin-load-1.141 — recordings from a loaded plugin', () => {
+  const README = readmeOf(VSCODE_PLUGIN_LOAD_DIR);
+
+  it('has recordings to describe', () => {
+    // The positive control: the loops below pass on an empty directory.
+    expect(fixtureNames(VSCODE_PLUGIN_LOAD_DIR)).toEqual([
+      'postToolUse-create_file',
+      'postToolUse-run_in_terminal',
+      'preToolUse-create_file',
+      'preToolUse-run_in_terminal',
+      'sessionStart',
+      'userPromptSubmitted-cat-env',
+      'userPromptSubmitted-create-notes',
+    ]);
+  });
+
+  it('states the build, the load route and that the files were recorded', () => {
+    expect(README).toMatch(/VS Code\s+1\.141\.0/u);
+    expect(README).toMatch(/Copilot Chat 0\.69\.0/u);
+    expect(README).toContain('chat.pluginLocations');
+    expect(README).toMatch(/recorded/iu);
+  });
+
+  it('names every recording in the README', () => {
+    const undescribed = fixtureNames(VSCODE_PLUGIN_LOAD_DIR).filter(
+      (name) => !README.includes(`${name}.json`),
+    );
+    expect(undescribed).toEqual([]);
+  });
+
+  it('carries no file that the provisional directory also carries', () => {
+    const overlap = fixtureNames(VSCODE_PLUGIN_LOAD_DIR).filter((name) =>
+      fixtureNames(PROVISIONAL_DIR).includes(name),
+    );
+    expect(overlap).toEqual([]);
+  });
+
+  it('is pointed at from the provisional README', () => {
+    // A recording nobody links from the specimens it replaces is one a reader
+    // of those specimens never finds.
+    expect(PROVISIONAL_README).toContain('../vscode/plugin-load-1.141/');
   });
 });
 

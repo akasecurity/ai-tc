@@ -12,7 +12,7 @@
  * The prose ABOVE the table is not generated, because it carries argument
  * rather than data — but the claims in it that the matrix can check are checked.
  */
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
@@ -80,13 +80,41 @@ describe('the capability matrix and the SKILL.md that renders it', () => {
     }
   });
 
-  it('keeps every VS Code row unverified, and says so in the prose', () => {
-    // The claim the whole doc-derived half rests on. Two halves: the data says
-    // it, and the prose says it — because a reader who trusts the table has
-    // already read the paragraph above it.
-    expect(capabilitiesFor('vscode').every((row) => !row.verified)).toBe(true);
-    expect(surfaceIsVerified('vscode')).toBe(false);
-    expect(SKILL).toMatch(/confirmed against no live install/u);
+  it('verifies exactly the VS Code rows the recordings back, and says so in the prose', () => {
+    // Pinned as an exact set: the three capture-only events were recorded,
+    // while the two PreToolUse rows claim a block and a rewrite nobody drove.
+    // Two halves — the data says it, and the prose says it — because a reader
+    // who trusts the table has already read the paragraph above it.
+    const verified = capabilitiesFor('vscode')
+      .filter((row) => row.verified)
+      .map((row) => `${row.event} ${row.subject}`);
+    expect(verified).toEqual([
+      'SessionStart session',
+      'UserPromptSubmit prompt',
+      'PostToolUse tool_response',
+    ]);
+    expect(SKILL).toMatch(/partly confirmed\s+against a live install/u);
+    expect(SKILL).toMatch(/never driven/u);
+  });
+
+  it('cites a recording directory that exists on every verified VS Code row', () => {
+    const rows = capabilitiesFor('vscode').filter((row) => row.verified);
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      const cited = /test\/fixtures\/vscode\/[^\s/]+\//u.exec(row.note)?.[0];
+      expect(cited, `${row.event} cites a recording`).toBeDefined();
+      expect(
+        readdirSync(new URL(`../${cited ?? ''}`, import.meta.url)).length,
+        `${row.event}: ${cited ?? '(none)'}`,
+      ).toBeGreaterThan(0);
+    }
+  });
+
+  it('says in prose that a VS Code notice reaches only the hooks output channel', () => {
+    // The recorded half of the warn: the host accepted the systemMessage and
+    // the chat showed nothing, so no sentence may promise the user a message.
+    expect(SKILL).toMatch(/GitHub Copilot Chat Hooks" output channel/u);
+    expect(SKILL).not.toMatch(/says so as a message under VS Code/u);
   });
 
   it('keeps the CLI surface verified, so the column is not decorative', () => {

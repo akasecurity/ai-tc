@@ -73,7 +73,7 @@ import { warnIfStoreRedirected } from './store-health.ts';
 /**
  * The two events this entry is registered for, one per dialect.
  *
- * Checked rather than assumed, for the reason `pre-tool-use.ts` gives: a
+ * Checked rather than assumed, for the reason `pre-tool-use-run.ts` gives: a
  * manifest that wired this script to some other event would otherwise open a
  * session root off a payload that is not a session start — and on this host
  * `sessionEnd` and `sessionStart` carry the SAME envelope, so nothing in the

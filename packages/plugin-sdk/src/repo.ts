@@ -59,8 +59,9 @@ export function remoteWithoutCredentials(remote: string): string {
 
 /**
  * `remote` with a userinfo that holds a `#` or `?` removed, keeping an ssh
- * login user. The URL parser ends the host at either character, so it would read
- * part of such a password as the host, or refuse the remote outright.
+ * login user that holds neither. The URL parser ends the host at either
+ * character, so it would read part of such a userinfo as the host, or refuse the
+ * remote outright.
  */
 function withoutUnparseableUserinfo(remote: string): string {
   const match = /^([a-z][a-z0-9+.-]*):\/\/([^/]*)@/i.exec(remote);
@@ -69,7 +70,8 @@ function withoutUnparseableUserinfo(remote: string): string {
   if (match === null || scheme === undefined || userinfo === undefined) return remote;
   if (!/[?#]/.test(userinfo)) return remote;
   const login = /^(?:git\+)?ssh$/i.test(scheme) ? (userinfo.split(':')[0] ?? '') : '';
-  return `${scheme}://${login === '' ? '' : `${login}@`}${remote.slice(match[0].length)}`;
+  const kept = login !== '' && !/[?#]/.test(login) ? `${login}@` : '';
+  return `${scheme}://${kept}${remote.slice(match[0].length)}`;
 }
 
 /**

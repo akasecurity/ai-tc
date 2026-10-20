@@ -160,6 +160,8 @@ describe('remoteWithoutCredentials', () => {
       'ssh://git:not-a-real#password@git.example.test/acme/app.git',
       'ssh://git@git.example.test/acme/app.git',
     ],
+    ['ssh://git#x@git.example.test/acme/app.git', 'ssh://git.example.test/acme/app.git'],
+    ['ssh://git?x@git.example.test/acme/app.git', 'ssh://git.example.test/acme/app.git'],
   ])('removes a userinfo holding a `#` or `?` from %s', (remote, expected) => {
     expect(remoteWithoutCredentials(remote)).toBe(expected);
   });

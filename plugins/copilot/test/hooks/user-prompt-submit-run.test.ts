@@ -183,6 +183,7 @@ describe.each(DIALECTS)('runUserPromptSubmit on the $kind dialect', (d) => {
       { rule_id: RULE_ID, action_taken: 'warn', root_session_id: d.sessionId() },
     ]);
     expectNoEchoOf(text, FIXTURE.example);
+    expectNoEchoOf(stderr.raw(), FIXTURE.example);
   });
 
   it('resolves a redact policy to the redactFallback, and says the prompt went out', async () => {
@@ -195,6 +196,7 @@ describe.each(DIALECTS)('runUserPromptSubmit on the $kind dialect', (d) => {
     expect(text).toContain(RULE_ID);
     expect(text).not.toMatch(/\bredacted\b|\bblocked\b/iu);
     expectNoEchoOf(text, FIXTURE.example);
+    expectNoEchoOf(stderr.raw(), FIXTURE.example);
   });
 
   it('stamps the scope key of the cwd the payload names', async () => {
@@ -249,6 +251,7 @@ describe.each(DIALECTS)('runUserPromptSubmit on the $kind dialect', (d) => {
     expect(text).not.toMatch(/\bblocked\b/iu);
     expect(findingRows()).toEqual([]);
     expectNoEchoOf(text, FIXTURE.example);
+    expectNoEchoOf(stderr.raw(), FIXTURE.example);
     // Nothing on stderr claims the prompt was refused: this hook cannot refuse
     // it, so the SDK's refusal line is not written. The case below is the
     // control that the same bounded scan does write it for a refusing caller.

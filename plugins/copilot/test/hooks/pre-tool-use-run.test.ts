@@ -200,7 +200,7 @@ describe.each(DIALECTS)('runPreToolUse on the $kind dialect', (d) => {
     const written = stderr.filtered();
     expect(written).toMatch(/\[aka\] a large input could not be scanned.* and was refused/u);
     expectNoEchoOf(stderr.raw(), FIXTURE.example);
-    expect(written).not.toContain('lorem ipsum');
+    expect(stderr.raw()).not.toContain('lorem ipsum');
   });
 
   it('reaches no verdict on benign text below the threshold over the same absent worker (the control)', async () => {
@@ -240,5 +240,77 @@ describe.each(DIALECTS)('runPreToolUse on the $kind dialect', (d) => {
       expect(output).toBeUndefined();
       expect(stderr.filtered()).toContain('could not open its local store');
     }
+  });
+});
+
+// On the CLI a prose field still rewrites beside a command (`modifiedArgs`
+// carries no verdict), so a redact in `description` and a warn in `command`
+// meet in the rewrite branch. The notice there has to name both, or the
+// command's warning is recorded and never shown.
+describe('runPreToolUse on the cli dialect — a warned command beside a redacted description', () => {
+  const COMMAND_RULE = 'command-risk/credential-file-read';
+  const COMMAND = ruleExample(COMMAND_RULE);
+
+  function seedPolicies(entries: readonly (readonly [string, string, BuiltinPolicyId])[]): void {
+    const db = openLocalDatabase(join(akaHome, 'data'));
+    try {
+      db.installedPacks.recordInventory(bundledDetections());
+      for (const [namespace, packId, policy] of entries) {
+        db.installedPacks.setPolicy(namespace, packId, policy);
+      }
+    } finally {
+      db.close();
+    }
+  }
+
+  function actions(): unknown[] {
+    const db = new DatabaseSync(join(akaHome, 'data', 'aka.db'), { readOnly: true });
+    try {
+      return db
+        .prepare(
+          `SELECT d.rule_id, f.action_taken FROM inspection_findings f
+             JOIN inspection_definitions d ON d.id = f.inspection_definition_id
+             ORDER BY d.rule_id`,
+        )
+        .all()
+        .map((row) => ({ rule_id: row.rule_id, action_taken: row.action_taken }));
+    } finally {
+      db.close();
+    }
+  }
+
+  it('rewrites the description and names both rules in the stderr notice', async () => {
+    seedPolicies([
+      [COMMAND.namespace, COMMAND.packId, 'warn'],
+      [FIXTURE.namespace, FIXTURE.packId, 'redact'],
+    ]);
+    const base = fixture('cli', 'preToolUse.json');
+    const description = `Read the file, then use ${FIXTURE.example}`;
+    const payload = {
+      ...base,
+      cwd,
+      toolArgs: { ...(base.toolArgs as object), command: COMMAND.example, description },
+    };
+
+    const output = (await runPreToolUse('preToolUse', JSON.stringify(payload), { akaHome })) as {
+      modifiedArgs?: Record<string, unknown>;
+    };
+
+    // The rewrite: the command untouched, the description masked.
+    expect(output.modifiedArgs?.command).toBe(COMMAND.example);
+    expect(typeof output.modifiedArgs?.description).toBe('string');
+    expect(output.modifiedArgs?.description).not.toBe(description);
+    expectNoEchoOf(String(output.modifiedArgs?.description), FIXTURE.example);
+
+    const written = stderr.filtered();
+    expect(written).toContain(`AKA redacted sensitive content in bash input — flagged ${RULE_ID}.`);
+    expect(written).toContain(`AKA flagged sensitive content in bash input (${COMMAND_RULE}).`);
+    expectNoEchoOf(stderr.raw(), FIXTURE.example);
+
+    // The ledger records what each field resolved to; the notice changes none of it.
+    expect(actions()).toEqual([
+      { rule_id: COMMAND_RULE, action_taken: 'warn' },
+      { rule_id: RULE_ID, action_taken: 'redact' },
+    ]);
   });
 });

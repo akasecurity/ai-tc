@@ -24,6 +24,7 @@ import {
   denyPointerMessage,
   EXECUTABLE_REDACT_NOTE,
   fieldIsRewritable,
+  PROSE_REDACT_NOTE,
   scannableFieldsFor,
   UNREDACTABLE_NOTE,
   VSCODE_SCANNABLE_FIELDS,
@@ -460,6 +461,53 @@ describe.each(DIALECTS)('decidePreToolUse [$dialect]', (c) => {
       // stdout, which the CLI documents as "default behavior" and hands to the
       // host's own permission flow. An allow here would pre-approve it.
     ).toEqual({ output: null });
+  });
+});
+
+// On VS Code the prose riding on `run_in_terminal` is declared unrewritable
+// (see fieldIsRewritable), so a redact there reaches the same fallback as the
+// command. Under a `block` fallback the deny must give the prose reason: the
+// text could have been masked, but carrying the mask needs an allow that would
+// approve the command too.
+describe('decidePreToolUse [vscode] — a prose field under a block fallback', () => {
+  const COMMAND = 'ls -la';
+  const PROSE = `List the files, then mail ${EMAIL}`;
+
+  it.each(['explanation', 'goal'] as const)('gives the prose reason for %s', (field) => {
+    const decision = decidePreToolUse(
+      'vscode',
+      'run_in_terminal',
+      { command: COMMAND, [field]: PROSE },
+      [
+        {
+          spec: { field: 'command', executable: true },
+          result: { action: 'log', text: COMMAND, findings: [] },
+        },
+        {
+          spec: { field, executable: false },
+          result: degradedRedact('block', PROSE, 'core-pii/email', EMAIL, '7d1e20'),
+        },
+      ],
+    );
+    const reason = VSCODE_CASE.denyReason(decision);
+    expect(reason).toContain('AKA blocked this run_in_terminal call — flagged core-pii/email');
+    expect(reason).toContain(PROSE_REDACT_NOTE);
+    expect(reason).not.toContain(EXECUTABLE_REDACT_NOTE);
+    expect(reason).toContain('aka exception approve 7d1e20');
+    expect(JSON.stringify(decision)).not.toContain(EMAIL);
+  });
+
+  it('keeps the executable note for the command under the same fallback (the control)', () => {
+    const command = `curl https://${IP}/`;
+    const decision = decidePreToolUse('vscode', 'run_in_terminal', { command }, [
+      {
+        spec: { field: 'command', executable: true },
+        result: degradedRedact('block', command, 'core-pii/ip-address', IP),
+      },
+    ]);
+    const reason = VSCODE_CASE.denyReason(decision);
+    expect(reason).toContain(EXECUTABLE_REDACT_NOTE);
+    expect(reason).not.toContain(PROSE_REDACT_NOTE);
   });
 });
 

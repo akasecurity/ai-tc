@@ -537,6 +537,108 @@ describe('the audit-event submission', () => {
   });
 });
 
+describe('a repository label on the wire', () => {
+  const server = useLoopbackServer();
+  // A query value a git remote can carry, and the labels an older plugin cut
+  // from such a remote.
+  const QUERY = 'Pm4Zx9Cb7Jd1Fy';
+  const SLUG = `payments-api.git?t=${QUERY}`;
+  const NWO = `acme/payments-api.git?t=${QUERY}`;
+
+  const capture = (repo: string) => ({
+    id: 'cap-1',
+    sourceTool: 'claude-code' as const,
+    kind: 'prompt' as const,
+    occurredAt: '2026-08-24T10:00:00.000Z',
+    contentHash: 'hash',
+    content: 'redacted content',
+    metadata: { sessionId: 's-1', repo },
+  });
+  const root = (attributes: Record<string, unknown>) => ({
+    id: 'evt-1',
+    eventType: 'session' as const,
+    startedAt: '2026-08-24T10:00:00.000Z',
+    inspections: [],
+    attributes,
+  });
+  const accept = (body: unknown) => {
+    server.reply((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(json(body));
+    });
+  };
+
+  it("sends a capture's repo without the query", async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    accept({ accepted: 1, duplicates: 0 });
+
+    await client.ingestEvents({ events: [capture(SLUG)] });
+
+    const body = server.received.at(-1)?.body;
+    expect(JSON.parse(body ?? '{}')).toMatchObject({
+      events: [{ metadata: { sessionId: 's-1', repo: 'payments-api' } }],
+    });
+    expectNoEchoOf(body, QUERY);
+  });
+
+  it("sends an audit event's repo and project without the query, on both routes", async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    const attributes = { project: SLUG, repo: NWO, cwd: '/home/dev/payments-api' };
+    accept({ accepted: true });
+    await client.recordAuditEvent(root(attributes));
+    const single = server.received.at(-1)?.body;
+    accept({ accepted: 1 });
+    await client.recordAuditEvents([root(attributes)]);
+    const batch = server.received.at(-1)?.body;
+
+    const clean = {
+      project: 'payments-api',
+      repo: 'acme/payments-api',
+      cwd: '/home/dev/payments-api',
+    };
+    expect(JSON.parse(single ?? '{}')).toMatchObject({ attributes: clean });
+    expect(JSON.parse(batch ?? '{}')).toMatchObject({ events: [{ attributes: clean }] });
+    expectNoEchoOf(single, QUERY);
+    expectNoEchoOf(batch, QUERY);
+  });
+
+  it('sends the labels without the query on the single-event fallback too', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((req, res) => {
+      if (req.url === '/v1/audit-events/batch') {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(json({ accepted: true }));
+    });
+    const before = server.received.length;
+
+    await client.recordAuditEvents([root({ project: SLUG, repo: NWO })], {
+      fallbackToSingleEvents: true,
+    });
+
+    const single = server.received.slice(before).at(-1);
+    expect(single?.url).toBe('/v1/audit-events');
+    expect(JSON.parse(single?.body ?? '{}')).toMatchObject({
+      attributes: { project: 'payments-api', repo: 'acme/payments-api' },
+    });
+    expectNoEchoOf(single?.body, QUERY);
+  });
+
+  it('sends a label with no query exactly as given', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    // A remote-less checkout's folder name may hold a `#`; only a query is removed.
+    const batch = { events: [capture('c#-tools')] };
+    accept({ accepted: 1, duplicates: 0 });
+
+    await client.ingestEvents(batch);
+
+    expect(server.received.at(-1)?.body).toBe(json(batch));
+  });
+});
+
 describe('the shares-ingest submission', () => {
   const server = useLoopbackServer();
 

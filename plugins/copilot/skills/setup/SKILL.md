@@ -194,3 +194,60 @@ everything or only enrolled repositories, and which repositories are enrolled.
 | vscode  | UserPromptSubmit    | prompt                  | none    | yes      | Captured and scanned, recorded in test/fixtures/vscode/plugin-load-1.141/; nothing can be stopped or rewritten. This host blocks through exit 2, which no path in this adapter takes, so a block or redact policy is recorded and the prompt is sent unchanged.                                   |
 | vscode  | PostToolUse         | tool_response           | none    | yes      | Captured and scanned, recorded in test/fixtures/vscode/plugin-load-1.141/ as a string response; nothing can be withheld. This host has no output-rewrite field at all, and its whole-result block has never been driven, so a finding is recorded and the output reaches the model unchanged.     |
 | cloud   | preToolUse          | bash.command            | block   | no       | Speaks the CLI protocol, so the adapter behaves identically — but it runs only where the repository commits a hook on its default branch, and ask is coerced to deny there.                                                                                                                       |
+
+## Install — VS Code agent mode (beta)
+
+**VS Code agent mode support is beta.** Capture was observed in one agent-mode
+session on VS Code 1.141.0 with the built-in GitHub Copilot Chat 0.69.0. That is
+the only version it has been seen on. Enforcement is unverified. The capability
+matrix above is the authority on which VS Code rows are verified: rely only on a
+row marked `yes` as working, and describe every row marked `no` as what the
+vendor documents, not as what was seen to happen.
+
+**Load the package from a local directory.** There is no marketplace install for
+VS Code. Pack and unpack the npm package, then point VS Code at the unpacked
+folder in your user settings:
+
+```
+npm pack @akasecurity/ai-tc-copilot
+tar -xzf akasecurity-ai-tc-copilot-*.tgz
+```
+
+```json
+{
+  "chat.plugins.enabled": true,
+  "chat.useHooks": true,
+  "chat.pluginLocations": { "<absolute path to the unpacked package folder>": true }
+}
+```
+
+`npm pack` unpacks into a folder named `package`; use its absolute path. VS Code
+reads the plugin's own `hooks.json` — no VS Code-specific hooks file is needed —
+runs its four hooks and expands `${PLUGIN_ROOT}` in their commands.
+
+**What was observed working: capture only.** In that session AKA recorded the
+session start, the prompt, a `run_in_terminal` command, a `create_file` write
+and the tool result. A secret-bearing command raised a finding on the dashboard.
+Nothing else in the session was driven.
+
+**Not verified.** None of these has been seen to work on VS Code, so do not
+promise them:
+
+- blocking a tool call (a deny);
+- rewriting a file write (`updatedInput`);
+- the large-input refusal;
+- scanning an object-shaped tool result.
+
+**AKA's notices are not shown in the chat.** A hook's `systemMessage`, such as a
+warn or the first-run notice, appeared only in VS Code's "GitHub Copilot Chat
+Hooks" output channel, and the chat showed nothing from AKA. To read them, open
+the Output panel and choose the "GitHub Copilot Chat Hooks" channel. Do not tell
+a user a warning will appear in the chat.
+
+**Caveats that apply here.** Matchers are ignored, so the hook runs for every
+tool call, and a rewrite is last-hook-wins, so another hook's `updatedInput` can
+discard AKA's. Both are described under Known limitations above.
+
+**The cloud coding agent is not covered by this install.** It reads hooks from
+`.github/hooks/*.json` on a repository's default branch and is a separate
+surface; see Known limitations.

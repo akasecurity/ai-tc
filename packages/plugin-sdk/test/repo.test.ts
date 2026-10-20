@@ -193,6 +193,20 @@ describe('remoteWithoutCredentials', () => {
   ])('returns %s unchanged when there is nothing to remove', (remote) => {
     expect(remoteWithoutCredentials(remote)).toBe(remote);
   });
+
+  const FILE_REMOTE = pathToFileURL('/home/x/a').href;
+  it.each([FILE_REMOTE, `${FILE_REMOTE}?b`, `${FILE_REMOTE}#b`, `${FILE_REMOTE}?b@c`])(
+    'returns the file remote %s as written',
+    (remote) => {
+      expect(remoteWithoutCredentials(remote)).toBe(remote);
+    },
+  );
+
+  it('removes only the userinfo from a file remote', () => {
+    expect(remoteWithoutCredentials('file://ci:not-a-real-token@host/x/a?b#c')).toBe(
+      'file://host/x/a?b#c',
+    );
+  });
 });
 
 describe('resolveRepoIdentity', () => {
@@ -211,6 +225,13 @@ describe('resolveRepoIdentity', () => {
   it('keeps the url as the git config writes it, and reads the name without its credentials', () => {
     gitDir(root, ORIGIN(CREDENTIALED_REMOTE));
     expect(resolveRepoIdentity(root)).toEqual({ url: CREDENTIALED_REMOTE, name: 'payments-api' });
+  });
+
+  it('reads the whole folder name from a file remote whose path holds a `?`', () => {
+    const remote = `${pathToFileURL('/srv/repos/widgets').href}?b`;
+    gitDir(root, ORIGIN(remote));
+    expect(resolveRepoIdentity(root)).toEqual({ url: remote, name: 'widgets?b' });
+    expect(resolveRepo(root)).toBe('widgets?b');
   });
 
   it('falls back to the worktree root as url and basename as name with no remote', () => {

@@ -153,6 +153,9 @@ describe('nameBucket', () => {
     ['password1', 'secret_like'],
     ['key2', 'secret_like'],
     ['secret123', 'secret_like'],
+    ['token2', 'secret_like'],
+    // Only DIGITS may follow the word: letters after it make another word.
+    ['password1abc', 'other'],
     ['test2', 'test_like'],
     ['secretkey', 'secret_like'],
     ['PRIVATEKEY', 'secret_like'],

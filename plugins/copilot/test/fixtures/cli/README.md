@@ -362,6 +362,14 @@ outcomes and file states, not hook payloads, so **no file here backs them**.
   leaves AKA running and makes `copilot plugin update` unusable for it; a
   newer version is installed by unpacking it again and running
   `copilot plugin install ./package`.
+- **`copilot plugin uninstall aka-copilot` removes the install, and it can be
+  installed again.** It exited 0 and printed
+  `Plugin "aka-copilot" uninstalled successfully.`; `copilot plugin list`
+  afterwards no longer listed it, and `$COPILOT_HOME/installed-plugins/_direct`
+  was gone. Installing again with `copilot plugin install ./package` worked.
+- **`COPILOT_HOME` defaults to `$HOME/.copilot`**, as `copilot help environment`
+  states. That is the help text only: every run here set `COPILOT_HOME`, so an
+  install under the default location was not itself observed.
 - **`copilot plugin marketplace add akasecurity/ai-tc` refuses this
   repository's marketplace.** It read `.claude-plugin/marketplace.json` and
   exited 1 with

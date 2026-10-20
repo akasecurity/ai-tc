@@ -18,21 +18,41 @@ calibration step to the user as though it exists here.
 ## Install — Copilot CLI
 
 The plugin is installed from an unpacked copy of its npm package. There is no
-marketplace entry for it yet.
+marketplace entry for it yet. Run these from a folder of their own, and keep
+that folder: updates are taken from it.
 
 ```sh
-npm pack @akasecurity/ai-tc-copilot
-tar -xzf akasecurity-ai-tc-copilot-*.tgz
+mkdir aka-copilot && cd aka-copilot
+tar -xzf "$(npm pack @akasecurity/ai-tc-copilot --silent)"
 copilot plugin install ./package
 copilot plugin list
 aka init
 ```
 
-`copilot plugin list` shows `aka-copilot` once the install has landed. The
-plugin is placed under `~/.copilot/installed-plugins/_direct/`. To remove it,
-run `copilot plugin uninstall aka-copilot`.
+To update, from that same folder:
 
-These steps were recorded against Copilot CLI 1.0.98.
+```sh
+rm -rf package
+tar -xzf "$(npm pack @akasecurity/ai-tc-copilot --silent)"
+copilot plugin update aka-copilot
+```
+
+`copilot plugin update` re-copies the `package` folder into the installed
+plugin. It does not fetch a newer version itself: the newer version is whatever
+`npm pack` just unpacked there. Removing the old `package` folder first matters,
+because unpacking over it would keep files the newer version deleted, and the
+update would copy those too.
+
+What Copilot CLI 1.0.98 was recorded doing with these commands:
+
+- `copilot plugin list` shows `aka-copilot` once the install has landed.
+- The installed copy is placed under `$COPILOT_HOME/installed-plugins/_direct/`.
+  `COPILOT_HOME` defaults to `~/.copilot`, per `copilot help environment`.
+- `copilot plugin uninstall aka-copilot` removes it: `copilot plugin list` no
+  longer shows it, the `_direct` folder is gone, and installing again with
+  `copilot plugin install ./package` works.
+
+Limits of this install:
 
 - **The CLI warns that this install route is deprecated.** It says direct
   installs from a path are being replaced by `plugin@marketplace` installs.
@@ -46,11 +66,11 @@ These steps were recorded against Copilot CLI 1.0.98.
   platform's shell is untested.
 - **Updating re-copies the folder the plugin was installed from.** The install
   remembers that folder, and `copilot plugin update aka-copilot` replaces the
-  installed copy with whatever the folder holds, an older version included.
-  To move to a newer version, delete the old `package` folder, unpack the new
-  package in the same place, then run `copilot plugin update aka-copilot`. If
-  that folder has been deleted, update fails and changes nothing; AKA keeps
-  running from the installed copy. A session start does not update the plugin.
+  installed copy with whatever the folder holds, an older version included. It
+  does not fetch from npm; the update steps above put the newer version in the
+  folder first. If that folder has been deleted, update fails and changes
+  nothing; AKA keeps running from the installed copy. A session start does not
+  update the plugin.
 - **The cloud coding agent is not covered by this install.** It does not load
   installed plugins; it reads only the repository's `.github/hooks/*.json`.
 
@@ -212,9 +232,9 @@ vendor documents, not as what was seen to happen.
 VS Code. Pack and unpack the npm package, then point VS Code at the unpacked
 folder in your user settings:
 
-```
-npm pack @akasecurity/ai-tc-copilot
-tar -xzf akasecurity-ai-tc-copilot-*.tgz
+```sh
+mkdir aka-copilot && cd aka-copilot
+tar -xzf "$(npm pack @akasecurity/ai-tc-copilot --silent)"
 ```
 
 ```json

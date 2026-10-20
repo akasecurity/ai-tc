@@ -101,9 +101,14 @@ export const AGENT_PLUGINS: readonly AgentPlugin[] = [
     // with no ref is skipped by the update notice's `npm view` lookups.
     installHint:
       'Copilot installs this plugin from a local directory rather than a marketplace:\n' +
-      '  npm pack @akasecurity/ai-tc-copilot && tar -xzf akasecurity-ai-tc-copilot-*.tgz\n' +
+      '  mkdir aka-copilot && cd aka-copilot\n' +
+      '  tar -xzf "$(npm pack @akasecurity/ai-tc-copilot --silent)"\n' +
       '  copilot plugin install ./package\n' +
       'Then run `aka init` to set up the local store.\n' +
+      'To update, from that same folder (`copilot plugin update` re-copies it and fetches nothing):\n' +
+      '  rm -rf package\n' +
+      '  tar -xzf "$(npm pack @akasecurity/ai-tc-copilot --silent)"\n' +
+      '  copilot plugin update aka-copilot\n' +
       'VS Code agent mode can load the same folder via its `chat.pluginLocations` setting (beta).',
   },
 ];

@@ -10,7 +10,25 @@ Detection and enforcement run locally. A handful of narrow paths do reach the ne
 - Claude Desktop: supported through the same plugin package; see the installation guide.
 - Codex CLI: `codex plugin marketplace add akasecurity/ai-tc` then `codex plugin add aka-codex@ai-tc` — a separate plugin package, served from this repository's own `ai-tc` marketplace rather than the `akasecurity` marketplace Claude Code installs from.
 - Antigravity: a separate plugin package with no marketplace at all — `agy plugin install` takes a local directory, so unpack `@akasecurity/ai-tc-antigravity` and install it from that path; see the installation guide.
-- GitHub Copilot: a separate plugin package, also with no marketplace — unpack `@akasecurity/ai-tc-copilot` (`npm pack @akasecurity/ai-tc-copilot`) and run `copilot plugin install ./package`. The Copilot CLI warns that local-path installs are deprecated, Windows is unconfirmed, and VS Code agent mode is beta, not yet confirmed against a live install.
+- GitHub Copilot: a separate plugin package, also with no marketplace. From a folder of its own, which is kept for updates:
+
+  ```sh
+  mkdir aka-copilot && cd aka-copilot
+  tar -xzf "$(npm pack @akasecurity/ai-tc-copilot --silent)"
+  copilot plugin install ./package
+  copilot plugin list
+  aka init
+  ```
+
+  To update, from that same folder (`copilot plugin update` re-copies it and does not fetch a newer version itself):
+
+  ```sh
+  rm -rf package
+  tar -xzf "$(npm pack @akasecurity/ai-tc-copilot --silent)"
+  copilot plugin update aka-copilot
+  ```
+
+  The Copilot CLI warns that local-path installs are deprecated, Windows is unconfirmed, and VS Code agent mode is beta, not yet confirmed against a live install.
 - Browser extension (ChatGPT + Claude.ai web chat): `aka extension install`, bridged to Chrome over native messaging.
 - Standalone CLI (binary `aka`, no coding agent required): `brew install akasecurity/tap/aka` (macOS, Linux), `scoop bucket add akasecurity https://github.com/akasecurity/scoop-bucket` then `scoop install aka` (Windows), the `install.sh`/`install.ps1` one-liner, or a direct download from the `bin-latest` release; then `aka init` — it detects whether a plugin is present and offers to add it.
 

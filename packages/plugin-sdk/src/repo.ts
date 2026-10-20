@@ -59,9 +59,11 @@ export function remoteWithoutCredentials(remote: string): string {
  * (the `origin` remote URL, so two machines cloning the same repo collapse to
  * one `source_project` row; the HEAD worktree root path is the fallback for a
  * repo with no remote) plus a human `name` (the remote slug, else the HEAD
- * worktree basename). A linked worktree (`.git` file → `gitdir:`/`commondir`)
- * resolves to its PARENT repo's identity — the checkout is the same project,
- * not a new one — so worktree sessions collapse into the head repo's row.
+ * worktree basename). The `url` is the remote exactly as the git config writes
+ * it, credentials and query included; the `name` is read from it without them.
+ * A linked worktree (`.git` file → `gitdir:`/`commondir`) resolves to its
+ * PARENT repo's identity — the checkout is the same project, not a new one — so
+ * worktree sessions collapse into the head repo's row.
  * Returns undefined when `cwd` is not inside a git repo. Same pure, fail-open,
  * never-spawns-git contract as resolveRepo.
  */
@@ -195,10 +197,11 @@ function attributeRepo(cwd: string): RepoAttribution {
 
 /**
  * The `owner/repo` name-with-owner for `cwd`, derived from the `origin` (else
- * any) remote URL — the meaningful value for the Activity page's `repo` display
- * field (distinct from `project`, which is the bare slug). undefined when the
- * repo has no remote (a purely-local checkout has no owner) or `cwd` is outside a
- * git repo. Same pure, never-spawns-git, never-throws contract as resolveRepo.
+ * any) remote URL without its credentials or query — the meaningful value for
+ * the Activity page's `repo` display field (distinct from `project`, which is
+ * the bare slug). undefined when the repo has no remote (a purely-local checkout
+ * has no owner) or `cwd` is outside a git repo. Same pure, never-spawns-git,
+ * never-throws contract as resolveRepo.
  */
 export function resolveRepoNwo(cwd: string): string | undefined {
   try {
@@ -206,7 +209,7 @@ export function resolveRepoNwo(cwd: string): string | undefined {
     if (!root) return undefined;
     const ctx = resolveGitContext(root);
     const url = ctx ? remoteUrl(ctx) : undefined;
-    return url ? nwoFromUrl(url) : undefined;
+    return url ? nwoFromUrl(remoteWithoutCredentials(url)) : undefined;
   } catch {
     return undefined;
   }
@@ -377,11 +380,13 @@ function locateRepo(cwd: string): RepoLocation | undefined {
   return { headRoot: ctx?.headRoot ?? root, remote: ctx ? remoteUrl(ctx) : undefined };
 }
 
-// The repo's display slug: the remote's last path segment, else the HEAD
-// worktree basename, never an arbitrary directory name (see the header).
+// The repo's display slug: the last path segment of the remote without its
+// credentials or query, else the HEAD worktree basename, never an arbitrary
+// directory name (see the header).
 function slugOf(location: RepoLocation): string {
   return (
-    (location.remote ? slugFromUrl(location.remote) : undefined) ?? basename(location.headRoot)
+    (location.remote ? slugFromUrl(remoteWithoutCredentials(location.remote)) : undefined) ??
+    basename(location.headRoot)
   );
 }
 

@@ -23,7 +23,11 @@ import type {
   ScanLedgerState,
 } from '@akasecurity/plugin-sdk';
 import type { BoundedScanRequest } from '@akasecurity/plugin-sdk';
-import { bundledDetections, isSecretBearingFileSnapshot } from '@akasecurity/plugin-sdk';
+import {
+  bundledDetections,
+  isSecretBearingFileSnapshot,
+  remoteWithoutCredentials,
+} from '@akasecurity/plugin-sdk';
 import type {
   AuditEventBatchAck,
   AuditEventInput,
@@ -814,11 +818,17 @@ export class AttachedDataGateway
     // process directory is still judged by that project here, while its root
     // stays local.
     //
+    // The verdict reads the project url as the session root's key is read, and
+    // the context is sent with that url's credentials, query and fragment
+    // removed (`inventoryForWire`).
+    //
     // The posture report below is NOT gated: it is the device's liveness
     // channel, and a scoped machine whose sessions are all personal must still
     // report, or it reads as silent.
     if (this.inventoryVerdict(ctx, opts?.scopeKey) === 'forward') {
-      const remote = await this.deps.forward.run(() => this.deps.client.ingestInventory(ctx));
+      const remote = await this.deps.forward.run(() =>
+        this.deps.client.ingestInventory(inventoryForWire(ctx)),
+      );
       // UNCONDITIONAL, including on failure. One gateway instance serves many
       // sessions — `reconcileHistory` walks them in a loop — so keeping the
       // previous session's resolution when this one's forward fails would stamp
@@ -1741,6 +1751,17 @@ function inventoryKey(ctx: InventoryContext): string | undefined {
   const tool = ctx.harness?.identityKey;
   if (tool === undefined || !sessionToolIsKeyed(tool)) return undefined;
   return canonicalRepoUrl(ctx.project?.url ?? '');
+}
+
+/**
+ * The context `POST /v1/inventory` carries: `ctx` with its project url passed
+ * through `remoteWithoutCredentials`. A url with nothing to remove, and a
+ * context with no project, are sent as given.
+ */
+function inventoryForWire(ctx: InventoryContext): InventoryContext {
+  if (ctx.project === undefined) return ctx;
+  const url = remoteWithoutCredentials(ctx.project.url);
+  return url === ctx.project.url ? ctx : { ...ctx, project: { ...ctx.project, url } };
 }
 
 /**

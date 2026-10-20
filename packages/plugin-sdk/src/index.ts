@@ -165,6 +165,7 @@ export {
 } from './raw-egress.ts';
 export type { RepoAttribution } from './repo.ts';
 export {
+  remoteWithoutCredentials,
   resolveGitBranch,
   resolveHeadRoot,
   resolveRepo,

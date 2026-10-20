@@ -202,6 +202,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'recordSessionModel',
   'registerBundledPacks',
   'registerRulePack',
+  'remoteWithoutCredentials',
   'reportedCaptureDocumentForSite',
   'requiredHostVersion',
   'resolveAntigravityProvider',

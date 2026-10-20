@@ -10,10 +10,10 @@ import type {
   McpServerScanEntry,
   SkillScanEntry,
 } from '@akasecurity/schema';
-import { mcpServerIdentityKey, skillIdentityKey } from '@akasecurity/schema';
+import { mcpServerIdentityKey, skillIdentityKey, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { maskText } from './mask.ts';
-import { resolveRepoIdentity } from './repo.ts';
+import { remoteWithoutCredentials, resolveRepoIdentity } from './repo.ts';
 
 /**
  * Inputs for one config-inventory scan. `homeDir` is injectable for tests;
@@ -61,7 +61,12 @@ export interface ResolveConfigInventoryInput {
  *   plus every known marketplace's skills (root + `plugins/*` + `external_plugins/*`)
  *   EXCEPT Anthropic's built-in `claude-plugins-official` catalog. Skills are
  *   de-duplicated by inventory identity (source + name), so distinct sources that
- *   share a name (personal `pdf` vs a marketplace `pdf`) stay separate.
+ *   share a name (personal `pdf` vs a marketplace `pdf`) stay separate. A skill's
+ *   description is masked through the bundled detection packs.
+ *
+ * The repo identity folded into project and local scope (and set as
+ * `projectKey`) is the remote URL with its credentials and query removed
+ * (`remoteWithoutCredentials`), else the working directory.
  *
  * Installed plugins come from `~/.claude/plugins/installed_plugins.json`
  * (version 2: `plugins: { "<name>@<marketplace>": [{ installPath, version }] }`)
@@ -77,6 +82,7 @@ export function resolveConfigInventory(input: ResolveConfigInventoryInput): Conf
     mcpServers: [],
     configFiles: [],
     errors: [],
+    sourceTool: SOURCE_TOOL.ClaudeCode,
   };
   try {
     const home = input.homeDir ?? homedir();
@@ -88,7 +94,8 @@ export function resolveConfigInventory(input: ResolveConfigInventoryInput): Conf
     // (an MCP row carries a trust decision; sharing would let a cloned repo
     // inherit it).
     const repo = resolveRepoIdentity(input.cwd);
-    const repoIdentity = repo?.url ?? input.cwd;
+    const repoIdentity = repo === undefined ? input.cwd : remoteWithoutCredentials(repo.url);
+    if (repoIdentity !== '') scan.projectKey = repoIdentity;
     const projectSource = `project:${repoIdentity}`;
 
     // Hooks + (managed-deployment) MCP servers from the three settings scopes.
@@ -194,7 +201,7 @@ function collectHooksObject(
 }
 
 function collectSettingsHooks(scan: ConfigScanResult, path: string, scope: ConfigScope): void {
-  const raw = readOptional(path);
+  const raw = readOptional(scan, path);
   if (raw === undefined) return; // absent file = nothing registered, not an error
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -295,7 +302,7 @@ function collectMcpFile(
   origin: McpOrigin,
   opts?: { recordErrors?: boolean },
 ): void {
-  const raw = readOptional(path);
+  const raw = readOptional(scan, path, opts?.recordErrors ?? false);
   if (raw === undefined) return;
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -319,7 +326,7 @@ function collectUserClaudeJson(
   cwd: string,
   repoIdentity: string,
 ): void {
-  const raw = readOptional(path);
+  const raw = readOptional(scan, path);
   if (raw === undefined) return;
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -383,7 +390,7 @@ function collectPluginManifestMcp(
   origin: McpOrigin,
 ): void {
   const manifestPath = join(installPath, '.claude-plugin', 'plugin.json');
-  const raw = readOptional(manifestPath);
+  const raw = readOptional(scan, manifestPath);
   if (raw === undefined) return;
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -432,6 +439,7 @@ function collectConfigFiles(scan: ConfigScanResult, claudeDir: string, cwd: stri
 // The row skeleton every source shares: basename, mtime, kind. Returns
 // undefined when the path doesn't exist (a non-event, not an error).
 function configFileEntry(
+  scan: ConfigScanResult,
   path: string,
   scope: ConfigScope,
   kind: string,
@@ -439,7 +447,8 @@ function configFileEntry(
   try {
     const stat = statSync(path);
     return { name: basename(path), path, scope, kind, updatedAt: stat.mtime.toISOString() };
-  } catch {
+  } catch (err) {
+    if (!isAbsent(err)) scan.errors.push({ source: path, reason: message(err) });
     return undefined;
   }
 }
@@ -450,9 +459,9 @@ function settingsConfigFile(
   scope: ConfigScope,
   kind: string,
 ): void {
-  const entry = configFileEntry(path, scope, kind);
+  const entry = configFileEntry(scan, path, scope, kind);
   if (!entry) return;
-  const raw = readOptional(path);
+  const raw = readOptional(scan, path, false);
   if (raw !== undefined) {
     try {
       const parsed: unknown = JSON.parse(raw);
@@ -476,9 +485,9 @@ function memoryConfigFile(
   scope: ConfigScope,
   kind: string,
 ): void {
-  const entry = configFileEntry(path, scope, kind);
+  const entry = configFileEntry(scan, path, scope, kind);
   if (!entry) return;
-  const raw = readOptional(path);
+  const raw = readOptional(scan, path);
   if (raw !== undefined) {
     // Line count only — memory content never leaves the machine's file. A
     // trailing newline terminates the last line rather than starting a new
@@ -491,9 +500,9 @@ function memoryConfigFile(
 }
 
 function mcpJsonConfigFile(scan: ConfigScanResult, path: string): void {
-  const entry = configFileEntry(path, 'project', 'MCP servers');
+  const entry = configFileEntry(scan, path, 'project', 'MCP servers');
   if (!entry) return;
-  const raw = readOptional(path);
+  const raw = readOptional(scan, path, false);
   if (raw !== undefined) {
     try {
       const parsed: unknown = JSON.parse(raw);
@@ -524,7 +533,7 @@ function mcpJsonConfigFile(scan: ConfigScanResult, path: string): void {
 // subdirectories — so count .md files recursively, and never count what the
 // harness doesn't load (.DS_Store, dotfiles, stray non-.md files).
 function dirConfigFile(scan: ConfigScanResult, path: string, kind: string, noun: string): void {
-  const entry = configFileEntry(path, 'project', kind);
+  const entry = configFileEntry(scan, path, 'project', kind);
   if (!entry) return;
   try {
     const count = countMarkdownFiles(path, 0);
@@ -562,13 +571,15 @@ function collectSkillsDir(scan: ConfigScanResult, dir: string, origin: SkillOrig
   let names: string[];
   try {
     names = readdirSync(dir);
-  } catch {
-    return; // no skills dir = nothing installed, not an error
+  } catch (err) {
+    // No skills dir = nothing installed, not an error.
+    if (!isAbsent(err)) scan.errors.push({ source: dir, reason: message(err) });
+    return;
   }
   for (const name of names) {
     const skillFile = join(dir, name, 'SKILL.md');
     try {
-      const raw = readOptional(skillFile);
+      const raw = readOptional(scan, skillFile);
       if (raw === undefined) continue; // stray file/dir without a SKILL.md
       const front = parseFrontmatter(raw);
       const entry: SkillScanEntry = {
@@ -580,7 +591,7 @@ function collectSkillsDir(scan: ConfigScanResult, dir: string, origin: SkillOrig
       };
       const version = front.version ?? origin.defaultVersion;
       if (version !== undefined) entry.version = version;
-      if (front.description !== undefined) entry.description = front.description;
+      if (front.description !== undefined) entry.description = maskText(front.description);
       if (origin.pluginName !== undefined) entry.pluginName = origin.pluginName;
       scan.skills.push(entry);
     } catch (err) {
@@ -619,7 +630,7 @@ function parseFrontmatter(raw: string): { name?: string; description?: string; v
 
 function collectInstalledPlugins(scan: ConfigScanResult, claudeDir: string): void {
   const manifestPath = join(claudeDir, 'plugins', 'installed_plugins.json');
-  const raw = readOptional(manifestPath);
+  const raw = readOptional(scan, manifestPath);
   if (raw === undefined) return;
   let plugins: Record<string, unknown>;
   try {
@@ -647,7 +658,7 @@ function collectInstalledPlugins(scan: ConfigScanResult, claudeDir: string): voi
       const version = (install as Record<string, unknown>).version;
 
       const hooksPath = join(installPath, 'hooks', 'hooks.json');
-      const hooksRaw = readOptional(hooksPath);
+      const hooksRaw = readOptional(scan, hooksPath);
       if (hooksRaw !== undefined) {
         try {
           const parsed: unknown = JSON.parse(hooksRaw);
@@ -689,7 +700,7 @@ function collectInstalledPlugins(scan: ConfigScanResult, claudeDir: string): voi
 // plugin's `plugins/<p>/skills` and `external_plugins/<p>/skills`. Not scoped to
 // enabled plugins — the user asked to see the third-party surface they pulled in.
 function collectMarketplaceSkills(scan: ConfigScanResult, claudeDir: string): void {
-  for (const mp of readMarketplaces(join(claudeDir, 'plugins', 'known_marketplaces.json'))) {
+  for (const mp of readMarketplaces(scan, join(claudeDir, 'plugins', 'known_marketplaces.json'))) {
     if (isClaudeOfficialMarketplace(mp.name, mp.repo)) continue;
     // Marketplace-root skills (repo-level skills shipped in the checkout).
     collectSkillsDir(scan, join(mp.installLocation, 'skills'), {
@@ -712,8 +723,10 @@ function collectPluginSkillDirs(
   let plugins: string[];
   try {
     plugins = readdirSync(pluginsDir);
-  } catch {
-    return; // this marketplace doesn't use this layout
+  } catch (err) {
+    // This marketplace doesn't use this layout.
+    if (!isAbsent(err)) scan.errors.push({ source: pluginsDir, reason: message(err) });
+    return;
   }
   for (const plugin of plugins) {
     collectSkillsDir(scan, join(pluginsDir, plugin, 'skills'), {
@@ -731,8 +744,8 @@ interface KnownMarketplace {
 }
 
 // `known_marketplaces.json`: { "<name>": { installLocation, source: { repo } } }.
-function readMarketplaces(manifestPath: string): KnownMarketplace[] {
-  const raw = readOptional(manifestPath);
+function readMarketplaces(scan: ConfigScanResult, manifestPath: string): KnownMarketplace[] {
+  const raw = readOptional(scan, manifestPath);
   if (raw === undefined) return [];
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -747,8 +760,9 @@ function readMarketplaces(manifestPath: string): KnownMarketplace[] {
       out.push({ name, installLocation: loc, repo });
     }
     return out;
-  } catch {
-    return []; // malformed manifest → no marketplace skills
+  } catch (err) {
+    scan.errors.push({ source: manifestPath, reason: parseErrorReason(err) });
+    return [];
   }
 }
 
@@ -802,13 +816,22 @@ function dedupeMcpServers(servers: McpServerScanEntry[]): McpServerScanEntry[] {
 
 // ── Small helpers ────────────────────────────────────────────────────────────
 
-// undefined = file absent/unreadable (a non-event for optional config files).
-function readOptional(path: string): string | undefined {
+// The file's text, or undefined when it cannot be read. An absent file is a
+// non-event; any other failure is recorded in `scan.errors` unless `record` is
+// false, for a file another collector already reads and records.
+function readOptional(scan: ConfigScanResult, path: string, record = true): string | undefined {
   try {
     return readFileSync(path, 'utf8');
-  } catch {
+  } catch (err) {
+    if (record && !isAbsent(err)) scan.errors.push({ source: path, reason: message(err) });
     return undefined;
   }
+}
+
+// Whether a filesystem error means the path does not exist.
+function isAbsent(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
 }
 
 function message(err: unknown): string {

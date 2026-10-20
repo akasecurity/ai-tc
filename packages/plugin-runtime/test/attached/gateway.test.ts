@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -41,6 +41,7 @@ import { SOURCE_TOOL } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
+import { stagedConfigInventoryPath } from '../../src/attached/config-inventory-sync.ts';
 import { readForwardDrops } from '../../src/attached/forward-drops.ts';
 import type { ForwardPolicy, ForwardResult } from '../../src/attached/forward-policy.ts';
 import { createForwardPolicy, FORWARD_STATE_FILENAME } from '../../src/attached/forward-policy.ts';
@@ -1976,7 +1977,7 @@ describe('the scope verdict, method by method', () => {
 
   it('recordConfigScan stays local on a scoped attachment, even when stamped in scope', async () => {
     const scan: ConfigScanRecord = {
-      items: [],
+      ...configScan(),
       scanEvent: {
         id: 'scan-1',
         eventType: 'config_scan',
@@ -1989,10 +1990,12 @@ describe('the scope verdict, method by method', () => {
     expect(scoped.calls.order).toContain('local.recordConfigScan');
     expect(scoped.calls.order).not.toContain('forward.run');
     expect(scoped.calls.delivered).toEqual([]);
-    // The contrast: a machine attachment forwards the same scan.
+    expect(existsSync(stagedConfigInventoryPath(dataDir))).toBe(false);
+    // The contrast: a machine attachment forwards the same scan and stages its items.
     const machine = build();
     await machine.gateway.recordConfigScan(scan);
     expect(machine.calls.delivered).toEqual(['scan-1']);
+    expect(stagedRequests()).toHaveLength(1);
   });
 
   it('recordProjectEgress forwards a scan of an enrolled remote, keyed before hashing', async () => {
@@ -4102,5 +4105,115 @@ describe('forwardingScope', () => {
     expect(calls.delivered).toContain('s1');
     expect(calls.delivered).toContain(llmCallId('s1', 'm1'));
     expect(gateway.forwardingScope('s1')).toMatchObject({ rootKey: IN, rootForwards: true });
+  });
+});
+
+// ── the config inventory report ────────────────────────────────────────────
+
+const CONFIG_HARNESS = {
+  objectType: 'harness' as const,
+  identityKey: 'claude-code',
+  title: 'claude-code',
+  attributes: {},
+};
+const CONFIG_PROJECT_KEY = 'https://github.com/acme/widgets.git';
+
+function configItem(name: string, scope = 'user') {
+  return {
+    objectType: 'mcp_server' as const,
+    identityKey: `${name}|${scope}`,
+    title: name,
+    attributes: { scope, transport: 'http', url: `https://${name}.example.test/mcp` },
+  };
+}
+
+function configScan(overrides: Partial<ConfigScanRecord> = {}): ConfigScanRecord {
+  return {
+    items: [configItem('linear'), configItem('github', `project:${CONFIG_PROJECT_KEY}`)],
+    scanEvent: {
+      id: 'scan-1',
+      eventType: 'config_scan',
+      startedAt: '2026-10-19T09:00:00.000Z',
+      attributes: { mcp_servers: 2 },
+    },
+    harness: CONFIG_HARNESS,
+    projectKey: CONFIG_PROJECT_KEY,
+    complete: true,
+    ...overrides,
+  };
+}
+
+/** The requests of each staged report, or undefined when nothing is staged. */
+function stagedRequests(): unknown[] | undefined {
+  const path = stagedConfigInventoryPath(dataDir);
+  if (!existsSync(path)) return undefined;
+  const staged = JSON.parse(readFileSync(path, 'utf8')) as { reports: { requests: unknown }[] };
+  return staged.reports.map((report) => report.requests);
+}
+
+describe('recordConfigScan stages the scanned items for the sync child', () => {
+  it('writes locally, stages the items, forwards the event, and sends no items itself', async () => {
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const recordConfigInventory = vi.fn(() => Promise.resolve({ accepted: 0 }));
+    const client = Object.assign(makeClient(calls), { recordConfigInventory });
+    const { gateway } = build({
+      client,
+      local: makeLocal(calls),
+      forward: passthroughForward(calls),
+    });
+    const scan = configScan();
+
+    await gateway.recordConfigScan(scan);
+
+    expect(calls.order).toEqual([
+      'local.recordConfigScan',
+      'forward.run',
+      'client.recordAuditEvent',
+      'local.markAuditEventsDelivered',
+    ]);
+    expect(recordConfigInventory).not.toHaveBeenCalled();
+    expect(stagedRequests()).toEqual([
+      [
+        {
+          harness: CONFIG_HARNESS,
+          items: scan.items,
+          projectKey: CONFIG_PROJECT_KEY,
+          complete: true,
+        },
+      ],
+    ]);
+  });
+
+  it('stages the items when the forward is skipped', async () => {
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const { gateway } = build({ forward: deadForward(calls), local: makeLocal(calls) });
+
+    await gateway.recordConfigScan(configScan());
+
+    expect(calls.order).toContain('forward.skipped');
+    expect(stagedRequests()).toHaveLength(1);
+  });
+
+  it('stages nothing for a record that names no harness, and still forwards the event', async () => {
+    const { gateway, calls } = build();
+    const withoutHarness = configScan();
+    delete withoutHarness.harness;
+
+    await gateway.recordConfigScan(withoutHarness);
+
+    expect(calls.delivered).toEqual(['scan-1']);
+    expect(stagedRequests()).toBeUndefined();
+  });
+
+  it('does not reject when the report cannot be staged, and still forwards the event', async () => {
+    const blocked = stagedConfigInventoryPath(dataDir);
+    mkdirSync(blocked);
+    writeFileSync(join(blocked, 'occupied'), '');
+    const { gateway, calls } = build();
+
+    await expect(gateway.recordConfigScan(configScan())).resolves.toBeUndefined();
+
+    expect(calls.order).toContain('local.recordConfigScan');
+    expect(calls.delivered).toEqual(['scan-1']);
   });
 });

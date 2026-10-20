@@ -11,11 +11,13 @@
  *
  * This hook does NOT reconcile inline — it only TRIGGERS the background worker so it
  * adds zero latency to the turn. It reads `session_id` + `transcript_path` STRAIGHT
- * from the payload (no path reconstruction), throttle-checks, and if not throttled
- * spawns `scripts/reconcile.js` detached + unref, forwarding both via argv, then
- * returns immediately. Before the trigger it checks the thread's login against the
- * session log, so a login change is on disk before the reconcile reads it.
- * Fully fail-open: any error → no output, exit 0.
+ * from the payload (no path reconstruction), throttle-checks, and spawns
+ * `scripts/reconcile.js` detached + unref, forwarding both via argv, then returns
+ * immediately. A Stop the throttle holds back spawns the one worker that runs when
+ * the window closes, so the last Stop of a session is reconciled too. Before the
+ * trigger it checks the thread's login against the session log, so a login change
+ * is on disk before the reconcile reads it. Fully fail-open: any error → no
+ * output, exit 0.
  */
 import {
   codexModelFromRecord,

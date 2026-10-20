@@ -3,6 +3,8 @@ import type {
   AttachDeviceRequest as AttachDeviceRequestT,
   AttachTokenResponse as AttachTokenResponseT,
   AuditEventBatchAck as AuditEventBatchAckT,
+  ConfigInventoryAck as ConfigInventoryAckT,
+  ConfigInventoryRequest as ConfigInventoryRequestT,
   CredentialSightingsAck as CredentialSightingsAckT,
   CredentialSightingsRequest as CredentialSightingsRequestT,
   DeviceCommand as DeviceCommandT,
@@ -24,6 +26,8 @@ import {
   AttachDeviceGrant,
   AttachTokenResponse,
   AuditEventBatchAck,
+  ConfigInventoryAck,
+  ConfigInventoryRequest,
   CredentialSightingsAck,
   CredentialSightingsRequest,
   DeviceCommandAckBody,
@@ -51,11 +55,12 @@ import {
   RemoteRouteAbsent,
   send,
 } from './http.ts';
+import { auditEventForWire, batchForWire } from './repo-label.ts';
 
-// The thirteen routes an attached machine may call, and nothing else.
+// The fourteen routes an attached machine may call, and nothing else.
 //
 // The set is small on purpose and is the same set a deployment scopes a
-// credential to: nine writes and four self-scoped reads. There is
+// credential to: ten writes and four self-scoped reads. There is
 // deliberately no way to ask this client for anything organization-wide — a
 // credential on a laptop should not be able to read what other people's
 // machines reported, and a client that cannot express the request is a
@@ -80,6 +85,7 @@ const ROUTES = {
   auditEvents: '/v1/audit-events',
   auditEventsBatch: '/v1/audit-events/batch',
   inventory: '/v1/inventory',
+  configItems: '/v1/inventory/config-items',
   storePosture: '/v1/store-posture',
   policyBundle: '/v1/policy-bundle',
   whoami: '/v1/plugin/whoami',
@@ -127,6 +133,12 @@ export interface RemoteClient {
   ingestEvents(batch: IngestBatch): Promise<IngestAckT>;
   /** POST /v1/inventory — resolve this machine's inventory into the deployment's id space. */
   ingestInventory(context: InventoryContext): Promise<ResolvedInventoryT>;
+  /**
+   * POST /v1/inventory/config-items — the skills, hooks, MCP servers and config
+   * files one config scan found. Validated before it is sent; a 404 raises
+   * `RemoteRouteAbsent`.
+   */
+  recordConfigInventory(request: ConfigInventoryRequestT): Promise<ConfigInventoryAckT>;
   /** POST /v1/audit-events — one audit fact (session root, llm call, tool call, config scan). */
   recordAuditEvent(event: AuditEventSubmission): Promise<void>;
   /**
@@ -286,7 +298,7 @@ export function createRemoteClient(options: RemoteClientOptions): RemoteClient {
     // ZodError from a transport fault, so a deterministic local shape bug would
     // open the breaker, suppress every unrelated forward, and be reported as an
     // outage the control plane never had.
-    const validated = RecordAuditEventRequest.safeParse(event);
+    const validated = RecordAuditEventRequest.safeParse(auditEventForWire(event));
     if (!validated.success) throw new RemoteRequestInvalid(ROUTES.auditEvents, validated.error);
     const response = await send({
       ...common,
@@ -303,7 +315,7 @@ export function createRemoteClient(options: RemoteClientOptions): RemoteClient {
         ...common,
         method: 'POST',
         url: url(ROUTES.events),
-        body: JSON.stringify(batch),
+        body: JSON.stringify(batchForWire(batch)),
       });
       return parsed(IngestAck, okBody(response), ROUTES.events);
     },
@@ -316,6 +328,19 @@ export function createRemoteClient(options: RemoteClientOptions): RemoteClient {
         body: JSON.stringify(context),
       });
       return parsed(ResolvedInventory, okBody(response), ROUTES.inventory);
+    },
+
+    async recordConfigInventory(request) {
+      const validated = ConfigInventoryRequest.safeParse(request);
+      if (!validated.success) throw new RemoteRequestInvalid(ROUTES.configItems, validated.error);
+      const response = await send({
+        ...common,
+        method: 'POST',
+        url: url(ROUTES.configItems),
+        body: JSON.stringify(validated.data),
+      });
+      if (response.status === 404) throw new RemoteRouteAbsent(ROUTES.configItems);
+      return parsed(ConfigInventoryAck, okBody(response), ROUTES.configItems);
     },
 
     async recordAuditEvent(event) {
@@ -338,7 +363,7 @@ export function createRemoteClient(options: RemoteClientOptions): RemoteClient {
       // reason: this body carries the one field a deployment refuses on, and
       // catching it here names the defect instead of turning it into a 400 a
       // fail-open caller swallows.
-      const validated = RecordAuditEventBatch.safeParse({ events });
+      const validated = RecordAuditEventBatch.safeParse({ events: events.map(auditEventForWire) });
       if (!validated.success) {
         throw new RemoteRequestInvalid(ROUTES.auditEventsBatch, validated.error);
       }

@@ -1,4 +1,5 @@
 import type {
+  ConfigInventoryRequest,
   CredentialSightingsRequest,
   EgressIngestRequest,
   LabelReportRequest,
@@ -91,6 +92,32 @@ const sightingsRequest: CredentialSightingsRequest = {
     },
   ],
   scanId: '6f2d64f0-b6a4-4bb1-9a3c-6a4c26f5c9d1',
+};
+
+const configRequest: ConfigInventoryRequest = {
+  harness: {
+    objectType: 'harness',
+    identityKey: 'claude-code',
+    title: 'claude-code',
+    attributes: {},
+  },
+  items: [
+    {
+      objectType: 'hook',
+      identityKey: 'PreToolUse|Bash|guard.sh|project',
+      title: 'PreToolUse: guard.sh',
+      location: '/repo/.claude/settings.json',
+      attributes: { event: 'PreToolUse', command: 'guard.sh', scope: 'project', matcher: 'Bash' },
+    },
+    {
+      objectType: 'mcp_server',
+      identityKey: 'linear|user',
+      title: 'linear',
+      attributes: { scope: 'user', transport: 'http', url: 'https://mcp.linear.app/sse' },
+    },
+  ],
+  projectKey: 'https://github.com/acme/widgets.git',
+  complete: true,
 };
 
 /**
@@ -510,6 +537,123 @@ describe('the audit-event submission', () => {
   });
 });
 
+describe('a repository label on the wire', () => {
+  const server = useLoopbackServer();
+  // A query value a git remote can carry, and the labels an older plugin cut
+  // from such a remote.
+  const QUERY = 'Pm4Zx9Cb7Jd1Fy';
+  const SLUG = `payments-api.git?t=${QUERY}`;
+  const NWO = `acme/payments-api.git?t=${QUERY}`;
+
+  const capture = (repo: string) => ({
+    id: 'cap-1',
+    sourceTool: 'claude-code' as const,
+    kind: 'prompt' as const,
+    occurredAt: '2026-08-24T10:00:00.000Z',
+    contentHash: 'hash',
+    content: 'redacted content',
+    metadata: { sessionId: 's-1', repo },
+  });
+  const root = (attributes: Record<string, unknown>) => ({
+    id: 'evt-1',
+    eventType: 'session' as const,
+    startedAt: '2026-08-24T10:00:00.000Z',
+    inspections: [],
+    attributes,
+  });
+  const accept = (body: unknown) => {
+    server.reply((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(json(body));
+    });
+  };
+
+  it("sends a capture's repo without the query", async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    accept({ accepted: 1, duplicates: 0 });
+
+    await client.ingestEvents({ events: [capture(SLUG)] });
+
+    const body = server.received.at(-1)?.body;
+    expect(JSON.parse(body ?? '{}')).toMatchObject({
+      events: [{ metadata: { sessionId: 's-1', repo: 'payments-api' } }],
+    });
+    expectNoEchoOf(body, QUERY);
+  });
+
+  it("sends an audit event's repo and project without the query, on both routes", async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    const attributes = { project: SLUG, repo: NWO, cwd: '/home/dev/payments-api' };
+    accept({ accepted: true });
+    await client.recordAuditEvent(root(attributes));
+    const single = server.received.at(-1)?.body;
+    accept({ accepted: 1 });
+    await client.recordAuditEvents([root(attributes)]);
+    const batch = server.received.at(-1)?.body;
+
+    const clean = {
+      project: 'payments-api',
+      repo: 'acme/payments-api',
+      cwd: '/home/dev/payments-api',
+    };
+    expect(JSON.parse(single ?? '{}')).toMatchObject({ attributes: clean });
+    expect(JSON.parse(batch ?? '{}')).toMatchObject({ events: [{ attributes: clean }] });
+    expectNoEchoOf(single, QUERY);
+    expectNoEchoOf(batch, QUERY);
+  });
+
+  it('sends the labels without the query on the single-event fallback too', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((req, res) => {
+      if (req.url === '/v1/audit-events/batch') {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(json({ accepted: true }));
+    });
+    const before = server.received.length;
+
+    await client.recordAuditEvents([root({ project: SLUG, repo: NWO })], {
+      fallbackToSingleEvents: true,
+    });
+
+    const single = server.received.slice(before).at(-1);
+    expect(single?.url).toBe('/v1/audit-events');
+    expect(JSON.parse(single?.body ?? '{}')).toMatchObject({
+      attributes: { project: 'payments-api', repo: 'acme/payments-api' },
+    });
+    expectNoEchoOf(single?.body, QUERY);
+  });
+
+  it('sends a label with no query exactly as given', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    // A remote-less checkout's folder name may hold a `#`; only a query is removed.
+    const batch = { events: [capture('c#-tools')] };
+    accept({ accepted: 1, duplicates: 0 });
+
+    await client.ingestEvents(batch);
+
+    expect(server.received.at(-1)?.body).toBe(json(batch));
+  });
+
+  it('sends a folder name holding a `?` with no `=` after it exactly as given', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    const batch = { events: [capture('a?b')] };
+    const event = root({ project: 'a?c', cwd: '/home/dev/a?c' });
+    accept({ accepted: 1, duplicates: 0 });
+    await client.ingestEvents(batch);
+    const captures = server.received.at(-1)?.body;
+    accept({ accepted: true });
+    await client.recordAuditEvent(event);
+    const single = server.received.at(-1)?.body;
+
+    expect(captures).toBe(json(batch));
+    expect(JSON.parse(single ?? '{}')).toMatchObject({ attributes: event.attributes });
+  });
+});
+
 describe('the shares-ingest submission', () => {
   const server = useLoopbackServer();
 
@@ -584,7 +728,7 @@ describe('the shares-ingest submission', () => {
 describe('routes', () => {
   const server = useLoopbackServer();
 
-  it('addresses each of the thirteen, and tolerates trailing slashes on the endpoint', async () => {
+  it('addresses each of the fourteen, and tolerates trailing slashes on the endpoint', async () => {
     // SEVERAL slashes, not one. The normalization is a scan rather than a
     // `replace(/\/+$/, '')` — that regex is quadratic on an all-slash string,
     // since the engine retries from every position and each attempt walks to the
@@ -620,6 +764,7 @@ describe('routes', () => {
 
     await client.ingestEvents({ events: [] as never });
     await client.ingestInventory({});
+    await client.recordConfigInventory(configRequest);
     await client.recordAuditEvent({
       id: 'e',
       eventType: 'session',
@@ -647,6 +792,7 @@ describe('routes', () => {
     expect(server.received.map((r) => `${r.method ?? ''} ${r.url ?? ''}`)).toEqual([
       'POST /v1/events',
       'POST /v1/inventory',
+      'POST /v1/inventory/config-items',
       'POST /v1/audit-events',
       'POST /v1/audit-events/batch',
       'POST /v1/store-posture',
@@ -1204,6 +1350,100 @@ describe('the credential-sightings route', () => {
     });
 
     await expect(client.recordCredentialSightings(sightingsRequest)).rejects.toBeInstanceOf(
+      RemoteResponseInvalid,
+    );
+  });
+});
+
+describe('the config-inventory route', () => {
+  const server = useLoopbackServer();
+
+  it('issues exactly POST /v1/inventory/config-items with the credential and the body', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(json({ accepted: 2 }));
+    });
+
+    const ack = await client.recordConfigInventory(configRequest);
+
+    const seen = server.received.at(-1);
+    expect(`${seen?.method ?? ''} ${seen?.url ?? ''}`).toBe('POST /v1/inventory/config-items');
+    expect(seen?.headers['x-api-key']).toBe(API_KEY);
+    expect(JSON.parse(seen?.body ?? '')).toEqual(configRequest);
+    expect(ack).toEqual({ accepted: 2 });
+  });
+
+  it('refuses a project scoped item with no projectKey before it reaches the wire', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    const before = server.received.length;
+    const withoutKey = { ...configRequest };
+    delete withoutKey.projectKey;
+
+    const error = await client.recordConfigInventory(withoutKey).then(
+      () => undefined,
+      (err: unknown) => err as Error,
+    );
+
+    expect(error?.name).toBe('RemoteRequestInvalid');
+    expect(error?.message).toMatch(/\/v1\/inventory\/config-items/);
+    expectNoEchoOf(error?.message, 'https://mcp.linear.app/sse');
+    expectNoEchoOf(error?.message, '/repo/.claude/settings.json');
+    expectNoEchoOf(error?.message, 'PreToolUse: guard.sh');
+    expect(server.received).toHaveLength(before);
+  });
+
+  it('refuses an object type the route does not take before it reaches the wire', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    const before = server.received.length;
+
+    await expect(
+      client.recordConfigInventory({
+        ...configRequest,
+        items: [{ objectType: 'host', identityKey: 'laptop', attributes: {} }] as never,
+      }),
+    ).rejects.toMatchObject({ name: 'RemoteRequestInvalid' });
+    expect(server.received).toHaveLength(before);
+  });
+
+  it('names a deployment that predates the route', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((_req, res) => {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(json({ error: { code: 'NOT_FOUND' } }));
+    });
+
+    await expect(client.recordConfigInventory(configRequest)).rejects.toBeInstanceOf(
+      RemoteRouteAbsent,
+    );
+  });
+
+  it('carries only the status of a refusal, never the body the deployment wrote', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    const serverText = 'project-key-required-detail-7f3a91c2';
+    server.reply((_req, res) => {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(json({ error: { code: 'project_key_required', message: serverText } }));
+    });
+
+    const error = await client.recordConfigInventory(configRequest).then(
+      () => undefined,
+      (err: unknown) => err as Error,
+    );
+
+    expect(error).toBeInstanceOf(RemoteRequestError);
+    expect((error as RemoteRequestError).status).toBe(400);
+    expectNoEchoOf(error?.message, serverText);
+  });
+
+  it('refuses an acknowledgement it cannot read', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(json({ accepted: 'all' }));
+    });
+
+    await expect(client.recordConfigInventory(configRequest)).rejects.toBeInstanceOf(
       RemoteResponseInvalid,
     );
   });

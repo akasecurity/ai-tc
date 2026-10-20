@@ -8,11 +8,16 @@ import type {
   SkillScanEntry,
 } from '../../src/zod/config-inventory.ts';
 import {
+  CONFIG_INVENTORY_BATCH_MAX,
+  CONFIG_INVENTORY_ITEM_MAX_CHARS,
   configFileIdentityKey,
+  ConfigInventoryAck,
   configInventoryInputs,
+  ConfigInventoryRequest,
   ConfigScanRecord,
   configScopeKey,
   hookIdentityKey,
+  isProjectScopedConfigItem,
   mcpServerIdentityKey,
   skillIdentityKey,
 } from '../../src/zod/config-inventory.ts';
@@ -302,5 +307,95 @@ describe('ConfigScanRecord', () => {
     });
     expect(record.definitions).toBeUndefined();
     expect(record.scanEvent.eventType).toBe('config_scan');
+  });
+});
+
+describe('ConfigInventoryRequest', () => {
+  const harness = {
+    objectType: 'harness' as const,
+    identityKey: 'claude-code',
+    title: 'claude-code',
+    attributes: {},
+  };
+  const userServer: McpServerScanEntry = {
+    name: 'linear',
+    scope: 'user',
+    transport: 'http',
+    url: 'https://mcp.linear.app/sse',
+  };
+  const items = configInventoryInputs({
+    scannedAt: '2026-07-02T12:00:00.000Z',
+    skills: [skill],
+    hooks: [hook],
+    mcpServers: [mcpServer, userServer],
+    configFiles: [configFile],
+    errors: [],
+  });
+
+  it('carries the items a scan builds, attributed to a harness', () => {
+    const request = ConfigInventoryRequest.parse({
+      harness,
+      items,
+      projectKey: 'https://github.com/acme/repo-a.git',
+      complete: true,
+    });
+    expect(request.items.map((item) => item.objectType)).toEqual([
+      'skill',
+      'hook',
+      'mcp_server',
+      'mcp_server',
+      'config_file',
+    ]);
+    expect(request.complete).toBe(true);
+  });
+
+  it('refuses a project scoped item without a projectKey', () => {
+    expect(isProjectScopedConfigItem(items[2] ?? { attributes: {} })).toBe(true);
+    const result = ConfigInventoryRequest.safeParse({ harness, items });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues.map((issue) => issue.path)).toEqual([['projectKey']]);
+  });
+
+  it('accepts machine scoped items without a projectKey', () => {
+    const machineItems = items.filter((item) => !isProjectScopedConfigItem(item));
+    expect(machineItems).toHaveLength(3);
+    expect(ConfigInventoryRequest.safeParse({ harness, items: machineItems }).success).toBe(true);
+  });
+
+  it('refuses an object type the route does not take', () => {
+    const result = ConfigInventoryRequest.safeParse({
+      harness,
+      items: [{ objectType: 'host', identityKey: 'laptop', attributes: {} }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('refuses a harness that is not a harness', () => {
+    const result = ConfigInventoryRequest.safeParse({
+      harness: { ...harness, objectType: 'host' },
+      items: [],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('refuses an item over the size cap and a batch over the count cap', () => {
+    const oversized = {
+      objectType: 'skill' as const,
+      identityKey: 'big',
+      attributes: { description: 'x'.repeat(CONFIG_INVENTORY_ITEM_MAX_CHARS) },
+    };
+    expect(ConfigInventoryRequest.safeParse({ harness, items: [oversized] }).success).toBe(false);
+
+    const one = { objectType: 'skill' as const, identityKey: 'k', attributes: {} };
+    const full = Array.from({ length: CONFIG_INVENTORY_BATCH_MAX }, () => one);
+    expect(ConfigInventoryRequest.safeParse({ harness, items: full }).success).toBe(true);
+    expect(ConfigInventoryRequest.safeParse({ harness, items: [...full, one] }).success).toBe(
+      false,
+    );
+  });
+
+  it('parses the ack', () => {
+    expect(ConfigInventoryAck.parse({ accepted: 3, extra: true })).toEqual({ accepted: 3 });
+    expect(ConfigInventoryAck.safeParse({ accepted: -1 }).success).toBe(false);
   });
 });

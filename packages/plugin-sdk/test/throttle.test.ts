@@ -12,9 +12,10 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  gatePerKey,
   PER_KEY_MARKER_RETAIN_MS,
   PER_KEY_PRUNE_BATCH,
   throttled,
@@ -160,5 +161,186 @@ describe('throttledPerKey', () => {
     writeFileSync(notADir, '0');
     expect(() => throttledPerKey(join(notADir, 'nested'), 'p', 'a', 30_000)).not.toThrow();
     expect(throttledPerKey(join(notADir, 'nested'), 'p', 'a', 30_000)).toBe(false);
+  });
+});
+
+describe('gatePerKey', () => {
+  const WINDOW = 30_000;
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'aka-gate-key-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const markerMtime = (name: string): number => statSync(join(dir, name)).mtimeMs;
+  function backdate(name: string, ageMs: number): void {
+    const at = new Date(Date.now() - ageMs);
+    utimesSync(join(dir, name), at, at);
+  }
+
+  it('lets the first call of a key run, on the marker throttledPerKey names', () => {
+    expect(gatePerKey(dir, 'p', 'a', WINDOW)).toEqual({ kind: 'run' });
+    expect(existsSync(join(dir, 'p-a'))).toBe(true);
+    expect(throttledPerKey(dir, 'p', 'a', WINDOW)).toBe(true);
+  });
+
+  it('answers a call inside the window with a trailing pass due when the window closes', () => {
+    gatePerKey(dir, 'p', 'a', WINDOW);
+    const first = markerMtime('p-a');
+
+    const gate = gatePerKey(dir, 'p', 'a', WINDOW);
+
+    expect(gate.kind).toBe('trail');
+    if (gate.kind !== 'trail') return;
+    expect(gate.dueAt).toBeGreaterThanOrEqual(first + WINDOW);
+    expect(gate.dueAt).toBeLessThanOrEqual(first + WINDOW + 1);
+    expect(Number.isInteger(gate.dueAt)).toBe(true);
+  });
+
+  it('records the trailing pass on the marker, so the window it opens is counted from its due time', () => {
+    gatePerKey(dir, 'p', 'a', WINDOW);
+    const gate = gatePerKey(dir, 'p', 'a', WINDOW);
+    expect(gate.kind).toBe('trail');
+    if (gate.kind !== 'trail') return;
+
+    expect(Math.abs(markerMtime('p-a') - gate.dueAt)).toBeLessThan(5);
+    expect(throttled(dir, 'p-a', WINDOW)).toBe(true);
+  });
+
+  it('asks for no second trailing pass while one is already due', () => {
+    gatePerKey(dir, 'p', 'a', WINDOW);
+    gatePerKey(dir, 'p', 'a', WINDOW);
+    const scheduled = markerMtime('p-a');
+
+    expect(gatePerKey(dir, 'p', 'a', WINDOW)).toEqual({ kind: 'covered' });
+    expect(gatePerKey(dir, 'p', 'a', WINDOW)).toEqual({ kind: 'covered' });
+    expect(markerMtime('p-a')).toBe(scheduled);
+  });
+
+  it('asks for the next trailing pass from the one that was due, when a call lands after it', () => {
+    gatePerKey(dir, 'p', 'a', WINDOW);
+    gatePerKey(dir, 'p', 'a', WINDOW);
+    // Ten seconds on from the due time of the pass scheduled above.
+    backdate('p-a', 10_000);
+    const dueOfThatPass = markerMtime('p-a');
+
+    const gate = gatePerKey(dir, 'p', 'a', WINDOW);
+
+    expect(gate.kind).toBe('trail');
+    if (gate.kind !== 'trail') return;
+    expect(gate.dueAt).toBeGreaterThanOrEqual(dueOfThatPass + WINDOW);
+    expect(gate.dueAt).toBeLessThanOrEqual(dueOfThatPass + WINDOW + 1);
+  });
+
+  it('reads a marker dated a few milliseconds ahead of the clock as a pass that started, not one that is waiting', () => {
+    // A file's timestamp and the clock come from different sources, and on some
+    // platforms the first leads the second.
+    gatePerKey(dir, 'p', 'a', WINDOW);
+    const ahead = (Date.now() + 50) / 1000;
+    utimesSync(join(dir, 'p-a'), ahead, ahead);
+
+    const gate = gatePerKey(dir, 'p', 'a', WINDOW);
+
+    expect(gate.kind).toBe('trail');
+    if (gate.kind !== 'trail') return;
+    expect(gate.dueAt).toBeGreaterThanOrEqual(ahead * 1000 + WINDOW);
+  });
+
+  it('still reads a marker dated well ahead of the clock as a waiting pass', () => {
+    gatePerKey(dir, 'p', 'a', WINDOW);
+    const ahead = (Date.now() + WINDOW / 2) / 1000;
+    utimesSync(join(dir, 'p-a'), ahead, ahead);
+
+    expect(gatePerKey(dir, 'p', 'a', WINDOW)).toEqual({ kind: 'covered' });
+  });
+
+  it('lets a call run once a whole window has passed since the last pass', () => {
+    gatePerKey(dir, 'p', 'a', WINDOW);
+    backdate('p-a', WINDOW + 1_000);
+
+    expect(gatePerKey(dir, 'p', 'a', WINDOW)).toEqual({ kind: 'run' });
+    expect(gatePerKey(dir, 'p', 'a', WINDOW).kind).toBe('trail');
+  });
+
+  it('gates each key on its own marker', () => {
+    gatePerKey(dir, 'p', 'a', WINDOW);
+    gatePerKey(dir, 'p', 'a', WINDOW);
+
+    expect(gatePerKey(dir, 'p', 'b', WINDOW)).toEqual({ kind: 'run' });
+    expect(gatePerKey(dir, 'p', 'a', WINDOW)).toEqual({ kind: 'covered' });
+    expect(gatePerKey(dir, 'p', 'b', WINDOW).kind).toBe('trail');
+  });
+
+  it('does not prune the marker of a key with a trailing pass due', () => {
+    gatePerKey(dir, 'p', 'a', WINDOW);
+    gatePerKey(dir, 'p', 'a', WINDOW);
+    writeFileSync(join(dir, 'p-old'), '0');
+    backdate('p-old', PER_KEY_MARKER_RETAIN_MS + 60_000);
+
+    expect(gatePerKey(dir, 'p', 'b', WINDOW)).toEqual({ kind: 'run' });
+
+    expect(existsSync(join(dir, 'p-old'))).toBe(false);
+    expect(existsSync(join(dir, 'p-a'))).toBe(true);
+  });
+
+  it('fail-open: an unwritable data dir lets every call run and never throws', () => {
+    const notADir = join(dir, 'file');
+    writeFileSync(notADir, '0');
+    const nested = join(notADir, 'nested');
+
+    expect(() => gatePerKey(nested, 'p', 'a', WINDOW)).not.toThrow();
+    expect(gatePerKey(nested, 'p', 'a', WINDOW)).toEqual({ kind: 'run' });
+    expect(gatePerKey(nested, 'p', 'a', WINDOW)).toEqual({ kind: 'run' });
+  });
+});
+
+describe('gatePerKey — how far ahead of the clock a marker may read', () => {
+  const NOW = 1_700_000_000_000;
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'aka-gate-slack-'));
+    // Only the clock is held still: the marker's own time comes from the file.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // A marker whose time is `aheadMs` after the clock, then the gate's answer.
+  function gateWithMarkerAhead(aheadMs: number, windowMs: number) {
+    writeFileSync(join(dir, 'p-a'), '0');
+    const at = (NOW + aheadMs) / 1000;
+    utimesSync(join(dir, 'p-a'), at, at);
+    return gatePerKey(dir, 'p', 'a', windowMs);
+  }
+
+  it.each([
+    { label: 'just under two seconds', aheadMs: 1_999, kind: 'trail' },
+    { label: 'just over two seconds', aheadMs: 2_001, kind: 'covered' },
+  ])('with a 30 s window, a marker $label ahead is read as $kind', ({ aheadMs, kind }) => {
+    expect(gateWithMarkerAhead(aheadMs, 30_000).kind).toBe(kind);
+  });
+
+  it.each([
+    { label: 'just under half the window', aheadMs: 499, kind: 'trail' },
+    { label: 'just over half the window', aheadMs: 501, kind: 'covered' },
+    // 1,999 ms is inside the two-second slack, but the slack never exceeds half
+    // the window, so a one-second window does not take it as a pass that started.
+    { label: 'inside two seconds but past half the window', aheadMs: 1_999, kind: 'covered' },
+  ])('with a 1 s window, a marker $label ahead is read as $kind', ({ aheadMs, kind }) => {
+    expect(gateWithMarkerAhead(aheadMs, 1_000).kind).toBe(kind);
+  });
+
+  it('puts the trailing pass of a marker read as a pass that started a full window after it', () => {
+    const gate = gateWithMarkerAhead(1_999, 30_000);
+
+    expect(gate.kind).toBe('trail');
+    if (gate.kind !== 'trail') return;
+    expect(gate.dueAt).toBeGreaterThanOrEqual(NOW + 1_999 + 30_000);
+    expect(gate.dueAt).toBeLessThanOrEqual(NOW + 1_999 + 30_000 + 1);
   });
 });

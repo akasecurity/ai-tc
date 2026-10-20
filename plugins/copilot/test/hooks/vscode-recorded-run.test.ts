@@ -78,6 +78,7 @@ const SAMPLE = ruleExample(SAMPLE_RULE);
 
 // The finding the recorded host stored for the recorded `run_in_terminal` call.
 const COMMAND_RULE = 'command-risk/credential-file-read';
+const COMMAND = ruleExample(COMMAND_RULE);
 
 // The userinfo in an scp-style remote reads as an email address to a scanner,
 // so the remote is built from parts.
@@ -358,8 +359,9 @@ describe('a flagged variant of each recording that produced no finding', () => {
 });
 
 // `explanation` and `goal` are model-authored prose that rides along with the
-// call. Both are scanned, neither executes, so a redact rewrites them in place
-// while `command` keeps the executable-field fallback.
+// call. Both are scanned and neither executes, but a rewrite on this host
+// needs an allow that would approve the command too, so a redact on either
+// takes the same redactFallback as `command`.
 describe('run_in_terminal explanation and goal', () => {
   beforeEach(async () => {
     markOnboarded();
@@ -424,28 +426,74 @@ describe('run_in_terminal explanation and goal', () => {
   });
 
   it.each(['explanation', 'goal'] as const)(
-    'rewrites a secret in %s in place under redact, leaving the command as sent',
+    'falls back on a secret in %s under redact rather than approving the call',
     async (field) => {
       seedPolicy(SAMPLE.namespace, SAMPLE.packId, 'redact');
-      const payload = withSecretIn(field);
-      const sent = payload.tool_input as Payload;
-      const output = (await drive('preToolUse-run_in_terminal', payload)) as {
-        hookSpecificOutput?: { permissionDecision?: unknown; updatedInput?: Payload };
-      };
-      const updated = output.hookSpecificOutput?.updatedInput;
-      // Positive control: a rewrite came back, of this field.
-      expect(output.hookSpecificOutput?.permissionDecision).toBe('allow');
-      expect(typeof updated?.[field]).toBe('string');
-      expect(updated?.[field]).not.toBe(sent[field]);
-      expectNoEchoOf(String(updated?.[field]), SAMPLE.example);
-      // Everything else is what the model sent.
-      expect({ ...updated, [field]: sent[field] }).toEqual(sent);
+      const output = await drive('preToolUse-run_in_terminal', withSecretIn(field));
+      const text = systemMessage(output);
+      // A rewrite would need `permissionDecision: 'allow'`, which approves the
+      // command riding with this prose. The exact shape is the assertion: a
+      // systemMessage and nothing else, so no verdict and no updatedInput.
+      expect(output).toEqual({ systemMessage: text });
+      // The shipped redactFallback is `warn`, and the ledger records what was
+      // emitted rather than the policy's redact.
+      expect(text).toBe(`AKA flagged sensitive content in run_in_terminal input (${SAMPLE_RULE}).`);
       expect(findings()).toEqual([
-        { rule_id: SAMPLE_RULE, action_taken: 'redact', event_type: 'tool_use' },
+        { rule_id: SAMPLE_RULE, action_taken: 'warn', event_type: 'tool_use' },
       ]);
+      expectNoEchoOf(text, SAMPLE.example);
       expectStderrCarriesNoRaw();
     },
   );
+
+  it('warns on both a degraded command finding and a prose redact, approving nothing', async () => {
+    // The recorded command keeps its own finding; a redact on its pack
+    // degrades to the fallback because the command executes. The prose carries
+    // a second rule under redact. Both must surface, as one warn.
+    seedPolicy(COMMAND.namespace, COMMAND.packId, 'redact');
+    seedPolicy(SAMPLE.namespace, SAMPLE.packId, 'redact');
+    const payload = repointed('preToolUse-run_in_terminal');
+    const input = payload.tool_input as Payload;
+    input.explanation = `${String(input.explanation)} ${SAMPLE.example}`;
+    const output = await drive('preToolUse-run_in_terminal', payload);
+    const text = systemMessage(output);
+    expect(output).toEqual({ systemMessage: text });
+    expect(text).toBe(
+      `AKA flagged sensitive content in run_in_terminal input (${COMMAND_RULE}, ${SAMPLE_RULE}).`,
+    );
+    expect(findings()).toEqual(
+      expect.arrayContaining([
+        { rule_id: COMMAND_RULE, action_taken: 'warn', event_type: 'tool_use' },
+        { rule_id: SAMPLE_RULE, action_taken: 'warn', event_type: 'tool_use' },
+      ]),
+    );
+    expect(findings()).toHaveLength(2);
+    expectNoEchoOf(text, SAMPLE.example);
+    expectStderrCarriesNoRaw();
+  });
+
+  it('still rewrites create_file content under redact (the control that the fallback is scoped)', async () => {
+    seedPolicy(SAMPLE.namespace, SAMPLE.packId, 'redact');
+    const payload = repointed('preToolUse-create_file');
+    const sent = payload.tool_input as Payload;
+    sent.content = `${String(sent.content)}\n${SAMPLE.example}\n`;
+    const output = (await drive('preToolUse-create_file', payload)) as {
+      hookSpecificOutput?: { permissionDecision?: unknown; updatedInput?: Payload };
+      systemMessage?: unknown;
+    };
+    const updated = output.hookSpecificOutput?.updatedInput;
+    // A tool with no executable field keeps its rewrite, carried with an allow.
+    expect(output.hookSpecificOutput?.permissionDecision).toBe('allow');
+    expect(typeof updated?.content).toBe('string');
+    expect(updated?.content).not.toBe(sent.content);
+    expectNoEchoOf(String(updated?.content), SAMPLE.example);
+    expect({ ...updated, content: sent.content }).toEqual(sent);
+    expect(findings()).toEqual([
+      { rule_id: SAMPLE_RULE, action_taken: 'redact', event_type: 'code_change' },
+    ]);
+    expectNoEchoOf(systemMessage(output), SAMPLE.example);
+    expectStderrCarriesNoRaw();
+  });
 
   it('keeps the command on the executable-field fallback under redact, never rewritten', async () => {
     seedPolicy(SAMPLE.namespace, SAMPLE.packId, 'redact');

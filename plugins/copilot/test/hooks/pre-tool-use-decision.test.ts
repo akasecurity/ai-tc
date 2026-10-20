@@ -23,6 +23,7 @@ import {
   decidePreToolUse,
   denyPointerMessage,
   EXECUTABLE_REDACT_NOTE,
+  fieldIsRewritable,
   scannableFieldsFor,
   UNREDACTABLE_NOTE,
   VSCODE_SCANNABLE_FIELDS,
@@ -191,6 +192,47 @@ const VSCODE_CASE: DialectCase = {
 };
 
 const DIALECTS = [CLI_CASE, VSCODE_CASE];
+
+describe('fieldIsRewritable — what the hook passes to the runtime as rewritable', () => {
+  const rewritableOn = (dialect: Dialect, tool: string): Record<string, boolean> => {
+    const fields = scannableFieldsFor(dialect)[tool] ?? [];
+    expect(fields.length, `${dialect} ${tool} has a field table`).toBeGreaterThan(0);
+    return Object.fromEntries(
+      fields.map((spec) => [spec.field, fieldIsRewritable(dialect, spec, fields)]),
+    );
+  };
+
+  it('never rewrites an executable field, on either dialect', () => {
+    expect(rewritableOn('cli', 'bash').command).toBe(false);
+    expect(rewritableOn('vscode', 'run_in_terminal').command).toBe(false);
+  });
+
+  it('on VS Code, does not rewrite the prose that rides on a call with an executable field', () => {
+    // A rewrite there needs `permissionDecision: 'allow'`, which would approve
+    // the command along with the masked prose.
+    expect(rewritableOn('vscode', 'run_in_terminal')).toEqual({
+      command: false,
+      explanation: false,
+      goal: false,
+    });
+  });
+
+  it('on VS Code, still rewrites a tool with no executable field (the control)', () => {
+    for (const tool of [
+      'create_file',
+      'replace_string_in_file',
+      'insert_edit_into_file',
+      'apply_patch',
+    ]) {
+      expect(Object.values(rewritableOn('vscode', tool)), tool).toEqual([true]);
+    }
+  });
+
+  it('on the CLI, still rewrites prose beside a command, since modifiedArgs carries no verdict', () => {
+    expect(rewritableOn('cli', 'bash')).toEqual({ command: false, description: true });
+    expect(rewritableOn('cli', 'apply_patch')).toEqual({ input: true });
+  });
+});
 
 describe('the two field tables', () => {
   it('marks command text executable and written content stored, in both', () => {

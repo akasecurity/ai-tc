@@ -83,8 +83,8 @@ export const CLI_SCANNABLE_FIELDS: Record<string, readonly ScannableField[]> = {
  *
  * `run_in_terminal`'s `explanation` and `goal` are model-authored prose that
  * rides along with the call and reaches the transcript, the counterpart of the
- * CLI's `bash.description`. Neither executes, so a redact rewrites them in
- * place while `command` follows the executable-field fallback. `mode` is the
+ * CLI's `bash.description`. Neither executes, but the call they ride on does,
+ * so neither is rewritten here either (see `fieldIsRewritable`). `mode` is the
  * tool's own dial and carries no user text, so it is deliberately absent.
  */
 export const VSCODE_SCANNABLE_FIELDS: Record<string, readonly ScannableField[]> = {
@@ -98,6 +98,31 @@ export const VSCODE_SCANNABLE_FIELDS: Record<string, readonly ScannableField[]> 
   insert_edit_into_file: [{ field: 'code', executable: false }],
   apply_patch: [{ field: 'input', executable: false }],
 };
+
+/**
+ * Whether a redact on this field may be carried out as a rewrite, which is what
+ * the hook passes to the runtime as `rewritable`.
+ *
+ * An executable field never may: masking inside a command changes what runs.
+ *
+ * On VS Code a non-executable field of a tool that ALSO has an executable field
+ * may not either. That host takes `updatedInput` only alongside
+ * `permissionDecision: 'allow'`, so rewriting `run_in_terminal`'s prose would
+ * approve the command that rides with it, suppressing whatever prompt the
+ * user's own settings would have raised. The redact resolves to
+ * `redactFallback` instead, inside the runtime, so the emitted decision and the
+ * recorded action stay one answer. A tool with no executable field (a file
+ * write) keeps its rewrite, and the CLI's `modifiedArgs` carries no verdict, so
+ * that dialect is unaffected.
+ */
+export function fieldIsRewritable(
+  dialect: Dialect,
+  spec: ScannableField,
+  fields: readonly ScannableField[],
+): boolean {
+  if (spec.executable) return false;
+  return dialect === 'cli' || !fields.some((field) => field.executable);
+}
 
 /** The field table for a dialect. Never a merge of the two. */
 export function scannableFieldsFor(dialect: Dialect): Record<string, readonly ScannableField[]> {

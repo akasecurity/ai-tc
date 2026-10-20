@@ -186,9 +186,10 @@ Nothing in this session reached any of these, so none of them is measured:
 
 - a `PreToolUse` deny, through `hookSpecificOutput.permissionDecision` or
   through exit 2;
-- an `updatedInput` rewrite of a file-write tool's content, or of
-  `run_in_terminal`'s `explanation` or `goal`, including whether the
-  `permissionDecision: 'allow'` it rides with is honoured;
+- an `updatedInput` rewrite of a file-write tool's content, including whether
+  the `permissionDecision: 'allow'` it rides with is honoured. `run_in_terminal`
+  is not rewritten at all: a redact on its `explanation` or `goal` takes the
+  workspace `redactFallback`, because the allow would approve its `command`;
 - the large-input refusal;
 - an object-shaped or array-shaped `tool_response`;
 - a flagged tool result;

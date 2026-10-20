@@ -13,9 +13,11 @@ import {
   EXPONENTIAL_PROBES,
   GROWTH_CONFIRM_SAMPLES,
   GROWTH_CORPORA,
+  GROWTH_FLOOR_MS,
   GROWTH_MAX_CHARS,
   GROWTH_SAMPLES,
   GROWTH_START_CHARS,
+  GROWTH_WINDOW_DEADLINE_MS,
   GROWTH_WINDOW_STEPS,
   MAX_GROWTH_RATIO,
   OVER_BUDGET_READINGS,
@@ -1131,6 +1133,32 @@ describe('the probe battery itself', () => {
         /step was not measured/,
       );
     });
+
+    // A clock that stops advancing never fills a window. The deadline is read
+    // on an elapsed-time clock of its own, scripted here to pass a second a
+    // read, and `run` gives up long after the deadline would have ended the
+    // window, so a window with no deadline fails here instead of hanging.
+    it.each([
+      ['never advances', (): number => 0],
+      [
+        'advances once and then stops',
+        (() => {
+          let reads = 0;
+          return (): number => (reads++ === 0 ? 0 : 5);
+        })(),
+      ],
+    ])('a window on a clock that %s is refused at its deadline', (_, now) => {
+      let wall = 0;
+      const wallNow = (): number => (wall += 1_000);
+      let runs = 0;
+      const run = (): void => {
+        if (++runs > 10_000) throw new Error('the window ran past its deadline');
+      };
+      expect(() => windowReadingMs(run, now, 16, undefined, wallNow)).toThrow(
+        /clock that has stopped/,
+      );
+      expect(runs).toBeLessThanOrEqual(GROWTH_WINDOW_DEADLINE_MS / 1_000);
+    });
   });
 
   describe('the growth tier judges the budget at the pair, and the next doubling on its ratio', () => {
@@ -1138,6 +1166,13 @@ describe('the probe battery itself', () => {
 
     it('a pair under the ratio is not measured at the next doubling: 31 / 90', () => {
       runCleared([...cheapClimb(), ...firstPass(31, 90)]);
+    });
+
+    it('a pair whose larger text reads under the floor is cleared on that one scan', () => {
+      // The script holds the larger text's first reading and nothing else, so
+      // reading the smaller text first, or reading on past the clear, scans
+      // past the script.
+      runCleared([...cheapClimb(), GROWTH_FLOOR_MS - 1]);
     });
 
     it('a linear rule past a step is not a breach, whatever the next doubling costs: 15 / 55 / 110', () => {

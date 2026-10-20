@@ -396,16 +396,32 @@ export const GROWTH_SAMPLES = 3;
  */
 export const GROWTH_WINDOW_STEPS = 8;
 
+/**
+ * How long, in elapsed time, one pair reading may take to fill its window. A
+ * window spans `GROWTH_WINDOW_STEPS` steps of its clock, at most 128ms of work
+ * on a 16ms step, so this is far past what any reading on a working clock
+ * takes, loaded or not. A clock that stops advancing never fills a window, and
+ * this is what ends the reading: it is refused, as a clock whose step was not
+ * measured is.
+ */
+export const GROWTH_WINDOW_DEADLINE_MS = 10_000;
+
 // Rounds in the second pass `judgePair` runs on a pair over the ratio. The
 // verdict on growth is given on the readings of this pass alone. Each reading
 // is a window of a work clock, which a descheduled thread does not advance, so
 // what this pass has to read through is what the work itself can pick up — a
-// GC pause, a slower core — and a window dilutes that over its runs.
+// GC pause, a slower core. Each size reduces to its FASTEST reading over the
+// rounds, which needs one round in four to be clean; a mean, which every GC
+// pause inflates, needed many more rounds to settle. On a clock with a fine
+// step a window is a single scan, so the rounds, not the window, are what read
+// through that noise there.
 export const GROWTH_CONFIRM_SAMPLES = 4;
 
 // The largest size being sampled stops being read once this many rounds have
-// run and every reading of it is at or over the budget. The first pass ends
-// there; the second pass keeps reading the smaller sizes.
+// run and every reading of it is at or over the budget, which bounds what an
+// expensive pattern costs to measure. That binds only the second pass: the
+// first runs GROWTH_SAMPLES rounds, no more than this many, so it never stops
+// early. The second pass keeps reading the smaller sizes once it stops.
 export const OVER_BUDGET_READINGS = 3;
 
 /** A named generator of adversarial text of an exact length. */
@@ -516,12 +532,17 @@ export interface GrowthBreach {
  * run that cheap needs no finer reading to be judged against the line, and on a
  * coarse clock that is what keeps a cheap scan from paying for a whole window.
  * `cleared` says that this is how the window ended.
+ *
+ * A window still short of its steps after `GROWTH_WINDOW_DEADLINE_MS` of
+ * `wallNow` throws: the clock has stopped advancing, and a reading cannot be
+ * taken on it.
  */
 export function windowReadingMs(
   run: () => void,
   now: ProbeClock,
   stepMs: number,
   clearBelowMs?: number,
+  wallNow: ProbeClock = wallClock,
 ): { ms: number; cleared: boolean } {
   if (!Number.isFinite(stepMs) || stepMs < 0) {
     throw new Error(
@@ -530,6 +551,7 @@ export function windowReadingMs(
     );
   }
   const windowMs = stepMs * GROWTH_WINDOW_STEPS;
+  const deadline = wallNow() + GROWTH_WINDOW_DEADLINE_MS;
   const start = now();
   let runs = 0;
   let elapsed: number;
@@ -539,6 +561,13 @@ export function windowReadingMs(
     elapsed = now() - start;
     if (clearBelowMs !== undefined && (elapsed + stepMs) / runs < clearBelowMs) {
       return { ms: elapsed / runs, cleared: true };
+    }
+    if (elapsed < windowMs && wallNow() >= deadline) {
+      throw new Error(
+        `the growth tier's clock advanced ${String(elapsed)}ms of a ${String(windowMs)}ms ` +
+          `window over ${String(runs)} runs in ${String(GROWTH_WINDOW_DEADLINE_MS)}ms of ` +
+          `elapsed time; a reading cannot be windowed on a clock that has stopped`,
+      );
     }
   } while (elapsed < windowMs);
   return { ms: elapsed / runs, cleared: false };
@@ -562,7 +591,9 @@ export function windowReadingMs(
 // the budget, which bounds what an expensive pattern costs to measure. The pass
 // then ends with it, unless `keepOthers` asks for the other texts to be read
 // through the remaining rounds: a verdict that compares them is only as good as
-// their readings, and those cost a fraction of the largest text's.
+// their readings, and those cost a fraction of the largest text's. A pass of
+// no more than OVER_BUDGET_READINGS rounds, as `judgePair`'s first pass is,
+// reaches that stop only on its last round, so it binds the second pass.
 //
 // `clearBelowMs` is passed to the largest text's windows: once one reads it
 // under that line beyond the clock's rounding, the pass ends with `cleared`

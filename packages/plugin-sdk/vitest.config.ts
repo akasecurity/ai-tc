@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
 import { coverageOptions } from '../../test/vitest/coverage.ts';
+import { UnfinishedModulesReporter } from '../../test/vitest/unfinished-modules-reporter.ts';
 
 // Every test file runs behind the no-network guard: it refuses any outbound
 // connection that is not loopback and names the call site that made it. Wired
@@ -18,6 +19,10 @@ const noManagedSettingsGuard = fileURLToPath(
   new URL('../../test/setup/no-managed-settings.ts', import.meta.url),
 );
 
+// See the setup file: works around a V8 abort on Node 24.21 when workers are
+// terminated, which this suite does on purpose.
+const noWasmCodeGc = fileURLToPath(new URL('../../test/setup/no-wasm-code-gc.ts', import.meta.url));
+
 // The rule timing tests exercise real ReDoS backtracking behavior via checkRuleTiming
 // and filterUnsafeRules; catastrophic patterns can take well over a second to evaluate
 // on the Windows CI runner, so raise the per-test AND per-hook timeouts above vitest's
@@ -25,10 +30,12 @@ const noManagedSettingsGuard = fileURLToPath(
 // and packages/plugin-runtime for the same reason under heavy workspace contention).
 export default defineConfig({
   test: {
-    setupFiles: [noNetworkGuard, noManagedSettingsGuard],
+    setupFiles: [noNetworkGuard, noManagedSettingsGuard, noWasmCodeGc],
     coverage: coverageOptions(import.meta.url),
     environment: 'node',
     testTimeout: 20_000,
     hookTimeout: 20_000,
+    // Names a file whose worker died, which vitest's own output does not.
+    reporters: ['default', new UnfinishedModulesReporter()],
   },
 });

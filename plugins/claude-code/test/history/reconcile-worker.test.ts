@@ -64,6 +64,46 @@ describe('runReconcileWorker', () => {
     );
   });
 
+  it('waits until the window closes for a trailing pass, then runs a pass that is the follow-up of no hold', async () => {
+    const order: string[] = [];
+    sleep.mockImplementationOnce(() => {
+      order.push('slept');
+      return Promise.resolve();
+    });
+    reconcileSessionTail.mockImplementationOnce(() => {
+      order.push('ran');
+      return Promise.resolve({ llmCalls: 0, skipped: 0, toolCalls: 0 });
+    });
+    await run(['sess-A', '/t/a.jsonl', String(NOW + 20_000), 'trailing']);
+    expect(sleep).toHaveBeenCalledWith(20_000);
+    expect(order).toEqual(['slept', 'ran']);
+    expect(reconcileSessionTail).toHaveBeenCalledTimes(1);
+    // Four arguments: a fifth would name a follow-up due time, and a pass given
+    // one does nothing unless a hold asked for it.
+    expect(reconcileSessionTail.mock.calls[0]).toHaveLength(4);
+    expect(reconcileSessionTail).toHaveBeenCalledWith(
+      CONFIG,
+      'sess-A',
+      '/t/a.jsonl',
+      expect.any(Function),
+    );
+  });
+
+  it('runs a trailing pass at once when its window has already closed', async () => {
+    await run(['sess-A', '/t/a.jsonl', String(NOW - 5_000), 'trailing']);
+    expect(sleep).toHaveBeenCalledWith(0);
+    expect(reconcileSessionTail).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([['follow-up'], [''], ['TRAILING']])(
+    'runs no pass for a fourth argument that is not "trailing" (%j)',
+    async (mode) => {
+      await run(['sess-A', '/t/a.jsonl', String(NOW + 1_000), mode]);
+      expect(reconcileSessionTail).not.toHaveBeenCalled();
+      expect(sleep).not.toHaveBeenCalled();
+    },
+  );
+
   it('does not wait for a due time that has passed, and still runs the pass', async () => {
     await run(['sess-A', '/t/a.jsonl', String(NOW - 5_000)]);
     expect(sleep).toHaveBeenCalledWith(0);

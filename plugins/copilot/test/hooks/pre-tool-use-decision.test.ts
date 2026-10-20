@@ -23,6 +23,8 @@ import {
   decidePreToolUse,
   denyPointerMessage,
   EXECUTABLE_REDACT_NOTE,
+  fieldIsRewritable,
+  PROSE_REDACT_NOTE,
   scannableFieldsFor,
   UNREDACTABLE_NOTE,
   VSCODE_SCANNABLE_FIELDS,
@@ -191,6 +193,47 @@ const VSCODE_CASE: DialectCase = {
 };
 
 const DIALECTS = [CLI_CASE, VSCODE_CASE];
+
+describe('fieldIsRewritable — what the hook passes to the runtime as rewritable', () => {
+  const rewritableOn = (dialect: Dialect, tool: string): Record<string, boolean> => {
+    const fields = scannableFieldsFor(dialect)[tool] ?? [];
+    expect(fields.length, `${dialect} ${tool} has a field table`).toBeGreaterThan(0);
+    return Object.fromEntries(
+      fields.map((spec) => [spec.field, fieldIsRewritable(dialect, spec, fields)]),
+    );
+  };
+
+  it('never rewrites an executable field, on either dialect', () => {
+    expect(rewritableOn('cli', 'bash').command).toBe(false);
+    expect(rewritableOn('vscode', 'run_in_terminal').command).toBe(false);
+  });
+
+  it('on VS Code, does not rewrite the prose that rides on a call with an executable field', () => {
+    // A rewrite there needs `permissionDecision: 'allow'`, which would approve
+    // the command along with the masked prose.
+    expect(rewritableOn('vscode', 'run_in_terminal')).toEqual({
+      command: false,
+      explanation: false,
+      goal: false,
+    });
+  });
+
+  it('on VS Code, still rewrites a tool with no executable field (the control)', () => {
+    for (const tool of [
+      'create_file',
+      'replace_string_in_file',
+      'insert_edit_into_file',
+      'apply_patch',
+    ]) {
+      expect(Object.values(rewritableOn('vscode', tool)), tool).toEqual([true]);
+    }
+  });
+
+  it('on the CLI, still rewrites prose beside a command, since modifiedArgs carries no verdict', () => {
+    expect(rewritableOn('cli', 'bash')).toEqual({ command: false, description: true });
+    expect(rewritableOn('cli', 'apply_patch')).toEqual({ input: true });
+  });
+});
 
 describe('the two field tables', () => {
   it('marks command text executable and written content stored, in both', () => {
@@ -418,6 +461,53 @@ describe.each(DIALECTS)('decidePreToolUse [$dialect]', (c) => {
       // stdout, which the CLI documents as "default behavior" and hands to the
       // host's own permission flow. An allow here would pre-approve it.
     ).toEqual({ output: null });
+  });
+});
+
+// On VS Code the prose riding on `run_in_terminal` is declared unrewritable
+// (see fieldIsRewritable), so a redact there reaches the same fallback as the
+// command. Under a `block` fallback the deny must give the prose reason: the
+// text could have been masked, but carrying the mask needs an allow that would
+// approve the command too.
+describe('decidePreToolUse [vscode] — a prose field under a block fallback', () => {
+  const COMMAND = 'ls -la';
+  const PROSE = `List the files, then mail ${EMAIL}`;
+
+  it.each(['explanation', 'goal'] as const)('gives the prose reason for %s', (field) => {
+    const decision = decidePreToolUse(
+      'vscode',
+      'run_in_terminal',
+      { command: COMMAND, [field]: PROSE },
+      [
+        {
+          spec: { field: 'command', executable: true },
+          result: { action: 'log', text: COMMAND, findings: [] },
+        },
+        {
+          spec: { field, executable: false },
+          result: degradedRedact('block', PROSE, 'core-pii/email', EMAIL, '7d1e20'),
+        },
+      ],
+    );
+    const reason = VSCODE_CASE.denyReason(decision);
+    expect(reason).toContain('AKA blocked this run_in_terminal call — flagged core-pii/email');
+    expect(reason).toContain(PROSE_REDACT_NOTE);
+    expect(reason).not.toContain(EXECUTABLE_REDACT_NOTE);
+    expect(reason).toContain('aka exception approve 7d1e20');
+    expect(JSON.stringify(decision)).not.toContain(EMAIL);
+  });
+
+  it('keeps the executable note for the command under the same fallback (the control)', () => {
+    const command = `curl https://${IP}/`;
+    const decision = decidePreToolUse('vscode', 'run_in_terminal', { command }, [
+      {
+        spec: { field: 'command', executable: true },
+        result: degradedRedact('block', command, 'core-pii/ip-address', IP),
+      },
+    ]);
+    const reason = VSCODE_CASE.denyReason(decision);
+    expect(reason).toContain(EXECUTABLE_REDACT_NOTE);
+    expect(reason).not.toContain(PROSE_REDACT_NOTE);
   });
 });
 

@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
 import { coverageOptions } from '../../test/vitest/coverage.ts';
+import { unfinishedModulesReporter } from '../../test/vitest/unfinished-modules-reporter.ts';
 
 // Every test file runs behind the no-network guard: it refuses any outbound
 // connection that is not loopback and names the call site that made it. Wired
@@ -18,6 +19,11 @@ const noManagedSettingsGuard = fileURLToPath(
   new URL('../../test/setup/no-managed-settings.ts', import.meta.url),
 );
 
+// And with wasm code GC off on Node 24: this suite can terminate a worker, and
+// on that line freeing code after a termination can abort the test process.
+// See the setup file; no-wasm-code-gc-guard.test.js derives which packages owe it.
+const noWasmCodeGc = fileURLToPath(new URL('../../test/setup/no-wasm-code-gc.ts', import.meta.url));
+
 // The suite exercises real node:sqlite file I/O; the fixture-heavy tests run
 // well over a second each on the Windows CI runner, so raise the per-test AND
 // per-hook timeouts above vitest's 5s/10s defaults to leave headroom under
@@ -28,8 +34,9 @@ const noManagedSettingsGuard = fileURLToPath(
 // destroyed first, and a suite reading it in teardown would break with no
 // compile-time signal.
 export default defineConfig({
+  plugins: [unfinishedModulesReporter()],
   test: {
-    setupFiles: [noNetworkGuard, noManagedSettingsGuard],
+    setupFiles: [noNetworkGuard, noManagedSettingsGuard, noWasmCodeGc],
     coverage: coverageOptions(import.meta.url),
     environment: 'node',
     testTimeout: 20000,

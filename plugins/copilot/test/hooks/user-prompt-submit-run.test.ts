@@ -43,6 +43,8 @@ import { openGatewayOrNull } from '../../src/hooks/store-health.ts';
 import { runUserPromptSubmit } from '../../src/hooks/user-prompt-submit-run.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { ruleExample } from '../helpers/rule-example.ts';
+import type { StderrCapture } from '../helpers/stderr-capture.ts';
+import { captureStderr } from '../helpers/stderr-capture.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(HERE, '..', 'fixtures');
@@ -86,9 +88,7 @@ const DIALECTS = [
 let root: string;
 let akaHome: string;
 let cwd: string;
-let stderr: string[];
-// `(node:1234) ExperimentalWarning: …` and the `--trace-warnings` hint after it.
-const NODE_WARNING = /^\(node:\d+\) |--trace-warnings/u;
+let stderr: StderrCapture;
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'aka-copilot-prompt-run-'));
@@ -98,11 +98,7 @@ beforeEach(() => {
   cwd = join(root, 'checkout');
   mkdirSync(join(cwd, '.git'), { recursive: true });
   writeFileSync(join(cwd, '.git', 'config'), `[remote "origin"]\n\turl = ${WORK_REMOTE}\n`);
-  stderr = [];
-  vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
-    stderr.push(String(chunk));
-    return true;
-  });
+  stderr = captureStderr();
 });
 
 afterEach(() => {
@@ -154,15 +150,6 @@ function findingRows(): Record<string, unknown>[] {
   );
 }
 
-/**
- * Everything written to stderr except node's own runtime warnings — the hook's
- * notices AND the SDK's `[aka]` lines, so a line the SDK writes on the hook's
- * behalf is read like any other.
- */
-function akaStderr(): string {
-  return stderr.filter((line) => !NODE_WARNING.test(line)).join('');
-}
-
 describe.each(DIALECTS)('runUserPromptSubmit on the $kind dialect', (d) => {
   const isCli = d.kind === 'cli';
 
@@ -172,9 +159,9 @@ describe.each(DIALECTS)('runUserPromptSubmit on the $kind dialect', (d) => {
       // The CLI documents no message field on this event: stdout stays empty.
       expect(output).toBeUndefined();
       // `writeNotice` terminates the line; the message itself does not.
-      return akaStderr().trimEnd();
+      return stderr.filtered().trimEnd();
     }
-    expect(akaStderr()).toBe('');
+    expect(stderr.filtered()).toBe('');
     return String((output as { systemMessage?: unknown } | undefined)?.systemMessage);
   }
 
@@ -196,6 +183,7 @@ describe.each(DIALECTS)('runUserPromptSubmit on the $kind dialect', (d) => {
       { rule_id: RULE_ID, action_taken: 'warn', root_session_id: d.sessionId() },
     ]);
     expectNoEchoOf(text, FIXTURE.example);
+    expectNoEchoOf(stderr.raw(), FIXTURE.example);
   });
 
   it('resolves a redact policy to the redactFallback, and says the prompt went out', async () => {
@@ -208,6 +196,7 @@ describe.each(DIALECTS)('runUserPromptSubmit on the $kind dialect', (d) => {
     expect(text).toContain(RULE_ID);
     expect(text).not.toMatch(/\bredacted\b|\bblocked\b/iu);
     expectNoEchoOf(text, FIXTURE.example);
+    expectNoEchoOf(stderr.raw(), FIXTURE.example);
   });
 
   it('stamps the scope key of the cwd the payload names', async () => {
@@ -220,7 +209,7 @@ describe.each(DIALECTS)('runUserPromptSubmit on the $kind dialect', (d) => {
     markOnboarded();
     const output = await run('nothing to see here');
     expect(output).toBeUndefined();
-    expect(akaStderr()).toBe('');
+    expect(stderr.filtered()).toBe('');
     // The row is the control: silence here is a decision, not a hook that
     // never ran.
     expect(promptRows()).toHaveLength(1);
@@ -262,10 +251,11 @@ describe.each(DIALECTS)('runUserPromptSubmit on the $kind dialect', (d) => {
     expect(text).not.toMatch(/\bblocked\b/iu);
     expect(findingRows()).toEqual([]);
     expectNoEchoOf(text, FIXTURE.example);
+    expectNoEchoOf(stderr.raw(), FIXTURE.example);
     // Nothing on stderr claims the prompt was refused: this hook cannot refuse
     // it, so the SDK's refusal line is not written. The case below is the
     // control that the same bounded scan does write it for a refusing caller.
-    expect(stderr.join('')).not.toMatch(/refus/iu);
+    expect(stderr.raw()).not.toMatch(/refus/iu);
   });
 
   it('writes the SDK refusal line for a refusing caller over the same absent worker', async () => {
@@ -293,9 +283,7 @@ describe.each(DIALECTS)('runUserPromptSubmit on the $kind dialect', (d) => {
     } finally {
       await runtime.close();
     }
-    expect(stderr.join('')).toMatch(
-      /\[aka\] a large input could not be scanned.* and was refused/u,
-    );
+    expect(stderr.raw()).toMatch(/\[aka\] a large input could not be scanned.* and was refused/u);
   });
 
   it('warns once per session when the store cannot be opened', async () => {
@@ -309,10 +297,10 @@ describe.each(DIALECTS)('runUserPromptSubmit on the $kind dialect', (d) => {
     const first = notice(await run('nothing to see here'));
     expect(first).toContain('could not open its local store');
 
-    stderr = [];
+    stderr.reset();
     const second = await run('nothing to see here');
     expect(second).toBeUndefined();
-    expect(akaStderr()).toBe('');
+    expect(stderr.filtered()).toBe('');
   });
 
   it.skipIf(process.platform === 'win32')(
@@ -325,12 +313,12 @@ describe.each(DIALECTS)('runUserPromptSubmit on the $kind dialect', (d) => {
       symlinkSync(elsewhere, join(akaHome, 'data'));
 
       expect(await run('first prompt')).toBeUndefined();
-      const first = stderr.join('');
+      const first = stderr.raw();
       expect(first).toContain(elsewhere);
 
-      stderr = [];
+      stderr.reset();
       expect(await run('second prompt')).toBeUndefined();
-      expect(stderr.join('')).not.toContain(elsewhere);
+      expect(stderr.raw()).not.toContain(elsewhere);
       // Still captured through the redirect: the warning is a notice, not a stop.
       expect(promptRows()).toHaveLength(2);
     },
@@ -363,7 +351,7 @@ describe('runUserPromptSubmit declines without opening the store', () => {
   ])('on %s', async (_label, event, stdin) => {
     expect(await runUserPromptSubmit(event, stdin, { akaHome })).toBeUndefined();
     expect(existsSync(akaHome)).toBe(false);
-    expect(akaStderr()).toBe('');
+    expect(stderr.filtered()).toBe('');
   });
 
   it('opens it for the same payload under its own token (the control)', async () => {

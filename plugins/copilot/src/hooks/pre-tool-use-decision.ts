@@ -30,6 +30,12 @@ import type { Dialect } from './dialect.ts';
  * masking inside a command changes what runs, so the capture declares that
  * field unrewritable and the RUNTIME resolves the redact into the configured
  * fallback. This module reads that resolution; it never re-derives it.
+ *
+ * It also decides which rules judge the field. The command-risk rules are
+ * scoped to text about to run, so a field that does not execute is captured
+ * with `kindScopedRules: false`: secret and PII rules still scan it, and a
+ * description that merely mentions a risky command cannot deny a call whose
+ * command is clean.
  */
 export interface ScannableField {
   field: string;

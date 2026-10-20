@@ -72,7 +72,7 @@ export const CAPABILITY_MATRIX: readonly Capability[] = [
     subject: 'bash.description',
     channel: 'rewrite',
     verified: true,
-    note: 'Model-authored prose that rides along with the call, rewritten in place through modifiedArgs.',
+    note: 'Model-authored prose that rides along with the call, rewritten in place through modifiedArgs. Scanned for secrets and PII only: the command-risk rules judge bash.command, never this prose.',
   },
   {
     surface: 'cli',
@@ -122,7 +122,7 @@ export const CAPABILITY_MATRIX: readonly Capability[] = [
     subject: 'run_in_terminal.command',
     channel: 'block',
     verified: false,
-    note: 'The capture and the warn were recorded in test/fixtures/vscode/plugin-load-1.141/: the call was stored with its finding, and the warn systemMessage reached only the hooks output channel, never the chat. A deny through hookSpecificOutput was never driven, so the block itself is unverified.',
+    note: 'The capture and the warn were recorded in test/fixtures/vscode/plugin-load-1.141/: the call was stored with its finding, and the warn systemMessage reached only the hooks output channel, never the chat. A deny through hookSpecificOutput was never driven, so the block itself is unverified. explanation, the model’s prose beside the command, is scanned for secrets and PII only, never against the command-risk rules.',
   },
   {
     surface: 'vscode',

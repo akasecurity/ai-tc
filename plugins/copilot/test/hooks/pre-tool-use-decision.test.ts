@@ -1,5 +1,5 @@
 // Tests the pure pre-tool-use decision module directly — NEVER via the hook
-// entry file (src/hooks/pre-tool-use.ts runs main() on import and would hang
+// entry file (src/hooks/pre-tool-use.ts runs its handler on import and would hang
 // vitest collection).
 //
 // Every case is driven in BOTH dialects, because the two differ in shape and in

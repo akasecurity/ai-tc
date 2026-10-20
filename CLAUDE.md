@@ -984,10 +984,11 @@ changes. The gaps that exist today:
   every prompt twice.
   The VS Code half is built to the published contract and **partly confirmed against a live
   install**: one agent-mode session on VS Code 1.141.0 recorded the session start, prompt,
-  tool-call and tool-result captures and a warn, in `test/fixtures/vscode/plugin-load-1.141/`,
-  and those capability rows are verified. A deny, an `updatedInput` rewrite, a large-input
-  refusal and a flagged tool result were never driven, so those rows stay unverified, and the
-  warn's `systemMessage` reached only the hooks output channel, never the chat. The doc-derived
+  tool-call and tool-result captures and a warn, in `test/fixtures/vscode/plugin-load-1.141/`.
+  Only the session start, prompt and tool-result rows are verified. The block and rewrite rows
+  that the tool-call capture feeds stay unverified, because a deny, an `updatedInput` rewrite, a
+  large-input refusal and a flagged tool result were never driven. The warn's `systemMessage`
+  reached only the hooks output channel, never the chat. The doc-derived
   fixtures sit in a separate `test/fixtures/vscode-provisional/` directory, and
   `plugins/copilot/test/fixture-provenance.test.ts` is what keeps a doc-derived specimen from
   being filed among the recordings.

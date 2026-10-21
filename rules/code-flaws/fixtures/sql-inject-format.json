@@ -43,5 +43,20 @@
     "label": "JSON dictionary whose values start with SQL words",
     "text": "{\"id-1\":\"select 1\",\"id-2\":\"where 2\",\"id-3\":\"update 3\"}",
     "shouldMatch": false
+  },
+  {
+    "label": "parameterized query followed by a type assertion",
+    "text": "const r = db.prepare(\"SELECT id FROM t WHERE value=? AND k=?\").get(x) as { id: string };",
+    "shouldMatch": false
+  },
+  {
+    "label": "parameterized query followed by an object literal",
+    "text": "expect(db.prepare(\"SELECT n FROM t WHERE value=?\").get(1)).toEqual({ n: 1 });",
+    "shouldMatch": false
+  },
+  {
+    "label": "braces after the closing quote of a %s query do not matter",
+    "text": "q = \"SELECT * FROM t WHERE a = %s\" % (x,); y = {\"k\": 1}",
+    "shouldMatch": true
   }
 ]

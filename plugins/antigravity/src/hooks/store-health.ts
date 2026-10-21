@@ -115,16 +115,29 @@ export function storeUnavailableMessage(dbPath: string): string {
  * toward WARNING: with no session id (can't dedupe), or on any fs error, it
  * returns true — repeating the warning is noise; hiding that detection is off
  * is not.
+ *
+ * The marker is line-based (one id per line), so an id carrying a control
+ * character, a newline above all, cannot be stored faithfully. Such an id is
+ * never recorded and is treated like a missing one: the warning is shown.
  */
 export function claimStoreUnavailableWarning(
   dataDir: string,
   sessionId: string | undefined,
 ): boolean {
-  if (!sessionId) return true; // no session id → can't dedupe, warn anyway
+  if (!sessionId || hasControlChar(sessionId)) return true; // can't dedupe, warn anyway
   const dirs = markerDirs(dataDir);
   if (alreadyClaimed(dirs, STORE_WARNING_MARKER, sessionId)) return false;
   recordClaim(dirs, STORE_WARNING_MARKER, sessionId);
   return true;
+}
+
+// True when the text holds a C0 control character or DEL.
+function hasControlChar(text: string): boolean {
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code < 0x20 || code === 0x7f) return true;
+  }
+  return false;
 }
 
 // Where a session marker may live, in preference order.

@@ -8,7 +8,15 @@
 // store silently disabled all detection while the onboarding nudge still
 // claimed AKA was monitoring.
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -106,6 +114,29 @@ describe('claimStoreUnavailableWarning — once per session', () => {
       claimStoreUnavailableWarning(dir, id),
     );
     expect(warned).toEqual(['sess-1', 'sess-2']);
+  });
+
+  it('keeps a bounded id list, newest last, and evicts the oldest', () => {
+    for (let i = 0; i < 100; i += 1) claimStoreUnavailableWarning(dir, `s${String(i)}`);
+    const ids = readFileSync(join(dir, 'store-warning-last-session'), 'utf8').split('\n');
+    expect(ids).toHaveLength(32);
+    expect(ids.at(-1)).toBe('s99');
+    expect(ids).not.toContain('s0');
+    expect(claimStoreUnavailableWarning(dir, 's0')).toBe(true);
+  });
+
+  it('reads a marker written by an older build that held a single id', () => {
+    writeFileSync(join(dir, 'store-warning-last-session'), 's1');
+    expect(claimStoreUnavailableWarning(dir, 's1')).toBe(false);
+    expect(claimStoreUnavailableWarning(dir, 's2')).toBe(true);
+  });
+
+  it('refuses an id carrying a newline: it always warns and is never recorded', () => {
+    expect(claimStoreUnavailableWarning(dir, 'a\nb')).toBe(true);
+    expect(claimStoreUnavailableWarning(dir, 'a\nb')).toBe(true);
+    expect(claimStoreUnavailableWarning(dir, 'a')).toBe(true);
+    expect(claimStoreUnavailableWarning(dir, 'b')).toBe(true);
+    expect(claimStoreUnavailableWarning(dir, 'a')).toBe(false);
   });
 
   it('with no session id it cannot dedupe and always warns', () => {

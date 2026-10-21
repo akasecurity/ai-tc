@@ -20,9 +20,10 @@ import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
 import { DATA_DIR_MODE, DATA_FILE_MODE } from '@akasecurity/plugin-sdk';
 
-// A single marker holding the last session id warned — one file, overwritten
-// each new session so it never accumulates (same scheme as the onboarding
-// nudge marker).
+// A marker holding the recent session ids warned, one per line and newest last,
+// capped at RECENT_SESSIONS so it never accumulates (same scheme as the
+// onboarding nudge marker). Holding several ids rather than the last one keeps
+// concurrent sessions from displacing each other's claims.
 const STORE_WARNING_MARKER = 'store-warning-last-session';
 
 // The redirect warning's own marker. Separate from the one above rather than
@@ -30,6 +31,9 @@ const STORE_WARNING_MARKER = 'store-warning-last-session';
 // been told the store cannot open must still be told WHERE it was being written
 // once it can. One marker would let whichever fired first silence the other.
 const STORE_REDIRECT_MARKER = 'store-redirect-last-session';
+
+// How many recent session ids each marker remembers.
+const RECENT_SESSIONS = 32;
 
 /** A gateway, or the reason there is none. */
 export type GatewayOpen =
@@ -170,7 +174,7 @@ export function storeUnavailableMessage(dbPath: string, cause?: string): string 
 
 /**
  * Gate the store-unavailable warning to once per Claude Code session instead
- * of once per hook fire. Records the current session id in a single marker
+ * of once per hook fire. Records the current session id in a marker of recent ids
  * file and returns true only the first time a given session asks. Fail-open
  * toward WARNING: with no session id (can't dedupe), or on any fs error, it
  * returns true — repeating the warning is noise; hiding that detection is off
@@ -204,13 +208,16 @@ function markerDirs(dataDir: string): string[] {
 // Has this session already been warned? Every candidate is consulted, so a
 // marker recorded in the fallback is still found once data/ is writable again.
 function alreadyClaimed(dirs: readonly string[], marker: string, sessionId: string): boolean {
-  return dirs.some((dir) => {
-    try {
-      return readFileSync(join(dir, marker), 'utf8') === sessionId;
-    } catch {
-      return false; // no marker yet, or unreadable → not a claim
-    }
-  });
+  return dirs.some((dir) => readRecent(dir, marker).includes(sessionId));
+}
+
+// The session ids a marker holds; empty when it is absent or unreadable.
+function readRecent(dir: string, marker: string): string[] {
+  try {
+    return readFileSync(join(dir, marker), 'utf8').split('\n').filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 // Record the claim in the first candidate that accepts it. Best-effort: with
@@ -219,7 +226,8 @@ function recordClaim(dirs: readonly string[], marker: string, sessionId: string)
   for (const dir of dirs) {
     try {
       mkdirSync(dir, { recursive: true, mode: DATA_DIR_MODE });
-      writeFileSync(join(dir, marker), sessionId, { mode: DATA_FILE_MODE });
+      const recent = [...readRecent(dir, marker), sessionId].slice(-RECENT_SESSIONS);
+      writeFileSync(join(dir, marker), recent.join('\n'), { mode: DATA_FILE_MODE });
       return;
     } catch {
       // This candidate is unusable — try the next.

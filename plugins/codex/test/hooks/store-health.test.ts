@@ -86,10 +86,17 @@ describe('claimStoreUnavailableWarning — once per session', () => {
     expect(claimStoreUnavailableWarning(dir, 'sess-1')).toBe(false);
   });
 
-  it('a NEW session warns again (single overwritten marker, not an accumulating set)', () => {
+  it('a NEW session warns again', () => {
     expect(claimStoreUnavailableWarning(dir, 'sess-1')).toBe(true);
     expect(claimStoreUnavailableWarning(dir, 'sess-2')).toBe(true);
     expect(claimStoreUnavailableWarning(dir, 'sess-2')).toBe(false);
+  });
+
+  it('two sessions alternating claims each warn exactly once', () => {
+    const warned = ['sess-1', 'sess-2', 'sess-1', 'sess-2', 'sess-1', 'sess-2'].filter((id) =>
+      claimStoreUnavailableWarning(dir, id),
+    );
+    expect(warned).toEqual(['sess-1', 'sess-2']);
   });
 
   it('with no session id it cannot dedupe and always warns', () => {
@@ -251,6 +258,24 @@ describe('warnIfStoreRedirected — a symlinked store path is surfaced', () => {
   it('derives the store home from dataDir exactly as the layout builds it', () => {
     const home = join(dir, 'somewhere');
     expect(dataDirOf(home)).toBe(join(home, 'data'));
+  });
+
+  it('two sessions alternating each get the redirect warning exactly once', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('unprivileged symlink creation is not available on Windows');
+      return;
+    }
+    const victim = join(dir, 'victim-alt');
+    mkdirSync(victim, { mode: 0o755 });
+    const home = join(dir, 'linked-home-alt');
+    symlinkSync(victim, home);
+    mkdirSync(dataDirOf(home), { recursive: true });
+    const config = configFor(dataDirOf(home));
+    const written: string[] = [];
+    for (const id of ['s1', 's2', 's1', 's2', 's1', 's2']) {
+      warnIfStoreRedirected(config, id, (m) => written.push(m));
+    }
+    expect(written).toHaveLength(2);
   });
 
   it('says nothing at all when no store path is a symlink', (ctx) => {

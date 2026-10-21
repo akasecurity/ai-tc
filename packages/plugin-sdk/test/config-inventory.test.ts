@@ -882,3 +882,73 @@ describe('resolveConfigInventory — marketplace + code skills', () => {
     expect(scan.skills.filter((s) => s.name === 'audit')).toHaveLength(1);
   });
 });
+
+describe('resolveConfigInventory — CLAUDE_CONFIG_DIR', () => {
+  let configDir: string;
+
+  beforeEach(() => {
+    configDir = mkdtempSync(join(tmpdir(), 'aka-config-dir-'));
+  });
+
+  afterEach(() => {
+    rmSync(configDir, { recursive: true, force: true });
+  });
+
+  // A different hook, server and skill under ~/.claude and under the override,
+  // so each assertion says which directory the scan read.
+  function seedBoth(): void {
+    const hook = (command: string) => ({
+      hooks: { Stop: [{ hooks: [{ type: 'command', command }] }] },
+    });
+    writeJson(join(home, '.claude', 'settings.json'), hook('home-hook.sh'));
+    writeJson(join(home, '.claude.json'), { mcpServers: { homesrv: { command: 'mcp-home' } } });
+    write(join(home, '.claude', 'skills', 'homeskill', 'SKILL.md'), '---\nname: homeskill\n---\n');
+    write(join(home, '.claude', 'CLAUDE.md'), 'one\n');
+
+    writeJson(join(configDir, 'settings.json'), hook('profile-hook.sh'));
+    writeJson(join(configDir, '.claude.json'), {
+      mcpServers: { profilesrv: { command: 'mcp-profile' } },
+    });
+    write(join(configDir, 'skills', 'profileskill', 'SKILL.md'), '---\nname: profileskill\n---\n');
+    write(join(configDir, 'CLAUDE.md'), 'one\ntwo\n');
+    const installPath = join(configDir, 'plugins', 'cache', 'acme', 'guard', '1.0.0');
+    writeJson(join(configDir, 'plugins', 'installed_plugins.json'), {
+      version: 2,
+      plugins: { 'guard@acme': [{ installPath, version: '1.0.0' }] },
+    });
+    writeJson(join(installPath, 'hooks', 'hooks.json'), hook('plugin-hook.sh'));
+  }
+
+  function expectProfileScanned(scan: ReturnType<typeof resolveConfigInventory>): void {
+    expect(scan.errors).toEqual([]);
+    expect(scan.hooks.map((h) => h.command).sort()).toEqual(['plugin-hook.sh', 'profile-hook.sh']);
+    expect(scan.hooks.find((h) => h.command === 'profile-hook.sh')).toMatchObject({
+      scope: 'user',
+      location: join(configDir, 'settings.json'),
+    });
+    expect(scan.mcpServers.map((s) => s.name)).toEqual(['profilesrv']);
+    expect(scan.skills.map((s) => s.name)).toEqual(['profileskill']);
+    expect(scan.configFiles.map((f) => f.path)).toEqual(
+      expect.arrayContaining([join(configDir, 'settings.json'), join(configDir, 'CLAUDE.md')]),
+    );
+    expect(scan.configFiles.some((f) => f.path.startsWith(join(home, '.claude')))).toBe(false);
+  }
+
+  it('reads the user config and .claude.json from claudeConfigDir when it is given', () => {
+    seedBoth();
+
+    expectProfileScanned(
+      resolveConfigInventory({ cwd: project, homeDir: home, claudeConfigDir: configDir }),
+    );
+  });
+
+  it('reads ~/.claude and ~/.claude.json when no override is given', () => {
+    seedBoth();
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    expect(scan.errors).toEqual([]);
+    expect(scan.hooks.map((h) => h.command)).toEqual(['home-hook.sh']);
+    expect(scan.mcpServers.map((s) => s.name)).toEqual(['homesrv']);
+    expect(scan.skills.map((s) => s.name)).toEqual(['homeskill']);
+  });
+});

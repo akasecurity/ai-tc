@@ -19,16 +19,26 @@ import { remoteWithoutCredentials, resolveRepoIdentity } from './repo.ts';
  * Inputs for one config-inventory scan. `homeDir` is injectable for tests;
  * production callers omit it (node:os homedir — the same environment door the
  * inventory resolver already uses via hostname(), NOT process.env).
+ *
+ * `claudeConfigDir` is the user config directory when Claude Code's
+ * `CLAUDE_CONFIG_DIR` names one: settings, hooks, skills, plugins and
+ * `.claude.json` are all read from it rather than from `<home>/.claude` and
+ * `<home>/.claude.json`. The adapter reads the variable and passes it here, so
+ * this module never reads the environment.
  */
 export interface ResolveConfigInventoryInput {
   cwd: string;
   homeDir?: string | undefined;
+  claudeConfigDir?: string | undefined;
 }
 
 /**
  * Scan the machine's Claude Code configuration surface — registered hooks and
  * installed skills — into a {@link ConfigScanResult} (the meta-model config
  * inventory).
+ *
+ * `~/.claude` and `~/.claude.json` below stand for the user config directory
+ * and the `.claude.json` beside it, which `claudeConfigDir` moves.
  *
  * Sources, each parsed independently and fail-open (a malformed file becomes an
  * `errors` entry, never a throw — dropping one source must not lose the rest):
@@ -86,7 +96,8 @@ export function resolveConfigInventory(input: ResolveConfigInventoryInput): Conf
   };
   try {
     const home = input.homeDir ?? homedir();
-    const claudeDir = join(home, '.claude');
+    const claudeDir = input.claudeConfigDir ?? join(home, '.claude');
+    const claudeJson = join(input.claudeConfigDir ?? home, '.claude.json');
 
     // The repo identity — folded into project/local-scope identity for skills
     // (as the `project:` source surrogate) AND MCP servers (as the scope
@@ -113,7 +124,7 @@ export function resolveConfigInventory(input: ResolveConfigInventoryInput): Conf
     // malformed file must be noted here or it vanishes silently.
     const projectOrigin = { scope: 'project' as const, project: repoIdentity };
     collectMcpFile(scan, join(input.cwd, '.mcp.json'), projectOrigin, { recordErrors: true });
-    collectUserClaudeJson(scan, join(home, '.claude.json'), input.cwd, repoIdentity);
+    collectUserClaudeJson(scan, claudeJson, input.cwd, repoIdentity);
     collectMcpFile(scan, join(claudeDir, 'settings.json'), { scope: 'user' });
     collectMcpFile(scan, join(input.cwd, '.claude', 'settings.json'), projectOrigin);
     collectMcpFile(scan, join(input.cwd, '.claude', 'settings.local.json'), {

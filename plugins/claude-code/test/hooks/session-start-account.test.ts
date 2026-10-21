@@ -57,6 +57,7 @@ function deps(overrides: Partial<SessionStartDeps> = {}): SessionStartDeps {
   return {
     version: '0.0.0-test',
     harnessInterface: undefined,
+    claudeConfigDir: undefined,
     handleSessionStart,
     triggerReconcile: () => undefined,
     emit: () => Promise.resolve(),

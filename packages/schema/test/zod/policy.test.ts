@@ -156,15 +156,15 @@ describe('PolicyBundle.modelPolicy', () => {
     }
   });
 
-  it('refuses an empty id, an id over 512 characters, and more than 10,000 ids', () => {
+  it('refuses an empty id, an id over 512 characters, and more than 1,000 ids', () => {
     const parse = (approved: unknown) =>
       PolicyBundle.safeParse({ ...baseBundle, modelPolicy: { mode: 'allowlist', approved } })
         .success;
     expect(parse([''])).toBe(false);
     expect(parse(['m'.repeat(513)])).toBe(false);
     expect(parse(['m'.repeat(512)])).toBe(true);
-    expect(parse(Array.from({ length: 10_001 }, (_, i) => `m-${String(i)}`))).toBe(false);
-    expect(parse(Array.from({ length: 10_000 }, (_, i) => `m-${String(i)}`))).toBe(true);
+    expect(parse(Array.from({ length: 1_001 }, (_, i) => `m-${String(i)}`))).toBe(false);
+    expect(parse(Array.from({ length: 1_000 }, (_, i) => `m-${String(i)}`))).toBe(true);
   });
 });
 

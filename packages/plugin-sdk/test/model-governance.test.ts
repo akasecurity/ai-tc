@@ -2,15 +2,18 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { GEO_PREFIXES, PLATFORM_NAMESPACES } from '@akasecurity/schema';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import type { RefusalSeam } from '../src/model-governance.ts';
 import {
+  approvedModelIds,
   buildModelRefusalEvent,
   canonicalModelId,
   claudeCodeModelFromRecord,
   codexModelFromRecord,
   decideProhibitedModelTurn,
+  isModelApproved,
   isModelProhibited,
   matchProhibitedSpawnModel,
   modelFromTranscript,
@@ -70,43 +73,59 @@ describe('normalizeModelId', () => {
 });
 
 describe('canonicalModelId', () => {
-  it('folds as normalizeModelId does', () => {
+  it('lowercases, trims and strips a release date in either form', () => {
     expect(canonicalModelId('  Claude-Haiku-4-5-20251001 ')).toBe('claude-haiku-4-5');
+    expect(canonicalModelId('gpt-4o-2024-05-13')).toBe('gpt-4o');
     expect(canonicalModelId('gpt-4o')).toBe('gpt-4o');
   });
 
-  it('strips a Bedrock cross-region prefix', () => {
-    for (const geo of ['us', 'eu', 'apac', 'global']) {
-      expect(canonicalModelId(`${geo}.anthropic.claude-sonnet-4-5-v1:0`)).toBe(
-        'anthropic.claude-sonnet-4-5-v1:0',
-      );
+  it('reduces every platform spelling of one model to one id', () => {
+    const spellings = [
+      'claude-haiku-4-5',
+      'claude-haiku-4-5-20251001',
+      'anthropic.claude-haiku-4-5-v1:0',
+      'anthropic.claude-haiku-4-5-20251001-v1:0',
+      ...GEO_PREFIXES.map((geo) => `${geo}.anthropic.claude-haiku-4-5-20251001-v1:0`),
+      'arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0',
+      'claude-haiku-4-5@20251001',
+      'projects/p/locations/us-central1/publishers/anthropic/models/claude-haiku-4-5@20251001',
+      'anthropic/claude-haiku-4-5',
+    ];
+    for (const spelling of spellings) {
+      expect(canonicalModelId(spelling), spelling).toBe('claude-haiku-4-5');
     }
   });
 
-  it('keeps a bare Bedrock id, and a dotted id that names no region', () => {
-    expect(canonicalModelId('anthropic.claude-sonnet-4-5-v1:0')).toBe(
-      'anthropic.claude-sonnet-4-5-v1:0',
-    );
+  it('strips every geographic prefix and vendor namespace the registry declares', () => {
+    for (const geo of GEO_PREFIXES) {
+      expect(canonicalModelId(`${geo}.amazon.nova-pro-v1:0`), geo).toBe('nova-pro');
+    }
+    for (const vendor of PLATFORM_NAMESPACES) {
+      expect(canonicalModelId(`${vendor}.some-model`), vendor).toBe('some-model');
+      expect(canonicalModelId(`${vendor}/some-model`), vendor).toBe('some-model');
+    }
+  });
+
+  it('keeps a namespace no vendor declares, so one approves no other', () => {
+    expect(canonicalModelId('openai/gpt-4o')).toBe('openai/gpt-4o');
+    expect(canonicalModelId('other/gpt-4o')).toBe('other/gpt-4o');
+    expect(canonicalModelId('other/gpt-4o')).not.toBe(canonicalModelId('gpt-4o'));
     expect(canonicalModelId('usa.model-v1')).toBe('usa.model-v1');
+    expect(canonicalModelId('model-v1')).not.toBe(canonicalModelId('model-v2'));
     expect(canonicalModelId('us.model')).toBe('us.model');
   });
 
-  it('reduces a foundation-model or system inference-profile ARN to its model id', () => {
-    expect(
-      canonicalModelId(
-        'arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-5-v1:0',
-      ),
-    ).toBe('anthropic.claude-sonnet-4-5-v1:0');
+  it('reduces a foundation-model or system inference-profile ARN to its model', () => {
     expect(
       canonicalModelId(
         'arn:aws:bedrock:us-east-1:111122223333:inference-profile/us.anthropic.claude-sonnet-4-5-v1:0',
       ),
-    ).toBe('anthropic.claude-sonnet-4-5-v1:0');
+    ).toBe('claude-sonnet-4-5');
     expect(
       canonicalModelId(
         'arn:aws-us-gov:bedrock:us-gov-west-1::foundation-model/amazon.nova-pro-v1:0',
       ),
-    ).toBe('amazon.nova-pro-v1:0');
+    ).toBe('nova-pro');
   });
 
   it('keeps every other Bedrock ARN whole, since it names no model', () => {
@@ -119,47 +138,13 @@ describe('canonicalModelId', () => {
     for (const arn of opaque) expect(canonicalModelId(arn)).toBe(arn);
   });
 
-  it('reduces a Vertex publisher path and a Gemini models/ path to the model', () => {
-    expect(canonicalModelId('publishers/google/models/gemini-2.5-flash')).toBe('gemini-2.5-flash');
-    expect(
-      canonicalModelId(
-        'projects/p/locations/us-central1/publishers/anthropic/models/claude-sonnet-4-5@20250929',
-      ),
-    ).toBe('claude-sonnet-4-5');
-    expect(canonicalModelId('models/gemini-2.5-pro')).toBe('gemini-2.5-pro');
-  });
-
-  it('keeps the creator of a gateway creator/model id, so no namespace approves another', () => {
-    expect(canonicalModelId('openai/gpt-4o')).toBe('openai/gpt-4o');
-    expect(canonicalModelId('Anthropic/Claude-Sonnet-4-5-20250929')).toBe(
-      'anthropic/claude-sonnet-4-5',
-    );
-    expect(canonicalModelId('other/gpt-4o')).not.toBe(canonicalModelId('openai/gpt-4o'));
-    expect(canonicalModelId('openai/gpt-4o')).not.toBe(canonicalModelId('gpt-4o'));
-    expect(canonicalModelId('meta-llama/Llama-3-70b')).toBe('meta-llama/llama-3-70b');
-  });
-
-  it('folds the date out of every spelling of one dated Bedrock model', () => {
-    const spellings = [
-      'us.anthropic.claude-haiku-4-5-20251001-v1:0',
-      'anthropic.claude-haiku-4-5-20251001-v1:0',
-      'arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0',
-      'anthropic.claude-haiku-4-5-v1:0',
-    ];
-    for (const spelling of spellings) {
-      expect(canonicalModelId(spelling)).toBe('anthropic.claude-haiku-4-5-v1:0');
-    }
-  });
-
-  it('folds only a date: a version that is not one stays', () => {
-    expect(canonicalModelId('anthropic.claude-v2:1')).toBe('anthropic.claude-v2:1');
-    expect(canonicalModelId('model-1234567-v1:0')).toBe('model-1234567-v1:0');
-    expect(canonicalModelId('model@001')).toBe('model@001');
-  });
-
-  it('keeps an opaque endpoint or tuned model whole', () => {
+  it('keeps an endpoint or tuned model whole, folding nothing in it', () => {
     expect(canonicalModelId('vertex-endpoint/1234')).toBe('vertex-endpoint/1234');
-    expect(canonicalModelId('tunedModels/my-model')).toBe('tunedmodels/my-model');
+    expect(canonicalModelId('vertex-endpoint/models/4071')).toBe('vertex-endpoint/models/4071');
+    expect(canonicalModelId('tunedModels/my-model-20250101')).toBe('tunedmodels/my-model-20250101');
+    expect(canonicalModelId('tunedModels/my-model-20250101')).not.toBe(
+      canonicalModelId('tunedModels/my-model-20250202'),
+    );
   });
 
   it('is idempotent', () => {
@@ -168,14 +153,44 @@ describe('canonicalModelId', () => {
       'publishers/google/models/gemini-2.5-flash',
       'openai/gpt-4o',
       'vertex-endpoint/1234',
+      'gpt-4o-2024-05-13',
     ]) {
-      expect(canonicalModelId(canonicalModelId(raw))).toBe(canonicalModelId(raw));
+      const once = canonicalModelId(raw);
+      expect(once === undefined ? undefined : canonicalModelId(once)).toBe(once);
     }
   });
 
-  it('returns an empty string for an empty id', () => {
-    expect(canonicalModelId('   ')).toBe('');
-    expect(canonicalModelId('models/')).toBe('models/');
+  it('names no model for an empty id', () => {
+    expect(canonicalModelId('   ')).toBeUndefined();
+    expect(canonicalModelId('')).toBeUndefined();
+  });
+});
+
+describe('approvedModelIds and isModelApproved', () => {
+  it('approves every spelling of a listed model, and refuses one not listed', () => {
+    const approved = approvedModelIds({ mode: 'allowlist', approved: ['claude-haiku-4-5'] });
+    expect(isModelApproved('us.anthropic.claude-haiku-4-5-20251001-v1:0', approved)).toBe(true);
+    expect(isModelApproved('claude-haiku-4-5@20251001', approved)).toBe(true);
+    expect(isModelApproved('gpt-4o', approved)).toBe(false);
+  });
+
+  it('folds the listed ids as it folds the model', () => {
+    const approved = approvedModelIds({ mode: 'allowlist', approved: [' GPT-4o-2024-05-13 '] });
+    expect(approved).toEqual(new Set(['gpt-4o']));
+    expect(isModelApproved('gpt-4o', approved)).toBe(true);
+  });
+
+  it('enforces nothing for no policy, or a list naming no model', () => {
+    expect(approvedModelIds(undefined)).toBeUndefined();
+    expect(approvedModelIds({ mode: 'allowlist', approved: [] })).toBeUndefined();
+    expect(approvedModelIds({ mode: 'allowlist', approved: ['   '] })).toBeUndefined();
+    expect(isModelApproved('gpt-4o', undefined)).toBe(true);
+  });
+
+  it('never refuses a model it does not know', () => {
+    const approved = approvedModelIds({ mode: 'allowlist', approved: ['claude-haiku-4-5'] });
+    expect(isModelApproved(undefined, approved)).toBe(true);
+    expect(isModelApproved('   ', approved)).toBe(true);
   });
 });
 

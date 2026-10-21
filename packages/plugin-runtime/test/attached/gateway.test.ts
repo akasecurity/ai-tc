@@ -37,7 +37,7 @@ import type {
   ResolvedAttachmentScope,
   ToolCallInput,
 } from '@akasecurity/schema';
-import { SOURCE_TOOL } from '@akasecurity/schema';
+import { PolicyBundle as PolicyBundleSchema, SOURCE_TOOL } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
@@ -3370,6 +3370,63 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
     });
     const merged = await gateway.getPolicyBundle();
     expect(merged.prohibitedModels).toEqual(['claude-opus-5']);
+  });
+
+  it('DOES carry modelPolicy from the cache, and leaves it absent when there is none', async () => {
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const local = makeLocal(calls, {
+      getPolicyBundle: vi.fn(() => Promise.resolve(bundle([], { version: 'local' }))),
+    });
+    const modelPolicy = { mode: 'allowlist' as const, approved: ['claude-haiku-4-5'] };
+    const carried = build({
+      local,
+      readCachedBundle: () => Promise.resolve(bundle([], { modelPolicy })),
+    });
+    expect((await carried.gateway.getPolicyBundle()).modelPolicy).toEqual(modelPolicy);
+
+    const none = build({ local, readCachedBundle: () => Promise.resolve(bundle([])) });
+    expect((await none.gateway.getPolicyBundle()).modelPolicy).toBeUndefined();
+  });
+
+  it('decides every PolicyBundle field: carried from the cache, or kept local by name', async () => {
+    // A field the cache carries and the merge does not name is dropped in silence; listing each one
+    // here makes a new field fail until it is put on one side or the other.
+    const fromCache = [
+      'version',
+      'policies',
+      'rules',
+      'customKeywords',
+      'prohibitedModels',
+      'modelPolicy',
+      'redactFallback',
+    ];
+    const keptLocal = [
+      'rulesComplete',
+      'exceptions',
+      'reversibleRuleIds',
+      'ruleVersions',
+      'fetchedAt',
+    ];
+    expect(new Set([...fromCache, ...keptLocal])).toEqual(
+      new Set(Object.keys(PolicyBundleSchema.shape)),
+    );
+    expect(fromCache.filter((key) => keptLocal.includes(key))).toEqual([]);
+
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const local = makeLocal(calls, {
+      getPolicyBundle: vi.fn(() => Promise.resolve(bundle([], { version: 'local' }))),
+    });
+    const cached = bundle([], {
+      version: 'remote',
+      prohibitedModels: ['claude-opus-5'],
+      modelPolicy: { mode: 'allowlist', approved: ['gpt-4o'] },
+      redactFallback: 'block',
+    });
+    const { gateway } = build({ local, readCachedBundle: () => Promise.resolve(cached) });
+    const merged = await gateway.getPolicyBundle();
+    for (const key of ['version', 'prohibitedModels', 'modelPolicy', 'redactFallback'] as const) {
+      expect(merged[key], key).toEqual(cached[key]);
+    }
   });
 
   it('leaves prohibitedModels absent when the organization prohibits nothing', async () => {

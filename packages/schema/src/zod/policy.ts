@@ -108,12 +108,13 @@ export const RedactFallback = BuiltinPolicyId.extract(['monitor', 'warn', 'block
 });
 export type RedactFallback = z.infer<typeof RedactFallback>;
 
-// The models an organization approves. `allowlist` refuses any model whose id is not in `approved`,
-// compared after `canonicalModelId`; an empty list approves none.
+// The models an organization approves. `allowlist` refuses a model whose id is not in `approved`.
+// The ids are kept as the organization listed them; the consumer folds both sides before comparing
+// them, and reads an empty list as no policy.
 export const ModelPolicy = z
   .object({
     mode: z.literal('allowlist'),
-    approved: z.array(z.string().min(1).max(512)).max(10_000),
+    approved: z.array(z.string().min(1).max(512)).max(1_000),
   })
   .meta({ id: 'ModelPolicy' });
 export type ModelPolicy = z.infer<typeof ModelPolicy>;

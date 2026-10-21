@@ -243,6 +243,75 @@ describe.each(DIALECTS)('runPreToolUse on the $kind dialect', (d) => {
   });
 });
 
+// Rule selection per field. The command-risk rules are scoped to `tool_use`
+// captures and judge text about to run, so they belong on a call's command and
+// nowhere else on it. The model's prose beside the command rides along under
+// the same capture kind, and a sentence that merely MENTIONS reading a
+// credential file must not deny a call whose command is clean. Secret rules
+// still run on that prose.
+const COMMAND_RULE = 'command-risk/credential-file-read';
+const COMMAND_PACK = ruleExample(COMMAND_RULE);
+const PROSE = 'tail .env to check the prefix';
+const CLEAN_COMMAND = 'git status';
+const RISKY_COMMAND = 'tail .env';
+
+const PROSE_FIELDS = [
+  { dialect: DIALECTS[0], argsKey: 'toolArgs', field: 'description' },
+  { dialect: DIALECTS[1], argsKey: 'tool_input', field: 'explanation' },
+  { dialect: DIALECTS[1], argsKey: 'tool_input', field: 'goal' },
+] as const;
+
+/** Both packs at one policy, so a command-risk finding denies under block. */
+function seedBothPolicies(policy: BuiltinPolicyId): void {
+  seedPolicy(policy);
+  const db = openLocalDatabase(join(akaHome, 'data'));
+  try {
+    db.installedPacks.setPolicy(COMMAND_PACK.namespace, COMMAND_PACK.packId, policy);
+  } finally {
+    db.close();
+  }
+}
+
+describe.each(PROSE_FIELDS)('runPreToolUse rule selection for $dialect.kind $field', (p) => {
+  const d = p.dialect;
+
+  async function run(command: string, prose: string): Promise<unknown> {
+    const payload = d.payload(command, cwd);
+    const args = { ...(payload[p.argsKey] as object), [p.field]: prose };
+    return runPreToolUse(d.event, JSON.stringify({ ...payload, [p.argsKey]: args }), { akaHome });
+  }
+
+  it('reaches no verdict on a clean command whose prose names a credential read', async () => {
+    seedBothPolicies('block');
+    const output = await run(CLEAN_COMMAND, PROSE);
+
+    expect(output).toBeUndefined();
+    expect(stderr.filtered()).toBe('');
+    expect(findingRules()).toEqual([]);
+  });
+
+  it('denies the same credential read when it is the command (the control)', async () => {
+    // The prose text above really is what the command-risk rule matches, so
+    // its silence there is rule selection rather than a rule that missed.
+    seedBothPolicies('block');
+    const output = await run(RISKY_COMMAND, 'Show the first lines of the env file');
+
+    expect(reasonOf(output)).toContain(COMMAND_RULE);
+    expect(output).toEqual(d.deny(reasonOf(output)));
+    expect(findingRules()).toEqual([COMMAND_RULE]);
+  });
+
+  it('still finds a secret in the prose, and only the secret', async () => {
+    seedBothPolicies('block');
+    const output = await run(CLEAN_COMMAND, `${PROSE} TWILIO=${FIXTURE.example}`);
+
+    // The secret rule fires on the prose and the command-risk rule does not,
+    // on one and the same field.
+    expect(findingRules()).toEqual([RULE_ID]);
+    expect(output).toEqual(d.deny(reasonOf(output)));
+  });
+});
+
 // On the CLI a prose field still rewrites beside a command (`modifiedArgs`
 // carries no verdict), so a redact in `description` and a warn in `command`
 // meet in the rewrite branch. The notice there has to name both, or the

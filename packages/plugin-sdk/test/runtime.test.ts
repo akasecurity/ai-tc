@@ -1016,6 +1016,34 @@ describe('capture — appliesTo eventKind threading', () => {
       await rt.close();
     }
   });
+
+  it('drops kind-scoped rules for a field captured with kindScopedRules: false', async () => {
+    const gw = fakeGateway(bundle([toolUseKeyword, toolUseRegex, unscoped]));
+    const rt = createPluginRuntime(gw, settings());
+    try {
+      const prose = await rt.capture(
+        { kind: 'tool_use', sourceTool: 'claude-code', text },
+        { kindScopedRules: false },
+      );
+      // The positive control: the unscoped rule still fires on the same text,
+      // so the empty kind-scoped half is rule selection, not a scan that ran
+      // nothing.
+      expect(prose.findings.map((f) => f.ruleId)).toEqual(['pulled/unscoped-marker']);
+      // Only selection changes: the event is still recorded as a tool_use.
+      expect(gw.records.map((r) => r.event.kind)).toEqual(['tool_use']);
+
+      // The same text with the option unset keeps full selection, the regex
+      // rule included, so the option is what dropped them above.
+      const command = await rt.capture({ kind: 'tool_use', sourceTool: 'claude-code', text });
+      expect(command.findings.map((f) => f.ruleId).sort()).toEqual([
+        'pulled/tool-use-keyword',
+        'pulled/tool-use-regex',
+        'pulled/unscoped-marker',
+      ]);
+    } finally {
+      await rt.close();
+    }
+  });
 });
 
 describe('capture — at-rest finding_key', () => {

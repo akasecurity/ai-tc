@@ -159,6 +159,11 @@ export const runPreToolUse: HookHandler = async (event, stdin, options = {}) => 
           // runtime, where the emitted decision, the recorded action and the
           // ledger all read one answer.
           rewritable: fieldIsRewritable(dialect, spec, fields),
+          // Also per FIELD: the command-risk rules judge text that is about to
+          // run, so a field that does not execute — the model's description of
+          // the call — is scanned without them. Secret and PII rules still run
+          // on it, and the capture is still recorded under `kind`.
+          kindScopedRules: spec.executable,
         },
       );
       scanned.push({ spec, result });

@@ -27,6 +27,7 @@ import {
   scopeKeyMemo,
   sessionRootScopeKey,
   toolCallScopeKey,
+  truncateTarget,
 } from '@akasecurity/plugin-sdk';
 import type {
   AuditEventInput,
@@ -55,11 +56,6 @@ import {
 // reconciler's NO_PROJECT_CWD sentinel.
 const NO_PROJECT_CWD = '/nonexistent/aka-reconciler/no-project';
 
-// The longest (masked) tool target we store — see usage.ts (claude-code) for
-// why this is applied AFTER masking.
-const MAX_TARGET_LEN = 500;
-const truncateTarget = (s: string): string =>
-  s.length > MAX_TARGET_LEN ? `${s.slice(0, MAX_TARGET_LEN)}…` : s;
 
 // The reconciler's `ensureInventory` can win the hourly posture throttle just
 // as the first PreInvocation's can, so its gateway resolution carries the same

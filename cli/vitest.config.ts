@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
 import { coverageOptions } from '../test/vitest/coverage.ts';
+import { unfinishedModulesReporter } from '../test/vitest/unfinished-modules-reporter.ts';
 
 // Every test file runs behind the no-network guard: it refuses any outbound
 // connection that is not loopback and names the call site that made it. Wired
@@ -37,10 +38,16 @@ const noHostCodexConfigGuard = fileURLToPath(
   new URL('../test/setup/no-host-codex-config.ts', import.meta.url),
 );
 
+// And with wasm code GC off on Node 24: this suite can terminate a worker, and
+// on that line freeing code after a termination can abort the test process.
+// See the setup file; no-wasm-code-gc-guard.test.js derives which packages owe it.
+const noWasmCodeGc = fileURLToPath(new URL('../test/setup/no-wasm-code-gc.ts', import.meta.url));
+
 // The CLI suite exercises real node:sqlite file I/O, which runs slowly under
 // Turbo's parallel task load, so raise the per-test AND per-hook timeouts above
 // vitest's 5s/10s defaults (mirrors packages/persistence/vitest.config.ts).
 export default defineConfig({
+  plugins: [unfinishedModulesReporter()],
   test: {
     setupFiles: [
       noNetworkGuard,
@@ -48,6 +55,7 @@ export default defineConfig({
       noSshAliasesGuard,
       noHostClaudeConfigGuard,
       noHostCodexConfigGuard,
+      noWasmCodeGc,
     ],
     coverage: coverageOptions(import.meta.url),
     environment: 'node',

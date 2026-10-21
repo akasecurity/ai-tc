@@ -4,6 +4,7 @@ import { Rule } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { redact, scan } from '../../src/index.ts';
+import { windowReadingMs } from '../../src/security/redos-probe.ts';
 import { BOM, FORMAT_CHARS, SOFT_HYPHEN, ZWSP } from '../helpers/format-chars.ts';
 import { growthClock } from '../helpers/growth-clock.ts';
 import { loadRule, RULES_DIR } from '../helpers/rules.ts';
@@ -428,9 +429,10 @@ describe('the slow path does not blow up on a large text with one format charact
   // costs on the other (see bench/benign-format-chars.bench.ts for the
   // measured, non-pathological cost of the slow path).
   //
-  // The readings are taken on the ReDoS growth tier's clock (`growthClock`):
-  // this thread's CPU time, averaged, where that clock steps finely enough,
-  // and the fastest wall reading otherwise. The fastest of five wall readings
+  // The readings are taken as the ReDoS growth tier takes them: this thread's
+  // CPU time (`growthClock`), each reading a window of several clock steps
+  // (`windowReadingMs`), so a clock that steps coarsely reads the cost rather
+  // than a step or nothing, and the fastest of them. The fastest of five wall readings
   // alone does not survive a machine with no free core for the whole
   // measurement: under 30 CPU burners on 10 cores the healthy scan read 10.1x,
   // 11.9x and 15.6x on the wall. And a ratio over the bound is measured again
@@ -456,13 +458,10 @@ describe('the slow path does not blow up on a large text with one format charact
     const withBom = BOM + body;
 
     const clock = growthClock();
-    function timeOnce(text: string): number {
-      const start = clock.now();
-      const findings = scan(text, rules);
-      const ms = clock.now() - start;
-      expect(findings).toHaveLength(60000);
-      return ms;
-    }
+    expect(scan(withoutBom, rules)).toHaveLength(60000);
+    expect(scan(withBom, rules)).toHaveLength(60000);
+    const timeOnce = (text: string): number =>
+      windowReadingMs(() => scan(text, rules), clock.now, clock.stepMs).ms;
 
     const REPEATS = 5;
     const ATTEMPTS = 3;
@@ -476,16 +475,14 @@ describe('the slow path does not blow up on a large text with one format charact
         without.push(timeOnce(withoutBom));
         withOne.push(timeOnce(withBom));
       }
-      const reduce = (xs: number[]): number =>
-        clock.statistic === 'mean' ? xs.reduce((a, b) => a + b, 0) / xs.length : Math.min(...xs);
-      const withoutMs = reduce(without);
-      const withMs = reduce(withOne);
+      const withoutMs = Math.min(...without);
+      const withMs = Math.min(...withOne);
       ratio = withMs / Math.max(withoutMs, 0.001);
       readings.push(`${withMs.toFixed(1)}ms with, ${withoutMs.toFixed(1)}ms without`);
     }
     expect(
       ratio,
-      `${clock.statistic} of ${String(REPEATS)} on ${clock.statistic === 'mean' ? 'thread CPU time' : 'wall time'}, per attempt: ${readings.join('; ')}`,
+      `fastest of ${String(REPEATS)} windows of thread CPU time (step ${clock.stepMs.toFixed(3)}ms), per attempt: ${readings.join('; ')}`,
     ).toBeLessThan(MAX_RATIO);
   });
 });

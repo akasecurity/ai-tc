@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
 import { coverageOptions } from '../../test/vitest/coverage.ts';
+import { unfinishedModulesReporter } from '../../test/vitest/unfinished-modules-reporter.ts';
 
 // Every test file runs behind the no-network guard: it refuses any outbound
 // connection that is not loopback and names the call site that made it. Wired
@@ -10,6 +11,11 @@ import { coverageOptions } from '../../test/vitest/coverage.ts';
 // packages/eslint-config/test/no-network-runtime.test.js fails the workspace
 // if a package drops the entry or points it at the wrong path.
 const noNetworkGuard = fileURLToPath(new URL('../../test/setup/no-network.ts', import.meta.url));
+
+// And with wasm code GC off on Node 24: this suite can terminate a worker, and
+// on that line freeing code after a termination can abort the test process.
+// See the setup file; no-wasm-code-gc-guard.test.js derives which packages owe it.
+const noWasmCodeGc = fileURLToPath(new URL('../../test/setup/no-wasm-code-gc.ts', import.meta.url));
 
 // No package-wide timeout override on purpose. Almost every case here is a
 // sub-millisecond assertion over an already-resolved config, and raising
@@ -25,8 +31,9 @@ const noNetworkGuard = fileURLToPath(new URL('../../test/setup/no-network.ts', i
 // paragraph no longer says the slow work is confined to hooks: a slow case is
 // allowed here, it just has to name its own deadline.
 export default defineConfig({
+  plugins: [unfinishedModulesReporter()],
   test: {
-    setupFiles: [noNetworkGuard],
+    setupFiles: [noNetworkGuard, noWasmCodeGc],
     coverage: coverageOptions(import.meta.url),
     environment: 'node',
   },

@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import { scan } from '../../src/index.ts';
 import { MAX_REGEX_INPUT_LENGTH } from '../../src/matchers/limits.ts';
-import type { GrowthBreach, GrowthStatistic, ProbeClock } from '../../src/security/redos-probe.ts';
+import type { GrowthBreach, ProbeClock } from '../../src/security/redos-probe.ts';
 import {
   backtrackRatio,
   BUDGET_MS,
@@ -13,13 +13,17 @@ import {
   EXPONENTIAL_PROBES,
   GROWTH_CONFIRM_SAMPLES,
   GROWTH_CORPORA,
+  GROWTH_FLOOR_MS,
   GROWTH_MAX_CHARS,
   GROWTH_SAMPLES,
   GROWTH_START_CHARS,
+  GROWTH_WINDOW_DEADLINE_MS,
+  GROWTH_WINDOW_STEPS,
   MAX_GROWTH_RATIO,
   OVER_BUDGET_READINGS,
   POLYNOMIAL_PROBES,
   superlinearGrowth,
+  windowReadingMs,
   worstProbeMs,
 } from '../../src/security/redos-probe.ts';
 import { growthClock, medianStepMs, threadCpuMs } from '../helpers/growth-clock.ts';
@@ -77,7 +81,15 @@ const cpuMs: ProbeClock = () => {
 
 const growth = growthClock();
 const measuredGrowth = (rule: Rule): GrowthBreach | undefined =>
-  superlinearGrowth(rule, growth.now, growth.statistic);
+  superlinearGrowth(rule, growth.now, growth.stepMs);
+
+// The same thread CPU clock rounded down to whole 16ms steps: the Windows
+// runner's clock, imposed so the growth tier's windows are exercised on every
+// machine rather than only where that clock is native.
+const STEP_16_MS = 16;
+const steppedThreadCpuMs: ProbeClock = () => Math.floor(threadCpuMs() / STEP_16_MS) * STEP_16_MS;
+const measuredGrowthOn16msSteps = (rule: Rule): GrowthBreach | undefined =>
+  superlinearGrowth(rule, steppedThreadCpuMs, STEP_16_MS);
 
 // The per-rule budget, judged so that only a breach that reproduces fails.
 //
@@ -346,25 +358,28 @@ function describeBreach(breach: GrowthBreach): string {
 // quadratic with a small constant passes every 40KB probe and still costs
 // seconds at the engine's 200,000-char input cap.
 //
-// The clock is the scanning thread's CPU time where that advances in steps fine
-// enough to resolve a 5-30ms reading, and wall time where it does not
+// The clock is the scanning thread's CPU time, on every platform
 // (`growthClock`). Elapsed time is not a measure of work on a loaded runner. A
 // scan that allocates fresh pages on every call, as V8 does once an input
 // crosses its large-object size, is rescheduled around each page fault, and
 // that stall grows faster than the input: a linear rule reads as superlinear,
-// and more samples do not remove it, because every sample pays it. CPU time
-// does not count the waiting. It does advance in whole scheduler ticks, so its
-// readings are averaged: a minimum of tick-quantized readings sits a tick below
-// the cost, or at zero.
+// or as over the budget, and more samples do not remove it, because every
+// sample pays it. CPU time does not count the waiting.
 //
-// On the wall-clock fallback what keeps a busy runner out of the verdict is the
-// statistic. Each side of a ratio is the FASTEST of its readings, which a stall
-// can only leave alone or miss, and the readings a ratio compares are taken in
-// the same rounds, so a slow stretch lands on both sides. Either way, one
-// doubling over the ratio is not a breach by itself: the growth has to persist
-// over the next doubling, which is what separates a quadratic curve from a
-// linear one with a step in it. The scripted-clock suites below pin each of
-// these.
+// It does advance in steps, from microseconds on macOS to 16ms on the Windows
+// runner, and a single scan read on a stepped clock is its cost rounded to a
+// step either way. So a pair reading repeats its scan until the clock has
+// advanced by GROWTH_WINDOW_STEPS steps and reads the cost per scan
+// (`windowReadingMs`); a pair whose larger text reads under the floor beyond
+// one step is cleared as soon as one window shows it, so a cheap rule does not
+// pay for whole windows. Each side of a ratio is then the FASTEST of its
+// windows, taken in the same rounds: what a busy machine adds to work — a GC
+// pause, a slower core, an emptied cache — can only leave a window alone or
+// inflate it, and the rounding the window bounds is the one error that runs
+// the other way. One doubling over the ratio is not a breach by itself: the
+// growth has to persist over the next doubling, which is what separates a
+// quadratic curve from a linear one with a step in it. The scripted-clock
+// suites below pin each of these.
 
 // What a failing bundled rule is told. An `over-budget` breach is a statement
 // about cost at one size and says nothing about the shape of the curve; a
@@ -786,6 +801,26 @@ describe('the probe battery itself', () => {
       ).toBe(true);
     });
 
+    it.each(superlinear)(
+      'catches %s on a CPU clock that advances in 16ms steps',
+      (_label, rule) => {
+        // The smaller reading of each pair here costs a step or less, so a
+        // single scan reads it as one step or as nothing. Only the window
+        // resolves it.
+        const breach = measuredGrowthOn16msSteps(rule);
+        expect(
+          breach,
+          'the growth tier passed a pattern that is superlinear at scale',
+        ).toBeDefined();
+        if (!breach) return;
+        expect(
+          breach.reason === 'over-budget' ||
+            breach.largeMs / Math.max(breach.smallMs, 1e-6) > MAX_GROWTH_RATIO,
+          describeBreach(breach),
+        ).toBe(true);
+      },
+    );
+
     it.each(superlinear)('the absolute-budget walk alone would miss %s', async (_label, rule) => {
       // Pins why the growth tier exists: every one of these clears the
       // single-probe walk. If that stops being true, the walk has grown a
@@ -802,8 +837,10 @@ describe('the probe battery itself', () => {
         regexRule('\\byaml\\.load\\(', 'g', ['data = yaml.load(user_input)']),
       ],
     ])('passes a linear pattern: %s', (_label, rule) => {
-      const breach = measuredGrowth(rule);
-      expect(breach && describeBreach(breach)).toBeUndefined();
+      const native = measuredGrowth(rule);
+      expect(native && describeBreach(native), 'thread CPU time').toBeUndefined();
+      const stepped = measuredGrowthOn16msSteps(rule);
+      expect(stepped && describeBreach(stepped), 'a 16ms-step CPU clock').toBeUndefined();
     });
   });
 
@@ -835,13 +872,15 @@ describe('the probe battery itself', () => {
     typeof reading === 'number' ? reading : reading(round);
 
   // The cost of each scan, in the order the tier makes them. `rounds` rounds of
-  // one scan per size, smallest first.
+  // one scan per size, in the order given.
   const rounds = (count: number, ...sizes: Reading[]): number[] =>
     Array.from({ length: count }, (_, round) => sizes.map((size) => at(size, round))).flat();
   // A climb whose scouts all read cheap, so only the top pair is sampled.
   const cheapClimb = (): number[] => SCOUT_SIZES.map(() => 1);
+  // The first pass reads the larger size first in each round, so a pair whose
+  // larger text is under the floor is cleared before the smaller is read.
   const firstPass = (small: Reading, large: Reading, count = GROWTH_SAMPLES): number[] =>
-    rounds(count, small, large);
+    rounds(count, large, small);
   // `nextCount` is how many of the rounds also read the next doubling: fewer
   // than `count` when it reads over the budget and stops being read.
   const confirmPass = (
@@ -883,15 +922,15 @@ describe('the probe battery itself', () => {
   // Runs the tier on a script and requires that every scripted scan was made.
   // `perCorpus` is what one corpus reads. A rule that is cleared reads it once
   // per corpus; a breach is returned on the first corpus and reads it once.
-  function runCleared(perCorpus: readonly number[], statistic?: GrowthStatistic): void {
+  function runCleared(perCorpus: readonly number[]): void {
     const { clock, unread } = scripted(GROWTH_CORPORA.flatMap(() => perCorpus));
-    const breach = superlinearGrowth(scriptedRule, clock, statistic);
+    const breach = superlinearGrowth(scriptedRule, clock);
     expect(breach && describeBreach(breach)).toBeUndefined();
     expect(unread(), 'scripted scans the tier did not make').toBe(0);
   }
-  function runBreached(perCorpus: readonly number[], statistic?: GrowthStatistic): GrowthBreach {
+  function runBreached(perCorpus: readonly number[]): GrowthBreach {
     const { clock, unread } = scripted(perCorpus);
-    const breach = superlinearGrowth(scriptedRule, clock, statistic);
+    const breach = superlinearGrowth(scriptedRule, clock);
     expect(unread(), 'scripted scans the tier did not make').toBe(0);
     if (!breach) throw new Error('expected a breach');
     expect(breach.corpus).toBe(GROWTH_CORPORA[0]?.name);
@@ -922,11 +961,11 @@ describe('the probe battery itself', () => {
     const NEXT_MS = 20;
 
     it('a stall on most of the larger readings does not read as growth', () => {
-      // Three of five larger readings stalled: a median reads 30ms over 3ms,
+      // Two of three larger readings stalled: a median reads 30ms over 3ms,
       // the fastest reading 6ms over 3ms. The next doubling is never scanned.
       runCleared([
         ...cheapClimb(),
-        ...firstPass(SMALL_MS, (i) => (i < 3 ? STALLED_LARGE_MS : CLEAN_LARGE_MS)),
+        ...firstPass(SMALL_MS, (i) => (i < 2 ? STALLED_LARGE_MS : CLEAN_LARGE_MS)),
       ]);
     });
 
@@ -951,7 +990,7 @@ describe('the probe battery itself', () => {
     });
 
     it('a stall on all but one reading of the next doubling does not read as growth', () => {
-      // 3.3x, then 4x on fourteen readings and 2x on the last.
+      // 3.3x, then 4x on every reading but the last, and 2x on that.
       const last = GROWTH_CONFIRM_SAMPLES - 1;
       runCleared([
         ...cheapClimb(),
@@ -1021,55 +1060,104 @@ describe('the probe battery itself', () => {
     });
   });
 
-  describe('the growth tier averages the readings of a clock that ticks', () => {
-    // A work clock that advances 4ms at a time reads a 4ms scan as 0 or 8 and a
-    // 9ms scan as 8 or 12, depending on where a tick falls.
-    const ticked4 = (round: number): number => (round % 2 === 0 ? 0 : 8);
-    const ticked9 = (round: number): number => (round % 3 === 2 ? 12 : 8);
-    const ticked36 = (round: number): number => (round % 2 === 0 ? 36 : 40);
+  describe('a pair reading is a window of its clock', () => {
+    // A run of fixed cost, read on a clock that advances in whole steps from a
+    // given phase: `phase` ms into its first step.
+    function stepped(costMs: number, stepMs: number, phase: number) {
+      let time = phase;
+      let runs = 0;
+      return {
+        run: () => {
+          time += costMs;
+          runs++;
+        },
+        now: (): number => Math.floor(time / stepMs) * stepMs,
+        runs: () => runs,
+      };
+    }
+    const phases = Array.from({ length: 16 }, (_, i) => i);
 
-    it('the fastest of those readings reads a linear rule as unbounded growth', () => {
-      const breach = runBreached([
-        ...cheapClimb(),
-        ...firstPass(ticked4, ticked9),
-        ...confirmPass(ticked4, ticked9, ticked36),
-      ]);
-      expect(breach).toMatchObject({ reason: 'superlinear', smallMs: 0, largeMs: 8, nextMs: 36 });
+    it('one run of 3ms on a 16ms clock reads a whole step or nothing', () => {
+      // The rounding a window exists to remove: no single reading is near 3.
+      const single = phases.map((phase) => {
+        const clock = stepped(3, 16, phase);
+        const start = clock.now();
+        clock.run();
+        return clock.now() - start;
+      });
+      expect(new Set(single)).toEqual(new Set([0, 16]));
     });
 
-    it('their mean, 3.2ms over 8.8ms, is growth under the ratio', () => {
-      runCleared([...cheapClimb(), ...firstPass(ticked4, ticked9)], 'mean');
+    it.each(phases)(
+      'a window of 3ms runs on a 16ms clock reads 3ms within one step over its runs (phase %i)',
+      (phase) => {
+        const clock = stepped(3, 16, phase);
+        const { ms, cleared } = windowReadingMs(clock.run, clock.now, 16);
+        expect(cleared).toBe(false);
+        expect(clock.runs() * 3).toBeGreaterThanOrEqual(16 * GROWTH_WINDOW_STEPS - 16);
+        expect(Math.abs(ms - 3)).toBeLessThanOrEqual(16 / clock.runs());
+      },
+    );
+
+    it('a clock with no step reads one run', () => {
+      const clock = stepped(3, 1e-9, 0);
+      expect(windowReadingMs(clock.run, clock.now, 0).ms).toBeCloseTo(3);
+      expect(clock.runs()).toBe(1);
     });
 
-    it('their mean still shows quadratic growth: 4x, then 4x', () => {
-      const breach = runBreached(
-        [
-          ...cheapClimb(),
-          ...firstPass(
-            (r) => 12 + (r % 2) * 4,
-            (r) => 48 + (r % 2) * 4,
-          ),
-          ...confirmPass(
-            (r) => 12 + (r % 2) * 4,
-            (r) => 48 + (r % 2) * 4,
-            (r) => 192 + (r % 2) * 4,
-            GROWTH_CONFIRM_SAMPLES,
-            OVER_BUDGET_READINGS,
-          ),
-        ],
-        'mean',
+    it.each(phases)(
+      'a cheap run is cleared under a line after a few runs, not a whole window (phase %i)',
+      (phase) => {
+        const clock = stepped(0.5, 16, phase);
+        expect(windowReadingMs(clock.run, clock.now, 16, 5).cleared).toBe(true);
+        expect(clock.runs()).toBeLessThanOrEqual(8);
+      },
+    );
+
+    it.each(phases)(
+      'a run over the line is never cleared under it, however the steps fall (phase %i)',
+      (phase) => {
+        // The window reads 0 for the first runs on most phases, and 0 plus one
+        // step is still over 5ms a run until enough runs have been made to
+        // show the cost: the bound clears nothing it cannot prove.
+        const clock = stepped(5.2, 16, phase);
+        const { ms, cleared } = windowReadingMs(clock.run, clock.now, 16, 5);
+        expect(cleared).toBe(false);
+        expect(ms).toBeGreaterThan(5.2 - 16 / clock.runs());
+      },
+    );
+
+    it('a clock whose step was not measured is refused rather than read once', () => {
+      const clock = stepped(3, 16, 0);
+      expect(() => windowReadingMs(clock.run, clock.now, Infinity)).toThrow(
+        /step was not measured/,
       );
-      expect(breach.reason).toBe('superlinear');
-      expect(breach.largeMs / breach.smallMs).toBeGreaterThan(MAX_GROWTH_RATIO);
-      expect((breach.nextMs ?? 0) / breach.largeMs).toBeGreaterThan(MAX_GROWTH_RATIO);
     });
 
-    it('a pair whose mean reads over the budget is a breach after OVER_BUDGET_READINGS rounds', () => {
-      const breach = runBreached(
-        [...cheapClimb(), ...firstPass(3, BUDGET_MS + 20, OVER_BUDGET_READINGS)],
-        'mean',
+    // A clock that stops advancing never fills a window. The deadline is read
+    // on an elapsed-time clock of its own, scripted here to pass a second a
+    // read, and `run` gives up long after the deadline would have ended the
+    // window, so a window with no deadline fails here instead of hanging.
+    it.each([
+      ['never advances', (): number => 0],
+      [
+        'advances once and then stops',
+        (() => {
+          let reads = 0;
+          return (): number => (reads++ === 0 ? 0 : 5);
+        })(),
+      ],
+    ])('a window on a clock that %s is refused at its deadline', (_, now) => {
+      let wall = 0;
+      const wallNow = (): number => (wall += 1_000);
+      let runs = 0;
+      const run = (): void => {
+        if (++runs > 10_000) throw new Error('the window ran past its deadline');
+      };
+      expect(() => windowReadingMs(run, now, 16, undefined, wallNow)).toThrow(
+        /the clock is starved or stopped/,
       );
-      expect(breach).toMatchObject({ reason: 'over-budget', largeMs: BUDGET_MS + 20 });
+      expect(runs).toBeLessThanOrEqual(GROWTH_WINDOW_DEADLINE_MS / 1_000);
     });
   });
 
@@ -1078,6 +1166,13 @@ describe('the probe battery itself', () => {
 
     it('a pair under the ratio is not measured at the next doubling: 31 / 90', () => {
       runCleared([...cheapClimb(), ...firstPass(31, 90)]);
+    });
+
+    it('a pair whose larger text reads under the floor is cleared on that one scan', () => {
+      // The script holds the larger text's first reading and nothing else, so
+      // reading the smaller text first, or reading on past the clear, scans
+      // past the script.
+      runCleared([...cheapClimb(), GROWTH_FLOOR_MS - 1]);
     });
 
     it('a linear rule past a step is not a breach, whatever the next doubling costs: 15 / 55 / 110', () => {

@@ -32,7 +32,8 @@ export function resolveRepo(cwd: string): string | undefined {
 /**
  * `remote` without the credentials or query a remote URL can carry. An http(s)
  * URL loses its userinfo, query and fragment; an ssh URL keeps a plain login
- * user and loses a password, query and fragment. The userinfo runs to the last
+ * user and loses a password, query and fragment; a `file:` URL loses only its
+ * userinfo, and a `?` or `#` in its path is kept. The userinfo runs to the last
  * `@` before the first `/` and is removed before the URL is parsed, whatever it
  * holds; when the first `/` comes before every `@`, the text before it is the
  * host and is kept. A URL-form remote the parser still refuses is rebuilt from
@@ -48,6 +49,7 @@ export function remoteWithoutCredentials(remote: string): string {
   } catch {
     return unparsedWithoutCredentials(withoutInfo);
   }
+  if (url.protocol === 'file:') return withoutInfo;
   const keepsUser = url.protocol === 'ssh:' || url.protocol === 'git+ssh:';
   const carries =
     url.password !== '' ||

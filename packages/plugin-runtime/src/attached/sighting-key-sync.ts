@@ -65,6 +65,10 @@ function isFresh(
  * The first-seen instant of each previous version in `response`: the one
  * `stored` records for a version it already held as previous, and `nowMs`
  * for one that is new to that list.
+ *
+ * The store takes no lock, so two syncs that overlap can stamp a newly demoted
+ * version up to one request window apart. Only this instant can differ: the key
+ * material always comes from the response, never from `stored`.
  */
 function carryFirstSeen(
   response: SightingKeyResponse,

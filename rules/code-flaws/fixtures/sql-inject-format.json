@@ -58,5 +58,30 @@
     "label": "braces after the closing quote of a %s query do not matter",
     "text": "q = \"SELECT * FROM t WHERE a = %s\" % (x,); y = {\"k\": 1}",
     "shouldMatch": true
+  },
+  {
+    "label": "Python f-string where-fragment opening on a new line",
+    "text": "clause = f\"\"\"\n  WHERE id = {uid}\n\"\"\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "% format where-fragment opening on a new line",
+    "text": "clause = \"\"\"\n  WHERE id = %s\n\"\"\" % uid",
+    "shouldMatch": true
+  },
+  {
+    "label": "Ruby-style heredoc body with a %s placeholder",
+    "text": "sql = <<~SQL\n  SELECT * FROM t WHERE id = %s\nSQL",
+    "shouldMatch": true
+  },
+  {
+    "label": "format-style heredoc body with an f-string placeholder",
+    "text": "q = \"\"\"\nSELECT * FROM t WHERE id = {uid}\n\"\"\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "heredoc body without a placeholder",
+    "text": "sql = <<~SQL\n  SELECT * FROM t WHERE id = 1\nSQL",
+    "shouldMatch": false
   }
 ]

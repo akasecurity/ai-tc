@@ -15,7 +15,7 @@ overrides:
   postcss: ^8.5.18
   sharp: ^0.35.0
   source-map-js@<1.2.2: ^1.2.2
-  vite: ^8.1.6
+  vite: ^8.3.3
 
 importers:
 
@@ -2777,7 +2777,7 @@ packages:
     resolution: {integrity: sha512-2XJVD55d1o5AZous5CCGKS74g/riOj9odEt2bQpCVZeblHyHdnMeFl4jl0XjU21stf4mbjUkew2eXQZt65g5CQ==}
     peerDependencies:
       msw: ^2.4.9
-      vite: ^8.1.6
+      vite: ^8.3.3
     peerDependenciesMeta:
       msw:
         optional: true
@@ -4846,7 +4846,7 @@ packages:
       '@vitest/ui': 4.1.11
       happy-dom: '*'
       jsdom: '*'
-      vite: ^8.1.6
+      vite: ^8.3.3
     peerDependenciesMeta:
       '@edge-runtime/vm':
         optional: true

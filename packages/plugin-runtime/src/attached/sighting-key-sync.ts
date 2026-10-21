@@ -3,8 +3,8 @@
 import type { SightingKeyStore } from '@akasecurity/persistence';
 import {
   createSightingKeyStore,
-  isPreviousVersionAccepted,
   keysDir,
+  previousVersionUsableUntil,
   readControlPlaneCredentialFile,
   readWorkspaceSettings,
 } from '@akasecurity/persistence';
@@ -40,10 +40,11 @@ export interface RunSightingKeySyncDeps {
 /**
  * Whether `stored` was issued by the endpoint with `fingerprint`, fetched
  * within the last day by a clock that has not run backwards past it, and holds
- * no previous version whose `acceptedUntil` passed after the map was fetched: a
- * refetch then drops that version as soon as the deployment stops accepting it.
- * A map fetched once that window had already closed is not fetched again for
- * it; a lapsed version is never used, whatever the map holds.
+ * no previous version whose use ended after the map was fetched: a refetch then
+ * drops that version as soon as the deployment stops accepting it. A map
+ * fetched once that window had already closed is not fetched again for it, and
+ * a version without a readable `acceptedUntil` counts as fresh; neither is
+ * ever used, whatever the map holds.
  */
 function isFresh(
   stored: StoredSightingKeys | undefined,
@@ -53,12 +54,10 @@ function isFresh(
   if (stored?.endpointFingerprint !== fingerprint) return false;
   const age = nowMs - stored.fetchedAtMs;
   if (age < 0 || age >= SIGHTING_KEY_MAX_AGE_MS) return false;
-  return (stored.previous ?? []).every(
-    (version) =>
-      version.acceptedUntil === undefined ||
-      isPreviousVersionAccepted(version, nowMs) ||
-      !(stored.fetchedAtMs < Date.parse(version.acceptedUntil)),
-  );
+  return (stored.previous ?? []).every((version) => {
+    const end = previousVersionUsableUntil(version, stored.fetchedAtMs);
+    return Number.isNaN(end) || nowMs < end || stored.fetchedAtMs >= end;
+  });
 }
 
 function readStored(store: SightingKeyStore): StoredSightingKeys | undefined {

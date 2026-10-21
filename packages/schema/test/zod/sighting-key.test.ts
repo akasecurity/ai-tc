@@ -173,13 +173,23 @@ describe('previous versions and their overlap window', () => {
     expect(SightingKeyResponse.parse(body()).previous?.[0]).not.toHaveProperty('acceptedUntil');
   });
 
-  it('refuses an instant that is not an ISO datetime', () => {
+  it('keeps an instant with a numeric UTC offset', () => {
+    for (const acceptedUntil of ['2026-10-21T09:00:00+00:00', '2026-10-21T09:00:00+05:30']) {
+      const parsed = SightingKeyResponse.parse(
+        body({ previous: [{ keyVersion: 1, key: material(3), acceptedUntil }] }),
+      );
+      expect(parsed.previous?.[0]?.acceptedUntil).toBe(acceptedUntil);
+    }
+  });
+
+  it('drops an instant that is not an ISO datetime and keeps the rest of the map', () => {
     for (const acceptedUntil of ['tomorrow', '2026-10-21', 1_766_000_000_000]) {
-      expect(
-        SightingKeyResponse.safeParse(
-          body({ previous: [{ keyVersion: 1, key: material(3), acceptedUntil }] }),
-        ).success,
-      ).toBe(false);
+      const parsed = SightingKeyResponse.parse(
+        body({ previous: [{ keyVersion: 1, key: material(3), acceptedUntil }] }),
+      );
+      expect(parsed.keyVersion).toBe(2);
+      expect(parsed.previous?.[0]?.keyVersion).toBe(1);
+      expect(parsed.previous?.[0]?.acceptedUntil).toBeUndefined();
     }
   });
 

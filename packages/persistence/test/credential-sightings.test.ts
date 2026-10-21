@@ -222,6 +222,7 @@ describe('planSightingShare', () => {
     const earlier = new Date(Date.now() - 1_000).toISOString();
     createSightingKeyStore('file', keysDir(store.home)).replace({
       ...STORED_KEY,
+      fetchedAtMs: Date.now(),
       previous: [
         { keyVersion: 3, key: Buffer.alloc(32, 3).toString('base64url'), acceptedUntil: later },
         { keyVersion: 2, key: Buffer.alloc(32, 2).toString('base64url'), acceptedUntil: earlier },

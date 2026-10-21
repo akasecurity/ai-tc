@@ -52,6 +52,5 @@ export {
   planSightingShare,
   sendScanSightings,
   sightingToken,
-  sightingTokens,
 } from './scan-sightings.ts';
 export { StandaloneDataGateway } from './standalone-gateway.ts';

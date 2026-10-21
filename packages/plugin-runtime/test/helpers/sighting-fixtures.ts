@@ -94,7 +94,7 @@ export function storeSightingKey(
             ...(p.acceptedUntil === undefined ? {} : { acceptedUntil: p.acceptedUntil }),
           })),
         }),
-    fetchedAtMs: 1,
+    fetchedAtMs: Date.now(),
     endpointFingerprint: sightingKeyEndpointFingerprint(opts.issuedBy ?? attachedTo),
   });
 }

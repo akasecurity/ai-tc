@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { isAttached, StoredSightingKeys } from '@akasecurity/schema';
+import { isAttached, SIGHTING_ALIASES_MAX, StoredSightingKeys } from '@akasecurity/schema';
 
 import { defaultDataDir, keysDir } from '../local-layout.ts';
 import { ensureDataDirSync, writeOwnerOnlyFileSync } from '../paths.ts';
@@ -36,20 +36,40 @@ export interface SightingKey {
 
 export interface SightingKeys {
   current: SightingKey;
-  /** Versions still accepted during a rotation overlap; may be empty. */
+  /**
+   * Versions still used during a rotation overlap, newest first and at most
+   * SIGHTING_ALIASES_MAX; may be empty.
+   */
   previous: SightingKey[];
 }
 
+/** The longest a previous version is used for, counted from when its map was fetched. */
+export const SIGHTING_KEY_OVERLAP_MAX_MS = 90 * 24 * 60 * 60 * 1000;
+
 /**
- * Whether a previous version is still accepted at `nowMs`: only before its
- * `acceptedUntil`. A version without one is never used.
+ * The instant a previous version stops being used: its `acceptedUntil`, but no
+ * later than SIGHTING_KEY_OVERLAP_MAX_MS after its map was fetched. NaN when it
+ * has no `acceptedUntil` or one that does not parse.
+ */
+export function previousVersionUsableUntil(
+  version: { acceptedUntil?: string | undefined },
+  fetchedAtMs: number,
+): number {
+  if (version.acceptedUntil === undefined) return Number.NaN;
+  return Math.min(Date.parse(version.acceptedUntil), fetchedAtMs + SIGHTING_KEY_OVERLAP_MAX_MS);
+}
+
+/**
+ * Whether a previous version is used at `nowMs`: only before the instant
+ * `previousVersionUsableUntil` gives. A version without a readable
+ * `acceptedUntil` is never used.
  */
 export function isPreviousVersionAccepted(
   version: { acceptedUntil?: string | undefined },
   nowMs: number,
+  fetchedAtMs: number,
 ): boolean {
-  if (version.acceptedUntil === undefined) return false;
-  return nowMs < Date.parse(version.acceptedUntil);
+  return nowMs < previousVersionUsableUntil(version, fetchedAtMs);
 }
 
 export interface SightingKeyStore {
@@ -178,7 +198,9 @@ export function sightingKeysOf(stored: StoredSightingKeys, nowMs: number): Sight
   return {
     current: { keyVersion: stored.keyVersion, key: bytes(stored.key) },
     previous: (stored.previous ?? [])
-      .filter((p) => isPreviousVersionAccepted(p, nowMs))
+      .filter((p) => isPreviousVersionAccepted(p, nowMs, stored.fetchedAtMs))
+      .sort((a, b) => b.keyVersion - a.keyVersion)
+      .slice(0, SIGHTING_ALIASES_MAX)
       .map((p) => ({ keyVersion: p.keyVersion, key: bytes(p.key) })),
   };
 }

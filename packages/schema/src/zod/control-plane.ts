@@ -1090,12 +1090,13 @@ const sightingKeyVersion = z.number().int().min(1);
 
 /**
  * One accepted version of the key: its number, its base64url material, and,
- * for a previous version, the instant after which it is no longer accepted.
+ * for a previous version, the instant at which it stops being accepted. An
+ * instant that is not an ISO datetime is dropped rather than refusing the map.
  */
 export const SightingKeyVersion = z.object({
   keyVersion: sightingKeyVersion,
   key: sightingKeyMaterial,
-  acceptedUntil: z.iso.datetime().optional(),
+  acceptedUntil: z.iso.datetime({ offset: true }).optional().catch(undefined),
 });
 export type SightingKeyVersion = z.infer<typeof SightingKeyVersion>;
 

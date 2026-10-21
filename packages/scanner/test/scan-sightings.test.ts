@@ -275,6 +275,26 @@ describe('scanWorktree — credential sightings', () => {
     );
   });
 
+  it('reads unchanged files again once a previous version comes into use', async () => {
+    const windowless = { keyVersion: 2, key: PREVIOUS_KEY_BYTES.toString('base64url') };
+    await scanWorktree(attach(true, ENDPOINT, undefined, [windowless]), options(recorder().send));
+
+    const windowed = {
+      ...windowless,
+      acceptedUntil: new Date(Date.now() + 86_400_000).toISOString(),
+    };
+    const rotating = recorder();
+    await scanWorktree(attach(true, ENDPOINT, undefined, [windowed]), options(rotating.send));
+    expect(rotating.requests.flatMap((r) => r.sightings)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          token: sightingToken(KEY, SOURCE_VALUE),
+          aliases: [sightingToken(PREVIOUS_KEY, SOURCE_VALUE)],
+        }),
+      ]),
+    );
+  });
+
   it('reads unchanged files again once attached to another deployment', async () => {
     await scanWorktree(attach(true), options(recorder().send));
 

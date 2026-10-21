@@ -129,10 +129,18 @@ interface LedgerContext {
 // files skipped as unchanged while vault consent was absent are re-read once
 // consent is granted, so their secrets are vaulted. So is whether the scan
 // shares credential sightings, to which deployment, in which attachment mode
-// and with which repositories enrolled, and under which key version: files
+// and with which repositories enrolled, and under which key versions: files
 // skipped while sharing was off, while attached elsewhere or while their
 // repository was not enrolled, are re-read once that changes, so their
 // sightings are sent.
+/** `3` for the current version alone, `3+2,1` with the previous versions in use. */
+function keyVersionsMaterial(keys: SightingKeys): string {
+  const current = String(keys.current.keyVersion);
+  if (keys.previous.length === 0) return current;
+  const previous = keys.previous.map((k) => k.keyVersion);
+  return `${current}+${previous.join(',')}`;
+}
+
 async function loadLedger(
   gateway: DataGateway,
   runtime: PluginRuntime,
@@ -145,7 +153,7 @@ async function loadLedger(
   const sightingMaterial =
     sightings === undefined
       ? ''
-      : `:sightings:${sightings.endpointFingerprint}:${sightings.scopeFingerprint}:v${String(sightings.keys.current.keyVersion)}`;
+      : `:sightings:${sightings.endpointFingerprint}:${sightings.scopeFingerprint}:v${keyVersionsMaterial(sightings.keys)}`;
   const rulesetHash = contentHashOf(
     `${await runtime.rulesetFingerprint()}:${contentHashOf(egressMaterial)}${vaultMaterial}${sightingMaterial}`,
   );

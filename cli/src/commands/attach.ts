@@ -107,16 +107,16 @@ Registers this machine against your organization's AKA deployment.
              \`aka enroll --account\`: its Claude Code or Codex sessions and the
              replies in its claude.ai chats.
              Whenever a session starts anywhere on this machine, in a
-             repository or not (a browser chat included), the machine pulls
-             the deployment's policy (at most every 15 minutes) and its
-             sighting key (when none is stored or the stored one is a day
-             old) and sends it a device report (at most hourly): a device
-             identifier, host name, versions, detection packs, policy counts,
-             finding counts and dates for everything recorded on the machine,
-             and, when the machine is attached as a personal device, the fact
-             that it is one. Where a scan is available (the coding-agent
-             plugins, not a browser chat), the same session start also checks
-             it for device commands.
+             repository or not (a browser chat included), the machine pulls the
+             deployment's policy (at most every 15 minutes) and its sighting
+             key (when none is stored, the stored one is a day old, or an older
+             version it holds has stopped being accepted) and sends it a device
+             report (at most hourly): a device identifier, host name, versions,
+             detection packs, policy counts, finding counts and dates for
+             everything recorded on the machine, and, when the machine is
+             attached as a personal device, the fact that it is one. Where a
+             scan is available (the coding-agent plugins, not a browser chat),
+             the same session start also checks it for device commands.
   --machine  A machine your organization owns: send activity from anywhere on
              this machine.
 
@@ -1106,15 +1106,15 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
           // personal device the report also says that it is one. The check for
           // device commands is made only where the host supplies a scan, which
           // the browser host does not.
-          'Whenever a session starts anywhere on this machine, in a repository or not',
-          "(a browser chat included), the machine pulls that deployment's policy (at",
-          'most every 15 minutes) and its sighting key (when none is stored or the stored',
-          'one is a day old) and sends it a device report (at most hourly): a device',
-          'identifier, host name, versions, detection packs, policy counts, finding counts',
-          'and dates for everything recorded on the machine, and, when the machine is',
-          'attached as a personal device, the fact that it is one. Where a scan is',
-          'available (the coding-agent plugins, not a browser chat), the same session',
-          'start also checks it for device commands.',
+          'Whenever a session starts anywhere on this machine, in a repository or not (a',
+          "browser chat included), the machine pulls that deployment's policy (at most",
+          'every 15 minutes) and its sighting key (when none is stored, the stored one is a',
+          'day old, or an older version it holds has stopped being accepted) and sends it a',
+          'device report (at most hourly): a device identifier, host name, versions,',
+          'detection packs, policy counts, finding counts and dates for everything recorded',
+          'on the machine, and, when the machine is attached as a personal device, the fact',
+          'that it is one. Where a scan is available (the coding-agent plugins, not a',
+          'browser chat), the same session start also checks it for device commands.',
           'On a personal device, the background sync also asks the deployment which account',
           'its key belongs to, and asks again at later syncs until the device has an',
           'answer; syncs that overlap can each send one.',
@@ -1522,13 +1522,13 @@ async function askAboutMode(io: Prompter): Promise<AttachmentMode | undefined> {
       '  send only from what you enroll, run `aka unenroll --work-subscriptions` after',
       '  attaching. Whenever a session starts anywhere on this machine, in a',
       '  repository or not (a browser chat included), the machine pulls your',
-      "  organization's policy (at most every 15 minutes) and its sighting key",
-      '  (when none is stored or the stored one is a day old) and sends it',
-      '  a device report (at most hourly): a device identifier, host name,',
-      '  versions, detection packs, policy counts, finding counts and dates',
-      '  for everything recorded on the machine, and, when the machine is',
-      '  attached as a personal device, the fact that it is one. Where a scan is',
-      '  available (the coding-agent plugins, not a browser chat), the same',
+      "  organization's policy (at most every 15 minutes) and its sighting key (when",
+      '  none is stored, the stored one is a day old, or an older version it holds',
+      '  has stopped being accepted) and sends it a device report (at most hourly): a',
+      '  device identifier, host name, versions, detection packs, policy counts,',
+      '  finding counts and dates for everything recorded on the machine, and, when',
+      '  the machine is attached as a personal device, the fact that it is one. Where',
+      '  a scan is available (the coding-agent plugins, not a browser chat), the same',
       '  session start also checks it for device commands.',
       '  On a personal device, the background sync also asks the deployment which',
       '  account its key belongs to, and asks again at later syncs until the',

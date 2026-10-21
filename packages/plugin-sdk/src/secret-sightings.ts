@@ -1,5 +1,5 @@
 import type { MatchResult, TokenizedSecretSpan } from '@akasecurity/detections';
-import type { ScanSighting, SightingKeys } from '@akasecurity/persistence';
+import type { ScanSighting, SightingKeys, SightingTokens } from '@akasecurity/persistence';
 import { sightingTokens } from '@akasecurity/persistence';
 
 /** One file's secrets as sighting tokens, each computed once. */
@@ -24,7 +24,7 @@ export function secretSightingsOf(
   const found: SecretSightings = { sightings: [], spans: [] };
   for (const match of matches) {
     if (match.category !== 'secret') continue;
-    let tokens: { token: string; aliases?: string[] };
+    let tokens: SightingTokens;
     try {
       tokens = sightingTokens(keys, match.rawMatch);
     } catch {

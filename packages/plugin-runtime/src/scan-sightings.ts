@@ -17,7 +17,7 @@ export type {
   SightingScanProject,
   SightingSharePlan,
 } from '@akasecurity/persistence';
-export { planSightingShare, sightingToken, sightingTokens } from '@akasecurity/persistence';
+export { planSightingShare, sightingToken } from '@akasecurity/persistence';
 export type { CredentialSightingsOutcome, ManagedSettings } from '@akasecurity/schema';
 export { combineCredentialSightingsOutcomes } from '@akasecurity/schema';
 

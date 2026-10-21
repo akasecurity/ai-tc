@@ -223,7 +223,7 @@ describe('outbound encoder: previous key versions', () => {
     encoderWith(current, { readKeys: () => ({ current, previous }) });
 
   it('lists the value under each previous version as aliases, and puts only the current token in content', async () => {
-    const result = await withPrevious([older, newer]).encodeContent(`push ${value}`);
+    const result = await withPrevious([newer, older]).encodeContent(`push ${value}`);
     expect(result.content).toBe(`push ${expectedToken(current, value)}`);
     expect(result.content).not.toContain(expectedToken(newer, value));
     expect(result.sightings).toEqual([
@@ -238,6 +238,8 @@ describe('outbound encoder: previous key versions', () => {
 
   it('carries no aliases member with no previous version', async () => {
     const result = await withPrevious([]).encodeContent(value);
+    expect(result.sightings).toHaveLength(1);
+    expect(result.sightings[0]?.token).toBe(expectedToken(current, value));
     expect(result.sightings[0]).not.toHaveProperty('aliases');
   });
 
@@ -551,10 +553,14 @@ describe('createStoreOutboundEncoder', () => {
 
     storeSightingKey(base, key, { previous: [{ key: previous, acceptedUntil: until(-1_000) }] });
     const past = await encoderOver(base).encodeContent(value);
+    expect(past.sightings).toHaveLength(1);
+    expect(past.sightings[0]?.token).toBe(expectedToken(key, value));
     expect(past.sightings[0]).not.toHaveProperty('aliases');
 
     storeSightingKey(base, key, { previous: [{ key: previous }] });
     const unbounded = await encoderOver(base).encodeContent(value);
+    expect(unbounded.sightings).toHaveLength(1);
+    expect(unbounded.sightings[0]?.token).toBe(expectedToken(key, value));
     expect(unbounded.sightings[0]).not.toHaveProperty('aliases');
     expect(unbounded.content).toBe(expectedToken(key, value));
   });
@@ -569,7 +575,6 @@ describe('createStoreOutboundEncoder', () => {
     const result = await encoderOver(base).encodeContent(value);
 
     expect(result).toEqual({ content: FAIL_CLOSED_MARKER, sightings: [] });
-    expect(result.content).not.toContain(expectedToken(previous, value));
   });
 
   it('sends the marker for a pointer the vault does not hold', async () => {

@@ -1820,7 +1820,11 @@ function toolAuditEvent(
 /** The domain string prefixed to a variable name before it is hashed for the wire. */
 export const NAME_HASH_DOMAIN = 'aka:feature:name:v1';
 
-/** `v<keyVersion>.<base64url(HMAC-SHA256(key, domain ‖ name))>`. */
+/**
+ * `v<keyVersion>.<base64url(HMAC-SHA256(key, domain ‖ name))>`, under the
+ * current version only: a name hashed before a rotation does not join the same
+ * name hashed after it.
+ */
 function nameHash(key: SightingKey, name: string): string {
   const mac = createHmac('sha256', key.key)
     .update(NAME_HASH_DOMAIN, 'utf8')

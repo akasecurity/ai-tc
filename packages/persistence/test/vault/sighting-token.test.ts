@@ -56,20 +56,14 @@ describe('sightingTokens', () => {
     expect(tokens).not.toHaveProperty('aliases');
   });
 
-  it('adds the token under each previous version, newest first', () => {
+  it('adds the token under each previous version, in the order the keys hold them', () => {
     const current = keyOf(5, 1);
-    const older = keyOf(3, 2);
     const newer = keyOf(4, 3);
-    expect(sightingTokens({ current, previous: [older, newer] }, value)).toEqual({
+    const older = keyOf(3, 2);
+    expect(sightingTokens({ current, previous: [newer, older] }, value)).toEqual({
       token: expectedToken(current, value),
       aliases: [expectedToken(newer, value), expectedToken(older, value)],
     });
-  });
-
-  it('carries at most the cap of previous versions, keeping the newest', () => {
-    const previous = [1, 2, 3, 4, 5].map((version) => keyOf(version, version));
-    const { aliases } = sightingTokens({ current: keyOf(6, 9), previous }, value);
-    expect(aliases).toEqual([5, 4, 3, 2].map((v) => expectedToken(keyOf(v, v), value)));
   });
 
   it('never contains the value', () => {

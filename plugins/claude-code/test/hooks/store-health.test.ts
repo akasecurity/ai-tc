@@ -318,6 +318,29 @@ describe('warnIfStoreRedirected — a symlinked store path is surfaced', () => {
     expect(written).toHaveLength(2);
   });
 
+  it('a session id carrying a newline cannot dedupe: it warns every time and is never recorded', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('unprivileged symlink creation is not available on Windows');
+      return;
+    }
+    const victim = join(dir, 'victim-newline');
+    mkdirSync(victim, { mode: 0o755 });
+    const home = join(dir, 'linked-home-newline');
+    symlinkSync(victim, home);
+    mkdirSync(dataDirOf(home), { recursive: true });
+    const config = configFor(dataDirOf(home));
+    const written: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      warnIfStoreRedirected(config, 's1\ns2', (m) => written.push(m));
+    }
+    expect(written).toHaveLength(3);
+    // The ids the newline would have split into are not recorded either, so a
+    // genuine session of the same name still gets its own warning.
+    warnIfStoreRedirected(config, 's1', (m) => written.push(m));
+    warnIfStoreRedirected(config, 's2', (m) => written.push(m));
+    expect(written).toHaveLength(5);
+  });
+
   it('says nothing at all when no store path is a symlink', (ctx) => {
     if (process.platform === 'win32') {
       ctx.skip('unprivileged symlink creation is not available on Windows');

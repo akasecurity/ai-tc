@@ -174,8 +174,8 @@ export function storeUnavailableMessage(dbPath: string, cause?: string): string 
 
 /**
  * Gate the store-unavailable warning to once per Claude Code session instead
- * of once per hook fire. Records the current session id in a marker of recent ids
- * file and returns true only the first time a given session asks. Fail-open
+ * of once per hook fire. Records the current session id into a marker file of recent ids
+ * and returns true only the first time a given session asks. Fail-open
  * toward WARNING: with no session id (can't dedupe), or on any fs error, it
  * returns true — repeating the warning is noise; hiding that detection is off
  * is not.
@@ -221,6 +221,7 @@ function markerDirs(dataDir: string): string[] {
 // Has this session already been warned? Every candidate is consulted, so a
 // marker recorded in the fallback is still found once data/ is writable again.
 function alreadyClaimed(dirs: readonly string[], marker: string, sessionId: string): boolean {
+  if (hasControlChar(sessionId)) return false; // never stored, so never found
   return dirs.some((dir) => readRecent(dir, marker).includes(sessionId));
 }
 
@@ -236,6 +237,7 @@ function readRecent(dir: string, marker: string): string[] {
 // Record the claim in the first candidate that accepts it. Best-effort: with
 // none writable the caller has already warned, and the next fire warns again.
 function recordClaim(dirs: readonly string[], marker: string, sessionId: string): void {
+  if (hasControlChar(sessionId)) return; // the marker is line-based; see claimStoreUnavailableWarning
   for (const dir of dirs) {
     try {
       mkdirSync(dir, { recursive: true, mode: DATA_DIR_MODE });

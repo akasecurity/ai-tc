@@ -99,7 +99,8 @@ function splitAtVersion(key: string): [string, string | undefined] {
 /**
  * Sorts the root overrides into floors this review can judge and floors it
  * cannot. A value that is not a lower bound is not a floor and appears in
- * neither list.
+ * neither list, unless it starts with `^`, `~` or `>=` but is not a single
+ * bound: that one appears in `unchecked` with the reason.
  */
 export function parseOverrideFloors(overrides: Record<string, unknown>): {
   floors: OverrideFloor[];

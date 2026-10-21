@@ -63,5 +63,10 @@
     "label": "loopback range beyond 127.0.0.1",
     "text": "proxy at 127.1.2.3",
     "shouldMatch": false
+  },
+  {
+    "label": "public address reported beside a loopback address",
+    "text": "scan 203.0.113.7 then 127.0.0.1",
+    "shouldMatch": true
   }
 ]

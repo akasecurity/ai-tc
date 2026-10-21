@@ -35,13 +35,14 @@ export interface CredentialDetailViewProps {
 }
 
 const SAVE_FAILED = "Couldn't save the label.";
+const REFUSED = "You can't label this credential.";
 
 function LabelEditor({
   label,
   onSave,
   error,
   maxLength,
-  refusal,
+  refusal: rawRefusal,
 }: {
   label: string | null;
   onSave: (label: string | null) => Promise<void>;
@@ -54,23 +55,26 @@ function LabelEditor({
   const [failed, setFailed] = useState(false);
   const reasonId = useId();
   const trigger = useRef<HTMLButtonElement>(null);
-  const returnFocus = useRef(false);
+  const refusal =
+    rawRefusal === undefined ? undefined : rawRefusal.trim() === '' ? REFUSED : rawRefusal;
+  // A refusal that arrives with the editor open (a save the host just
+  // refused) replaces the form, so the draft goes with it.
+  if (refusal !== undefined && draft !== null) setDraft(null);
+  const editing = draft !== null;
+  const wasEditing = useRef(false);
 
-  // Closing the editor unmounts the input that held focus; hand it back to
-  // the control that opened it, not to the page body.
+  // Closing the editor, by any path, unmounts the input that held focus; hand
+  // it back to the control that opened it, not to the page body.
   useEffect(() => {
-    if (draft === null && returnFocus.current) {
-      returnFocus.current = false;
-      trigger.current?.focus();
-    }
-  }, [draft]);
+    if (wasEditing.current && !editing) trigger.current?.focus();
+    wasEditing.current = editing;
+  }, [editing]);
 
   const open = () => {
     setFailed(false);
     setDraft(label ?? '');
   };
   const close = () => {
-    returnFocus.current = true;
     setDraft(null);
   };
   const save = async (next: string | null) => {
@@ -94,6 +98,7 @@ function LabelEditor({
     return (
       <div className="flex flex-col items-end gap-1">
         <Button
+          ref={trigger}
           variant="outline"
           size="sm"
           {...refusedControlProps(reasonId, refusal, 'hover:bg-surface')}
@@ -158,10 +163,16 @@ function LabelEditor({
           Cancel
         </Button>
       </div>
-      {failed && (
+      {failed ? (
         <p role="alert" className="text-xs text-sev-critical-ink">
           {error ?? SAVE_FAILED}
         </p>
+      ) : (
+        tooLong && (
+          <p role="alert" className="text-xs text-sev-critical-ink">
+            {`Labels are limited to ${String(maxLength)} characters.`}
+          </p>
+        )
       )}
     </form>
   );

@@ -191,7 +191,10 @@ describe('CredentialsListView', () => {
 describe('CredentialDetailView', () => {
   function detail(
     credential: CredentialDetailModel = DETAIL,
-    label: Pick<CredentialDetailViewProps, 'onSaveLabel' | 'labelError' | 'labelRefusal'> = {},
+    label: Pick<
+      CredentialDetailViewProps,
+      'onSaveLabel' | 'labelError' | 'labelRefusal' | 'labelMaxLength'
+    > = {},
   ) {
     const onBack = vi.fn();
     const onOpenFinding = vi.fn();
@@ -202,7 +205,6 @@ describe('CredentialDetailView', () => {
         onBack={onBack}
         onOpenFinding={onOpenFinding}
         renderedAt={RENDERED_AT}
-        labelMaxLength={120}
         {...label}
       />,
     );
@@ -309,11 +311,56 @@ describe('CredentialDetailView', () => {
   });
 
   it('bounds the label at CREDENTIAL_LABEL_MAX_LENGTH when the host names no length', () => {
-    detail(DETAIL, { onSaveLabel: vi.fn() });
+    detail(DETAIL, { onSaveLabel: vi.fn(), labelMaxLength: undefined });
     act(() => {
       button('Add label')?.click();
     });
     expect(labelInput()?.maxLength).toBe(CREDENTIAL_LABEL_MAX_LENGTH);
+  });
+
+  it("bounds the label at the host's length when it names one", () => {
+    detail(DETAIL, { onSaveLabel: vi.fn(), labelMaxLength: 40 });
+    act(() => {
+      button('Add label')?.click();
+    });
+    expect(labelInput()?.maxLength).toBe(40);
+  });
+
+  it('says why Save is off for a stored label longer than the bound', () => {
+    const long = 'x'.repeat(50);
+    detail(
+      { ...DETAIL, label: long, displayName: long },
+      { onSaveLabel: vi.fn(), labelMaxLength: 40 },
+    );
+    act(() => {
+      button('Rename')?.click();
+    });
+    expect(button('Save')?.disabled).toBe(true);
+    expect(mounted.host.querySelector('[role="alert"]')?.textContent).toBe(
+      'Labels are limited to 40 characters.',
+    );
+  });
+
+  it('closes the editor onto the locked control when a refusal arrives, keeping focus', () => {
+    const onSaveLabel = vi.fn<(label: string | null) => Promise<void>>().mockResolvedValue();
+    detail(DETAIL, { onSaveLabel });
+    act(() => {
+      button('Add label')?.click();
+    });
+    expect(labelInput()).not.toBeNull();
+    detail(DETAIL, { onSaveLabel, labelRefusal: 'You do not have enough permissions.' });
+    expect(labelInput()).toBeNull();
+    expect(button('Add label')?.getAttribute('aria-disabled')).toBe('true');
+    expect(document.activeElement).toBe(button('Add label'));
+  });
+
+  it('gives a blank refusal a reason rather than an empty line', () => {
+    detail(DETAIL, { onSaveLabel: vi.fn(), labelRefusal: '  ' });
+    const control = button('Add label');
+    expect(control?.getAttribute('aria-disabled')).toBe('true');
+    expect(mounted.host.querySelector('[data-slot="credential-label-reason"]')?.textContent).toBe(
+      "You can't label this credential.",
+    );
   });
 
   it('says a save failed when the host gives no reason, and clears it on reopening', async () => {

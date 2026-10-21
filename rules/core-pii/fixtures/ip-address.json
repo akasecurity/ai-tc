@@ -67,6 +67,13 @@
   {
     "label": "public address reported beside a loopback address",
     "text": "scan 203.0.113.7 then 127.0.0.1",
-    "shouldMatch": true
+    "shouldMatch": true,
+    "expectedSpans": [{ "start": 5, "end": 16 }]
+  },
+  {
+    "label": "public address reported after a loopback address",
+    "text": "127.0.0.1 then 203.0.113.7",
+    "shouldMatch": true,
+    "expectedSpans": [{ "start": 15, "end": 26 }]
   }
 ]

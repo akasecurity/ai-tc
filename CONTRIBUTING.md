@@ -137,6 +137,26 @@ from our dependency tree, add a waiver to `.github/audit-waivers.json`:
   decrements the severity counts to match and leaves `muted` **empty** — so a muted run
   is indistinguishable from a clean one by its result alone.
 
+**Floors are reviewed like waivers.** A floor in the root `pnpm.overrides` has no expiry,
+and it keeps constraining resolution after the release it guards against has aged out of
+the tree. A selector naming a major (`vite@8`) also holds that major in place. So the
+workspace report lists, under "Stale override floors — remove these", every floor that no
+longer does anything:
+
+- its package is no longer in `pnpm-lock.yaml` (for a `name@major` selector, no copy of
+  that major is); or
+- re-resolving the workspace without the floors leaves nothing below it. The gate runs
+  `pnpm install --lockfile-only` on a scratch copy of the workspace manifests with the
+  floors removed and reads the versions that lockfile resolves.
+
+A floor is an override whose value starts with `^`, `~` or `>=`. Exact pins, `npm:`
+aliases and `-` removals are not floors and are not reviewed. The selectors reviewed are a
+bare name, `name@major` and `name@<version`. A floor under any other selector (`a>b`,
+`name@^2`) is listed as not checked, and so is every floor when the re-resolution fails.
+Like a stale waiver, a stale floor never fails the check. Remove it, run `pnpm install`,
+and read the lockfile diff before you commit. The floors are removed together for the
+review, so remove stale ones one at a time if any of them overlap.
+
 ## Contributing detection rules
 
 Detection rules live in [`rules/`](rules/). Every rule ships with **at least 2 positive

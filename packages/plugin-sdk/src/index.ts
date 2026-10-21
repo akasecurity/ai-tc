@@ -111,10 +111,13 @@ export type { PromptRedactionMode } from './mod-host-mode.ts';
 export { promptRedactionLines, promptRedactionMode } from './mod-host-mode.ts';
 export type { ModelFromRecord, RefusalSeam } from './model-governance.ts';
 export {
+  approvedModelIds,
   buildModelRefusalEvent,
+  canonicalModelId,
   claudeCodeModelFromRecord,
   codexModelFromRecord,
   decideProhibitedModelTurn,
+  isModelApproved,
   isModelProhibited,
   matchProhibitedSpawnModel,
   modelFromTranscript,

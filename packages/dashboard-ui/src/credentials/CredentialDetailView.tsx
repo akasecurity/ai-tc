@@ -1,13 +1,14 @@
 'use client';
 import { harnessFromTool } from '@akasecurity/schema';
-import { Badge, Button, Card, SeverityBadge } from '@akasecurity/ui-kit';
-import type { ReactNode } from 'react';
+import { Badge, Button, Card, cn, Input, SeverityBadge } from '@akasecurity/ui-kit';
+import { type ReactNode, useState } from 'react';
 
 import { Ico } from '../inventory/Ico.tsx';
 import type { IconName } from '../inventory/icons.ts';
 import { relativeTime } from '../lib/relativeTime.ts';
 import { MetaItem, SectionLabel } from '../shared/DetailFields.tsx';
 import { PROVIDERS } from '../shared/Provider.tsx';
+import { namedByVariable } from './CredentialsListView.tsx';
 import type { CredentialDetailModel } from './types.ts';
 
 export interface CredentialDetailViewProps {
@@ -16,6 +17,115 @@ export interface CredentialDetailViewProps {
   onOpenFinding: (id: string) => void;
   /** The instant relative times are measured against, in epoch milliseconds. */
   renderedAt: number;
+  /**
+   * Saves a label, or clears it with null. Rejects when the save fails, which
+   * keeps the editor open. Omit it and no edit control is shown.
+   */
+  onSaveLabel?: ((label: string | null) => Promise<void>) | undefined;
+  /** Why the last label save failed. */
+  labelError?: string | undefined;
+  /** The longest label the host accepts. */
+  labelMaxLength?: number | undefined;
+}
+
+function LabelEditor({
+  label,
+  onSave,
+  error,
+  maxLength,
+}: {
+  label: string | null;
+  onSave: (label: string | null) => Promise<void>;
+  error: string | undefined;
+  maxLength: number | undefined;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const save = async (next: string | null) => {
+    setSaving(true);
+    try {
+      await onSave(next);
+      setDraft(null);
+    } catch {
+      // The host reports the failure through `error`; the draft stays for a retry.
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (draft === null) {
+    return (
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => {
+          setDraft(label ?? '');
+        }}
+      >
+        {label === null ? 'Add label' : 'Rename'}
+      </Button>
+    );
+  }
+  const trimmed = draft.trim();
+  return (
+    <form
+      className="flex flex-col gap-1.5"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (trimmed !== '') void save(trimmed);
+      }}
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          aria-label="Credential label"
+          autoFocus
+          value={draft}
+          maxLength={maxLength}
+          disabled={saving}
+          className="w-64"
+          onChange={(e) => {
+            setDraft(e.target.value);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') setDraft(null);
+          }}
+        />
+        <Button type="submit" size="sm" disabled={saving || trimmed === ''}>
+          Save
+        </Button>
+        {label !== null && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={saving}
+            onClick={() => {
+              void save(null);
+            }}
+          >
+            Clear label
+          </Button>
+        )}
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          disabled={saving}
+          onClick={() => {
+            setDraft(null);
+          }}
+        >
+          Cancel
+        </Button>
+      </div>
+      {error !== undefined && (
+        <p role="alert" className="text-xs text-sev-critical-ink">
+          {error}
+        </p>
+      )}
+    </form>
+  );
 }
 
 // A sighting names the tool that sent it (`claude-code`); the label map is keyed
@@ -64,6 +174,9 @@ export function CredentialDetailView({
   onBack,
   onOpenFinding,
   renderedAt,
+  onSaveLabel,
+  labelError,
+  labelMaxLength,
 }: CredentialDetailViewProps) {
   const detectedOnly = c.reference === null;
   return (
@@ -78,12 +191,26 @@ export function CredentialDetailView({
         <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-sev-high-fill text-sev-high-ink">
           <Ico name="key" className="size-5" />
         </span>
-        <div className="min-w-0">
-          <h2 className="truncate font-mono text-lg font-semibold text-text">
-            {c.variableName ?? 'Unnamed'}
+        <div className="min-w-0 flex-1">
+          <h2
+            className={cn(
+              'truncate text-lg font-semibold text-text',
+              namedByVariable(c) && 'font-mono',
+            )}
+          >
+            {c.displayName}
           </h2>
           <div className="text-xs text-text-3">{c.kind}</div>
         </div>
+        {onSaveLabel !== undefined && (
+          <LabelEditor
+            key={c.id}
+            label={c.label}
+            onSave={onSaveLabel}
+            error={labelError}
+            maxLength={labelMaxLength}
+          />
+        )}
       </div>
 
       {detectedOnly && (
@@ -104,6 +231,11 @@ export function CredentialDetailView({
       <div>
         <SectionLabel>Details</SectionLabel>
         <div className="grid grid-cols-2 gap-x-6 gap-y-4 md:grid-cols-4">
+          {c.label !== null && c.variableName !== null && (
+            <MetaItem label="Variable">
+              <span className="font-mono text-xs">{c.variableName}</span>
+            </MetaItem>
+          )}
           <MetaItem label="Provider">{c.provider ?? '—'}</MetaItem>
           <MetaItem label="Reference">
             {c.reference === null ? '—' : <span className="font-mono text-xs">{c.reference}</span>}

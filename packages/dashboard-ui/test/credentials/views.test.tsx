@@ -2,7 +2,10 @@
 import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { CredentialDetailView } from '../../src/credentials/CredentialDetailView.tsx';
+import {
+  CredentialDetailView,
+  type CredentialDetailViewProps,
+} from '../../src/credentials/CredentialDetailView.tsx';
 import {
   CredentialsListView,
   type CredentialsListViewProps,
@@ -20,6 +23,8 @@ const RENDERED_AT = Date.parse('2026-10-21T12:00:00.000Z');
 const ITEM: CredentialListItem = {
   id: 'cred-1',
   variableName: 'GITHUB_TOKEN',
+  label: null,
+  displayName: 'GITHUB_TOKEN',
   kind: 'GitHub token',
   provider: 'GitHub',
   owner: null,
@@ -101,6 +106,29 @@ describe('CredentialsListView', () => {
     expect(cells).toEqual(['GITHUB_TOKENGitHub token', 'GitHub', '—', '2', '3', '4', '—']);
   });
 
+  it('shows the display name, with the variable beside the kind once a label names it', () => {
+    list({
+      items: [
+        { ...ITEM, id: 'cred-1', label: 'Deploy bot', displayName: 'Deploy bot' },
+        {
+          ...ITEM,
+          id: 'cred-2',
+          variableName: null,
+          displayName: 'GitHub token · acme/api',
+        },
+      ],
+      total: 2,
+    });
+    const names = [...mounted.host.querySelectorAll('tbody tr')].map(
+      (tr) => tr.querySelector('td')?.textContent,
+    );
+    expect(names).toEqual([
+      'Deploy botGitHub token · GITHUB_TOKEN',
+      'GitHub token · acme/apiGitHub token',
+    ]);
+    expect(text()).not.toContain('Unnamed');
+  });
+
   it('opens a credential on click and exports on request', () => {
     const props = list();
     act(() => {
@@ -160,7 +188,10 @@ describe('CredentialsListView', () => {
 });
 
 describe('CredentialDetailView', () => {
-  function detail(credential: CredentialDetailModel = DETAIL) {
+  function detail(
+    credential: CredentialDetailModel = DETAIL,
+    label: Pick<CredentialDetailViewProps, 'onSaveLabel' | 'labelError'> = {},
+  ) {
     const onBack = vi.fn();
     const onOpenFinding = vi.fn();
     renderRoot(
@@ -170,10 +201,103 @@ describe('CredentialDetailView', () => {
         onBack={onBack}
         onOpenFinding={onOpenFinding}
         renderedAt={RENDERED_AT}
+        labelMaxLength={120}
+        {...label}
       />,
     );
     return { onBack, onOpenFinding };
   }
+
+  const labelInput = () =>
+    mounted.host.querySelector<HTMLInputElement>('input[aria-label="Credential label"]');
+
+  function type(value: string) {
+    const input = labelInput();
+    if (!input) throw new Error('no label input');
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  }
+
+  async function submit() {
+    await act(async () => {
+      button('Save')?.click();
+      await Promise.resolve();
+    });
+  }
+
+  it('shows no label control without a save callback', () => {
+    detail();
+    expect(button('Add label')).toBeUndefined();
+    expect(button('Rename')).toBeUndefined();
+  });
+
+  it('heads a labelled credential with its label and keeps the variable as a detail', () => {
+    detail({ ...DETAIL, label: 'Deploy bot', displayName: 'Deploy bot' });
+    expect(mounted.host.querySelector('h2')?.textContent).toBe('Deploy bot');
+    expect(text()).toContain('Variable');
+    expect(text()).toContain('GITHUB_TOKEN');
+  });
+
+  it('heads an unnamed credential with its kind and project, never Unnamed', () => {
+    detail({ ...DETAIL, variableName: null, displayName: 'GitHub token · acme/api' });
+    expect(mounted.host.querySelector('h2')?.textContent).toBe('GitHub token · acme/api');
+    expect(text()).not.toContain('Unnamed');
+  });
+
+  it('saves a trimmed label and closes the editor', async () => {
+    const onSaveLabel = vi.fn<(label: string | null) => Promise<void>>().mockResolvedValue();
+    detail(DETAIL, { onSaveLabel });
+    act(() => {
+      button('Add label')?.click();
+    });
+    expect(labelInput()?.maxLength).toBe(120);
+    type('   ');
+    expect(button('Save')?.disabled).toBe(true);
+    type('  Deploy bot ');
+    await submit();
+    expect(onSaveLabel).toHaveBeenCalledWith('Deploy bot');
+    expect(labelInput()).toBeNull();
+  });
+
+  it('clears a label, and cancels without saving', async () => {
+    const onSaveLabel = vi.fn<(label: string | null) => Promise<void>>().mockResolvedValue();
+    detail({ ...DETAIL, label: 'Deploy bot', displayName: 'Deploy bot' }, { onSaveLabel });
+    act(() => {
+      button('Rename')?.click();
+    });
+    expect(labelInput()?.value).toBe('Deploy bot');
+    act(() => {
+      button('Cancel')?.click();
+    });
+    expect(labelInput()).toBeNull();
+    expect(onSaveLabel).not.toHaveBeenCalled();
+    act(() => {
+      button('Rename')?.click();
+    });
+    await act(async () => {
+      button('Clear label')?.click();
+      await Promise.resolve();
+    });
+    expect(onSaveLabel).toHaveBeenCalledWith(null);
+  });
+
+  it('keeps the editor open with the host error when a save fails', async () => {
+    const onSaveLabel = vi
+      .fn<(label: string | null) => Promise<void>>()
+      .mockRejectedValue(new Error('refused'));
+    detail(DETAIL, { onSaveLabel, labelError: 'You need permission to label credentials.' });
+    act(() => {
+      button('Add label')?.click();
+    });
+    type('Deploy bot');
+    await submit();
+    expect(labelInput()?.value).toBe('Deploy bot');
+    expect(mounted.host.querySelector('[role="alert"]')?.textContent).toBe(
+      'You need permission to label credentials.',
+    );
+  });
 
   it('marks a credential no secrets manager references as detected only', () => {
     detail();

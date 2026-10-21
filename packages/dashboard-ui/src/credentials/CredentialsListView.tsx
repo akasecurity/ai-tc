@@ -20,6 +20,11 @@ import { relativeTime } from '../lib/relativeTime.ts';
 import { SearchField } from '../shared/SearchField.tsx';
 import type { CredentialListItem } from './types.ts';
 
+/** True when the name shown is the variable name, which renders as code. */
+export function namedByVariable(item: Pick<CredentialListItem, 'label' | 'variableName'>): boolean {
+  return item.label === null && item.variableName !== null;
+}
+
 export interface CredentialsListViewProps {
   items: CredentialListItem[];
   /** Credentials matching the search across every page. */
@@ -146,16 +151,26 @@ export function CredentialsListView({
                 <TableRow
                   key={item.id}
                   className="cursor-pointer"
-                  aria-label={`View credential ${item.variableName ?? item.kind}`}
+                  aria-label={`View credential ${item.displayName}`}
                   onClick={() => {
                     onSelect(item.id);
                   }}
                 >
                   <TableCell>
-                    <div className="font-mono text-xs font-semibold text-text">
-                      {item.variableName ?? 'Unnamed'}
+                    <div
+                      className={cn(
+                        'text-xs font-semibold text-text',
+                        namedByVariable(item) && 'font-mono',
+                      )}
+                    >
+                      {item.displayName}
                     </div>
-                    <div className="text-xs text-text-3">{item.kind}</div>
+                    <div className="text-xs text-text-3">
+                      {item.kind}
+                      {item.label !== null && item.variableName !== null && (
+                        <span className="font-mono"> · {item.variableName}</span>
+                      )}
+                    </div>
                   </TableCell>
                   <TableCell className="text-xs">{item.provider ?? '—'}</TableCell>
                   <TableCell className="text-xs text-text-2">{item.owner ?? '—'}</TableCell>

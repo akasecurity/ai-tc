@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
@@ -116,6 +116,10 @@ const nodeVersionVia = (dir: string): string =>
     stdio: ['ignore', 'pipe', 'pipe'],
   }).trim();
 
+// What the dynamic loader prints when a binary cannot find a shared library it
+// links: dyld on macOS, ld.so on Linux.
+const SHARED_LIBRARY_LOAD_FAILURE = /Library not loaded|error while loading shared libraries/;
+
 afterEach(() => {
   removeTrees(dirs.splice(0));
 });
@@ -223,7 +227,7 @@ describe('nodeOnlyDir', () => {
     expect(calls).toEqual([[process.execPath, join(dir, NODE_BIN)]]);
   });
 
-  it('falls back to a copy when the link is refused, and the copy still runs', () => {
+  it('falls back to a copy when the link is refused, and the copy still runs', (ctx) => {
     // Driven through the seam so the branch is reachable from a host that grants
     // symlinks; the real refusal (a Windows account without the privilege) is a
     // leg no runner here takes.
@@ -240,6 +244,22 @@ describe('nodeOnlyDir', () => {
     expect(lstatSync(target).isSymbolicLink()).toBe(false);
     expect(lstatSync(target).isFile()).toBe(true);
     expect(statSync(target).size).toBe(statSync(process.execPath).size);
+    // A node built against a shared libnode (Homebrew's, for one) finds that
+    // library relative to its own location, so a copy in another directory
+    // cannot load it and dies in the dynamic loader before any JavaScript runs.
+    // That is a property of the host's node build rather than of the helper, so
+    // the run assertion below is skipped there and stays in force wherever the
+    // copy loads. Any other failure falls through to it and fails the case.
+    const probe = spawnSync(target, ['--version'], {
+      encoding: 'utf8',
+      timeout: 20_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    if (probe.status !== 0 && SHARED_LIBRARY_LOAD_FAILURE.test(probe.stderr ?? '')) {
+      ctx.skip(
+        'this node build loads a shared libnode by relative path, so a copy of it cannot run',
+      );
+    }
     // And it runs, which is what the shebang will ask of it.
     expect(nodeVersionVia(dir)).toBe(process.version);
   });

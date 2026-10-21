@@ -39,6 +39,9 @@ import {
 } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// Reached by relative path: the seam is deliberately not re-exported from the
+// package barrel, the same way the managed-settings pin is not.
+import { UNSAFE_TEST_ONLY_setSshHostAliases } from '../../../packages/persistence/src/ssh-hosts.ts';
 import { writeCodexAuth } from '../../../packages/plugin-sdk/test/helpers/fake-jwt.ts';
 import {
   fixtureEmail,
@@ -888,11 +891,23 @@ describe('aka enroll --repo', () => {
     expect(storedScope()).toEqual(fresh([enrolled()]));
   });
 
-  it('keeps the case of a path, which some hosts tell apart', async () => {
+  it('keeps the case of a path on a host that tells case apart', async () => {
     attach({ scope: fresh() });
     const io = recorder();
-    expect(await runEnroll(['--repo', 'github.com/Acme/Payments-API'], deps(io))).toBe(0);
-    expect(identities()).toEqual(['github.com/Acme/Payments-API']);
+    expect(await runEnroll(['--repo', 'git.example.com/Acme/Payments-API'], deps(io))).toBe(0);
+    expect(identities()).toEqual(['git.example.com/Acme/Payments-API']);
+  });
+
+  // On a forge that ignores case the same spelling names a key no checkout
+  // stamps, so it is refused and the real key is named — the same near-miss
+  // correction an alias gets.
+  it('refuses a capitalised path on a forge that folds case', async () => {
+    attach({ scope: fresh() });
+    const io = recorder();
+    expect(await runEnroll(['--repo', 'github.com/Acme/Payments-API'], deps(io))).toBe(1);
+    expect(io.errors()).toContain('is not how that repository is keyed');
+    expect(io.errors()).toContain(`its key is ${WORK_REPO}`);
+    expect(storedScope()).toEqual(fresh());
   });
 
   it.each([
@@ -926,6 +941,54 @@ describe('aka enroll --repo', () => {
     expect(io.errors()).toContain('does not name a repository that can be enrolled');
     expect(io.errors()).not.toContain('its key is');
     expect(storedScope()).toEqual(fresh());
+  });
+
+  // An SSH `Host` alias is resolved to the host it names, so every clone of one
+  // repository keys the same way (see Architecture principles §8). The reason
+  // that matters HERE is that enrolment is matched by exact string: a key no
+  // checkout on this machine can produce enrols nothing and reports nothing —
+  // the repository reads as covered while that developer forwards none of their
+  // activity. These two shapes are exactly that near miss, and the existing
+  // re-spelling refusal is what turns each of them into a visible correction.
+  describe('a key whose host this machine resolves elsewhere', () => {
+    afterEach(() => {
+      UNSAFE_TEST_ONLY_setSshHostAliases(new Map());
+    });
+
+    it('refuses an alias spelling and names the key checkouts really produce', async () => {
+      UNSAFE_TEST_ONLY_setSshHostAliases(new Map([['github-personal', 'github.com']]));
+      attach({ scope: fresh() });
+      const io = recorder();
+      expect(await runEnroll(['--repo', 'github-personal/acme/payments-api'], deps(io))).toBe(1);
+      expect(io.errors()).toContain('is not how that repository is keyed');
+      expect(io.errors()).toContain(`its key is ${WORK_REPO}`);
+      expect(storedScope()).toEqual(fresh());
+    });
+
+    // The sharper half. `Host github.com` rewriting a REAL host is ordinary on
+    // a machine behind a corporate proxy, and there the obvious-looking key is
+    // the wrong one. Without this the user enrols `github.com/...`, every local
+    // checkout stamps the proxy host, and nothing ever matches.
+    it('refuses the obvious key where a block rewrites the real host', async () => {
+      UNSAFE_TEST_ONLY_setSshHostAliases(new Map([['github.com', 'gh.internal.corp']]));
+      attach({ scope: fresh() });
+      const io = recorder();
+      expect(await runEnroll(['--repo', WORK_REPO], deps(io))).toBe(1);
+      expect(io.errors()).toContain('is not how that repository is keyed');
+      expect(io.errors()).toContain('its key is gh.internal.corp/acme/payments-api');
+      expect(storedScope()).toEqual(fresh());
+    });
+
+    // The control: with no alias in force the same key enrols cleanly, so the
+    // two refusals above are the alias doing it and not the command refusing
+    // every typed key.
+    it('enrols the same key when no alias is in force', async () => {
+      attach({ scope: fresh() });
+      const io = recorder();
+      expect(await runEnroll(['--repo', WORK_REPO], deps(io))).toBe(0);
+      const scope = storedScope() as { entries?: { identity: string }[] } | undefined;
+      expect(scope?.entries?.map((entry) => entry.identity)).toContain(WORK_REPO);
+    });
   });
 
   // A repository kept at the top of its host cannot be enrolled by naming its

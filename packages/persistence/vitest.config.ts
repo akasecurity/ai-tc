@@ -18,6 +18,13 @@ const noManagedSettingsGuard = fileURLToPath(
   new URL('../../test/setup/no-managed-settings.ts', import.meta.url),
 );
 
+// `~/.ssh/config` is read to resolve a Host alias to the host it names, and is
+// likewise outside any temp home — so without this a project id and a scope key
+// depend on whose laptop the suite ran on.
+const noSshAliasesGuard = fileURLToPath(
+  new URL('../../test/setup/no-ssh-aliases.ts', import.meta.url),
+);
+
 // The suite exercises real node:sqlite file I/O; the fixture-heavy tests run
 // well over a second each on the Windows CI runner, so raise the per-test AND
 // per-hook timeouts above vitest's 5s/10s defaults to leave headroom under
@@ -29,7 +36,7 @@ const noManagedSettingsGuard = fileURLToPath(
 // compile-time signal.
 export default defineConfig({
   test: {
-    setupFiles: [noNetworkGuard, noManagedSettingsGuard],
+    setupFiles: [noNetworkGuard, noManagedSettingsGuard, noSshAliasesGuard],
     coverage: coverageOptions(import.meta.url),
     environment: 'node',
     testTimeout: 20000,

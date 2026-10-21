@@ -102,6 +102,7 @@ export {
   canonicalRepoUrl,
   enrollableRepoKey,
   hashProjectKey,
+  namesARemoteAddress,
   scopeKeyOfProjectKey,
   toEgressIngestRequest,
 } from './egress-wire.ts';

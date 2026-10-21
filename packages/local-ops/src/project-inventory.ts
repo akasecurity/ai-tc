@@ -6,6 +6,7 @@ import {
   resolveHeadRoot,
   resolveProjectFiles,
   resolveRepoIdentity,
+  resolveSupersededProjectUrls,
   resolveWorktreeRoot,
 } from '@akasecurity/plugin-sdk';
 
@@ -82,7 +83,12 @@ export function recordProjectInventory(
     const headRoot = resolveHeadRoot(abs);
     const worktreeRoot = resolveWorktreeRoot(abs);
     if (headRoot && worktreeRoot) {
-      db.reconcileWorktreeProjects(sourceProjectId, headRoot, worktreeRoot);
+      db.reconcileWorktreeProjects(
+        sourceProjectId,
+        headRoot,
+        worktreeRoot,
+        resolveSupersededProjectUrls(abs),
+      );
     }
 
     return {

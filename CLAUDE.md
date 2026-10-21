@@ -736,6 +736,92 @@ takes `platform` and a resolution seam the way `judgeEnv`/`writeCommandShim` tak
   so routing it through `planBareCommand` is available rather than blocked by a package wall.
   Migrating it is tracked separately.
 
+### 8. A project's identity is the repository, not the remote string
+
+**`canonicalGitUrl` is the ONE reduction, and all three identities go through
+it**: the project id (`sourceProjectId`), the scope key (`canonicalRepoUrl`) and
+the wire digest (`hashProjectKey`). One repository is cloned in spellings that
+share no bytes — scp-style and HTTPS, with and without `.git`, any case of the
+host, and through an SSH `Host` alias — so a reduction applied to one of those
+and not the others gives one repository several identities, differently on each
+surface.
+
+Keeping them unified is not tidiness. A scope key is matched against what a user
+enrolled by EXACT STRING (`resolved.keys.has(key)`), so a key that splits per
+spelling is a security-control failure, not a display bug: an organization
+enrols `github.com/acme/app`, every developer who cloned through an alias keys
+as `alias/acme/app`, matches nothing, forwards nothing — and the repository
+still reads as enrolled. Nothing reports the gap. The same split makes every
+org-wide count a fraction of the truth, leaves policy bound to one spelling, and
+lets `syncLaneRetentionOf` expire bodies it should have held.
+
+Three rules hold it together:
+
+- **Transport is not identity.** `canonicalGitUrl` drops the scheme, any
+  userinfo and any port, lowercases the host and strips a trailing `.git` and
+  trailing slashes. The PATH's case is folded only on a host in
+  `CASE_INSENSITIVE_FORGES` (the public github.com / gitlab.com /
+  bitbucket.org), because the two errors are not symmetric: on GitHub
+  `acme/App` and `acme/app` are one repository and keeping the case splits it,
+  while on a case-sensitive self-hosted git they are two and folding blends
+  their egress invisibly. An unrecognised host — a GitHub Enterprise instance
+  included, since no hostname says what answers it — keeps its case and misses
+  the convergence, which is the visible failure rather than the silent one.
+- **An SSH alias is resolved through `~/.ssh/config`, inside `parseGitRemote`.**
+  `github-personal` is `github.com` only because a line in that file says so.
+  That mapping exists on the machine and NOWHERE ELSE — the control plane
+  receives the remote as written (`inventoryForWire` sends `project.url` through
+  `remoteWithoutCredentials`), so it could never derive it. Resolving it here or
+  not at all is the whole choice, which is why it is done here. Only a LITERAL
+  alias is stored: lookup is an exact map hit, so a pattern entry would sit
+  under the key `*` and answer only a host spelled `*`. Memoized once per
+  process, `Host`/`HostName` alone, fail-open — a failure answers the host as
+  written, and a machine with no config is unaffected in every respect.
+- **The remote picked is an ADDRESS where one exists.** git does not guarantee
+  `origin` names a forge: a submodule checked out inside a linked worktree gets
+  an `origin` pointing at the parent repository's gitdir on local disk, with the
+  real URL on a second remote. `remoteUrl` prefers a remote
+  `namesARemoteAddress` accepts, falling back to `origin` and then to the first
+  remote — a preference, not a filter, so a repository whose only remote is a
+  local path still gets it.
+
+**Changing what `sourceProjectId` hashes RE-KEYS every existing row, and that is
+handled rather than incidental.** `reconcileSourceProjectIds` runs on every store
+open, folds any row whose stored id no longer equals the current answer into the
+canonical row, and repoints `audit_events`, `share_call_site`, `project_file` and
+`file_access_override` first. A future change to the reduction inherits that
+sweep; one made without it would strand every row in the store.
+
+Two rows it CANNOT fold are the gitdir-path identities the `origin` defect
+minted, because nothing in SQL can tell which repository a local directory was a
+clone of. Those are handled from both ends instead:
+`resolveSupersededProjectUrls` reads them back out of the checkout's own config —
+byte for byte what the old resolver stored, so a fold keyed on them matches that
+row or nothing — and the SessionStart and scan passes hand them to
+`reconcileWorktreeProjects`. A checkout deleted before a session next runs in it
+never gets that, so `GHOST_PROJECT_FILTER` also refuses any url inside a `.git`
+directory outright: git's own storage is never a project.
+
+**A near miss is REPORTED rather than silently stored.** `aka enroll` refuses a
+typed key that is not how the repository is really keyed and names the spelling
+that is — and because the host now resolves, that refusal covers both alias
+shapes: an alias typed by hand (`github-personal/acme/app` → "its key is
+`github.com/acme/app`"), and the obvious key on a machine whose config rewrites a
+REAL host (`Host github.com` → a proxy), where `github.com/acme/app` is the
+wrong answer and the refusal says so. That matters because the failure it
+prevents is invisible: an enrolment nothing produces reports no error, forwards
+nothing and still lists the repository as covered.
+
+**What this still does not reach.** A path whose case differs on a host NOT in
+the forge list — a self-hosted GitHub Enterprise most obviously — keys as two.
+A host rewritten on SOME machines and not others splits those machines' keys,
+and nothing client-side or server-side can see that, since the config is local
+to each. A repository RENAMED on the forge keys as two, because the key is a
+path rather than the forge's immutable id, which no hook can ask for without a
+network call. All three are convergence that is MISSED, which shows up as two
+entries a human can reconcile, rather than two repositories merged into one —
+the direction this whole section prefers to fail in.
+
 ## Dependency advisories
 
 CI gates every PR (and a daily run) on two audits via `tools/audit-gate`: `pnpm audit`
@@ -794,7 +880,12 @@ Keep these package boundaries intact — a forbidden import across a package wal
                      layout/settings/fingerprint file I/O, plus the egress wire
                      projection — toEgressIngestRequest / hashProjectKey, the one
                      place an EgressIngestRequest is built, pure and beside the cap
-                     helpers it applies — NO fetch client, NO Drizzle)
+                     helpers it applies — NO fetch client, NO Drizzle.
+                     ssh-hosts.ts is the ONE reader of a file outside ~/.aka that
+                     is not the administrative overlay: it parses `Host`/`HostName`
+                     out of ~/.ssh/config so a clone made through an SSH alias keys
+                     to the same project as one made over HTTPS — see "A project's
+                     identity is the repository, not the remote string" (§8))
 @akasecurity/local-ops     → @akasecurity/schema, @akasecurity/persistence, @akasecurity/detections,
                      @akasecurity/plugin-sdk (repo-identity, project-file walkers, posix
                      path normalization, and the ReDoS gates the dashboard's folder
@@ -2638,6 +2729,38 @@ Five things about it are load-bearing:
   `execArgv`, and a child spawned with a deliberately minimal env cannot be
   reached that way. Nothing covers this the way the `No-network` CI job covers
   shell-outs.
+
+### The no-ssh-aliases guard
+
+`test/setup/no-ssh-aliases.ts` is the third shared setup file, wired beside the
+other two by every package that wires `no-managed-settings.ts`. It declares,
+once per test file, that the machine defines no SSH `Host` aliases.
+
+The reasoning is the managed-overlay one exactly: `~/.ssh/config` is an absolute
+path outside `~/.aka`, so the temp homes these suites build do not redirect it,
+and §8 reads it to reduce every clone of one repository to one identity. Without
+the pin, a project id and a scope key depend on whose laptop the suite ran on —
+a developer whose config carries `Host github.com` computes different keys than
+CI, which has no config at all, and CI stays green while their machine fails.
+
+Two things about it are load-bearing, and the second was learned the hard way:
+
+- **It imports ONE MODULE by relative path**, never the package barrel, for the
+  reason `no-managed-settings.ts` sets out at length.
+- **A suite ABOUT the parser cannot reach the real path by mocking `node:os`.**
+  This setup file imports `ssh-hosts.ts` before any test file runs, so the
+  module's `homedir` binding is already the real one by the time a `vi.mock`
+  could replace it — the mock is accepted and changes nothing. A suite that
+  mocked it therefore read the DEVELOPER'S OWN `~/.ssh/config`, passed the one
+  case whose alias happened to exist there and failed the rest, which is how
+  this was found. `UNSAFE_TEST_ONLY_setSshConfigPath` is the seam that works:
+  it moves the path the parser reads, and needs no mock. A CONSUMER suite that
+  merely wants an alias in force pins the map instead, with
+  `UNSAFE_TEST_ONLY_setSshHostAliases`, and restores the empty map afterwards.
+
+A CHILD PROCESS is outside it, exactly as it is outside the managed-settings
+pin, and for the same reason: the pin lives in one process's copy of the module,
+and a spawned hook loads its own with nothing set.
 
 ### The PATH shim, and why it fails OPEN
 

@@ -278,7 +278,12 @@ export interface LocalDatabase {
   // row — remapping their audit-event references (FK) before deleting. One
   // session with the fixed plugin permanently clears a store's ghost projects.
   // Fail-open.
-  reconcileWorktreeProjects(canonicalId: string, headRoot: string, worktreeRoot: string): void;
+  reconcileWorktreeProjects(
+    canonicalId: string,
+    headRoot: string,
+    worktreeRoot: string,
+    supersededUrls?: readonly string[],
+  ): void;
   // The Skills & Hooks read surface: artifacts seen by the latest scan, with
   // statuses derived at read time from that scan's open posture findings.
   configInventoryReport(): ConfigInventoryReport;
@@ -973,6 +978,7 @@ export function openLocalDatabase(
     canonicalId: string,
     headRoot: string,
     worktreeRoot: string,
+    supersededUrls: readonly string[] = [],
   ): void {
     try {
       // Rows the OLD resolver minted: url = a checkout path, never a remote.
@@ -988,14 +994,35 @@ export function openLocalDatabase(
       const headPosix = headRoot.split(sep).join('/');
       const worktreePosix = worktreeRoot.split(sep).join('/');
       const exactArm = worktreeRoot === headRoot ? '' : 'url IN (:worktreePosix, :worktreeWin) OR ';
+      // Identities a PREVIOUS resolver minted for THIS checkout — a local-disk
+      // remote it took for an address (see resolveSupersededProjectUrls). They
+      // are matched exactly, never by pattern: each is the url that resolver
+      // would have written, so it names this checkout's row or nothing at all.
+      // Both separator flavors, for the reason the patterns below carry them.
+      const superseded = [
+        ...new Set(
+          supersededUrls.flatMap((url) => {
+            const posix = url.split(sep).join('/');
+            return [posix, posix.split('/').join('\\')];
+          }),
+        ),
+      ];
+      const supersededParams = Object.fromEntries(
+        superseded.map((url, i) => [`superseded${String(i)}`, url]),
+      );
+      const supersededArm =
+        superseded.length === 0
+          ? ''
+          : `url IN (${superseded.map((_, i) => `:superseded${String(i)}`).join(', ')}) OR `;
       const stale = db
         .prepare(
           `SELECT id FROM source_project
            WHERE id <> :canonicalId
-             AND (${exactArm}url LIKE :pattern ESCAPE '\\' OR url LIKE :patternWin ESCAPE '\\')`,
+             AND (${supersededArm}${exactArm}url LIKE :pattern ESCAPE '\\' OR url LIKE :patternWin ESCAPE '\\')`,
         )
         .all({
           canonicalId,
+          ...supersededParams,
           ...(worktreeRoot === headRoot
             ? {}
             : { worktreePosix, worktreeWin: worktreePosix.split('/').join('\\') }),

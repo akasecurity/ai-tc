@@ -33,10 +33,25 @@ describe('meta-id content addressing (golden vectors)', () => {
     );
   });
 
+  // This vector MOVED, deliberately: sourceProjectId hashes the project
+  // identity key rather than the raw url, so every spelling of one repository
+  // lands on one id (see projectIdentityKey). The old vector was
+  // '9c7aa01ab8…', the digest of the raw `https://…/ai-tc.git` string. Moving
+  // it re-keys existing rows, which `reconcileSourceProjectIds` folds on the
+  // next store open — a change here is only safe while that sweep runs.
   it('sourceProjectId is stable', () => {
     expect(sourceProjectId('https://github.com/akasecurity/ai-tc.git')).toBe(
-      '9c7aa01ab82c82990b846f885919a1619e810b3dca090bb62852db0e1687f2da',
+      '337326ca02c9eba47e7ddba49592116abd50fde11c10fd5e9d952b05532a26f8',
     );
+  });
+
+  it('sourceProjectId gives one id to every spelling of one repository', () => {
+    // The property the vector above now encodes. Pinned beside it so a future
+    // change that freezes the digest but drops the convergence fails here.
+    const id = '337326ca02c9eba47e7ddba49592116abd50fde11c10fd5e9d952b05532a26f8';
+    expect(sourceProjectId('git@github.com:akasecurity/ai-tc')).toBe(id);
+    expect(sourceProjectId('git@github.com:akasecurity/ai-tc.git')).toBe(id);
+    expect(sourceProjectId('https://GitHub.com/akasecurity/ai-tc')).toBe(id);
   });
 
   it('classifiedDataId is stable', () => {

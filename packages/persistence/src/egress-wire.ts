@@ -25,6 +25,7 @@ import {
 } from '@akasecurity/schema';
 
 import { capHits, withoutDroppedFiles } from './repositories/shares.ts';
+import { resolveSshHost } from './ssh-hosts.ts';
 
 /**
  * The shape of the string that is digested, stamped into the digest itself.
@@ -118,15 +119,65 @@ function trimSlashes(path: string): string {
  * name no repository or could not be enrolled. The rules themselves are the
  * ones `canonicalGitUrl` documents below.
  */
-function parseGitRemote(url: string): { readonly host: string; readonly path: string } | undefined {
+export function parseGitRemote(
+  url: string,
+): { readonly host: string; readonly path: string } | undefined {
   const trimmed = url.trim();
   if (DOS_DRIVE.test(trimmed) || FILE_URL.test(trimmed)) return undefined;
   const scheme = SCHEME_FORM.exec(trimmed);
   const scp = scheme === null ? SCP_FORM.exec(trimmed) : null;
-  const host = (scheme?.[1] ?? scp?.[1])?.toLowerCase();
-  if (host === undefined) return undefined;
+  const written = (scheme?.[1] ?? scp?.[1])?.toLowerCase();
+  if (written === undefined) return undefined;
+  // The host an SSH `Host` alias NAMES, not the alias. `github-personal` is
+  // `github.com` only because a line in the user's ~/.ssh/config says so, and
+  // that file is the only place on earth the mapping exists — the control plane
+  // receives the remote as written (`inventoryForWire`) and could never derive
+  // it. So an alias has to be resolved HERE or nowhere: every clone of one
+  // repository must reduce to one host, or the identity, the scope key and the
+  // wire digest below each split per spelling. See `resolveSshHost` for how
+  // narrow that resolution is (literal aliases only, memoized, fail-open).
+  const host = resolveSshHost(written);
   const bare = trimSlashes((scheme === null ? scp?.[2] : scheme[2]) ?? '');
-  return { host, path: bare.endsWith(GIT_SUFFIX) ? bare.slice(0, -GIT_SUFFIX.length) : bare };
+  const path = bare.endsWith(GIT_SUFFIX) ? bare.slice(0, -GIT_SUFFIX.length) : bare;
+  return { host, path: CASE_INSENSITIVE_FORGES.has(host) ? path.toLowerCase() : path };
+}
+
+/**
+ * Hosts that treat a repository path case-insensitively, so two clones
+ * differing only in case are one repository and must reduce to one identity.
+ *
+ * An ALLOWLIST rather than a rule, because the cost of being wrong runs one
+ * way only: fold a case a host really distinguishes and two repositories share
+ * an identity, which blends their egress with nothing to notice it; keep a case
+ * a host ignores and one repository shows up twice, which a human can see and
+ * reconcile. So a host goes in here only where the behaviour is known.
+ *
+ * It is the PUBLIC instance that is listed. A self-hosted GitHub Enterprise or
+ * GitLab is case-insensitive too and is NOT covered, because nothing in a
+ * hostname says which software answers it — those keep their case and miss the
+ * convergence, which is the safe side of the same trade.
+ */
+const CASE_INSENSITIVE_FORGES: ReadonlySet<string> = new Set([
+  'github.com',
+  'gitlab.com',
+  'bitbucket.org',
+]);
+
+/**
+ * Whether `url` names a REMOTE ADDRESS — a host and a path every clone shares —
+ * rather than a location on this machine. False for a POSIX path, a Windows
+ * drive path and a `file://` URL.
+ *
+ * The caller this exists for is remote SELECTION. git does not guarantee that
+ * `origin` names a forge: a submodule checked out inside a linked worktree gets
+ * an `origin` pointing at the parent repository's gitdir on local disk, while
+ * the real forge URL sits on a second remote. Keying a project on the first of
+ * those makes a machine-local directory the repository's identity, which can
+ * never converge with any other clone and renders as a project named after the
+ * submodule directory.
+ */
+export function namesARemoteAddress(url: string): boolean {
+  return parseGitRemote(url) !== undefined;
 }
 
 /**
@@ -150,13 +201,15 @@ function parseGitRemote(url: string): { readonly host: string; readonly path: st
  *   - a trailing `.git` and trailing slashes go. Both are spellings of the
  *     same remote.
  *
- * The PATH's case is deliberately left alone. Forges differ — GitHub treats it
- * case-insensitively, a self-hosted git over a case-sensitive filesystem does
- * not — so lowercasing it would merge two genuinely different repositories on
- * the hosts that distinguish them. Merging identities is the worse error here
- * than failing to merge: convergence that is missed shows up as two projects a
- * human can reconcile, while a collision silently blends two repositories'
- * egress into one.
+ * The PATH's case is folded ONLY on a host known to treat it
+ * case-insensitively (`CASE_INSENSITIVE_FORGES`). Forges differ, and the two
+ * errors are not symmetric: on GitHub `acme/App` and `acme/app` are one
+ * repository, so keeping the case splits it; on a self-hosted git over a
+ * case-sensitive filesystem they are two, so folding the case silently blends
+ * two repositories' egress into one. Folding is therefore allowed exactly
+ * where it is known to be true and nowhere else — an unrecognised host keeps
+ * its case and simply misses the convergence, which shows up as two projects a
+ * human can reconcile rather than as a collision nobody can see.
  *
  * A string that matches neither form is returned trimmed and otherwise as-is.
  * It is still a stable identity for whatever produced it; it simply does not
@@ -165,7 +218,7 @@ function parseGitRemote(url: string): { readonly host: string; readonly path: st
  * one — a Windows drive path, or a `file://` URL — because it is a location on
  * one machine rather than a remote every clone shares.
  */
-function canonicalGitUrl(url: string): string {
+export function canonicalGitUrl(url: string): string {
   const remote = parseGitRemote(url);
   if (remote === undefined) return url.trim();
   return remote.path === '' ? remote.host : `${remote.host}/${remote.path}`;
@@ -341,9 +394,11 @@ function namesTheHostGitContacts(url: string, host: string): boolean {
  * Converging every spelling of one repository matters more here than separating
  * those two, and it is the same trade the digest makes.
  *
- * Path case is kept, for the reason `canonicalGitUrl` gives. Keys are compared
- * byte-exact (scopeVerdict is a set lookup), so two producers that built one
- * key differently would disagree about it.
+ * Path case follows `canonicalGitUrl`: folded on a host known to ignore it,
+ * kept everywhere else. Keys are compared byte-exact (scopeVerdict is a set
+ * lookup), so two producers that built one key differently would disagree about
+ * it — which is why the fold has to happen in the one shared parse and not at a
+ * call site.
  *
  * A canonical key is not itself a remote — `github.com/acme/widgets` has neither
  * a scheme nor an scp colon — so it reads as `undefined` here. A caller holding a
@@ -395,8 +450,11 @@ function isEnrollableKey(key: string): boolean {
  * compared byte for byte, so a key that is almost canonical — a capitalised
  * host, a trailing slash, a `.git` suffix — would look like a key and match
  * nothing a checkout stamps. It is refused rather than repaired, so the
- * difference is visible instead of silently rewritten. Path case is kept:
- * `github.com/Acme/Payments` is accepted, and is not `github.com/acme/payments`.
+ * difference is visible instead of silently rewritten. That covers path case on
+ * a case-insensitive forge too: `github.com/Acme/Payments` is REFUSED, naming
+ * `github.com/acme/payments` as the key, since that is what a checkout stamps.
+ * On a host not in `CASE_INSENSITIVE_FORGES` the case is significant and a
+ * capitalised path is accepted as itself.
  *
  * Either way, a key that names no repository is refused:
  *   - a host not made of real labels: `.`, `..` or `-` (which is how a typed

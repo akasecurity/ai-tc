@@ -1626,8 +1626,14 @@ export class AttachedDataGateway
     canonicalId: string,
     headRoot: string,
     worktreeRoot: string,
+    supersededUrls: readonly string[] = [],
   ): Promise<void> {
-    return this.deps.local.reconcileWorktreeProjects(canonicalId, headRoot, worktreeRoot);
+    return this.deps.local.reconcileWorktreeProjects(
+      canonicalId,
+      headRoot,
+      worktreeRoot,
+      supersededUrls,
+    );
   }
 
   staleBinaryNotice(currentVersion: string): string | null {

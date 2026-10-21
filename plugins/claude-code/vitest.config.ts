@@ -18,6 +18,13 @@ const noManagedSettingsGuard = fileURLToPath(
   new URL('../../test/setup/no-managed-settings.ts', import.meta.url),
 );
 
+// `~/.ssh/config` is read to resolve a Host alias to the host it names, and is
+// likewise outside any temp home — so without this a project id and a scope key
+// depend on whose laptop the suite ran on.
+const noSshAliasesGuard = fileURLToPath(
+  new URL('../../test/setup/no-ssh-aliases.ts', import.meta.url),
+);
+
 // globalSetup builds scripts/*.js once, in the main process, before any worker
 // runs — the journey harness (test/journey) drives those built scripts.
 //
@@ -36,7 +43,7 @@ export default defineConfig({
     },
   },
   test: {
-    setupFiles: [noNetworkGuard, noManagedSettingsGuard],
+    setupFiles: [noNetworkGuard, noManagedSettingsGuard, noSshAliasesGuard],
     // hooks/mod.ts runs inside Claude Code's mod runtime, never in Node; the
     // "Claude Code · Mod runtime" CI job (`claude plugin test`) is what covers it.
     coverage: coverageOptions(import.meta.url),

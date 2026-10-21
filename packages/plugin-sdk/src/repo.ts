@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, sep } from 'node:path';
 
-import { canonicalRepoUrl } from '@akasecurity/persistence';
+import { canonicalRepoUrl, namesARemoteAddress } from '@akasecurity/persistence';
 
 // Repo attribution for a captured event. The Security dashboard's Top-Sources
 // (by repo) and the recommendation engine both group findings by `repo`, but the
@@ -113,6 +113,43 @@ export function resolveRepoIdentity(cwd: string): { url: string; name: string } 
     };
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * The project identities a PREVIOUS resolver minted for `cwd` that this one no
+ * longer would — the rows a self-heal should fold into the repository's real
+ * project.
+ *
+ * Today that is exactly one shape: a remote in this repository's config that
+ * names a location on local disk rather than a remote address. `remoteUrl` used
+ * to take `origin` unconditionally, and git writes a local-disk `origin` for a
+ * submodule checked out inside a linked worktree (it points at the parent
+ * repository's gitdir), so such a checkout was recorded under a directory path
+ * instead of the repository it is a clone of. Those rows render as a project
+ * named after the submodule directory, one per worktree.
+ *
+ * The urls are read from the config rather than reconstructed from the gitdir,
+ * so what comes back is byte-for-byte what the old resolver would have stored —
+ * a fold keyed on these matches the real rows or nothing, and can never match a
+ * row belonging to some other repository. A path is posix-normalized for the
+ * same reason the identity fallback is: the store's path patterns are written
+ * with `/`.
+ *
+ * Empty for an ordinary checkout, whose remotes are all addresses. Same pure,
+ * never-spawns-git, never-throws contract as `resolveRepo`.
+ */
+export function resolveSupersededProjectUrls(cwd: string): string[] {
+  try {
+    const root = findGitRoot(cwd);
+    if (!root) return [];
+    const ctx = resolveGitContext(root);
+    const config = ctx ? safeRead(ctx.configPath) : undefined;
+    if (config === undefined) return [];
+    const local = Object.values(parseRemoteUrls(config)).filter((url) => !namesARemoteAddress(url));
+    return [...new Set(local.map((url) => url.split(sep).join('/')))];
+  } catch {
+    return [];
   }
 }
 
@@ -384,12 +421,32 @@ function safeRead(path: string): string | undefined {
   }
 }
 
-// The `origin` remote URL from the resolved git config (else any remote's).
+/**
+ * The remote URL to identify this repository by: `origin` where it names a
+ * remote ADDRESS, else the first remote in config order that does, else
+ * `origin`, else the first remote. Undefined when the config has no remote.
+ *
+ * WHY `origin` IS NOT TAKEN BLINDLY. git writes an `origin` that points at
+ * local disk in a layout this product meets routinely: a submodule checked out
+ * inside a linked worktree gets
+ * `origin = <parent>/.git/modules/<name>` — the parent repository's gitdir —
+ * while the real forge URL is left on a second remote. Taking `origin` there
+ * identifies the repository by a directory that exists on one machine, so it
+ * converges with no other clone, and the display name comes out as the
+ * submodule's directory rather than the repository's. Preferring an address
+ * costs nothing in the ordinary case, where `origin` is one.
+ *
+ * It is a PREFERENCE and not a filter: a repository whose only remote is a
+ * local path still gets that remote, because a local path is a better identity
+ * for it than no remote at all (which would fall back to the checkout path).
+ */
 function remoteUrl(ctx: GitContext): string | undefined {
   const config = safeRead(ctx.configPath);
   if (config === undefined) return undefined;
   const remotes = parseRemoteUrls(config);
-  return remotes.origin ?? Object.values(remotes)[0];
+  const ordered = remotes.origin === undefined ? [] : [remotes.origin];
+  for (const [name, url] of Object.entries(remotes)) if (name !== 'origin') ordered.push(url);
+  return ordered.find((url) => namesARemoteAddress(url)) ?? ordered[0];
 }
 
 // One repository, located from `cwd`: ONE ancestor walk (findGitRoot) and,

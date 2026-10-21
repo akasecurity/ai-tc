@@ -2,6 +2,8 @@ import { createHash, createHmac } from 'node:crypto';
 
 import { canonicalIdentity } from '@akasecurity/schema';
 
+import { canonicalGitUrl } from './egress-wire.ts';
+
 // Content-addressed ids for the [Meta] Data Model dimensions. Lives here (not in
 // `@akasecurity/schema`) because the spine must stay free of Node-API deps — `@akasecurity/schema`
 // only provides the pure `canonicalIdentity` join; the sha256 happens in this
@@ -24,9 +26,22 @@ export function inventoryId(objectType: string, identityKey: string): string {
   return sha256Hex(canonicalIdentity(['inventory', objectType, identityKey]));
 }
 
-// sha256(['source_project', remote_url]): two machines reporting the same repo collapse.
+// sha256(['source_project', project_identity_key]): two machines reporting the
+// same repo collapse, and so do two clones of it on ONE machine that spell the
+// remote differently. The key — not the raw url — is what is hashed, because the
+// raw string is not an identity: scp-style and HTTPS, with and without `.git`,
+// and a clone made through an SSH `Host` alias are five spellings of one
+// repository. `canonicalGitUrl` documents the reduction, and is the SAME
+// function the scope key and the wire digest reduce through, so "which
+// repository is this" has one answer on every surface; a non-remote url (a
+// filesystem path) passes through it and keys on itself.
+//
+// Changing what this hashes RE-KEYS every existing row. That is handled, not
+// incidental: `reconcileSourceProjectIds` runs on every store open, folds any
+// row whose stored id no longer equals this answer into the canonical row, and
+// repoints every reference first. A future change here inherits that sweep.
 export function sourceProjectId(url: string): string {
-  return sha256Hex(canonicalIdentity(['source_project', url]));
+  return sha256Hex(canonicalIdentity(['source_project', canonicalGitUrl(url)]));
 }
 
 // sha256(['classified_data', class]): a handful of rows, one per recognized class.

@@ -157,6 +157,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'mintPointer',
   'modPolicyInputFromStore',
   'modPolicySnapshotPath',
+  'namesARemoteAddress',
   'normalizeHost',
   'openLocalDatabase',
   'overlayManagedSettings',

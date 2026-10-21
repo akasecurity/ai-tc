@@ -327,12 +327,19 @@ describe('canonicalRepoUrl', () => {
     expect(canonicalRepoUrl(url)).toBe('github.com/org/repo');
   });
 
-  it('keeps path case, so a differently-cased path is a different key', () => {
+  it('keeps path case on a host not known to fold it', () => {
     // The opposite of the host rule, for the reason canonicalGitUrl gives: a
     // forge on a case-sensitive filesystem can host both, and merging them would
     // forward one repository because the other was enrolled.
-    expect(canonicalRepoUrl('https://github.com/Org/Repo')).toBe('github.com/Org/Repo');
-    expect(canonicalRepoUrl('https://github.com/Org/Repo')).not.toBe(
+    expect(canonicalRepoUrl('https://git.example.com/Org/Repo')).toBe('git.example.com/Org/Repo');
+    expect(canonicalRepoUrl('https://git.example.com/Org/Repo')).not.toBe(
+      canonicalRepoUrl('https://git.example.com/org/repo'),
+    );
+  });
+
+  it('folds path case on a forge that ignores it, so one repository has one key', () => {
+    expect(canonicalRepoUrl('https://github.com/Org/Repo')).toBe('github.com/org/repo');
+    expect(canonicalRepoUrl('https://github.com/Org/Repo')).toBe(
       canonicalRepoUrl('https://github.com/org/repo'),
     );
   });

@@ -18,6 +18,13 @@ const noManagedSettingsGuard = fileURLToPath(
   new URL('../test/setup/no-managed-settings.ts', import.meta.url),
 );
 
+// `~/.ssh/config` is read to resolve a Host alias to the host it names, and is
+// likewise outside any temp home — so without this a project id and a scope key
+// depend on whose laptop the suite ran on.
+const noSshAliasesGuard = fileURLToPath(
+  new URL('../test/setup/no-ssh-aliases.ts', import.meta.url),
+);
+
 // web-ui's test runner, covering two suites with different needs.
 //
 // The Server Action suites exercise the REAL node:sqlite store and the REAL
@@ -49,7 +56,7 @@ const noManagedSettingsGuard = fileURLToPath(
 export default defineConfig({
   oxc: { jsx: { runtime: 'automatic' } },
   test: {
-    setupFiles: [noNetworkGuard, noManagedSettingsGuard],
+    setupFiles: [noNetworkGuard, noManagedSettingsGuard, noSshAliasesGuard],
     coverage: coverageOptions(import.meta.url),
     environment: 'node',
     testTimeout: 20_000,

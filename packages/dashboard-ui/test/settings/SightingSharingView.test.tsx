@@ -1,5 +1,5 @@
 import type { SightingSharing } from '@akasecurity/schema';
-import { SIGHTING_SHARE_PAYLOAD_NOTE } from '@akasecurity/schema';
+import { SIGHTING_SHARE_PAYLOAD_NOTE, SIGHTING_SHARE_ROTATION_NOTE } from '@akasecurity/schema';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
@@ -41,6 +41,7 @@ describe('SightingSharingView', () => {
     expect(html).toContain('attached, scoped');
     expect(html).toContain('You have not opted in.');
     expect(html).toContain(SIGHTING_SHARE_PAYLOAD_NOTE);
+    expect(html).toContain(SIGHTING_SHARE_ROTATION_NOTE);
   });
 
   it('scopes the payload sentence to sightings and points at the attached-mode disclosure', () => {

@@ -12,6 +12,8 @@ export interface TokenizedSecretSpan {
   end: number;
   ruleId: string;
   token: string;
+  /** The value's tokens under each previous key version still accepted. */
+  aliases?: string[] | undefined;
 }
 
 const CALL_LOOKBACK = 1_000;
@@ -302,7 +304,12 @@ export function withLiteralCredentialRefs(
     for (const secret of ordered) {
       if (secret.start < call.start || secret.end > call.end || tokens.has(secret.token)) continue;
       tokens.add(secret.token);
-      literals.push({ kind: 'literal', token: secret.token, ruleId: secret.ruleId });
+      literals.push({
+        kind: 'literal',
+        token: secret.token,
+        ...(secret.aliases?.length ? { aliases: secret.aliases } : {}),
+        ruleId: secret.ruleId,
+      });
     }
     if (literals.length === 0) return hit;
     const refs = [...literals, ...(hit.credentialRefs ?? [])];

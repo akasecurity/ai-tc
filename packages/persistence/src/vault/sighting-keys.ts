@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { isAttached, StoredSightingKeys } from '@akasecurity/schema';
+import { isAttached, SIGHTING_ALIASES_MAX, StoredSightingKeys } from '@akasecurity/schema';
 
 import { defaultDataDir, keysDir } from '../local-layout.ts';
 import { ensureDataDirSync, writeOwnerOnlyFileSync } from '../paths.ts';
@@ -36,8 +36,42 @@ export interface SightingKey {
 
 export interface SightingKeys {
   current: SightingKey;
-  /** Versions still accepted during a rotation overlap; may be empty. */
+  /**
+   * Versions still used during a rotation overlap, newest first and at most
+   * SIGHTING_ALIASES_MAX; may be empty.
+   */
   previous: SightingKey[];
+}
+
+/** The longest a previous version is used for, counted from when this machine first held it. */
+export const SIGHTING_KEY_OVERLAP_MAX_MS = 90 * 24 * 60 * 60 * 1000;
+
+/**
+ * When this machine first held `keyVersion` as a previous version: its
+ * `previousFirstSeenAtMs` entry, or the map's fetch time for a map stored
+ * without one.
+ */
+export function previousVersionFirstSeenAtMs(
+  stored: Pick<StoredSightingKeys, 'fetchedAtMs' | 'previousFirstSeenAtMs'>,
+  keyVersion: number,
+): number {
+  return stored.previousFirstSeenAtMs?.[String(keyVersion)] ?? stored.fetchedAtMs;
+}
+
+/**
+ * The instant a previous version stops being used: its `acceptedUntil`, but no
+ * later than SIGHTING_KEY_OVERLAP_MAX_MS after this machine first held it. NaN
+ * when it has no `acceptedUntil` or one that does not parse.
+ */
+export function previousVersionUsableUntil(
+  stored: Pick<StoredSightingKeys, 'fetchedAtMs' | 'previousFirstSeenAtMs'>,
+  version: { keyVersion: number; acceptedUntil?: string | undefined },
+): number {
+  if (version.acceptedUntil === undefined) return Number.NaN;
+  return Math.min(
+    Date.parse(version.acceptedUntil),
+    previousVersionFirstSeenAtMs(stored, version.keyVersion) + SIGHTING_KEY_OVERLAP_MAX_MS,
+  );
 }
 
 export interface SightingKeyStore {
@@ -157,12 +191,19 @@ export function createSightingKeyStore(
   return new FileSightingKeyStore(keysDirectory);
 }
 
-/** The stored map in the form a consumer uses: versions and raw key bytes. */
-export function sightingKeysOf(stored: StoredSightingKeys): SightingKeys {
+/**
+ * The stored map in the form a consumer uses: versions and raw key bytes, with
+ * only the previous versions still accepted at `nowMs`.
+ */
+export function sightingKeysOf(stored: StoredSightingKeys, nowMs: number): SightingKeys {
   const bytes = (key: string): Uint8Array => new Uint8Array(Buffer.from(key, 'base64url'));
   return {
     current: { keyVersion: stored.keyVersion, key: bytes(stored.key) },
-    previous: (stored.previous ?? []).map((p) => ({ keyVersion: p.keyVersion, key: bytes(p.key) })),
+    previous: (stored.previous ?? [])
+      .filter((p) => nowMs < previousVersionUsableUntil(stored, p))
+      .sort((a, b) => b.keyVersion - a.keyVersion)
+      .slice(0, SIGHTING_ALIASES_MAX)
+      .map((p) => ({ keyVersion: p.keyVersion, key: bytes(p.key) })),
   };
 }
 
@@ -174,7 +215,7 @@ export function sightingKeysOf(stored: StoredSightingKeys): SightingKeys {
  */
 export function readSightingKeys(
   base: string = defaultDataDir(),
-  deps: { exec?: SecurityExec } = {},
+  deps: { exec?: SecurityExec; now?: () => number } = {},
 ): SightingKeys | undefined {
   try {
     const settings = readWorkspaceSettings(base);
@@ -187,7 +228,7 @@ export function readSightingKeys(
     ).read();
     if (stored === undefined) return undefined;
     if (stored.endpointFingerprint !== sightingKeyEndpointFingerprint(endpoint)) return undefined;
-    return sightingKeysOf(stored);
+    return sightingKeysOf(stored, (deps.now ?? Date.now)());
   } catch {
     return undefined;
   }

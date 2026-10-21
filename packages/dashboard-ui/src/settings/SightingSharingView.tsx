@@ -4,6 +4,7 @@ import type { SightingSharing } from '@akasecurity/schema';
 import {
   managedByLabel,
   SIGHTING_SHARE_PAYLOAD_NOTE,
+  SIGHTING_SHARE_ROTATION_NOTE,
   sightingShareModeLabel,
   sightingShareReasonText,
 } from '@akasecurity/schema';
@@ -98,7 +99,7 @@ export function SightingSharingView({ state, onChange, busy, error }: SightingSh
           {sentence(sightingShareReasonText(state))}
         </p>
         <p className="mt-1 text-xs text-text-3" data-slot="sighting-share-payload">
-          {SIGHTING_SHARE_PAYLOAD_NOTE}
+          {SIGHTING_SHARE_PAYLOAD_NOTE} {SIGHTING_SHARE_ROTATION_NOTE}
         </p>
         {standalone ? (
           <p className="mt-1 text-xs text-text-3" data-slot="sighting-share-standalone">

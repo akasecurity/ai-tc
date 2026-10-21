@@ -214,6 +214,75 @@ describe('outbound encoder: values', () => {
   });
 });
 
+describe('outbound encoder: previous key versions', () => {
+  const value = patShaped(19);
+  const current = keyOf(5, 1);
+  const older = keyOf(3, 2);
+  const newer = keyOf(4, 3);
+  const withPrevious = (previous: SightingKey[]) =>
+    encoderWith(current, { readKeys: () => ({ current, previous }) });
+
+  it('lists the value under each previous version as aliases, and puts only the current token in content', async () => {
+    const result = await withPrevious([newer, older]).encodeContent(`push ${value}`);
+    expect(result.content).toBe(`push ${expectedToken(current, value)}`);
+    expect(result.content).not.toContain(expectedToken(newer, value));
+    expect(result.sightings).toEqual([
+      {
+        token: expectedToken(current, value),
+        aliases: [expectedToken(newer, value), expectedToken(older, value)],
+        ruleId: 'secrets/github-pat',
+        category: 'secret',
+      },
+    ]);
+  });
+
+  it('carries no aliases member with no previous version', async () => {
+    const result = await withPrevious([]).encodeContent(value);
+    expect(result.sightings).toHaveLength(1);
+    expect(result.sightings[0]?.token).toBe(expectedToken(current, value));
+    expect(result.sightings[0]).not.toHaveProperty('aliases');
+  });
+
+  it('gives a vaulted secret its aliases too', async () => {
+    const vaulted = patShaped(29);
+    const result = await encoderWith(current, {
+      readKeys: () => ({ current, previous: [older] }),
+      openVault: () => ({
+        vault: {
+          fingerprintPointer: (_token, digest) =>
+            Promise.resolve({ digest: digest(vaulted), ruleId: 'secrets/vaulted' }),
+        },
+        close: () => undefined,
+      }),
+    }).encodeContent(pointerOf('secret', 'A'));
+    expect(result.content).toBe(expectedToken(current, vaulted));
+    expect(result.sightings).toEqual([
+      {
+        token: expectedToken(current, vaulted),
+        aliases: [expectedToken(older, vaulted)],
+        ruleId: 'secrets/vaulted',
+        category: 'secret',
+      },
+    ]);
+  });
+
+  it('never puts a raw value anywhere in the event it sends', async () => {
+    const encoder = withPrevious([older]);
+    const content = `k ${value}`;
+    const encoded = await encoder.encodeEvent({
+      id: captureWireId('s', contentHashOf(content), null),
+      sourceTool: 'claude-code',
+      kind: 'prompt',
+      occurredAt: '2026-10-01T10:00:00.000Z',
+      contentHash: contentHashOf(content),
+      content,
+      metadata: { sessionId: 's' },
+    });
+    expect(encoded.metadata?.sightings?.[0]?.aliases).toEqual([expectedToken(older, value)]);
+    expect(JSON.stringify(encoded)).not.toContain(value);
+  });
+});
+
 describe('outbound encoder: vault pointers', () => {
   const vaulted = patShaped(23);
   const secretPointer = pointerOf('secret', 'A');
@@ -470,6 +539,42 @@ describe('createStoreOutboundEncoder', () => {
     } finally {
       db.close();
     }
+  });
+
+  it('uses a stored previous version only inside its window', async () => {
+    const key = keyOf(7, 4);
+    const previous = keyOf(6, 5);
+    const value = patShaped(47);
+    const until = (offsetMs: number) => new Date(Date.now() + offsetMs).toISOString();
+
+    storeSightingKey(base, key, { previous: [{ key: previous, acceptedUntil: until(60_000) }] });
+    const inside = await encoderOver(base).encodeContent(value);
+    expect(inside.sightings[0]?.aliases).toEqual([expectedToken(previous, value)]);
+
+    storeSightingKey(base, key, { previous: [{ key: previous, acceptedUntil: until(-1_000) }] });
+    const past = await encoderOver(base).encodeContent(value);
+    expect(past.sightings).toHaveLength(1);
+    expect(past.sightings[0]?.token).toBe(expectedToken(key, value));
+    expect(past.sightings[0]).not.toHaveProperty('aliases');
+
+    storeSightingKey(base, key, { previous: [{ key: previous }] });
+    const unbounded = await encoderOver(base).encodeContent(value);
+    expect(unbounded.sightings).toHaveLength(1);
+    expect(unbounded.sightings[0]?.token).toBe(expectedToken(key, value));
+    expect(unbounded.sightings[0]).not.toHaveProperty('aliases');
+    expect(unbounded.content).toBe(expectedToken(key, value));
+  });
+
+  it('sends no alias, and no token at all, while sighting sharing is off', async () => {
+    const key = keyOf(7, 4);
+    const previous = keyOf(6, 5);
+    const value = patShaped(53);
+    const acceptedUntil = new Date(Date.now() + 60_000).toISOString();
+    storeSightingKey(base, key, { sharing: false, previous: [{ key: previous, acceptedUntil }] });
+
+    const result = await encoderOver(base).encodeContent(value);
+
+    expect(result).toEqual({ content: FAIL_CLOSED_MARKER, sightings: [] });
   });
 
   it('sends the marker for a pointer the vault does not hold', async () => {

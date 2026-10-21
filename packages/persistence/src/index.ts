@@ -341,11 +341,14 @@ export type { SightingKey, SightingKeys, SightingKeyStore } from './vault/sighti
 export {
   clearSightingKeys,
   createSightingKeyStore,
+  previousVersionFirstSeenAtMs,
+  previousVersionUsableUntil,
   readSightingKeys,
   SIGHTING_KEY_FILENAME,
   sightingKeyEndpointFingerprint,
 } from './vault/sighting-keys.ts';
-export { SIGHTING_DOMAIN, sightingToken } from './vault/sighting-token.ts';
+export type { SightingTokens } from './vault/sighting-token.ts';
+export { SIGHTING_DOMAIN, sightingToken, sightingTokens } from './vault/sighting-token.ts';
 export type {
   DetokenizeOptions,
   DetokenizeResult,

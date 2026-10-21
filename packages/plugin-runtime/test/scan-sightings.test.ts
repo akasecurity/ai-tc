@@ -69,7 +69,7 @@ function input() {
     project: { projectKey: `path:${root}`, name: 'widgets', root },
     sightings: [
       {
-        token: sightingToken(plan.key, ['value', 'for', 'test'].join('-')),
+        token: sightingToken(plan.keys.current, ['value', 'for', 'test'].join('-')),
         ruleId: 'test/secret',
         file: join(root, 'a.ts'),
       },

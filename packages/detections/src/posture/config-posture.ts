@@ -100,13 +100,24 @@ export const CONFIG_POSTURE_RULES: readonly InspectionDefinitionInput[] = [
  * and mints row ids. `maskedMatch` carries the offending COMMAND — it is the
  * correlation key the read surface matches back to a hook row, and it is
  * config the user already holds locally, not captured secret content.
+ *
+ * One finding per (rule, command): a command registered on several events, or
+ * in several scopes, is the same risk, so its repeat registrations collapse
+ * onto the first one's finding.
  */
 export function evaluateConfigPosture(scan: ConfigScanResult): ConfigPostureFindingInput[] {
   const findings: ConfigPostureFindingInput[] = [];
+  const seen = new Set<string>();
+  const push = (f: ConfigPostureFindingInput): void => {
+    const key = `${f.ruleId}\0${f.maskedMatch}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    findings.push(f);
+  };
   for (const hook of scan.hooks) {
     const egress = EGRESS_RE.exec(hook.command);
     if (egress) {
-      findings.push(
+      push(
         finding(
           'hook-external-egress',
           hook.command,
@@ -119,11 +130,11 @@ export function evaluateConfigPosture(scan: ConfigScanResult): ConfigPostureFind
       );
     }
     if (isUnknown(hook)) {
-      findings.push(finding('hook-unknown', hook.command, whole(hook.command), 0.6));
+      push(finding('hook-unknown', hook.command, whole(hook.command), 0.6));
     }
   }
   for (const conflicted of conflictingHooks(scan.hooks)) {
-    findings.push(finding('hook-conflict', conflicted.command, whole(conflicted.command), 0.7));
+    push(finding('hook-conflict', conflicted.command, whole(conflicted.command), 0.7));
   }
   return findings;
 }

@@ -14,8 +14,10 @@
  * This hook does NOT reconcile inline — it only TRIGGERS the background worker
  * so it adds zero latency to the turn. It reads `conversationId` +
  * `transcriptPath` STRAIGHT from the payload (no path reconstruction),
- * throttle-checks, and if not throttled spawns `scripts/reconcile.js` detached
- * + unref, forwarding both via argv, then returns immediately.
+ * throttle-checks, and spawns `scripts/reconcile.js` detached + unref,
+ * forwarding both via argv, then returns immediately. A Stop the throttle holds
+ * back spawns the one worker that runs when the window closes, so the last Stop
+ * of a session is reconciled too.
  *
  * Fail-open on a fail-closed host: `runHookFailOpen` always writes `{}` and
  * exits 0 — see shared.ts.

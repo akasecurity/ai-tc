@@ -35,6 +35,8 @@ import { denyPointerMessage } from '../../src/hooks/pre-tool-use-decision.ts';
 import { runPreToolUse } from '../../src/hooks/pre-tool-use-run.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { ruleExample } from '../helpers/rule-example.ts';
+import type { StderrCapture } from '../helpers/stderr-capture.ts';
+import { captureStderr } from '../helpers/stderr-capture.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(HERE, '..', 'fixtures');
@@ -89,9 +91,7 @@ const DIALECTS = [
 let root: string;
 let akaHome: string;
 let cwd: string;
-let stderr: string[];
-// `(node:1234) ExperimentalWarning: …` and the `--trace-warnings` hint after it.
-const NODE_WARNING = /^\(node:\d+\) |--trace-warnings/u;
+let stderr: StderrCapture;
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'aka-copilot-call-run-'));
@@ -100,11 +100,7 @@ beforeEach(() => {
   akaHome = join(root, 'aka-home');
   cwd = join(root, 'checkout');
   mkdirSync(cwd);
-  stderr = [];
-  vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
-    stderr.push(String(chunk));
-    return true;
-  });
+  stderr = captureStderr();
 });
 
 afterEach(() => {
@@ -143,11 +139,6 @@ function findingRules(): unknown[] {
   }
 }
 
-/** Everything written to stderr except node's own runtime warnings. */
-function akaStderr(): string {
-  return stderr.filter((line) => !NODE_WARNING.test(line)).join('');
-}
-
 function reasonOf(output: unknown): string {
   const flat = output as { permissionDecisionReason?: unknown } | undefined;
   const nested = output as
@@ -172,7 +163,7 @@ describe.each(DIALECTS)('runPreToolUse on the $kind dialect', (d) => {
   it('writes nothing for a clean call of ordinary size', async () => {
     seedPolicy('block');
     expect(await run('ls -la')).toBeUndefined();
-    expect(akaStderr()).toBe('');
+    expect(stderr.filtered()).toBe('');
     // The control: the store was opened, so the silence is a decision.
     expect(existsSync(join(akaHome, 'data', 'aka.db'))).toBe(true);
   });
@@ -186,7 +177,7 @@ describe.each(DIALECTS)('runPreToolUse on the $kind dialect', (d) => {
     expect(reason).toContain(RULE_ID);
     expect(findingRules()).toContain(RULE_ID);
     expectNoEchoOf(reason, FIXTURE.example);
-    expectNoEchoOf(akaStderr(), FIXTURE.example);
+    expectNoEchoOf(stderr.raw(), FIXTURE.example);
   });
 
   // The worker is pointed at a location with nothing in it — an install that
@@ -206,10 +197,10 @@ describe.each(DIALECTS)('runPreToolUse on the $kind dialect', (d) => {
     expect(findingRules()).toEqual([]);
     expectNoEchoOf(reasonOf(output), FIXTURE.example);
     // The SDK says on stderr that it refused, and carries none of the field.
-    const written = akaStderr();
+    const written = stderr.filtered();
     expect(written).toMatch(/\[aka\] a large input could not be scanned.* and was refused/u);
-    expectNoEchoOf(written, FIXTURE.example);
-    expect(written).not.toContain('lorem ipsum');
+    expectNoEchoOf(stderr.raw(), FIXTURE.example);
+    expect(stderr.raw()).not.toContain('lorem ipsum');
   });
 
   it('reaches no verdict on benign text below the threshold over the same absent worker (the control)', async () => {
@@ -218,7 +209,7 @@ describe.each(DIALECTS)('runPreToolUse on the $kind dialect', (d) => {
     // worker is needed, so the absent one cannot decide anything.
     const absent = pathToFileURL(join(root, 'no-worker-here', 'scan-worker.js'));
     expect(await run(`echo ${LARGE.slice(0, 1000)}`, { scanWorkerUrl: absent })).toBeUndefined();
-    expect(akaStderr()).toBe('');
+    expect(stderr.filtered()).toBe('');
   });
 
   it('denies a vault pointer in the command without reaching the store', async () => {
@@ -227,7 +218,7 @@ describe.each(DIALECTS)('runPreToolUse on the $kind dialect', (d) => {
     // Decided from the call alone: the config load that creates the home never
     // ran, so no store was opened and none can be left open.
     expect(existsSync(akaHome)).toBe(false);
-    expect(akaStderr()).toBe('');
+    expect(stderr.filtered()).toBe('');
   });
 
   it('denies a vault pointer in the command even when the store cannot be opened', async () => {
@@ -247,7 +238,148 @@ describe.each(DIALECTS)('runPreToolUse on the $kind dialect', (d) => {
       );
     } else {
       expect(output).toBeUndefined();
-      expect(akaStderr()).toContain('could not open its local store');
+      expect(stderr.filtered()).toContain('could not open its local store');
     }
+  });
+});
+
+// Rule selection per field. The command-risk rules are scoped to `tool_use`
+// captures and judge text about to run, so they belong on a call's command and
+// nowhere else on it. The model's prose beside the command rides along under
+// the same capture kind, and a sentence that merely MENTIONS reading a
+// credential file must not deny a call whose command is clean. Secret rules
+// still run on that prose.
+const COMMAND_RULE = 'command-risk/credential-file-read';
+const COMMAND_PACK = ruleExample(COMMAND_RULE);
+const PROSE = 'tail .env to check the prefix';
+const CLEAN_COMMAND = 'git status';
+const RISKY_COMMAND = 'tail .env';
+
+const PROSE_FIELDS = [
+  { dialect: DIALECTS[0], argsKey: 'toolArgs', field: 'description' },
+  { dialect: DIALECTS[1], argsKey: 'tool_input', field: 'explanation' },
+  { dialect: DIALECTS[1], argsKey: 'tool_input', field: 'goal' },
+] as const;
+
+/** Both packs at one policy, so a command-risk finding denies under block. */
+function seedBothPolicies(policy: BuiltinPolicyId): void {
+  seedPolicy(policy);
+  const db = openLocalDatabase(join(akaHome, 'data'));
+  try {
+    db.installedPacks.setPolicy(COMMAND_PACK.namespace, COMMAND_PACK.packId, policy);
+  } finally {
+    db.close();
+  }
+}
+
+describe.each(PROSE_FIELDS)('runPreToolUse rule selection for $dialect.kind $field', (p) => {
+  const d = p.dialect;
+
+  async function run(command: string, prose: string): Promise<unknown> {
+    const payload = d.payload(command, cwd);
+    const args = { ...(payload[p.argsKey] as object), [p.field]: prose };
+    return runPreToolUse(d.event, JSON.stringify({ ...payload, [p.argsKey]: args }), { akaHome });
+  }
+
+  it('reaches no verdict on a clean command whose prose names a credential read', async () => {
+    seedBothPolicies('block');
+    const output = await run(CLEAN_COMMAND, PROSE);
+
+    expect(output).toBeUndefined();
+    expect(stderr.filtered()).toBe('');
+    expect(findingRules()).toEqual([]);
+  });
+
+  it('denies the same credential read when it is the command (the control)', async () => {
+    // The prose text above really is what the command-risk rule matches, so
+    // its silence there is rule selection rather than a rule that missed.
+    seedBothPolicies('block');
+    const output = await run(RISKY_COMMAND, 'Show the first lines of the env file');
+
+    expect(reasonOf(output)).toContain(COMMAND_RULE);
+    expect(output).toEqual(d.deny(reasonOf(output)));
+    expect(findingRules()).toEqual([COMMAND_RULE]);
+  });
+
+  it('still finds a secret in the prose, and only the secret', async () => {
+    seedBothPolicies('block');
+    const output = await run(CLEAN_COMMAND, `${PROSE} TWILIO=${FIXTURE.example}`);
+
+    // The secret rule fires on the prose and the command-risk rule does not,
+    // on one and the same field.
+    expect(findingRules()).toEqual([RULE_ID]);
+    expect(output).toEqual(d.deny(reasonOf(output)));
+  });
+});
+
+// On the CLI a prose field still rewrites beside a command (`modifiedArgs`
+// carries no verdict), so a redact in `description` and a warn in `command`
+// meet in the rewrite branch. The notice there has to name both, or the
+// command's warning is recorded and never shown.
+describe('runPreToolUse on the cli dialect — a warned command beside a redacted description', () => {
+  const COMMAND_RULE = 'command-risk/credential-file-read';
+  const COMMAND = ruleExample(COMMAND_RULE);
+
+  function seedPolicies(entries: readonly (readonly [string, string, BuiltinPolicyId])[]): void {
+    const db = openLocalDatabase(join(akaHome, 'data'));
+    try {
+      db.installedPacks.recordInventory(bundledDetections());
+      for (const [namespace, packId, policy] of entries) {
+        db.installedPacks.setPolicy(namespace, packId, policy);
+      }
+    } finally {
+      db.close();
+    }
+  }
+
+  function actions(): unknown[] {
+    const db = new DatabaseSync(join(akaHome, 'data', 'aka.db'), { readOnly: true });
+    try {
+      return db
+        .prepare(
+          `SELECT d.rule_id, f.action_taken FROM inspection_findings f
+             JOIN inspection_definitions d ON d.id = f.inspection_definition_id
+             ORDER BY d.rule_id`,
+        )
+        .all()
+        .map((row) => ({ rule_id: row.rule_id, action_taken: row.action_taken }));
+    } finally {
+      db.close();
+    }
+  }
+
+  it('rewrites the description and names both rules in the stderr notice', async () => {
+    seedPolicies([
+      [COMMAND.namespace, COMMAND.packId, 'warn'],
+      [FIXTURE.namespace, FIXTURE.packId, 'redact'],
+    ]);
+    const base = fixture('cli', 'preToolUse.json');
+    const description = `Read the file, then use ${FIXTURE.example}`;
+    const payload = {
+      ...base,
+      cwd,
+      toolArgs: { ...(base.toolArgs as object), command: COMMAND.example, description },
+    };
+
+    const output = (await runPreToolUse('preToolUse', JSON.stringify(payload), { akaHome })) as {
+      modifiedArgs?: Record<string, unknown>;
+    };
+
+    // The rewrite: the command untouched, the description masked.
+    expect(output.modifiedArgs?.command).toBe(COMMAND.example);
+    expect(typeof output.modifiedArgs?.description).toBe('string');
+    expect(output.modifiedArgs?.description).not.toBe(description);
+    expectNoEchoOf(String(output.modifiedArgs?.description), FIXTURE.example);
+
+    const written = stderr.filtered();
+    expect(written).toContain(`AKA redacted sensitive content in bash input — flagged ${RULE_ID}.`);
+    expect(written).toContain(`AKA flagged sensitive content in bash input (${COMMAND_RULE}).`);
+    expectNoEchoOf(stderr.raw(), FIXTURE.example);
+
+    // The ledger records what each field resolved to; the notice changes none of it.
+    expect(actions()).toEqual([
+      { rule_id: COMMAND_RULE, action_taken: 'warn' },
+      { rule_id: RULE_ID, action_taken: 'redact' },
+    ]);
   });
 });

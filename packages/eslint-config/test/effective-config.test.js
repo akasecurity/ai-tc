@@ -670,7 +670,9 @@ const EXPECTED_NON_PACKAGE_FILES = [
   'test/setup/no-host-codex-config.ts',
   'test/setup/no-managed-settings.ts',
   'test/setup/no-network.ts',
+  'test/setup/no-wasm-code-gc.ts',
   'test/vitest/coverage.ts',
+  'test/vitest/unfinished-modules-reporter.ts',
   'tools/ci/egress-probe.mjs',
 ];
 

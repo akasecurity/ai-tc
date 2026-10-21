@@ -64,7 +64,7 @@ import { responseKey, scannableResponseFields } from './tool-response.ts';
 /**
  * The two events this handler is registered for, one per dialect.
  *
- * Checked rather than assumed, for the reason `pre-tool-use.ts` gives: a
+ * Checked rather than assumed, for the reason `pre-tool-use-run.ts` gives: a
  * manifest that wired this script elsewhere would have it reading a result off
  * a payload that carries none, and declining for the wrong reason hides the
  * misconfiguration.

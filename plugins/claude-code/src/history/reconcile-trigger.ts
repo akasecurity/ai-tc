@@ -1,5 +1,6 @@
 // Detached spawns of the token-usage reconcile worker: the throttled one a hook
-// makes, and the follow-up a held pass asks for.
+// makes, the trailing one that closes a throttle window, and the follow-up a held
+// pass asks for.
 //
 // Detached + unref + on-disk min-gap marker so the hook never waits on it. It
 // passes the session id + transcript path through to the worker via argv, so the
@@ -13,16 +14,21 @@ import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { throttledPerKey } from '@akasecurity/plugin-sdk';
+import { gatePerKey } from '@akasecurity/plugin-sdk';
 import type { PendingHold } from '@akasecurity/plugin-sdk/account';
 
 import type { HeldPass } from './tail.ts';
 import { safeSessionId } from './tail.ts';
 
 // Min gap between reconcile spawns. Stop fires once per turn; batching a few turns
-// into one tail pass is lossless (the offset read is cumulative), so
-// this window is purely a freshness-vs-cost knob, not a correctness one.
+// into one tail pass is lossless (the offset read is cumulative) as long as a pass
+// still follows the last of them, which is what the trailing pass below is for.
 const RECONCILE_THROTTLE_MS = 30_000;
+
+// The fourth argument of a worker spawned for the trailing pass of a throttle
+// window: its third is when that window closes, and the worker runs a plain pass
+// then, which is the follow-up of no hold.
+export const TRAILING_MODE = 'trailing';
 
 // Marker-file PREFIX for the reconcile throttle. The marker is
 // namespaced PER SESSION (`${prefix}-${sessionId}`): each spawned worker reconciles
@@ -36,9 +42,12 @@ const RECONCILE_THROTTLE_MS = 30_000;
 const RECONCILE_MARKER_PREFIX = 'reconcile-last-attempt';
 
 /**
- * Trigger a background reconcile of one session's transcript tail. Throttle-checks
- * first; if not throttled, spawns `reconcile.js` DETACHED + unref, forwarding the
- * session id and transcript path as argv. Returns immediately — the hook adds no
+ * Trigger a background reconcile of one session's transcript tail. Gates the call
+ * on the session's throttle window: the first call of a window spawns
+ * `reconcile.js` DETACHED + unref, forwarding the session id and transcript path as
+ * argv, and a call the window holds back spawns one worker that waits until the
+ * window closes and then runs, so the last call of a window is never dropped.
+ * Later calls in that window spawn nothing. Returns immediately — the hook adds no
  * latency. `reconcile.js` is resolved next to this module so the bundled hook
  * script finds its compiled sibling in `scripts/`.
  */
@@ -47,8 +56,11 @@ export function triggerReconcile(dataDir: string, sessionId: string, transcriptP
     // The session id rides in from hook stdin — sanitize before it becomes a
     // marker filename so it can never name anything outside dataDir.
     const key = safeSessionId(sessionId);
-    if (throttledPerKey(dataDir, RECONCILE_MARKER_PREFIX, key, RECONCILE_THROTTLE_MS)) return;
-    spawnWorker([sessionId, transcriptPath]);
+    const gate = gatePerKey(dataDir, RECONCILE_MARKER_PREFIX, key, RECONCILE_THROTTLE_MS);
+    if (gate.kind === 'run') spawnWorker([sessionId, transcriptPath]);
+    else if (gate.kind === 'trail') {
+      spawnWorker([sessionId, transcriptPath, String(gate.dueAt), TRAILING_MODE]);
+    }
   } catch {
     // Fail-open: the next Stop or the SessionStart catch-up recovers the tail.
   }

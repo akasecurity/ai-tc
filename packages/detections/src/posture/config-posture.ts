@@ -21,12 +21,12 @@ import type {
 } from '@akasecurity/schema';
 
 // One version for the v1 heuristics below; bump on any behavior change.
-const RULE_VERSION = '1';
+const RULE_VERSION = '2';
 
 // First-executable-token basenames that identify a recognizable, widely-known
-// tool — the v1 stand-in for the future known-hooks registry. Deliberately
-// SMALL: a bare project script (guard.sh) is exactly what the rule should
-// surface until a registry can vouch for it.
+// tool or language runtime — the v1 stand-in for the future known-hooks
+// registry. Deliberately SMALL: a bare project script (guard.sh) is exactly
+// what the rule should surface until a registry can vouch for it.
 const KNOWN_TOOLS = new Set([
   'prettier',
   'eslint',
@@ -40,6 +40,13 @@ const KNOWN_TOOLS = new Set([
   'npm',
   'pnpm',
   'yarn',
+  'bun',
+  'bunx',
+  'deno',
+  'python3',
+  'uv',
+  'bash',
+  'sh',
   'make',
   'git',
   'jq',
@@ -78,7 +85,7 @@ export const CONFIG_POSTURE_RULES: readonly InspectionDefinitionInput[] = [
     name: 'Unknown hook — not attributable to a plugin or known tool',
     category: 'config',
     // medium, not high: with a deliberately tiny allowlist this v1 heuristic
-    // fires on ordinary interpreter hooks (python3 x.py) and compound commands
+    // fires on ordinary hooks it cannot attribute, such as compound commands
     // (cd … && tool); 'high' is reserved for egress, which is genuinely
     // dangerous. Revisit when the known-hooks registry replaces the allowlist.
     severity: 'medium',

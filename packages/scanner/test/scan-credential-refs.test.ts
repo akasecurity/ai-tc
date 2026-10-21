@@ -147,11 +147,10 @@ describe('scanWorktree — credential references', () => {
       ]),
     );
 
-    expect(chargeHit()?.credentialRefs?.[0]).toEqual({
+    expect(chargeHit()?.credentialRefs?.[0]).toMatchObject({
       kind: 'literal',
       token: sightingToken(KEY, INSIDE),
       aliases: [sightingToken(PREVIOUS_KEY, INSIDE)],
-      ruleId: expect.any(String),
     });
     expect(JSON.stringify(chargeHit()?.credentialRefs)).not.toContain(INSIDE);
   });

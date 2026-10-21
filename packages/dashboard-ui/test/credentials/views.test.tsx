@@ -70,8 +70,6 @@ function list(overrides: Partial<CredentialsListViewProps> = {}) {
     total: 1,
     search: '',
     onSearch: vi.fn(),
-    chip: 'all',
-    onChip: vi.fn(),
     onSelect: vi.fn(),
     onExport: vi.fn(),
     onNextPage: vi.fn(),
@@ -98,10 +96,9 @@ describe('CredentialsListView', () => {
       'Teams',
       'Endpoints',
       'Last rotated',
-      'Status',
     ]);
     const cells = [...mounted.host.querySelectorAll('tbody td')].map((td) => td.textContent.trim());
-    expect(cells).toEqual(['GITHUB_TOKENGitHub token', 'GitHub', '—', '2', '3', '4', '—', 'OK']);
+    expect(cells).toEqual(['GITHUB_TOKENGitHub token', 'GitHub', '—', '2', '3', '4', '—']);
   });
 
   it('opens a credential on click and exports on request', () => {
@@ -133,12 +130,32 @@ describe('CredentialsListView', () => {
     expect(text()).toContain('Nothing matches this search.');
   });
 
-  it('shows the host error in place of the table', () => {
-    list({ error: 'You need permission to view detections.' });
+  it('keeps the pager on an empty page past the first, and says the rows moved', () => {
+    const props = list({ items: [], total: 120, pageStart: 101, hasPreviousPage: true });
+    expect(text()).toContain('These rows moved while you were reading.');
+    expect(text()).not.toContain('No credentials have been seen yet');
+    act(() => {
+      button('Previous')?.click();
+    });
+    expect(props.onPreviousPage).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows placeholder rows, not an empty table, while the first page loads', () => {
+    list({ items: [], total: 0, isLoading: true });
+    expect(mounted.host.querySelector('table')).toBeNull();
+    expect(mounted.host.querySelectorAll('.animate-pulse').length).toBeGreaterThan(0);
+    expect(text()).not.toContain('No credentials have been seen yet');
+  });
+
+  it('shows the host error in place of the table, the count and Export', () => {
+    list({ items: [], total: 0, error: 'You need permission to view detections.' });
     expect(mounted.host.querySelector('[role="alert"]')?.textContent).toBe(
       'You need permission to view detections.',
     );
     expect(mounted.host.querySelector('table')).toBeNull();
+    expect(text()).toContain('Not available');
+    expect(text()).not.toContain('0 credentials');
+    expect(button('Export')?.disabled).toBe(true);
   });
 });
 
@@ -167,6 +184,13 @@ describe('CredentialDetailView', () => {
     expect(text()).toContain('vault://kv/payments#github');
   });
 
+  it('names the kind and variable once, in the header', () => {
+    detail();
+    expect(text()).not.toContain('Variable name');
+    expect(text().split('GITHUB_TOKEN')).toHaveLength(2);
+    expect(text().split('GitHub token')).toHaveLength(2);
+  });
+
   it('lists where it is used: projects, teams with an Ungrouped bucket, and harness labels', () => {
     detail();
     expect(text()).toContain('acme/api');
@@ -176,6 +200,8 @@ describe('CredentialDetailView', () => {
     expect(text()).toContain('Claude Code');
     // A harness the label map does not know is shown by its id, not dropped.
     expect(text()).toContain('some-new-harness');
+    detail({ ...DETAIL, harnesses: ['constructor'] });
+    expect(text()).toContain('constructor');
     expect(text()).toContain('Seen on 4 endpoints.');
   });
 

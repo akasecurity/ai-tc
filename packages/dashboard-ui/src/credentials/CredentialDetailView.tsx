@@ -1,6 +1,6 @@
 'use client';
-import { TOOL_TO_HARNESS } from '@akasecurity/schema';
-import { Badge, Button, Card } from '@akasecurity/ui-kit';
+import { harnessFromTool } from '@akasecurity/schema';
+import { Badge, Button, Card, SeverityBadge } from '@akasecurity/ui-kit';
 import type { ReactNode } from 'react';
 
 import { Ico } from '../inventory/Ico.tsx';
@@ -21,8 +21,10 @@ export interface CredentialDetailViewProps {
 // A sighting names the tool that sent it (`claude-code`); the label map is keyed
 // by harness (`claudecode`). An id neither knows is shown as it is.
 function harnessLabel(id: string): string {
-  const harness = TOOL_TO_HARNESS[id] ?? id;
-  return harness in PROVIDERS ? PROVIDERS[harness as keyof typeof PROVIDERS].label : id;
+  const harness = harnessFromTool(id);
+  return Object.hasOwn(PROVIDERS, harness)
+    ? PROVIDERS[harness as keyof typeof PROVIDERS].label
+    : id;
 }
 
 function UsageRow({
@@ -82,9 +84,6 @@ export function CredentialDetailView({
           </h2>
           <div className="text-xs text-text-3">{c.kind}</div>
         </div>
-        <span className="ml-auto inline-flex items-center gap-1.5 text-xs font-semibold text-ok-ink">
-          <Ico name="check-circle" className="size-4" /> OK
-        </span>
       </div>
 
       {detectedOnly && (
@@ -105,11 +104,7 @@ export function CredentialDetailView({
       <div>
         <SectionLabel>Details</SectionLabel>
         <div className="grid grid-cols-2 gap-x-6 gap-y-4 md:grid-cols-4">
-          <MetaItem label="Kind">{c.kind}</MetaItem>
           <MetaItem label="Provider">{c.provider ?? '—'}</MetaItem>
-          <MetaItem label="Variable name">
-            <span className="font-mono text-xs">{c.variableName ?? '—'}</span>
-          </MetaItem>
           <MetaItem label="Reference">
             {c.reference === null ? '—' : <span className="font-mono text-xs">{c.reference}</span>}
           </MetaItem>
@@ -187,7 +182,7 @@ export function CredentialDetailView({
                   }}
                   className="flex w-full cursor-pointer items-center gap-3 rounded-lg border border-border px-3 py-2 text-left hover:bg-surface-2"
                 >
-                  <Badge variant={f.severity}>{f.severity}</Badge>
+                  <SeverityBadge severity={f.severity} />
                   <span className="min-w-0 flex-1 truncate text-sm text-text">{f.name}</span>
                   <span className="shrink-0 text-xs text-text-3">
                     {relativeTime(f.detectedAt, renderedAt)}

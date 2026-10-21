@@ -233,8 +233,14 @@ export { ProjectDetail } from './inventory/ProjectDetail.tsx';
 export { TypeInventory } from './inventory/TypeInventory.tsx';
 
 // Credential ledger views — props-driven; the host maps its own records onto these shapes.
-export { CredentialDetailView } from './credentials/CredentialDetailView.tsx';
-export { type CredentialChip, CredentialsListView } from './credentials/CredentialsListView.tsx';
+export {
+  CredentialDetailView,
+  type CredentialDetailViewProps,
+} from './credentials/CredentialDetailView.tsx';
+export {
+  CredentialsListView,
+  type CredentialsListViewProps,
+} from './credentials/CredentialsListView.tsx';
 export type {
   CredentialDetailModel,
   CredentialLinkedFinding,

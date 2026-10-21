@@ -20,17 +20,12 @@ import { relativeTime } from '../lib/relativeTime.ts';
 import { SearchField } from '../shared/SearchField.tsx';
 import type { CredentialListItem } from './types.ts';
 
-/** The status chips the list filters by. */
-export type CredentialChip = 'all' | 'ok';
-
 export interface CredentialsListViewProps {
   items: CredentialListItem[];
   /** Credentials matching the search across every page. */
   total: number;
   search: string;
   onSearch: (value: string) => void;
-  chip: CredentialChip;
-  onChip: (chip: CredentialChip) => void;
   onSelect: (id: string) => void;
   onExport: () => void;
   exporting?: boolean | undefined;
@@ -42,7 +37,7 @@ export interface CredentialsListViewProps {
   /** 1-indexed position of `items[0]` in the whole result. */
   pageStart: number;
   isLoading?: boolean | undefined;
-  /** Shown in place of the table when the host cannot read the list. */
+  /** Shown in place of the table, the count and Export when the host cannot read the list. */
   error?: string | undefined;
   /** The instant relative times are measured against, in epoch milliseconds. */
   renderedAt: number;
@@ -56,7 +51,6 @@ const COLUMNS = [
   'Teams',
   'Endpoints',
   'Last rotated',
-  'Status',
 ] as const;
 const NUMERIC = new Set<string>(['Projects', 'Teams', 'Endpoints']);
 
@@ -66,8 +60,6 @@ export function CredentialsListView({
   total,
   search,
   onSearch,
-  chip,
-  onChip,
   onSelect,
   onExport,
   exporting = false,
@@ -81,6 +73,10 @@ export function CredentialsListView({
   error,
   renderedAt,
 }: CredentialsListViewProps) {
+  const refused = error !== undefined;
+  const loadingEmpty = isLoading && items.length === 0;
+  // An empty page past the first means rows moved under the cursor, not an empty ledger.
+  const emptyLedger = items.length === 0 && !hasPreviousPage && !hasNextPage;
   return (
     <Card className="flex flex-col gap-4 p-4 shadow-sm">
       <div className="flex flex-wrap items-center gap-3">
@@ -90,7 +86,11 @@ export function CredentialsListView({
         <div className="min-w-0">
           <div className="font-display text-sm font-semibold text-text">Credentials</div>
           <div className="text-xs text-text-3">
-            {isLoading ? '…' : `${String(total)} ${total === 1 ? 'credential' : 'credentials'}`}
+            {refused
+              ? 'Not available'
+              : isLoading
+                ? '…'
+                : `${String(total)} ${total === 1 ? 'credential' : 'credentials'}`}
           </div>
         </div>
         <SearchField
@@ -101,46 +101,28 @@ export function CredentialsListView({
           value={search}
           onValueChange={onSearch}
         />
-        <Button variant="outline" size="sm" disabled={exporting} onClick={onExport}>
+        <Button variant="outline" size="sm" disabled={exporting || refused} onClick={onExport}>
           Export
         </Button>
       </div>
 
-      <div role="group" aria-label="Status" className="flex gap-1.5">
-        {(
-          [
-            ['all', 'All'],
-            ['ok', 'OK'],
-          ] as const
-        ).map(([value, label]) => (
-          <button
-            key={value}
-            type="button"
-            aria-pressed={chip === value}
-            onClick={() => {
-              onChip(value);
-            }}
-            className={cn(
-              'rounded-full border px-3 py-1 text-xs font-semibold',
-              chip === value
-                ? 'border-primary bg-primary-tint text-primary'
-                : 'border-border text-text-2 hover:bg-surface-2',
-            )}
-          >
-            {label} <span className="opacity-65">{isLoading ? '' : String(total)}</span>
-          </button>
-        ))}
-      </div>
-
-      {error !== undefined ? (
+      {refused ? (
         <p role="alert" className="py-10 text-center text-sm text-text-3">
           {error}
         </p>
-      ) : !isLoading && items.length === 0 ? (
+      ) : loadingEmpty ? (
+        <div className="flex flex-col gap-2 py-2">
+          {Array.from({ length: 8 }, (_, i) => (
+            <div key={i} className="h-11 animate-pulse rounded-md bg-surface-3" />
+          ))}
+        </div>
+      ) : items.length === 0 ? (
         <p className="py-10 text-center text-sm text-text-3">
-          {search.trim() === ''
-            ? 'No credentials have been seen yet. They appear here once an attached machine shares a sighting.'
-            : 'Nothing matches this search.'}
+          {!emptyLedger
+            ? 'These rows moved while you were reading. Step back to see the rest.'
+            : search.trim() === ''
+              ? 'No credentials have been seen yet. They appear here once an attached machine shares a sighting.'
+              : 'Nothing matches this search.'}
         </p>
       ) : (
         <div className="overflow-x-auto">
@@ -148,13 +130,7 @@ export function CredentialsListView({
             <TableHeader>
               <TableRow>
                 {COLUMNS.map((column) => (
-                  <TableHead
-                    key={column}
-                    className={cn(
-                      NUMERIC.has(column) && 'text-right',
-                      column === 'Status' && 'text-right',
-                    )}
-                  >
+                  <TableHead key={column} className={cn(NUMERIC.has(column) && 'text-right')}>
                     {column}
                   </TableHead>
                 ))}
@@ -190,11 +166,6 @@ export function CredentialsListView({
                   <TableCell className="text-xs text-text-2">
                     {item.lastRotated === null ? '—' : relativeTime(item.lastRotated, renderedAt)}
                   </TableCell>
-                  <TableCell className="text-right">
-                    <span className="inline-flex items-center gap-1 text-xs font-semibold text-ok-ink">
-                      <Ico name="check-circle" className="size-3.5" /> OK
-                    </span>
-                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -202,11 +173,13 @@ export function CredentialsListView({
         </div>
       )}
 
-      {error === undefined && items.length > 0 && (
+      {!refused && !loadingEmpty && !emptyLedger && (
         <Pagination>
           <PaginationPrevious disabled={!hasPreviousPage || loadingPage} onClick={onPreviousPage} />
           <PaginationStatus>
-            {`${String(pageStart)}–${String(pageStart + items.length - 1)} of ${String(total)}`}
+            {items.length === 0
+              ? `${String(total)} in all`
+              : `${String(pageStart)}–${String(pageStart + items.length - 1)} of ${String(total)}`}
           </PaginationStatus>
           <PaginationNext
             disabled={!hasNextPage || loadingPage}

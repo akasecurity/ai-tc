@@ -1,5 +1,6 @@
 // The shapes the credential views render. A host maps its own credential
 // records onto these; the views never see a value or its fingerprint.
+import type { Severity } from '@akasecurity/schema';
 
 export interface CredentialListItem {
   id: string;
@@ -28,7 +29,7 @@ export interface CredentialTeamUsage {
 export interface CredentialLinkedFinding {
   id: string;
   name: string;
-  severity: 'critical' | 'high' | 'medium' | 'low';
+  severity: Severity;
   /** ISO time the capture that raised it happened. */
   detectedAt: string;
 }
@@ -42,7 +43,7 @@ export interface CredentialDetailModel extends CredentialListItem {
   reference: string | null;
   projects: string[];
   teams: CredentialTeamUsage[];
-  /** Harness ids, such as "claude-code". */
+  /** Source tool ids, such as "claude-code"; an id the registry does not know is shown as sent. */
   harnesses: string[];
   findings: CredentialLinkedFinding[];
 }

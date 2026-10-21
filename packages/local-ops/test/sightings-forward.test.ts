@@ -2,7 +2,11 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { CredentialSightingsSend, LocalDatabase } from '@akasecurity/persistence';
+import type {
+  CredentialSightingsSend,
+  LocalDatabase,
+  SightingKeys,
+} from '@akasecurity/persistence';
 import {
   applyOnboarding,
   createSightingKeyStore,
@@ -42,6 +46,8 @@ const STORED_KEY = {
 };
 // The same key, held independently of the custody read.
 const KEY = { keyVersion: 2, key: new Uint8Array(Buffer.alloc(32, 9)) };
+const KEYS = { current: KEY, previous: [] };
+const PREVIOUS_KEY = { keyVersion: 1, key: new Uint8Array(Buffer.alloc(32, 4)) };
 
 const RULES: Rule[] = [
   {
@@ -140,8 +146,8 @@ function recorder(): { send: CredentialSightingsSend; requests: CredentialSighti
   };
 }
 
-const scan = (sightingKey = KEY) =>
-  scanPathIntoStore(db, root, { rules: RULES, dataDir: store, sightingKey });
+const scan = (sightingKeys: SightingKeys = KEYS) =>
+  scanPathIntoStore(db, root, { rules: RULES, dataDir: store, sightingKeys });
 
 describe('scanPathIntoStore — sighting tokens', () => {
   it('reduces each secret it finds to its token, and carries no value', async () => {
@@ -157,6 +163,20 @@ describe('scanPathIntoStore — sighting tokens', () => {
         variableName: 'AWS_ACCESS_KEY_ID',
         file: join(root, 'config.ts'),
       },
+    ]);
+    expect(JSON.stringify(result.sightings)).not.toContain(VALUE);
+  });
+
+  it('adds the token under each previous version still held as its aliases', async () => {
+    writeFileSync(join(root, 'config.ts'), `const AWS_ACCESS_KEY_ID = '${VALUE}';\n`);
+
+    const result = await scan({ current: KEY, previous: [PREVIOUS_KEY] });
+
+    expect(result.sightings).toEqual([
+      expect.objectContaining({
+        token: sightingToken(KEY, VALUE),
+        aliases: [sightingToken(PREVIOUS_KEY, VALUE)],
+      }),
     ]);
     expect(JSON.stringify(result.sightings)).not.toContain(VALUE);
   });

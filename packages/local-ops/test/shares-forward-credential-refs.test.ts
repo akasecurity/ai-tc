@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import type { LocalDatabase } from '@akasecurity/persistence';
+import type { LocalDatabase, SightingKeys } from '@akasecurity/persistence';
 import {
   applyOnboarding,
   createSightingKeyStore,
@@ -45,6 +45,8 @@ const STORED_KEY = {
 };
 // The same key, held independently of the custody read.
 const KEY = { keyVersion: 2, key: new Uint8Array(Buffer.alloc(32, 9)) };
+const KEYS: SightingKeys = { current: KEY, previous: [] };
+const PREVIOUS_KEY = { keyVersion: 1, key: new Uint8Array(Buffer.alloc(32, 4)) };
 
 const RULES: Rule[] = [
   {
@@ -128,10 +130,10 @@ const forbid = (value: boolean): ManagedSettings => ({
 });
 
 async function scanAndForward(
-  sightingKey: typeof KEY | undefined,
+  sightingKeys: SightingKeys | undefined,
   managedSettings: ManagedSettings | null = null,
 ): Promise<EgressIngestRequest[]> {
-  const result = await scanPathIntoStore(db, root, { rules: RULES, dataDir: store, sightingKey });
+  const result = await scanPathIntoStore(db, root, { rules: RULES, dataDir: store, sightingKeys });
   const recorded = recordProjectEgress(db, root, result.egress, base);
   expect(recorded).not.toBeNull();
   const requests: EgressIngestRequest[] = [];
@@ -153,7 +155,7 @@ describe('forwardProjectEgress credential references', () => {
   it('sends the literal as its token and the variable by name, for the call that uses them', async () => {
     attach({ consent: true, key: true });
 
-    const [request] = await scanAndForward(KEY);
+    const [request] = await scanAndForward(KEYS);
 
     expect(request).toBeDefined();
     expect(RequestSchema.safeParse(request).success).toBe(true);
@@ -169,9 +171,27 @@ describe('forwardProjectEgress credential references', () => {
     expect(body).not.toContain('UNRELATED');
   });
 
+  it('carries the literal under each previous key version still held as its aliases', async () => {
+    attach({ consent: true, key: true });
+
+    const [request] = await scanAndForward({ current: KEY, previous: [PREVIOUS_KEY] });
+
+    expect(RequestSchema.safeParse(request).success).toBe(true);
+    const charge = request?.hits.find((h) => h.host === 'api.stripe.com');
+    expect(charge?.credentialRefs?.[0]).toEqual({
+      kind: 'literal',
+      token: sightingToken(KEY, INSIDE),
+      aliases: [sightingToken(PREVIOUS_KEY, INSIDE)],
+      ruleId: 'test/aws-key',
+    });
+    const body = JSON.stringify(request);
+    expect(body).not.toContain(INSIDE);
+    expect(body).not.toContain(OUTSIDE);
+  });
+
   it('keeps no reference in the local register', async () => {
     attach({ consent: true, key: true });
-    await scanAndForward(KEY);
+    await scanAndForward(KEYS);
 
     const raw = new DatabaseSync(join(store, DB_FILENAME), { readOnly: true });
     try {
@@ -190,7 +210,7 @@ describe('forwardProjectEgress credential references', () => {
   it('sends none while this machine does not share sightings', async () => {
     attach({ consent: false, key: true });
 
-    const [request] = await scanAndForward(KEY);
+    const [request] = await scanAndForward(KEYS);
 
     expect(request).toBeDefined();
     expect(request?.hits.every((h) => !('credentialRefs' in h))).toBe(true);
@@ -199,7 +219,7 @@ describe('forwardProjectEgress credential references', () => {
   it('sends none when sharing is turned off between the scan and the forward', async () => {
     attach({ consent: true, key: true });
 
-    const [request] = await scanAndForward(KEY, forbid(false));
+    const [request] = await scanAndForward(KEYS, forbid(false));
 
     expect(request?.hits.every((h) => !('credentialRefs' in h))).toBe(true);
   });
@@ -214,6 +234,6 @@ describe('forwardProjectEgress credential references', () => {
   });
 
   it('sends nothing at all from a standalone machine', async () => {
-    expect(await scanAndForward(KEY)).toEqual([]);
+    expect(await scanAndForward(KEYS)).toEqual([]);
   });
 });

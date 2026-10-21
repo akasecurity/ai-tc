@@ -134,3 +134,14 @@ describe('CredentialSightingsAck', () => {
     expect(CredentialSightingsAck.safeParse({ accepted: -1 }).success).toBe(false);
   });
 });
+
+describe('CredentialSighting aliases', () => {
+  it('carries the same value under each previous key version, up to the cap', () => {
+    const aliases = [token('B', 2), token('C', 1)];
+    expect(CredentialSighting.parse(sighting({ aliases }))).toEqual(sighting({ aliases }));
+    const many = Array.from({ length: 5 }, (_, i) => token('D', i + 1));
+    expect(CredentialSighting.safeParse(sighting({ aliases: many })).success).toBe(false);
+    expect(CredentialSighting.safeParse(sighting({ aliases: [] })).success).toBe(false);
+    expect(CredentialSighting.safeParse(sighting({ aliases: ['raw-value'] })).success).toBe(false);
+  });
+});

@@ -80,7 +80,8 @@ export async function runAttachedSync(
     // `refreshAttachedIdentity` never throws; nothing is waiting on this process.
   }
 
-  // Fetches the sighting key only when none is stored or it is a day old.
+  // Fetches the sighting key only when none is stored, it is a day old, or an
+  // older version it holds has stopped being accepted.
   // `runSightingKeySync` never throws.
   await runSightingKeySync({ base, settingsDir: settingsDir(base) });
 

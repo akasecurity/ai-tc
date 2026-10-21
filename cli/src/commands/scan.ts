@@ -277,7 +277,7 @@ export async function runScan(argv: string[], deps: ScanDeps = {}): Promise<void
       // `recordProjectEgress` takes below, for the same reason.
       akaHome: home,
       vault,
-      sightingKey: sightingPlan.ok ? sightingPlan.key : undefined,
+      sightingKeys: sightingPlan.ok ? sightingPlan.keys : undefined,
     });
     // Keep the Inventory page's project + file tree fresh for the repo just
     // scanned (fail-open, no-op outside a git repo).

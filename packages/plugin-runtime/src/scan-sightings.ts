@@ -13,6 +13,7 @@ export type {
   CredentialSightingsSend,
   ScanSighting,
   SightingKey,
+  SightingKeys,
   SightingScanProject,
   SightingSharePlan,
 } from '@akasecurity/persistence';

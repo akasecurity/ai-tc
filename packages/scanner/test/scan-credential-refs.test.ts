@@ -25,6 +25,8 @@ const ENDPOINT = 'https://cp.example';
 const MINTED_AT = '2026-10-01T00:00:00.000Z';
 const KEY_BYTES = Buffer.alloc(32, 6);
 const KEY = { keyVersion: 3, key: new Uint8Array(KEY_BYTES) };
+const PREVIOUS_KEY_BYTES = Buffer.alloc(32, 2);
+const PREVIOUS_KEY = { keyVersion: 2, key: new Uint8Array(PREVIOUS_KEY_BYTES) };
 const REMOTE = 'https://github.com/acme/widgets.git';
 
 const SOURCE = [
@@ -69,7 +71,7 @@ afterEach(() => {
   removeTrees([home, repo]);
 });
 
-function attach(consent: boolean): PluginConfig {
+function attach(consent: boolean, previous: Record<string, unknown>[] = []): PluginConfig {
   applyOnboarding(
     {
       runMode: 'attached',
@@ -106,6 +108,7 @@ function attach(consent: boolean): PluginConfig {
       key: KEY_BYTES.toString('base64url'),
       fetchedAtMs: Date.now(),
       endpointFingerprint: createHash('sha256').update(ENDPOINT).digest('hex'),
+      ...(previous.length === 0 ? {} : { previous }),
     }),
     { mode: 0o600 },
   );
@@ -133,6 +136,22 @@ describe('scanWorktree — credential references', () => {
     ]);
     const register = JSON.stringify(recorded);
     expect(register).not.toContain(sightingToken(KEY, OUTSIDE));
+    expect(JSON.stringify(chargeHit()?.credentialRefs)).not.toContain(INSIDE);
+  });
+
+  it('gives the literal its token under a previous version still in its window', async () => {
+    const acceptedUntil = new Date(Date.now() + 86_400_000).toISOString();
+    await scan(
+      attach(true, [
+        { keyVersion: 2, key: PREVIOUS_KEY_BYTES.toString('base64url'), acceptedUntil },
+      ]),
+    );
+
+    expect(chargeHit()?.credentialRefs?.[0]).toMatchObject({
+      kind: 'literal',
+      token: sightingToken(KEY, INSIDE),
+      aliases: [sightingToken(PREVIOUS_KEY, INSIDE)],
+    });
     expect(JSON.stringify(chargeHit()?.credentialRefs)).not.toContain(INSIDE);
   });
 

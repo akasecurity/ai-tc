@@ -158,3 +158,69 @@ describe('StoredSightingKeys', () => {
     ).toBe(false);
   });
 });
+
+describe('previous versions and their overlap window', () => {
+  const until = '2026-10-21T09:00:00.000Z';
+
+  it('keeps the instant each previous version stops being accepted', () => {
+    const parsed = SightingKeyResponse.parse(
+      body({ previous: [{ keyVersion: 1, key: material(3), acceptedUntil: until }] }),
+    );
+    expect(parsed.previous).toEqual([{ keyVersion: 1, key: material(3), acceptedUntil: until }]);
+  });
+
+  it('accepts a previous version without one, from a deployment that does not send it', () => {
+    expect(SightingKeyResponse.parse(body()).previous?.[0]).not.toHaveProperty('acceptedUntil');
+  });
+
+  it('keeps an instant with a numeric UTC offset', () => {
+    for (const acceptedUntil of ['2026-10-21T09:00:00+00:00', '2026-10-21T09:00:00+05:30']) {
+      const parsed = SightingKeyResponse.parse(
+        body({ previous: [{ keyVersion: 1, key: material(3), acceptedUntil }] }),
+      );
+      expect(parsed.previous?.[0]?.acceptedUntil).toBe(acceptedUntil);
+    }
+  });
+
+  it('drops an instant that is not an ISO datetime and keeps the rest of the map', () => {
+    for (const acceptedUntil of ['tomorrow', '2026-10-21', 1_766_000_000_000]) {
+      const parsed = SightingKeyResponse.parse(
+        body({ previous: [{ keyVersion: 1, key: material(3), acceptedUntil }] }),
+      );
+      expect(parsed.keyVersion).toBe(2);
+      expect(parsed.previous?.[0]?.keyVersion).toBe(1);
+      expect(parsed.previous?.[0]?.acceptedUntil).toBeUndefined();
+    }
+  });
+
+  it('stores when the machine first held each previous version, keyed by its number', () => {
+    const map = {
+      ...body({ previous: [{ keyVersion: 1, key: material(3), acceptedUntil: until }] }),
+      fetchedAtMs: 1,
+      endpointFingerprint: 'a'.repeat(64),
+    };
+    expect(StoredSightingKeys.parse({ ...map, previousFirstSeenAtMs: { '1': 5 } })).toMatchObject({
+      previousFirstSeenAtMs: { '1': 5 },
+    });
+    expect(StoredSightingKeys.safeParse({ ...map, previousFirstSeenAtMs: { v1: 5 } }).success).toBe(
+      false,
+    );
+    expect(
+      StoredSightingKeys.safeParse({ ...map, previousFirstSeenAtMs: { '1': -1 } }).success,
+    ).toBe(false);
+  });
+
+  it('takes no first-seen instant from the deployment', () => {
+    const parsed = SightingKeyResponse.parse({ ...body(), previousFirstSeenAtMs: { '1': 5 } });
+    expect(parsed).not.toHaveProperty('previousFirstSeenAtMs');
+  });
+
+  it('stores the instant with the map', () => {
+    const stored = StoredSightingKeys.parse({
+      ...body({ previous: [{ keyVersion: 1, key: material(3), acceptedUntil: until }] }),
+      fetchedAtMs: 1,
+      endpointFingerprint: 'a'.repeat(64),
+    });
+    expect(stored.previous?.[0]?.acceptedUntil).toBe(until);
+  });
+});

@@ -1,9 +1,4 @@
-import type {
-  LocalDatabase,
-  PointerDigest,
-  SightingKey,
-  SightingKeys,
-} from '@akasecurity/persistence';
+import type { LocalDatabase, PointerDigest, SightingKeys } from '@akasecurity/persistence';
 import {
   createKeyProvider,
   dataDir as dataDirOf,
@@ -15,7 +10,7 @@ import {
   readSightingSharing,
   readWorkspaceSettings,
   SecretVault,
-  sightingToken,
+  sightingTokens,
 } from '@akasecurity/persistence';
 import type {
   BoundedScanRequest,
@@ -121,25 +116,25 @@ interface Replacement {
 
 const failClosed = { text: FAIL_CLOSED_MARKER };
 
-function currentKey(deps: OutboundEncoderDeps): SightingKey | undefined {
+function readKeys(deps: OutboundEncoderDeps): SightingKeys | undefined {
   try {
     if (!deps.readSharing()) return undefined;
-    return deps.readKeys()?.current;
+    return deps.readKeys();
   } catch {
     return undefined;
   }
 }
 
-function valueReplacement(span: SecretSpan, key: SightingKey | undefined): Replacement {
+function valueReplacement(span: SecretSpan, keys: SightingKeys | undefined): Replacement {
   return {
     start: span.start,
     end: span.end,
     resolve: () => {
-      if (key === undefined || span.value === undefined) return Promise.resolve(failClosed);
-      const fp = sightingToken(key, span.value);
+      if (keys === undefined || span.value === undefined) return Promise.resolve(failClosed);
+      const tokens = sightingTokens(keys, span.value);
       return Promise.resolve({
-        text: fp,
-        sighting: { token: fp, ruleId: span.ruleId, category: span.category },
+        text: tokens.token,
+        sighting: { ...tokens, ruleId: span.ruleId, category: span.category },
       });
     },
   };
@@ -148,8 +143,10 @@ function valueReplacement(span: SecretSpan, key: SightingKey | undefined): Repla
 /**
  * Every secret-category span in outgoing capture content becomes its sighting
  * token, `[[aka:fp:v<keyVersion>.<fingerprint>]]`, under the current sighting
- * key. Values are found by scanning the content itself, so a capture encodes the
- * same way whichever path sends it. A secret vault pointer is resolved through
+ * key; its sighting also lists the value's tokens under each previous version
+ * still accepted as `aliases`, which never appear in the content. Values are
+ * found by scanning the content itself, so a capture encodes the same way
+ * whichever path sends it. A secret vault pointer is resolved through
  * the vault's audited fingerprint path to the token of its value.
  *
  * Fails closed and never throws: with no key, or on a fault resolving one span,
@@ -184,8 +181,8 @@ export function createOutboundEncoder(deps: OutboundEncoderDeps): OutboundEncode
     const spans = await findSpans(content);
     if (spans === undefined) return undefined;
     try {
-      const key = currentKey(deps);
-      const replacements: Replacement[] = spans.map((span) => valueReplacement(span, key));
+      const keys = readKeys(deps);
+      const replacements: Replacement[] = spans.map((span) => valueReplacement(span, keys));
 
       const pointers = [...content.matchAll(pointerTokenScanner())].filter((m) =>
         m[0].startsWith(SECRET_POINTER_PREFIX),
@@ -195,15 +192,23 @@ export function createOutboundEncoder(deps: OutboundEncoderDeps): OutboundEncode
       const resolvePointer = async (
         pointer: string,
       ): Promise<{ text: string; sighting?: CaptureSighting }> => {
-        if (key === undefined) return failClosed;
+        if (keys === undefined) return failClosed;
         opened ??= deps.openVault();
-        const result = await opened.vault.fingerprintPointer(pointer, (raw) =>
-          sightingToken(key, raw),
-        );
+        let aliases: string[] | undefined;
+        const result = await opened.vault.fingerprintPointer(pointer, (raw) => {
+          const tokens = sightingTokens(keys, raw);
+          aliases = tokens.aliases;
+          return tokens.token;
+        });
         if (typeof result !== 'object') return failClosed;
         return {
           text: result.digest,
-          sighting: { token: result.digest, ruleId: result.ruleId, category: 'secret' },
+          sighting: {
+            token: result.digest,
+            ...(aliases === undefined ? {} : { aliases }),
+            ruleId: result.ruleId,
+            category: 'secret',
+          },
         };
       };
       for (const match of pointers) {

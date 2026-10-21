@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { SIGHTING_SHARE_PAYLOAD_NOTE } from '@akasecurity/schema';
+import { SIGHTING_SHARE_PAYLOAD_NOTE, SIGHTING_SHARE_ROTATION_NOTE } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 const doc = readFileSync(
@@ -36,6 +36,8 @@ describe('setup credential-sightings question', () => {
   it('states what a sighting carries, scoped to sightings, before the options', () => {
     const note = step.indexOf(SIGHTING_SHARE_PAYLOAD_NOTE);
     expect(note).toBeGreaterThan(-1);
+    // Aliases sent during a key rotation stay inside the same grant, and the step says so.
+    expect(step.indexOf(SIGHTING_SHARE_ROTATION_NOTE)).toBeGreaterThan(note);
     expect(step.indexOf('Share credential sightings with your organization?')).toBeGreaterThan(
       note,
     );

@@ -158,7 +158,7 @@ export async function runScan(
       // No `akaHome`: this server always reads the default home, which is what
       // the scanner's own default resolves to. `--home` has no counterpart here.
       vault,
-      sightingKey: sightingPlan.ok ? sightingPlan.key : undefined,
+      sightingKeys: sightingPlan.ok ? sightingPlan.keys : undefined,
     });
   } catch (err) {
     if (!isProtectedTarget(err)) throw err;

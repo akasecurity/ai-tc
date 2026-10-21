@@ -110,7 +110,7 @@ function holdKey(): void {
   createSightingKeyStore('file', keysDir(store.home)).replace(STORED_KEY);
 }
 
-const independentKey = sightingKeysOf(STORED_KEY).current;
+const independentKey = sightingKeysOf(STORED_KEY, 0).current;
 
 interface Recorder {
   send: CredentialSightingsSend;
@@ -209,9 +209,27 @@ describe('planSightingShare', () => {
     const plan = planSightingShare(store.home, { managedSettings: null });
     expect(plan.ok).toBe(true);
     if (plan.ok) {
-      expect(plan.key.keyVersion).toBe(4);
-      expect(Buffer.from(plan.key.key).equals(KEY_BYTES)).toBe(true);
+      expect(plan.keys.current.keyVersion).toBe(4);
+      expect(Buffer.from(plan.keys.current.key).equals(KEY_BYTES)).toBe(true);
+      expect(plan.keys.previous).toEqual([]);
     }
+  });
+
+  it('hands out the previous versions still inside their overlap window', () => {
+    attach('machine');
+    consent();
+    const later = new Date(Date.now() + 86_400_000).toISOString();
+    const earlier = new Date(Date.now() - 1_000).toISOString();
+    createSightingKeyStore('file', keysDir(store.home)).replace({
+      ...STORED_KEY,
+      fetchedAtMs: Date.now(),
+      previous: [
+        { keyVersion: 3, key: Buffer.alloc(32, 3).toString('base64url'), acceptedUntil: later },
+        { keyVersion: 2, key: Buffer.alloc(32, 2).toString('base64url'), acceptedUntil: earlier },
+      ],
+    });
+    const plan = planSightingShare(store.home, { managedSettings: null });
+    expect(plan.ok && plan.keys.previous.map((k) => k.keyVersion)).toEqual([3]);
   });
 
   it('refuses a standalone machine, naming the sharing state', () => {
@@ -289,6 +307,32 @@ describe('planSightingShare', () => {
 });
 
 describe('forwardCredentialSightings', () => {
+  it("carries each sighting's previous-version tokens as its aliases", async () => {
+    sharingMachine();
+    const root = tempDir('aka-project-');
+    const file = join(root, 'src', 'config.ts');
+    const previousKey = { keyVersion: 3, key: new Uint8Array(Buffer.alloc(32, 5)) };
+    const aliases = [sightingToken(previousKey, VALUE_A)];
+    const rec = recorder();
+
+    await forwardCredentialSightings(
+      store.home,
+      {
+        project: project(root),
+        sightings: [sightingIn(file, VALUE_A, { aliases }), sightingIn(file, VALUE_B)],
+      },
+      deps(rec.send),
+    );
+
+    const body = rec.requests[0];
+    expect(RequestSchema.parse(body)).toEqual(body);
+    expect(body?.sightings[0]?.aliases).toEqual(aliases);
+    expect(body?.sightings[1]).not.toHaveProperty('aliases');
+    const wire = JSON.stringify(body);
+    expect(wire).not.toContain(VALUE_A);
+    expect(wire).not.toContain(VALUE_B);
+  });
+
   it('sends tokens with project, class, variable name and git-tracked, and nothing else', async () => {
     sharingMachine();
     const root = tempDir('aka-project-');

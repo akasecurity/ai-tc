@@ -43,6 +43,7 @@ export type {
   ScanSighting,
   SendScanSightingsDeps,
   SightingKey,
+  SightingKeys,
   SightingScanProject,
   SightingSharePlan,
 } from './scan-sightings.ts';

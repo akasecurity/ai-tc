@@ -24,11 +24,14 @@ const ENDPOINT = 'https://cp.example';
 const MINTED_AT = '2026-10-01T00:00:00.000Z';
 const KEY_BYTES = Buffer.alloc(32, 6);
 const KEY = { keyVersion: 3, key: new Uint8Array(KEY_BYTES) };
+const PREVIOUS_KEY_BYTES = Buffer.alloc(32, 2);
+const PREVIOUS_KEY = { keyVersion: 2, key: new Uint8Array(PREVIOUS_KEY_BYTES) };
 const REMOTE = 'https://github.com/acme/widgets.git';
 
 interface SentRequest {
   sightings: {
     token: string;
+    aliases?: string[] | undefined;
     locationClass: string;
     variableName?: string | undefined;
     gitTracked: boolean;
@@ -63,7 +66,12 @@ afterEach(() => {
 });
 
 // `enrolled` makes the attachment scoped, enrolling those repositories.
-function attach(consent: boolean, endpoint = ENDPOINT, enrolled?: string[]): PluginConfig {
+function attach(
+  consent: boolean,
+  endpoint = ENDPOINT,
+  enrolled?: string[],
+  previous: Record<string, unknown>[] = [],
+): PluginConfig {
   applyOnboarding(
     {
       runMode: 'attached',
@@ -112,6 +120,7 @@ function attach(consent: boolean, endpoint = ENDPOINT, enrolled?: string[]): Plu
       key: KEY_BYTES.toString('base64url'),
       fetchedAtMs: Date.now(),
       endpointFingerprint: createHash('sha256').update(endpoint).digest('hex'),
+      ...(previous.length === 0 ? {} : { previous }),
     }),
     { mode: 0o600 },
   );
@@ -171,6 +180,53 @@ describe('scanWorktree — credential sightings', () => {
     }
   });
 
+  it("adds each value's token under a previous version still in its window as an alias", async () => {
+    const previousVersion = {
+      keyVersion: 2,
+      key: PREVIOUS_KEY_BYTES.toString('base64url'),
+      acceptedUntil: new Date(Date.now() + 86_400_000).toISOString(),
+    };
+    const config = attach(true, ENDPOINT, undefined, [previousVersion]);
+    const rec = recorder();
+
+    await scanWorktree(config, options(rec.send));
+
+    const sent = rec.requests.flatMap((r) => r.sightings);
+    expect(sent).toHaveLength(2);
+    expect(sent).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          token: sightingToken(KEY, SOURCE_VALUE),
+          aliases: [sightingToken(PREVIOUS_KEY, SOURCE_VALUE)],
+        }),
+        expect.objectContaining({
+          token: sightingToken(KEY, DOTENV_VALUE),
+          aliases: [sightingToken(PREVIOUS_KEY, DOTENV_VALUE)],
+        }),
+      ]),
+    );
+    const wire = JSON.stringify(rec.requests);
+    expect(wire).not.toContain(SOURCE_VALUE);
+    expect(wire).not.toContain(DOTENV_VALUE);
+  });
+
+  it('sends no aliases once a previous version is past its window', async () => {
+    const config = attach(true, ENDPOINT, undefined, [
+      {
+        keyVersion: 2,
+        key: PREVIOUS_KEY_BYTES.toString('base64url'),
+        acceptedUntil: new Date(Date.now() - 1_000).toISOString(),
+      },
+    ]);
+    const rec = recorder();
+
+    await scanWorktree(config, options(rec.send));
+
+    const sent = rec.requests.flatMap((r) => r.sightings);
+    expect(sent).toHaveLength(2);
+    expect(sent.every((s) => !('aliases' in s))).toBe(true);
+  });
+
   it('reads an unchanged file again after a failed send, and not after a delivered one', async () => {
     const config = attach(true);
     const failing = recorder(true);
@@ -216,6 +272,26 @@ describe('scanWorktree — credential sightings', () => {
     await scanWorktree(attach(true, ENDPOINT), options(machine.send));
     expect(machine.requests.flatMap((r) => r.sightings.map((s) => s.token))).toEqual(
       expect.arrayContaining([sightingToken(KEY, SOURCE_VALUE), sightingToken(KEY, DOTENV_VALUE)]),
+    );
+  });
+
+  it('reads unchanged files again once a previous version comes into use', async () => {
+    const windowless = { keyVersion: 2, key: PREVIOUS_KEY_BYTES.toString('base64url') };
+    await scanWorktree(attach(true, ENDPOINT, undefined, [windowless]), options(recorder().send));
+
+    const windowed = {
+      ...windowless,
+      acceptedUntil: new Date(Date.now() + 86_400_000).toISOString(),
+    };
+    const rotating = recorder();
+    await scanWorktree(attach(true, ENDPOINT, undefined, [windowed]), options(rotating.send));
+    expect(rotating.requests.flatMap((r) => r.sightings)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          token: sightingToken(KEY, SOURCE_VALUE),
+          aliases: [sightingToken(PREVIOUS_KEY, SOURCE_VALUE)],
+        }),
+      ]),
     );
   });
 

@@ -183,8 +183,9 @@ carries no captured text, so the masking rule does not come into it.
 An attached machine also sends things that are not activity, and no repository
 limits them. Whenever a session starts anywhere on this machine, in a repository
 or not (a browser chat included), the machine pulls the deployment's policy (at
-most every 15 minutes) and its sighting key (when none is stored or the stored
-one is a day old) and sends it a device report (at most hourly): a device
+most every 15 minutes) and its sighting key (when none is stored, the stored
+one is a day old, or an older version it holds has stopped being accepted)
+and sends it a device report (at most hourly): a device
 identifier, host name, versions, detection packs, policy counts, finding counts
 and dates for everything recorded on the machine, and, when the machine is
 attached as a personal device, the fact that it is one. Where a scan is

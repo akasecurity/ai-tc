@@ -30,12 +30,14 @@ import { createTrackedFileLookup } from './git-index.ts';
 import { settingsDir } from './local-layout.ts';
 import { readWorkspaceSettings } from './settings.ts';
 import { readSightingSharing } from './sighting-sharing.ts';
-import type { SightingKey } from './vault/sighting-keys.ts';
+import type { SightingKeys } from './vault/sighting-keys.ts';
 import { readSightingKeys, sightingKeyEndpointFingerprint } from './vault/sighting-keys.ts';
 
 /** One secret a scan found, already reduced to its token. */
 export interface ScanSighting {
   token: string;
+  /** The value's tokens under each previous key version still accepted. */
+  aliases?: string[] | undefined;
   ruleId: string;
   variableName?: string | undefined;
   /** The absolute path the scan read; used to class the file and never sent. */
@@ -76,7 +78,7 @@ export interface SightingShareOptions {
 export type SightingSharePlan =
   | {
       ok: true;
-      key: SightingKey;
+      keys: SightingKeys;
       /** The sha256 hex of the endpoint that issued the key. */
       endpointFingerprint: string;
       /**
@@ -88,7 +90,7 @@ export type SightingSharePlan =
   | { ok: false; outcome: CredentialSightingsOutcome };
 
 /**
- * Whether a scan about to run should compute sighting tokens, and the key to
+ * Whether a scan about to run should compute sighting tokens, and the keys to
  * compute them with: only when sharing is on (which requires an attachment),
  * the run has not opted out, and the machine holds a sighting key. A run that
  * opted out on a machine that does not share reports that sharing is off.
@@ -124,7 +126,7 @@ export function planSightingShare(
         : [];
     return {
       ok: true,
-      key: keys.current,
+      keys,
       endpointFingerprint: sightingKeyEndpointFingerprint(endpoint),
       scopeFingerprint: createHash('sha256')
         .update([mode, ...enrolled].join('\n'))
@@ -275,6 +277,7 @@ export async function forwardCredentialSightings(
       }
       byKey.set(key, {
         token: sighting.token,
+        ...(sighting.aliases?.length ? { aliases: sighting.aliases } : {}),
         ruleId: sighting.ruleId,
         category: 'secret',
         ...(sighting.variableName ? { variableName: sighting.variableName } : {}),

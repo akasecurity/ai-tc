@@ -44,7 +44,9 @@ export interface InventoryNavProps {
   isLoading?: boolean | undefined;
   /**
    * Set when the host cannot read the harness and asset lists. The reason is shown
-   * in their place, and nothing is counted or summarised from the lists it lacks.
+   * in their place, and nothing is counted from the lists it lacks: the summary is
+   * a lower bound over what is still readable (the projects and the host links),
+   * or "Not available" when none of that needs review.
    */
   assetsRefusal?: string | undefined;
   /** Entries the host adds after the list, in either view; each counts toward the attention summary. */
@@ -68,14 +70,14 @@ export function InventoryNav({
   const empty = harnesses.length === 0 && projects.length === 0 && assetGroups.length === 0;
   // Every project and asset once, counted the way the tables count them.
   const linkAttention = links.reduce((n, link) => n + link.attention, 0);
-  const attention =
-    GROUPS.reduce(
-      (n, g) => n + typeRows(g.type, projects, assetGroups).filter(needsAttention).length,
-      0,
-    ) + linkAttention;
+  const groupAttention = GROUPS.map((g) => ({
+    type: g.type,
+    count: typeRows(g.type, projects, assetGroups).filter(needsAttention).length,
+  }));
+  const attention = groupAttention.reduce((n, g) => n + g.count, 0) + linkAttention;
   // Under a refusal, what is still counted: the projects and the host links.
   const knownAttention =
-    typeRows('project', projects, assetGroups).filter(needsAttention).length + linkAttention;
+    (groupAttention.find((g) => g.type === 'project')?.count ?? 0) + linkAttention;
   const linkRows = links.map((link) => (
     <NavRow
       key={link.key}

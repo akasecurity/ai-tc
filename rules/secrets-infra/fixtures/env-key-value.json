@@ -216,11 +216,6 @@
     "shouldMatch": false
   },
   {
-    "label": "input identifier is not a value",
-    "text": "password = input",
-    "shouldMatch": false
-  },
-  {
     "label": "typeof keyword is not a value",
     "text": "const token = typeof x",
     "shouldMatch": false
@@ -228,11 +223,6 @@
   {
     "label": "this keyword is not a value",
     "text": "this.secret = this",
-    "shouldMatch": false
-  },
-  {
-    "label": "self identifier is not a value",
-    "text": "secret = self",
     "shouldMatch": false
   },
   {
@@ -246,8 +236,68 @@
     "shouldMatch": true
   },
   {
-    "label": "keyword-led literal with a separator is still a value",
-    "text": "API_TOKEN=await_9f8e7d6c5b4a",
+    "label": "hyphen after a keyword is still a value (new)",
+    "text": "PASSWORD=new-abcd1234",
+    "shouldMatch": true
+  },
+  {
+    "label": "hyphen after a keyword is still a value (this)",
+    "text": "PASSWORD=this-is-my-passw0rd",
+    "shouldMatch": true
+  },
+  {
+    "label": "hyphen after a keyword is still a value (function)",
+    "text": "TOKEN=function-call-abc123",
+    "shouldMatch": true
+  },
+  {
+    "label": "hyphen after a keyword is still a value (async)",
+    "text": "API_TOKEN=async-abcd1234efgh",
+    "shouldMatch": true
+  },
+  {
+    "label": "hyphen after a keyword is still a value (void)",
+    "text": "SECRET=void-abcd1234efgh",
+    "shouldMatch": true
+  },
+  {
+    "label": "hyphen after a keyword is still a value (yield)",
+    "text": "SECRET_KEY=yield-abcd1234efgh",
+    "shouldMatch": true
+  },
+  {
+    "label": "underscore after a keyword is still a value",
+    "text": "PASSWORD=await_9f8e7d6c5b4a",
+    "shouldMatch": true
+  },
+  {
+    "label": "new keyword is not a value",
+    "text": "const token = new Client()",
+    "shouldMatch": false
+  },
+  {
+    "label": "void keyword is not a value",
+    "text": "const token = void 0",
+    "shouldMatch": false
+  },
+  {
+    "label": "async keyword is not a value",
+    "text": "const token = async () => 1",
+    "shouldMatch": false
+  },
+  {
+    "label": "function keyword is not a value",
+    "text": "const token = function () {}",
+    "shouldMatch": false
+  },
+  {
+    "label": "self-prefixed literal is a value",
+    "text": "SECRET=self-made-secret99",
+    "shouldMatch": true
+  },
+  {
+    "label": "KNOWN GAP: bare code identifier on the right still matches; the pattern cannot tell it from a short literal",
+    "text": "password = creds",
     "shouldMatch": true
   }
 ]

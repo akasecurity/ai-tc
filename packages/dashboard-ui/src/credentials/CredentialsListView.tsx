@@ -24,6 +24,11 @@ export interface CredentialsListViewProps {
   items: CredentialListItem[];
   /** Credentials matching the search across every page. */
   total: number;
+  /**
+   * The current query. A new query must start again at the first page: the view
+   * reads an empty page with a cursor either side as rows that moved, not as a
+   * search that matched nothing.
+   */
   search: string;
   onSearch: (value: string) => void;
   onSelect: (id: string) => void;

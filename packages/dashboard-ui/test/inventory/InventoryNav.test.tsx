@@ -133,13 +133,15 @@ describe('InventoryNav', () => {
     view: 'harness' | 'type',
     link: { selected?: boolean; onSelect?: () => void } = {},
     assetsRefusal?: string,
+    loading = false,
   ) {
     renderRoot(
       mounted.root,
       <InventoryNav
-        harnesses={HARNESSES}
-        projects={[PROJECT]}
-        assetGroups={GROUPS}
+        harnesses={loading ? [] : HARNESSES}
+        projects={loading ? [] : [PROJECT]}
+        assetGroups={loading ? [] : GROUPS}
+        isLoading={loading}
         view={view}
         onView={vi.fn()}
         harness="claudecode"
@@ -187,10 +189,26 @@ describe('InventoryNav', () => {
     expect(withLink('type', { selected: true }).getAttribute('aria-current')).toBe('true');
   });
 
-  it('still counts a host link while the asset lists are refused', () => {
+  it('still counts the projects and host links it shows while the asset lists are refused', () => {
     withLink('type', {}, 'You need permission to view assets.');
-    expect(mounted.host.textContent).toContain('At least 3 to review');
+    // The project row still needs attention, and so do the link's three.
+    expect(mounted.host.textContent).toContain('At least 4 to review');
     expect(mounted.host.textContent).not.toContain('All clear');
+  });
+
+  it('shows a host link while the inventory is still loading', () => {
+    withLink('type', {}, undefined, true);
+    expect(mounted.host.textContent).toContain('Loading inventory');
+    expect(entries()).toEqual(['Credentials7']);
+  });
+
+  it('puts host links in a list of their own in both views', () => {
+    for (const view of ['harness', 'type'] as const) {
+      withLink(view);
+      const pages = mounted.host.querySelector('nav ul[aria-label="Pages"]');
+      expect(pages?.querySelectorAll('li')).toHaveLength(1);
+      expect(pages?.textContent).toBe('Credentials7');
+    }
   });
 
   it('selects a harness on click and marks the current one', () => {
@@ -207,11 +225,32 @@ describe('InventoryNav', () => {
   describe('when the host cannot read the asset lists', () => {
     const REASON = 'You do not have enough permissions.';
 
-    it('claims no review count, clean or otherwise', () => {
+    it('claims no total, only a lower bound from the projects it can read', () => {
       mount('type', {}, REASON);
-      expect(mounted.host.textContent).toContain('Not available');
+      expect(mounted.host.textContent).toContain('At least 1 to review');
       expect(mounted.host.textContent).not.toContain('All clear');
+      expect(mounted.host.textContent).not.toMatch(/(?<!At least )\b\d+ to review/);
+    });
+
+    it('says Not available when nothing it can read needs review', () => {
+      renderRoot(
+        mounted.root,
+        <InventoryNav
+          harnesses={HARNESSES}
+          projects={[]}
+          assetGroups={GROUPS}
+          view="type"
+          onView={vi.fn()}
+          harness="claudecode"
+          type="project"
+          onSelectHarness={vi.fn()}
+          onSelectType={vi.fn()}
+          assetsRefusal={REASON}
+        />,
+      );
+      expect(mounted.host.textContent).toContain('Not available');
       expect(mounted.host.textContent).not.toContain('to review');
+      expect(mounted.host.textContent).not.toContain('All clear');
     });
 
     it('shows the reason instead of a harness list', () => {

@@ -73,6 +73,9 @@ export function InventoryNav({
       (n, g) => n + typeRows(g.type, projects, assetGroups).filter(needsAttention).length,
       0,
     ) + linkAttention;
+  // Under a refusal, what is still counted: the projects and the host links.
+  const knownAttention =
+    typeRows('project', projects, assetGroups).filter(needsAttention).length + linkAttention;
   const linkRows = links.map((link) => (
     <NavRow
       key={link.key}
@@ -84,6 +87,11 @@ export function InventoryNav({
       onSelect={link.onSelect}
     />
   ));
+  const linkList = linkRows.length > 0 && (
+    <ul aria-label="Pages" className="mt-0.5 flex flex-col gap-0.5">
+      {linkRows}
+    </ul>
+  );
 
   return (
     <Card className="flex w-60 shrink-0 flex-col self-start overflow-hidden shadow-sm">
@@ -93,13 +101,13 @@ export function InventoryNav({
           {isLoading && empty ? (
             <span className="ml-auto text-xs text-text-3">…</span>
           ) : assetsRefusal !== undefined ? (
-            linkAttention > 0 ? (
+            knownAttention > 0 ? (
               <span
                 className="ml-auto inline-flex items-center gap-1.5 text-xs font-semibold text-sev-high-ink"
                 title={assetsRefusal}
               >
                 <Ico name="flag" className="size-3.5" />
-                {`At least ${String(linkAttention)} to review`}
+                {`At least ${String(knownAttention)} to review`}
               </span>
             ) : (
               <span className="ml-auto text-xs text-text-3" title={assetsRefusal}>
@@ -134,39 +142,36 @@ export function InventoryNav({
         </SegmentedControl>
       </div>
 
-      <nav aria-label={view === 'harness' ? 'Harnesses' : 'Asset types'} className="p-2">
+      <nav aria-label="Inventory" className="p-2">
         {isLoading && empty ? (
           <div className="px-3 py-6 text-center text-xs text-text-3">Loading inventory…</div>
         ) : view === 'harness' ? (
-          <>
-            {assetsRefusal !== undefined ? (
-              <EmptyState message={assetsRefusal} />
-            ) : harnesses.length === 0 ? (
-              <EmptyState message="No harnesses detected" />
-            ) : (
-              <ul className="flex flex-col gap-0.5">
-                {harnesses.map((h) => {
-                  const rows = harnessRows(h);
-                  return (
-                    <NavRow
-                      key={h.id}
-                      icon={<Provider id={h.id} size={26} />}
-                      label={h.label}
-                      count={rows.length}
-                      attention={rows.filter(needsAttention).length}
-                      selected={h.id === harness}
-                      onSelect={() => {
-                        onSelectHarness(h.id);
-                      }}
-                    />
-                  );
-                })}
-              </ul>
-            )}
-            {linkRows.length > 0 && <ul className="mt-0.5 flex flex-col gap-0.5">{linkRows}</ul>}
-          </>
+          assetsRefusal !== undefined ? (
+            <EmptyState message={assetsRefusal} />
+          ) : harnesses.length === 0 ? (
+            <EmptyState message="No harnesses detected" />
+          ) : (
+            <ul aria-label="Harnesses" className="flex flex-col gap-0.5">
+              {harnesses.map((h) => {
+                const rows = harnessRows(h);
+                return (
+                  <NavRow
+                    key={h.id}
+                    icon={<Provider id={h.id} size={26} />}
+                    label={h.label}
+                    count={rows.length}
+                    attention={rows.filter(needsAttention).length}
+                    selected={h.id === harness}
+                    onSelect={() => {
+                      onSelectHarness(h.id);
+                    }}
+                  />
+                );
+              })}
+            </ul>
+          )
         ) : (
-          <ul className="flex flex-col gap-0.5">
+          <ul aria-label="Asset types" className="flex flex-col gap-0.5">
             {GROUPS.map((g) => {
               const rows = typeRows(g.type, projects, assetGroups);
               const unreadable = assetsRefusal !== undefined && g.type !== 'project';
@@ -184,9 +189,9 @@ export function InventoryNav({
                 />
               );
             })}
-            {linkRows}
           </ul>
         )}
+        {linkList}
       </nav>
     </Card>
   );

@@ -421,6 +421,25 @@ describe('the session root at session start', () => {
   });
 });
 
+describe('the config directory handed to the session start', () => {
+  it('reaches the scan the session start runs', async () => {
+    dev.attach();
+    const handed: Parameters<SessionStartDeps['handleSessionStart']>[0][] = [];
+    await runSessionStart(
+      payload(dev.transcript(randomUUID()), 'startup'),
+      deps({
+        claudeConfigDir: '/profiles/work',
+        handleSessionStart: (input, config) => {
+          handed.push(input);
+          return handleSessionStart(input, config);
+        },
+      }),
+    );
+    expect(handed).toHaveLength(1);
+    expect(handed[0]?.claudeConfigDir).toBe('/profiles/work');
+  });
+});
+
 describe('the forwarding line at session start', () => {
   async function shownAtSessionStart(): Promise<string> {
     const shown: string[] = [];

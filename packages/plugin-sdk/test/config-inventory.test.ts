@@ -1,6 +1,6 @@
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 import { configInventoryInputs, SOURCE_TOOL } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -887,7 +887,7 @@ describe('resolveConfigInventory — CLAUDE_CONFIG_DIR', () => {
   let configDir: string;
 
   beforeEach(() => {
-    configDir = mkdtempSync(join(tmpdir(), 'aka-config-dir-'));
+    configDir = realpathSync(mkdtempSync(join(tmpdir(), 'aka-config-dir-')));
   });
 
   afterEach(() => {
@@ -950,5 +950,55 @@ describe('resolveConfigInventory — CLAUDE_CONFIG_DIR', () => {
     expect(scan.hooks.map((h) => h.command)).toEqual(['home-hook.sh']);
     expect(scan.mcpServers.map((s) => s.name)).toEqual(['homesrv']);
     expect(scan.skills.map((s) => s.name)).toEqual(['homeskill']);
+  });
+
+  it('falls back to the home directory when the override is empty', () => {
+    seedBoth();
+
+    for (const empty of ['', '   ']) {
+      const scan = resolveConfigInventory({ cwd: project, homeDir: home, claudeConfigDir: empty });
+      expect(scan.errors).toEqual([]);
+      expect(scan.hooks.map((h) => h.command)).toEqual(['home-hook.sh']);
+      expect(scan.mcpServers.map((s) => s.name)).toEqual(['homesrv']);
+    }
+  });
+
+  it('expands a leading ~/ against the home directory', () => {
+    seedBoth();
+    // configDir lives under tmpdir, so name it from a home that contains it.
+    const scan = resolveConfigInventory({
+      cwd: project,
+      homeDir: dirname(configDir),
+      claudeConfigDir: `~/${basename(configDir)}`,
+    });
+    expect(scan.errors).toEqual([]);
+    expect(scan.hooks.map((h) => h.command).sort()).toEqual(['plugin-hook.sh', 'profile-hook.sh']);
+  });
+
+  it.each([
+    ['a quoted tilde that names no directory', () => '~/no-such-profile-dir'],
+    ['a relative path that names no directory', () => 'profiles/no-such-profile-dir'],
+    ['a directory that is missing', () => join(configDir, 'gone')],
+  ])('reports %s instead of reading a clean machine', (_label, override) => {
+    seedBoth();
+
+    const scan = resolveConfigInventory({
+      cwd: project,
+      homeDir: home,
+      claudeConfigDir: override(),
+    });
+    expect(scan.errors).toHaveLength(1);
+    expect(scan.errors[0]?.reason).toContain('CLAUDE_CONFIG_DIR');
+    expect(scan.hooks).toEqual([]);
+    expect(scan.mcpServers).toEqual([]);
+    expect(scan.skills).toEqual([]);
+  });
+
+  it('reports an override that names a file', () => {
+    const file = join(configDir, 'a-file');
+    write(file, 'x');
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home, claudeConfigDir: file });
+    expect(scan.errors.map((e) => e.source)).toContain(file);
   });
 });

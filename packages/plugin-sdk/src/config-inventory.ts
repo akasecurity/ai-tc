@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 
 import type {
   ConfigFileScanEntry,
@@ -30,6 +30,32 @@ export interface ResolveConfigInventoryInput {
   cwd: string;
   homeDir?: string | undefined;
   claudeConfigDir?: string | undefined;
+}
+
+/**
+ * The config directory an override names: empty or blank is no override, a
+ * leading `~/` expands to `home`, and the result is made absolute and resolved
+ * through symlinks. `usable` is false when it still is not a readable directory.
+ */
+function resolveConfigDirOverride(
+  raw: string | undefined,
+  home: string,
+): { path: string; usable: boolean } | undefined {
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const trimmed = raw.trim();
+  const expanded =
+    trimmed === '~' ? home : trimmed.startsWith('~/') ? join(home, trimmed.slice(2)) : trimmed;
+  const absolute = resolve(expanded);
+  try {
+    const real = realpathSync(absolute);
+    if (statSync(real).isDirectory()) {
+      readdirSync(real);
+      return { path: real, usable: true };
+    }
+  } catch {
+    // Falls through to the unusable result.
+  }
+  return { path: absolute, usable: false };
 }
 
 /**
@@ -96,8 +122,16 @@ export function resolveConfigInventory(input: ResolveConfigInventoryInput): Conf
   };
   try {
     const home = input.homeDir ?? homedir();
-    const claudeDir = input.claudeConfigDir ?? join(home, '.claude');
-    const claudeJson = join(input.claudeConfigDir ?? home, '.claude.json');
+    const override = resolveConfigDirOverride(input.claudeConfigDir, home);
+    if (override !== undefined && !override.usable) {
+      scan.errors.push({
+        source: override.path,
+        reason:
+          'CLAUDE_CONFIG_DIR does not name a readable directory; the user config was not scanned',
+      });
+    }
+    const claudeDir = override?.path ?? join(home, '.claude');
+    const claudeJson = join(override?.path ?? home, '.claude.json');
 
     // The repo identity — folded into project/local-scope identity for skills
     // (as the `project:` source surrogate) AND MCP servers (as the scope

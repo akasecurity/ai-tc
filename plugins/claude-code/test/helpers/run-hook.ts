@@ -36,7 +36,7 @@ export interface RunHookOptions {
   /** argv passed after the script path (e.g. the plugin manifest path). */
   args?: readonly string[];
   /** Extra env vars layered on top of the inherited process env. */
-  env?: Readonly<Record<string, string>>;
+  env?: Readonly<Record<string, string | undefined>>;
   timeoutMs?: number;
   /**
    * Where the built scripts live, when a case drives a modified COPY of
@@ -189,8 +189,10 @@ export function withTempHome<T>(fn: (home: string) => T, prefix = 'aka-hook-e2e-
 // Convenience: temp-home env vars for RunHookOptions.env, so a caller can
 // write `runHook(name, stdin, { env: tempHomeEnv(home) })` instead of
 // repeating the HOME/USERPROFILE pair at every call site.
-export function tempHomeEnv(home: string): Record<string, string> {
-  return { HOME: home, USERPROFILE: home };
+export function tempHomeEnv(home: string): Record<string, string | undefined> {
+  // CLAUDE_CONFIG_DIR is cleared so a profile exported on the host cannot
+  // redirect the spawned hook away from the throwaway home.
+  return { HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: undefined };
 }
 
 /** The host environment, for a test that spawns a built script directly. */

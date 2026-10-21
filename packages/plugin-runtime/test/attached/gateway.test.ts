@@ -37,7 +37,7 @@ import type {
   ResolvedAttachmentScope,
   ToolCallInput,
 } from '@akasecurity/schema';
-import { SOURCE_TOOL } from '@akasecurity/schema';
+import { PolicyBundle as PolicyBundleSchema, SOURCE_TOOL } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
@@ -3370,6 +3370,75 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
     });
     const merged = await gateway.getPolicyBundle();
     expect(merged.prohibitedModels).toEqual(['claude-opus-5']);
+  });
+
+  it('DOES carry modelPolicy from the cache, and leaves it absent when there is none', async () => {
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const local = makeLocal(calls, {
+      getPolicyBundle: vi.fn(() => Promise.resolve(bundle([], { version: 'local' }))),
+    });
+    const modelPolicy = { mode: 'allowlist' as const, approved: ['claude-haiku-4-5'] };
+    const carried = build({
+      local,
+      readCachedBundle: () => Promise.resolve(bundle([], { modelPolicy })),
+    });
+    expect((await carried.gateway.getPolicyBundle()).modelPolicy).toEqual(modelPolicy);
+
+    const none = build({ local, readCachedBundle: () => Promise.resolve(bundle([])) });
+    expect((await none.gateway.getPolicyBundle()).modelPolicy).toBeUndefined();
+  });
+
+  it('takes every PolicyBundle field from the side it belongs to, checked by value', async () => {
+    // Each field holds a different value on each side, so a field the merge drops, or takes from
+    // the wrong side, reads as the wrong value. A new field fails to compile here until it is
+    // placed, and the runtime check holds the table to the schema's own keys.
+    const source: Record<keyof PolicyBundle, 'cache' | 'local' | 'both'> = {
+      version: 'cache',
+      prohibitedModels: 'cache',
+      modelPolicy: 'cache',
+      redactFallback: 'cache',
+      policies: 'both',
+      rules: 'both',
+      customKeywords: 'both',
+      rulesComplete: 'local',
+      exceptions: 'local',
+      reversibleRuleIds: 'local',
+      ruleVersions: 'local',
+      fetchedAt: 'local',
+    };
+    expect(new Set(Object.keys(source))).toEqual(new Set(Object.keys(PolicyBundleSchema.shape)));
+
+    const side = (name: 'local' | 'remote'): PolicyBundle => ({
+      version: `${name}-version`,
+      policies: [policy({ category: name === 'local' ? 'pii' : 'secret' }, 'block')],
+      rules: [wireRule(`${name}-rule`, 'secret')],
+      customKeywords: [`${name}-keyword`],
+      rulesComplete: name === 'local',
+      exceptions: [{ sentinel: `${name}-exception` }] as unknown as PolicyBundle['exceptions'],
+      reversibleRuleIds: [`${name}-reversible`],
+      ruleVersions: { [`${name}-rule`]: `${name}-v` },
+      fetchedAt: name === 'local' ? '2026-01-01T00:00:00.000Z' : '2026-02-02T00:00:00.000Z',
+      prohibitedModels: [`${name}-prohibited`],
+      modelPolicy: { mode: 'allowlist', approved: [`${name}-approved`] },
+      redactFallback: name === 'local' ? 'warn' : 'block',
+    });
+    const localBundle = side('local');
+    const cached = side('remote');
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const local = makeLocal(calls, { getPolicyBundle: vi.fn(() => Promise.resolve(localBundle)) });
+    const { gateway } = build({ local, readCachedBundle: () => Promise.resolve(cached) });
+    const merged = await gateway.getPolicyBundle();
+
+    for (const [key, from] of Object.entries(source) as [keyof PolicyBundle, string][]) {
+      const value = JSON.stringify(merged[key]);
+      if (from === 'cache') expect(merged[key], key).toEqual(cached[key]);
+      else if (from === 'local') expect(merged[key], key).toEqual(localBundle[key]);
+      else {
+        const [mine, theirs] = key === 'policies' ? ['pii', 'secret'] : ['local', 'remote'];
+        expect(value, key).toContain(mine);
+        expect(value, key).toContain(theirs);
+      }
+    }
   });
 
   it('leaves prohibitedModels absent when the organization prohibits nothing', async () => {

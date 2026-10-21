@@ -1446,6 +1446,9 @@ export class AttachedDataGateway
       // apply to every event on the machine. Where a prohibition applies is
       // answered per event by `governanceAppliesTo` below.
       prohibitedModels: cached.prohibitedModels,
+      // Taken from the cache as `prohibitedModels` is: an approved-model list only ever refuses a
+      // model, and a device carries none of its own.
+      modelPolicy: cached.modelPolicy,
       // NAMED for the same reason as the line above, and it is the same defect
       // if it is not: `...local` above spreads the DEVICE's bundle, so a field
       // only the cache carries is dropped in silence. That is what left

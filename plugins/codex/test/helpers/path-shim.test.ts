@@ -255,7 +255,7 @@ describe('nodeOnlyDir', () => {
       timeout: 20_000,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    if (probe.status !== 0 && SHARED_LIBRARY_LOAD_FAILURE.test(probe.stderr ?? '')) {
+    if (probe.status !== 0 && SHARED_LIBRARY_LOAD_FAILURE.test(probe.stderr)) {
       ctx.skip(
         'this node build loads a shared libnode by relative path, so a copy of it cannot run',
       );

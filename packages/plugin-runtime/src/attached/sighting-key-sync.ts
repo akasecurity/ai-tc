@@ -40,8 +40,10 @@ export interface RunSightingKeySyncDeps {
 /**
  * Whether `stored` was issued by the endpoint with `fingerprint`, fetched
  * within the last day by a clock that has not run backwards past it, and holds
- * no previous version whose `acceptedUntil` has passed: a refetch then drops
- * that version as soon as the deployment stops accepting it.
+ * no previous version whose `acceptedUntil` passed after the map was fetched: a
+ * refetch then drops that version as soon as the deployment stops accepting it.
+ * A map fetched once that window had already closed is not fetched again for
+ * it; a lapsed version is never used, whatever the map holds.
  */
 function isFresh(
   stored: StoredSightingKeys | undefined,
@@ -52,7 +54,10 @@ function isFresh(
   const age = nowMs - stored.fetchedAtMs;
   if (age < 0 || age >= SIGHTING_KEY_MAX_AGE_MS) return false;
   return (stored.previous ?? []).every(
-    (version) => version.acceptedUntil === undefined || isPreviousVersionAccepted(version, nowMs),
+    (version) =>
+      version.acceptedUntil === undefined ||
+      isPreviousVersionAccepted(version, nowMs) ||
+      !(stored.fetchedAtMs < Date.parse(version.acceptedUntil)),
   );
 }
 

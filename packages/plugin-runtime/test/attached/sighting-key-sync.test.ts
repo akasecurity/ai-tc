@@ -176,6 +176,18 @@ describe('runSightingKeySync', () => {
       expect(store().read()?.keyVersion).toBe(FETCHED.keyVersion);
     });
 
+    it('does not refetch for a window that had already closed when the map was fetched', async () => {
+      attach();
+      // Served a window the deployment had already closed, or read by a clock
+      // running ahead: refetching would only bring the same map back.
+      store().replace(
+        youngWith([{ keyVersion: 4, key: material(4), acceptedUntil: at(NOW - 120_000) }]),
+      );
+
+      await expect(run()).resolves.toBe('fresh');
+      expect(getSightingKey).not.toHaveBeenCalled();
+    });
+
     it('keeps a young map while every acceptedUntil is still ahead', async () => {
       attach();
       const stored = youngWith([{ keyVersion: 1, key: material(1), acceptedUntil: at(NOW + 1) }]);

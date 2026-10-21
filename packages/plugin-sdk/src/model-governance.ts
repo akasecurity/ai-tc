@@ -9,6 +9,9 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 
+import type { ModelPolicy } from '@akasecurity/schema';
+import { GEO_PREFIXES, PLATFORM_NAMESPACES } from '@akasecurity/schema';
+
 import { DATA_DIR_MODE, DATA_FILE_MODE } from './data-dir.ts';
 
 /**
@@ -58,6 +61,95 @@ const DATE_SUFFIX = /-\d{8}$/;
  */
 export function normalizeModelId(model: string): string {
   return model.trim().toLowerCase().replace(DATE_SUFFIX, '');
+}
+
+/** A Bedrock geographic routing prefix, ahead of a `provider.model` id. */
+const GEO_PREFIX = new RegExp(`^(?:${GEO_PREFIXES.join('|')})\\.(?=[^.]+\\.)`, 'u');
+
+/** A platform vendor namespace: Bedrock's `vendor.model` and a gateway's `vendor/model`. */
+const NAMESPACE_DOT = new RegExp(`^(?:${PLATFORM_NAMESPACES.join('|')})\\.`, 'u');
+const NAMESPACE_SLASH = new RegExp(`^(?:${PLATFORM_NAMESPACES.join('|')})/`, 'u');
+
+/** A Bedrock model version (`-v1:0`) or revision (`:1`). */
+const BEDROCK_VERSION = /(?:-v\d+:\d+|:\d+)$/u;
+
+/** A Vertex model version (`@20250929`, `@001`). */
+const VERTEX_VERSION = /@[\w-]+$/u;
+
+/** A trailing release date: `-20251001` or `-2024-08-06`. */
+const RELEASE_DATE = /-(?:\d{8}|\d{4}-\d{2}-\d{2})$/u;
+
+/** A Bedrock ARN that names a model: a foundation model or a system inference profile. */
+const BEDROCK_MODEL_ARN =
+  /^arn:aws(?:-[a-z]+)*:bedrock:[^:]*:[^:]*:(?:foundation-model|inference-profile)\/(.+)$/;
+
+/** A Vertex `publishers/{p}/models/{m}` resource, or a Gemini `models/{m}` one. */
+const MODELS_PATH = /(?:^|\/)models\/([^/]+)$/;
+
+/** Prefixes of an id that names a deployment rather than a model, kept whole. */
+const OPAQUE_PREFIXES: readonly string[] = ['vertex-endpoint/', 'tunedmodels/'];
+
+/**
+ * A model id in the form an approved-model list compares, or `undefined` when `model`
+ * names no model.
+ *
+ * Lowercased and trimmed, then reduced to the model it names, across the platforms that
+ * serve it: a foundation-model or system inference-profile ARN becomes its model id,
+ * `publishers/{p}/models/{m}` and `models/{m}` become `{m}`, and a Bedrock geographic
+ * prefix, a known vendor namespace (`anthropic.`, `meta/`), a Bedrock or Vertex version
+ * and a release date are removed. So `us.anthropic.claude-haiku-4-5-20251001-v1:0`,
+ * `claude-haiku-4-5@20251001` and `claude-haiku-4-5` are one id.
+ *
+ * A namespace that is not a known vendor's is kept: `openai/gpt-4o`, `other/gpt-4o` and
+ * `gpt-4o` are three ids. Any other ARN, a `vertex-endpoint/{id}` and a `tunedModels/{m}`
+ * are kept whole, only lowercased.
+ */
+export function canonicalModelId(model: string): string | undefined {
+  let id = model.trim().toLowerCase();
+  if (id === '') return undefined;
+  if (OPAQUE_PREFIXES.some((prefix) => id.startsWith(prefix))) return id;
+  if (id.startsWith('arn:')) {
+    const named = BEDROCK_MODEL_ARN.exec(id)?.[1];
+    if (named === undefined) return id;
+    id = named;
+  }
+  const path = MODELS_PATH.exec(id)?.[1];
+  if (path !== undefined) id = path;
+  id = id
+    .replace(GEO_PREFIX, '')
+    .replace(NAMESPACE_DOT, '')
+    .replace(BEDROCK_VERSION, '')
+    .replace(VERTEX_VERSION, '')
+    .replace(NAMESPACE_SLASH, '')
+    .replace(RELEASE_DATE, '');
+  return id === '' ? undefined : id;
+}
+
+/**
+ * The approved ids of `policy`, each folded by `canonicalModelId`, or `undefined` when
+ * there is nothing to enforce: no policy, or a list holding no id that names a model.
+ */
+export function approvedModelIds(policy: ModelPolicy | undefined): ReadonlySet<string> | undefined {
+  if (policy === undefined) return undefined;
+  const ids = new Set<string>();
+  for (const raw of policy.approved) {
+    const id = canonicalModelId(raw);
+    if (id !== undefined) ids.add(id);
+  }
+  return ids.size === 0 ? undefined : ids;
+}
+
+/**
+ * Whether `model` may run under `approved` (from `approvedModelIds`). True when there is no
+ * list, and when `model` is unknown or names no model.
+ */
+export function isModelApproved(
+  model: string | undefined,
+  approved: ReadonlySet<string> | undefined,
+): boolean {
+  if (approved === undefined || model === undefined) return true;
+  const id = canonicalModelId(model);
+  return id === undefined || approved.has(id);
 }
 
 /**

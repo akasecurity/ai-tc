@@ -1,13 +1,14 @@
 'use client';
 import { harnessFromTool } from '@akasecurity/schema';
 import { Badge, Button, Card, cn, Input, SeverityBadge } from '@akasecurity/ui-kit';
-import { type ReactNode, useState } from 'react';
+import { type ReactNode, useId, useState } from 'react';
 
 import { Ico } from '../inventory/Ico.tsx';
 import type { IconName } from '../inventory/icons.ts';
 import { relativeTime } from '../lib/relativeTime.ts';
 import { MetaItem, SectionLabel } from '../shared/DetailFields.tsx';
 import { PROVIDERS } from '../shared/Provider.tsx';
+import { RefusalReason, refusedControlProps } from '../shared/Refusal.tsx';
 import { namedByVariable } from './CredentialsListView.tsx';
 import type { CredentialDetailModel } from './types.ts';
 
@@ -24,6 +25,11 @@ export interface CredentialDetailViewProps {
   onSaveLabel?: ((label: string | null) => Promise<void>) | undefined;
   /** Why the last label save failed. */
   labelError?: string | undefined;
+  /**
+   * Why this reader may not label the credential. Set, the control shows
+   * locked with this reason beside it; absent, it works.
+   */
+  labelRefusal?: string | undefined;
   /** The longest label the host accepts. */
   labelMaxLength?: number | undefined;
 }
@@ -33,14 +39,17 @@ function LabelEditor({
   onSave,
   error,
   maxLength,
+  refusal,
 }: {
   label: string | null;
   onSave: (label: string | null) => Promise<void>;
   error: string | undefined;
   maxLength: number | undefined;
+  refusal: string | undefined;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const reasonId = useId();
 
   const save = async (next: string | null) => {
     setSaving(true);
@@ -54,6 +63,23 @@ function LabelEditor({
     }
   };
 
+  const openLabel = label === null ? 'Add label' : 'Rename';
+  if (refusal !== undefined) {
+    return (
+      <div className="flex flex-col items-end gap-1">
+        <Button
+          variant="outline"
+          size="sm"
+          {...refusedControlProps(reasonId, refusal, 'hover:bg-surface')}
+        >
+          {openLabel}
+        </Button>
+        <RefusalReason id={reasonId} dataSlot="credential-label-reason">
+          {refusal}
+        </RefusalReason>
+      </div>
+    );
+  }
   if (draft === null) {
     return (
       <Button
@@ -63,7 +89,7 @@ function LabelEditor({
           setDraft(label ?? '');
         }}
       >
-        {label === null ? 'Add label' : 'Rename'}
+        {openLabel}
       </Button>
     );
   }
@@ -177,6 +203,7 @@ export function CredentialDetailView({
   onSaveLabel,
   labelError,
   labelMaxLength,
+  labelRefusal,
 }: CredentialDetailViewProps) {
   const detectedOnly = c.reference === null;
   return (
@@ -208,6 +235,7 @@ export function CredentialDetailView({
             label={c.label}
             onSave={onSaveLabel}
             error={labelError}
+            refusal={labelRefusal}
             maxLength={labelMaxLength}
           />
         )}

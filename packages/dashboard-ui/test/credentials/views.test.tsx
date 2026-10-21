@@ -190,7 +190,7 @@ describe('CredentialsListView', () => {
 describe('CredentialDetailView', () => {
   function detail(
     credential: CredentialDetailModel = DETAIL,
-    label: Pick<CredentialDetailViewProps, 'onSaveLabel' | 'labelError'> = {},
+    label: Pick<CredentialDetailViewProps, 'onSaveLabel' | 'labelError' | 'labelRefusal'> = {},
   ) {
     const onBack = vi.fn();
     const onOpenFinding = vi.fn();
@@ -281,6 +281,21 @@ describe('CredentialDetailView', () => {
       await Promise.resolve();
     });
     expect(onSaveLabel).toHaveBeenCalledWith(null);
+  });
+
+  it('shows a refused label control locked, with the reason, and opens no editor', () => {
+    const onSaveLabel = vi.fn<(label: string | null) => Promise<void>>().mockResolvedValue();
+    detail(DETAIL, { onSaveLabel, labelRefusal: 'You do not have enough permissions.' });
+    const control = button('Add label');
+    expect(control?.getAttribute('aria-disabled')).toBe('true');
+    const reason = mounted.host.querySelector('[data-slot="credential-label-reason"]');
+    expect(reason?.textContent).toBe('You do not have enough permissions.');
+    expect(control?.getAttribute('aria-describedby')).toBe(reason?.id);
+    act(() => {
+      control?.click();
+    });
+    expect(labelInput()).toBeNull();
+    expect(onSaveLabel).not.toHaveBeenCalled();
   });
 
   it('keeps the editor open with the host error when a save fails', async () => {

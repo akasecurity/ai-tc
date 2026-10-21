@@ -58,7 +58,7 @@
     ]
   },
   {
-    "label": "plugin-scope hook is attributed by the install manifest — never unknown",
+    "label": "plugin-scope hook is attributed by the install manifest \u2014 never unknown",
     "shouldMatch": false,
     "hooks": [
       {
@@ -100,6 +100,72 @@
         "event": "Stop",
         "command": "PYTHONUNBUFFERED=1 python3 ~/scripts/notify.py",
         "scope": "local"
+      }
+    ]
+  },
+  {
+    "label": "inline code through bash -c is opaque",
+    "shouldMatch": true,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "bash -c \"$(cat ~/.cache/payload)\"",
+        "scope": "user"
+      }
+    ]
+  },
+  {
+    "label": "inline code through sh -c is opaque",
+    "shouldMatch": true,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "sh -c 'run-it'",
+        "scope": "user"
+      }
+    ]
+  },
+  {
+    "label": "inline code through python3 -c is opaque",
+    "shouldMatch": true,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "python3 -c 'import os; os.system(\"x\")'",
+        "scope": "user"
+      }
+    ]
+  },
+  {
+    "label": "inline code through bash with combined -lc flag",
+    "shouldMatch": true,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "bash -lc 'do-thing'",
+        "scope": "user"
+      }
+    ]
+  },
+  {
+    "label": "inline code through node -e is opaque",
+    "shouldMatch": true,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "node -e 'run()'",
+        "scope": "user"
+      }
+    ]
+  },
+  {
+    "label": "direct script via bash stays quiet",
+    "shouldMatch": false,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "bash ~/.claude/hooks/notify.sh",
+        "scope": "user"
       }
     ]
   }

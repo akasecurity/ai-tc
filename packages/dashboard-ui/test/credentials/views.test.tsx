@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { CREDENTIAL_LABEL_MAX_LENGTH } from '@akasecurity/schema';
 import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -296,6 +297,72 @@ describe('CredentialDetailView', () => {
     });
     expect(labelInput()).toBeNull();
     expect(onSaveLabel).not.toHaveBeenCalled();
+  });
+
+  it('heads a credential with a blank display name by its kind, and a blank label counts as none', () => {
+    detail({ ...DETAIL, variableName: null, label: '', displayName: '' });
+    expect(mounted.host.querySelector('h2')?.textContent).toBe('GitHub token');
+    detail({ ...DETAIL, label: '  ', displayName: 'GITHUB_TOKEN' }, { onSaveLabel: vi.fn() });
+    expect(mounted.host.querySelector('h2')?.className).toContain('font-mono');
+    expect(button('Add label')).toBeDefined();
+    expect(text()).not.toContain('Variable');
+  });
+
+  it('bounds the label at CREDENTIAL_LABEL_MAX_LENGTH when the host names no length', () => {
+    detail(DETAIL, { onSaveLabel: vi.fn() });
+    act(() => {
+      button('Add label')?.click();
+    });
+    expect(labelInput()?.maxLength).toBe(CREDENTIAL_LABEL_MAX_LENGTH);
+  });
+
+  it('says a save failed when the host gives no reason, and clears it on reopening', async () => {
+    const onSaveLabel = vi
+      .fn<(label: string | null) => Promise<void>>()
+      .mockRejectedValue(new Error('refused'));
+    detail(DETAIL, { onSaveLabel });
+    act(() => {
+      button('Add label')?.click();
+    });
+    expect(mounted.host.querySelector('[role="alert"]')).toBeNull();
+    type('Deploy bot');
+    await submit();
+    expect(mounted.host.querySelector('[role="alert"]')?.textContent).toBe(
+      "Couldn't save the label.",
+    );
+    act(() => {
+      button('Cancel')?.click();
+    });
+    act(() => {
+      button('Add label')?.click();
+    });
+    expect(mounted.host.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it('returns focus to the label control after a save, a cancel and Escape', async () => {
+    const onSaveLabel = vi.fn<(label: string | null) => Promise<void>>().mockResolvedValue();
+    detail(DETAIL, { onSaveLabel });
+    act(() => {
+      button('Add label')?.click();
+    });
+    type('Deploy bot');
+    await submit();
+    expect(document.activeElement).toBe(button('Add label'));
+    act(() => {
+      button('Add label')?.click();
+    });
+    act(() => {
+      button('Cancel')?.click();
+    });
+    expect(document.activeElement).toBe(button('Add label'));
+    act(() => {
+      button('Add label')?.click();
+    });
+    act(() => {
+      labelInput()?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(labelInput()).toBeNull();
+    expect(document.activeElement).toBe(button('Add label'));
   });
 
   it('keeps the editor open with the host error when a save fails', async () => {

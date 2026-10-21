@@ -1,7 +1,7 @@
 'use client';
-import { harnessFromTool } from '@akasecurity/schema';
+import { CREDENTIAL_LABEL_MAX_LENGTH, harnessFromTool } from '@akasecurity/schema';
 import { Badge, Button, Card, cn, Input, SeverityBadge } from '@akasecurity/ui-kit';
-import { type ReactNode, useId, useState } from 'react';
+import { type ReactNode, useEffect, useId, useRef, useState } from 'react';
 
 import { Ico } from '../inventory/Ico.tsx';
 import type { IconName } from '../inventory/icons.ts';
@@ -9,7 +9,7 @@ import { relativeTime } from '../lib/relativeTime.ts';
 import { MetaItem, SectionLabel } from '../shared/DetailFields.tsx';
 import { PROVIDERS } from '../shared/Provider.tsx';
 import { RefusalReason, refusedControlProps } from '../shared/Refusal.tsx';
-import { namedByVariable } from './CredentialsListView.tsx';
+import { credentialLabel, credentialName } from './name.ts';
 import type { CredentialDetailModel } from './types.ts';
 
 export interface CredentialDetailViewProps {
@@ -23,16 +23,18 @@ export interface CredentialDetailViewProps {
    * keeps the editor open. Omit it and no edit control is shown.
    */
   onSaveLabel?: ((label: string | null) => Promise<void>) | undefined;
-  /** Why the last label save failed. */
+  /** Why the last label save failed. Without it a failed save shows a generic message. */
   labelError?: string | undefined;
   /**
    * Why this reader may not label the credential. Set, the control shows
    * locked with this reason beside it; absent, it works.
    */
   labelRefusal?: string | undefined;
-  /** The longest label the host accepts. */
+  /** The longest label the host accepts; `CREDENTIAL_LABEL_MAX_LENGTH` when omitted. */
   labelMaxLength?: number | undefined;
 }
+
+const SAVE_FAILED = "Couldn't save the label.";
 
 function LabelEditor({
   label,
@@ -44,20 +46,44 @@ function LabelEditor({
   label: string | null;
   onSave: (label: string | null) => Promise<void>;
   error: string | undefined;
-  maxLength: number | undefined;
+  maxLength: number;
   refusal: string | undefined;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [failed, setFailed] = useState(false);
   const reasonId = useId();
+  const trigger = useRef<HTMLButtonElement>(null);
+  const returnFocus = useRef(false);
 
+  // Closing the editor unmounts the input that held focus; hand it back to
+  // the control that opened it, not to the page body.
+  useEffect(() => {
+    if (draft === null && returnFocus.current) {
+      returnFocus.current = false;
+      trigger.current?.focus();
+    }
+  }, [draft]);
+
+  const open = () => {
+    setFailed(false);
+    setDraft(label ?? '');
+  };
+  const close = () => {
+    returnFocus.current = true;
+    setDraft(null);
+  };
   const save = async (next: string | null) => {
+    if (next !== null && next.length > maxLength) {
+      setFailed(true);
+      return;
+    }
     setSaving(true);
     try {
       await onSave(next);
-      setDraft(null);
+      close();
     } catch {
-      // The host reports the failure through `error`; the draft stays for a retry.
+      setFailed(true);
     } finally {
       setSaving(false);
     }
@@ -82,18 +108,13 @@ function LabelEditor({
   }
   if (draft === null) {
     return (
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={() => {
-          setDraft(label ?? '');
-        }}
-      >
+      <Button ref={trigger} variant="outline" size="sm" onClick={open}>
         {openLabel}
       </Button>
     );
   }
   const trimmed = draft.trim();
+  const tooLong = trimmed.length > maxLength;
   return (
     <form
       className="flex flex-col gap-1.5"
@@ -114,10 +135,10 @@ function LabelEditor({
             setDraft(e.target.value);
           }}
           onKeyDown={(e) => {
-            if (e.key === 'Escape') setDraft(null);
+            if (e.key === 'Escape') close();
           }}
         />
-        <Button type="submit" size="sm" disabled={saving || trimmed === ''}>
+        <Button type="submit" size="sm" disabled={saving || trimmed === '' || tooLong}>
           Save
         </Button>
         {label !== null && (
@@ -133,21 +154,13 @@ function LabelEditor({
             Clear label
           </Button>
         )}
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          disabled={saving}
-          onClick={() => {
-            setDraft(null);
-          }}
-        >
+        <Button type="button" variant="ghost" size="sm" disabled={saving} onClick={close}>
           Cancel
         </Button>
       </div>
-      {error !== undefined && (
+      {failed && (
         <p role="alert" className="text-xs text-sev-critical-ink">
-          {error}
+          {error ?? SAVE_FAILED}
         </p>
       )}
     </form>
@@ -222,21 +235,21 @@ export function CredentialDetailView({
           <h2
             className={cn(
               'truncate text-lg font-semibold text-text',
-              namedByVariable(c) && 'font-mono',
+              credentialName(c).isVariable && 'font-mono',
             )}
           >
-            {c.displayName}
+            {credentialName(c).text}
           </h2>
           <div className="text-xs text-text-3">{c.kind}</div>
         </div>
         {onSaveLabel !== undefined && (
           <LabelEditor
             key={c.id}
-            label={c.label}
+            label={credentialLabel(c)}
             onSave={onSaveLabel}
             error={labelError}
             refusal={labelRefusal}
-            maxLength={labelMaxLength}
+            maxLength={labelMaxLength ?? CREDENTIAL_LABEL_MAX_LENGTH}
           />
         )}
       </div>
@@ -259,7 +272,7 @@ export function CredentialDetailView({
       <div>
         <SectionLabel>Details</SectionLabel>
         <div className="grid grid-cols-2 gap-x-6 gap-y-4 md:grid-cols-4">
-          {c.label !== null && c.variableName !== null && (
+          {credentialLabel(c) !== null && c.variableName !== null && (
             <MetaItem label="Variable">
               <span className="font-mono text-xs">{c.variableName}</span>
             </MetaItem>

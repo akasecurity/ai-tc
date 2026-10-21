@@ -6,9 +6,13 @@ export interface CredentialListItem {
   id: string;
   /** The variable the value was last seen assigned to, when a scan named one. */
   variableName: string | null;
-  /** The name an administrator gave it. */
+  /** The name an administrator gave it; null when it has none. An empty string counts as none. */
   label: string | null;
-  /** The name to show: the label, else the variable name, else the kind and where it was seen. */
+  /**
+   * The name to show: the label, else the variable name, else the kind and
+   * where it was seen. Read it through `credentialName`, which falls back
+   * when it is empty.
+   */
   displayName: string;
   /** The detecting rule's short label, such as "GitHub token". */
   kind: string;

@@ -18,12 +18,8 @@ import {
 import { Ico } from '../inventory/Ico.tsx';
 import { relativeTime } from '../lib/relativeTime.ts';
 import { SearchField } from '../shared/SearchField.tsx';
+import { credentialLabel, credentialName } from './name.ts';
 import type { CredentialListItem } from './types.ts';
-
-/** True when the name shown is the variable name, which renders as code. */
-export function namedByVariable(item: Pick<CredentialListItem, 'label' | 'variableName'>): boolean {
-  return item.label === null && item.variableName !== null;
-}
 
 export interface CredentialsListViewProps {
   items: CredentialListItem[];
@@ -151,7 +147,7 @@ export function CredentialsListView({
                 <TableRow
                   key={item.id}
                   className="cursor-pointer"
-                  aria-label={`View credential ${item.displayName}`}
+                  aria-label={`View credential ${credentialName(item).text}`}
                   onClick={() => {
                     onSelect(item.id);
                   }}
@@ -160,14 +156,14 @@ export function CredentialsListView({
                     <div
                       className={cn(
                         'text-xs font-semibold text-text',
-                        namedByVariable(item) && 'font-mono',
+                        credentialName(item).isVariable && 'font-mono',
                       )}
                     >
-                      {item.displayName}
+                      {credentialName(item).text}
                     </div>
                     <div className="text-xs text-text-3">
                       {item.kind}
-                      {item.label !== null && item.variableName !== null && (
+                      {credentialLabel(item) !== null && item.variableName !== null && (
                         <span className="font-mono"> · {item.variableName}</span>
                       )}
                     </div>

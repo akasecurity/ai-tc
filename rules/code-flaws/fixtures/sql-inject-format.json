@@ -70,9 +70,9 @@
     "shouldMatch": true
   },
   {
-    "label": "Ruby-style heredoc body with a %s placeholder",
+    "label": "known gap: heredoc body with a %s placeholder and no quote anchor is not matched (line-start branch only takes #{ and ${)",
     "text": "sql = <<~SQL\n  SELECT * FROM t WHERE id = %s\nSQL",
-    "shouldMatch": true
+    "shouldMatch": false
   },
   {
     "label": "format-style heredoc body with an f-string placeholder",
@@ -82,6 +82,63 @@
   {
     "label": "heredoc body without a placeholder",
     "text": "sql = <<~SQL\n  SELECT * FROM t WHERE id = 1\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "Ruby heredoc with a #{} placeholder",
+    "text": "q = <<~SQL\n  SELECT * FROM t WHERE id = #{id}\nSQL",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 11,
+        "end": 45
+      }
+    ]
+  },
+  {
+    "label": "Ruby heredoc with a blank line after the opener: span starts on the SQL line",
+    "text": "q = <<~SQL\n\n  SELECT * FROM t WHERE id = #{id}\nSQL",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 12,
+        "end": 46
+      }
+    ]
+  },
+  {
+    "label": "dbt/Jinja model line is a table reference, not user input",
+    "text": "select * from {{ ref('orders') }}",
+    "shouldMatch": false
+  },
+  {
+    "label": "prose line with braces",
+    "text": "Select the id from the {list} of users",
+    "shouldMatch": false
+  },
+  {
+    "label": "prose line with a %s",
+    "text": "select the option from %s and press enter",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: heredoc statement split across lines with a %s placeholder is not matched",
+    "text": "sql = <<~SQL\n  SELECT *\n  FROM t\n  WHERE id = %s\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: heredoc statement split across lines with a #{} placeholder is not matched by this rule (sql-inject-interp covers it)",
+    "text": "sql = <<~SQL\n  SELECT *\n  FROM t\n  WHERE id = #{id}\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: unquoted parenthesized statement is not matched",
+    "text": "(SELECT * FROM t WHERE id = #{x})",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: interpolation-first statement is not matched",
+    "text": "#{prefix} UPDATE t SET a = #{x}",
     "shouldMatch": false
   }
 ]

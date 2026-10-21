@@ -209,5 +209,45 @@
     "label": "KNOWN GAP (PR #714): dot-separated id/secret pair (Twilio-style) — same, stays undetected by design",
     "text": "TWILIO_TOKEN=abcdef1234567890.abcdef1234567890",
     "shouldMatch": false
+  },
+  {
+    "label": "await keyword is not a value",
+    "text": "const token = await getToken();",
+    "shouldMatch": false
+  },
+  {
+    "label": "input identifier is not a value",
+    "text": "password = input",
+    "shouldMatch": false
+  },
+  {
+    "label": "typeof keyword is not a value",
+    "text": "const token = typeof x",
+    "shouldMatch": false
+  },
+  {
+    "label": "this keyword is not a value",
+    "text": "this.secret = this",
+    "shouldMatch": false
+  },
+  {
+    "label": "self identifier is not a value",
+    "text": "secret = self",
+    "shouldMatch": false
+  },
+  {
+    "label": "yield keyword is not a value",
+    "text": "const token = yield next",
+    "shouldMatch": false
+  },
+  {
+    "label": "keyword prefix of a longer literal is still a value",
+    "text": "password=inputXYZ12abc",
+    "shouldMatch": true
+  },
+  {
+    "label": "keyword-led literal with a separator is still a value",
+    "text": "API_TOKEN=await_9f8e7d6c5b4a",
+    "shouldMatch": true
   }
 ]

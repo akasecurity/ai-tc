@@ -856,7 +856,10 @@ export function createPluginRuntime(
       input.occurredAt === undefined && opts.persist !== 'never' ? startTiming() : undefined;
     const { decision, excepted, exceptionIds } = await evaluate(
       input.text,
-      { filePath: input.metadata?.filePath, eventKind: input.kind },
+      {
+        filePath: input.metadata?.filePath,
+        eventKind: opts.kindScopedRules === false ? undefined : input.kind,
+      },
       {
         sourceTool: input.sourceTool,
         metadata: input.metadata,
@@ -1233,6 +1236,16 @@ export interface CaptureOptions extends DecisionOptions {
   // For a whole-file `code_change` capture: holds each detected secret in the
   // vault, with a `file` sighting, and stores its pointer in the event content.
   vault?: AtRestVault | undefined;
+  // Whether rules scoped by `appliesTo.eventKinds` run on this text. Default
+  // true. Such a rule judges the capture itself (a command about to execute),
+  // so a field that rides along with the call without executing — a tool
+  // call's model-written description — passes false: the scan then carries no
+  // event kind, every kind-scoped rule drops out for this text, and every rule
+  // with no `eventKinds` (secrets, PII) runs exactly as it would otherwise.
+  // Only rule selection changes: the event is still recorded under
+  // `input.kind`, and the text is still scanned once, in the same scan call
+  // (in process or in the worker) as any other capture.
+  kindScopedRules?: boolean;
 }
 
 // What `captureDeferred` hands back: the decision, and the write held back.

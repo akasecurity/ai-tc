@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import type { z } from 'zod';
 
@@ -45,6 +47,11 @@ describe('Finding schema (tenant-free base)', () => {
     expect(Finding.safeParse(validRow).success).toBe(true);
     expectTypeOf<z.output<typeof Finding>>().not.toHaveProperty('tenantId');
     expectTypeOf<z.output<typeof DetectedFinding>>().not.toHaveProperty('tenantId');
+  });
+
+  it('accepts a content-addressed finding id as well as a UUID', () => {
+    const id = createHash('sha256').update('finding').digest('hex');
+    expect(Finding.parse({ ...validRow, id }).id).toBe(id);
   });
 });
 

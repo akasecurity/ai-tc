@@ -60,12 +60,13 @@ const KNOWN_TOOLS = new Set([
 ]);
 
 // Per-runtime flags that make the next argument inline code rather than a
-// script path. Matched only among the leading flags, before the first
-// positional argument.
+// script path (`-s` makes a shell read its program from stdin). A quoted body
+// glued to the flag (`-c'cmd'`) matches too. Matched only among the leading
+// flags, before the first positional argument.
 const INLINE_CODE_FLAGS: Record<string, RegExp> = {
-  bash: /^-[A-Za-z]*c[A-Za-z]*$/,
-  sh: /^-[A-Za-z]*c[A-Za-z]*$/,
-  python3: /^-[A-Za-z]*c[A-Za-z]*$/,
+  bash: /^-[A-Za-z]*[cs][A-Za-z]*(['"].*)?$/,
+  sh: /^-[A-Za-z]*[cs][A-Za-z]*(['"].*)?$/,
+  python3: /^-[A-Za-z]*c[A-Za-z]*(['"].*)?$/,
   node: /^(-[ep]|--eval|--print)$/,
   bun: /^(-e|-p|--eval|--print)$/,
   bunx: /^(-e|-p|--eval|--print)$/,
@@ -175,15 +176,20 @@ function isUnknown(hook: HookScanEntry): boolean {
 
 // True when a known runtime is invoked with inline code (`bash -c …`), which
 // the runtime itself does not vouch for. Only flags before the first
-// positional argument count; `deno eval` is the subcommand form.
+// positional argument count; `deno eval` is the subcommand form, and a bare
+// `-` argument reads the program from stdin.
 function hasInlineCode(name: string, command: string): boolean {
   const tokens = command.trim().split(/\s+/);
   const start = tokens.findIndex((t) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t));
   const args = tokens.slice(start + 1).map((t) => t.replace(/^['"]|['"]$/g, ''));
-  if (name === 'deno') return args[0] === 'eval';
+  if (name === 'deno') {
+    const subcommand = args.find((a) => !a.startsWith('-'));
+    return subcommand === 'eval';
+  }
   const flag = INLINE_CODE_FLAGS[name];
   if (flag === undefined) return false;
   for (const arg of args) {
+    if (arg === '-') return true;
     if (arg === '--' || !arg.startsWith('-')) return false;
     if (flag.test(arg)) return true;
   }

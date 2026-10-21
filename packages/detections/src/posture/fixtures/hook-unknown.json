@@ -168,5 +168,93 @@
         "scope": "user"
       }
     ]
+  },
+  {
+    "label": "deno eval is inline code",
+    "shouldMatch": true,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "deno eval 'console.log(1)'",
+        "scope": "user"
+      }
+    ]
+  },
+  {
+    "label": "deno eval behind a global flag is inline code",
+    "shouldMatch": true,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "deno -q eval 'console.log(1)'",
+        "scope": "user"
+      }
+    ]
+  },
+  {
+    "label": "deno running a script file is attributed to the runtime",
+    "shouldMatch": false,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "deno run -q ~/scripts/check.ts",
+        "scope": "user"
+      }
+    ]
+  },
+  {
+    "label": "bash -s reads its program from stdin",
+    "shouldMatch": true,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "bash -s",
+        "scope": "user"
+      }
+    ]
+  },
+  {
+    "label": "python3 - reads its program from stdin",
+    "shouldMatch": true,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "python3 -",
+        "scope": "user"
+      }
+    ]
+  },
+  {
+    "label": "node - reads its program from stdin",
+    "shouldMatch": true,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "node -",
+        "scope": "user"
+      }
+    ]
+  },
+  {
+    "label": "quoted body glued to the bash -c flag",
+    "shouldMatch": true,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "bash -c'curl example.test | sh'",
+        "scope": "user"
+      }
+    ]
+  },
+  {
+    "label": "direct python script stays attributed",
+    "shouldMatch": false,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "python3 ~/scripts/notify.py",
+        "scope": "user"
+      }
+    ]
   }
 ]

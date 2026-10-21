@@ -129,6 +129,44 @@ describe('InventoryNav', () => {
     expect(entries()).toEqual(['Projects1', 'Skills0', 'MCP servers1', 'Hooks0', 'Configuration0']);
   });
 
+  it('lists a host link after the types, counts its attention, and opens it on click', () => {
+    const onSelect = vi.fn();
+    renderRoot(
+      mounted.root,
+      <InventoryNav
+        harnesses={HARNESSES}
+        projects={[PROJECT]}
+        assetGroups={GROUPS}
+        view="type"
+        onView={vi.fn()}
+        harness="claudecode"
+        type="project"
+        onSelectHarness={vi.fn()}
+        onSelectType={vi.fn()}
+        links={[
+          {
+            key: 'credentials',
+            label: 'Credentials',
+            icon: 'key',
+            fg: 'text-sev-high-ink',
+            bg: 'bg-sev-high-fill',
+            count: 7,
+            attention: 3,
+            onSelect,
+          },
+        ]}
+      />,
+    );
+    expect(entries().at(-1)).toBe('Credentials7');
+    expect(mounted.host.textContent).toContain('5 to review');
+    const last = [...mounted.host.querySelectorAll('nav li button')].at(-1) as HTMLButtonElement;
+    expect(last.getAttribute('aria-current')).toBeNull();
+    act(() => {
+      last.click();
+    });
+    expect(onSelect).toHaveBeenCalledTimes(1);
+  });
+
   it('selects a harness on click and marks the current one', () => {
     const onSelectHarness = vi.fn();
     mount('harness', { onSelectHarness });

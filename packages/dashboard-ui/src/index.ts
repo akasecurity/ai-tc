@@ -228,9 +228,19 @@ export {
 } from './inventory/data.ts';
 export { HarnessInventory } from './inventory/HarnessInventory.tsx';
 export { Ico } from './inventory/Ico.tsx';
-export { InventoryNav } from './inventory/InventoryNav.tsx';
+export { InventoryNav, type InventoryNavLink } from './inventory/InventoryNav.tsx';
 export { ProjectDetail } from './inventory/ProjectDetail.tsx';
 export { TypeInventory } from './inventory/TypeInventory.tsx';
+
+// Credential ledger views — props-driven; the host maps its own records onto these shapes.
+export { CredentialDetailView } from './credentials/CredentialDetailView.tsx';
+export { type CredentialChip, CredentialsListView } from './credentials/CredentialsListView.tsx';
+export type {
+  CredentialDetailModel,
+  CredentialLinkedFinding,
+  CredentialListItem,
+  CredentialTeamUsage,
+} from './credentials/types.ts';
 
 // Security widget views — props-driven (no data fetching); the apps supply data.
 export {

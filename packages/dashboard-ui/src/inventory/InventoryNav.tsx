@@ -10,6 +10,21 @@ import { Provider } from '../shared/Provider.tsx';
 import { EmptyState } from './chips.tsx';
 import { GROUPS, harnessRows, type InventoryView, needsAttention, typeRows } from './data.ts';
 import { Ico } from './Ico.tsx';
+import type { IconName } from './icons.ts';
+
+/** An entry under the asset types, By type, that opens a page of its own. */
+export interface InventoryNavLink {
+  key: string;
+  label: string;
+  icon: IconName;
+  /** Tailwind classes for the icon tile. */
+  fg: string;
+  bg: string;
+  /** null when the count is not known. */
+  count: number | null;
+  attention: number;
+  onSelect: () => void;
+}
 
 export interface InventoryNavProps {
   harnesses: HarnessSummary[];
@@ -30,6 +45,8 @@ export interface InventoryNavProps {
    * in their place, and nothing is counted or summarised from the lists it lacks.
    */
   assetsRefusal?: string | undefined;
+  /** Entries the host adds after the asset types; each counts toward the attention summary. */
+  links?: readonly InventoryNavLink[] | undefined;
 }
 
 export function InventoryNav({
@@ -44,13 +61,15 @@ export function InventoryNav({
   onSelectType,
   isLoading,
   assetsRefusal,
+  links = [],
 }: InventoryNavProps) {
   const empty = harnesses.length === 0 && projects.length === 0 && assetGroups.length === 0;
   // Every project and asset once, counted the way the tables count them.
-  const attention = GROUPS.reduce(
-    (n, g) => n + typeRows(g.type, projects, assetGroups).filter(needsAttention).length,
-    0,
-  );
+  const attention =
+    GROUPS.reduce(
+      (n, g) => n + typeRows(g.type, projects, assetGroups).filter(needsAttention).length,
+      0,
+    ) + links.reduce((n, link) => n + link.attention, 0);
 
   return (
     <Card className="flex w-60 shrink-0 flex-col self-start overflow-hidden shadow-sm">
@@ -148,6 +167,27 @@ export function InventoryNav({
                 />
               );
             })}
+            {links.map((link) => (
+              <NavRow
+                key={link.key}
+                icon={
+                  <span
+                    className={cn(
+                      'grid size-6.5 shrink-0 place-items-center rounded-md',
+                      link.bg,
+                      link.fg,
+                    )}
+                  >
+                    <Ico name={link.icon} className="size-3.5" />
+                  </span>
+                }
+                label={link.label}
+                count={link.count}
+                attention={link.attention}
+                selected={false}
+                onSelect={link.onSelect}
+              />
+            ))}
           </ul>
         )}
       </nav>

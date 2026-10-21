@@ -1,7 +1,7 @@
 import * as z from 'zod';
 
 import { EgressCredentialRefs, EgressReconcile } from './egress-extraction.ts';
-import { SIGHTING_TOKEN_ANCHORED } from './event.ts';
+import { SIGHTING_TOKEN_ANCHORED, SightingAliases } from './event.ts';
 import type { ActionTaken } from './finding.ts';
 import { ACTION_TAKEN_KEYS, VariableName } from './finding.ts';
 import { AuditEventInput, ToolCallInspection } from './meta.ts';
@@ -1088,10 +1088,15 @@ const sightingKeyMaterial = z
 
 const sightingKeyVersion = z.number().int().min(1);
 
-/** One accepted version of the key: its number and its base64url material. */
+/**
+ * One accepted version of the key: its number, its base64url material, and,
+ * for a previous version, the instant at which it stops being accepted. An
+ * instant that is not an ISO datetime is dropped rather than refusing the map.
+ */
 export const SightingKeyVersion = z.object({
   keyVersion: sightingKeyVersion,
   key: sightingKeyMaterial,
+  acceptedUntil: z.iso.datetime({ offset: true }).optional().catch(undefined),
 });
 export type SightingKeyVersion = z.infer<typeof SightingKeyVersion>;
 
@@ -1100,7 +1105,8 @@ export type SightingKeyVersion = z.infer<typeof SightingKeyVersion>;
  *
  * `keyVersion`/`key` are the current version. `previous` lists the versions
  * still accepted during a rotation overlap; it may be absent or empty. No two
- * entries share a version.
+ * entries share a version. A previous version without `acceptedUntil`, or past
+ * it, is not used.
  *
  * A response parser, so it carries no component id and strips unknown keys.
  * A refusal names the field and never the value.
@@ -1125,11 +1131,18 @@ export type SightingKeyResponse = z.infer<typeof SightingKeyResponse>;
  * The sighting key as this machine stores it: the response it was given, the
  * epoch-ms instant it was fetched, and the sha256 hex of the endpoint it was
  * fetched from. A local custody shape, never on a wire.
+ *
+ * `previousFirstSeenAtMs` maps a previous version's number to the epoch-ms
+ * instant this machine first held it as a previous version. A refetch carries
+ * it forward, so it does not move while the version stays in the map.
  */
 export const StoredSightingKeys = SightingKeyResponse.and(
   z.object({
     fetchedAtMs: z.number().int().nonnegative(),
     endpointFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+    previousFirstSeenAtMs: z
+      .record(z.string().regex(/^[1-9][0-9]*$/), z.number().int().nonnegative())
+      .optional(),
   }),
 );
 export type StoredSightingKeys = z.infer<typeof StoredSightingKeys>;
@@ -1183,6 +1196,7 @@ export type SightingProject = z.infer<typeof SightingProject>;
 export const CredentialSighting = z
   .object({
     token: z.string().regex(SIGHTING_TOKEN_ANCHORED),
+    aliases: SightingAliases.optional(),
     ruleId: printable(256).min(1),
     category: z.literal('secret'),
     variableName: VariableName.min(1).optional(),

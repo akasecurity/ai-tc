@@ -112,6 +112,7 @@ describe('runSightingKeySync', () => {
       ...FETCHED,
       fetchedAtMs: NOW,
       endpointFingerprint: endpointFingerprint(CONNECTION.endpoint),
+      previousFirstSeenAtMs: { '3': NOW },
     });
   });
 
@@ -126,6 +127,7 @@ describe('runSightingKeySync', () => {
       ...FETCHED,
       fetchedAtMs: NOW,
       endpointFingerprint: endpointFingerprint(CONNECTION.endpoint),
+      previousFirstSeenAtMs: { '3': NOW },
     });
   });
 
@@ -151,6 +153,72 @@ describe('runSightingKeySync', () => {
 
     await expect(run()).resolves.toBe('fetched');
     expect(getSightingKey).toHaveBeenCalledTimes(1);
+  });
+
+  describe('a previous version past its overlap window', () => {
+    const youngWith = (previous: StoredSightingKeys['previous']): StoredSightingKeys => ({
+      ...STORED(NOW - 60_000),
+      keyVersion: 5,
+      key: material(5),
+      previous,
+    });
+    const at = (ms: number) => new Date(ms).toISOString();
+
+    it('refetches a young map once the soonest acceptedUntil has passed', async () => {
+      attach();
+      store().replace(
+        youngWith([
+          { keyVersion: 4, key: material(4), acceptedUntil: at(NOW + 3_600_000) },
+          { keyVersion: 3, key: material(3), acceptedUntil: at(NOW) },
+        ]),
+      );
+
+      await expect(run()).resolves.toBe('fetched');
+      expect(getSightingKey).toHaveBeenCalledTimes(1);
+      expect(store().read()?.keyVersion).toBe(FETCHED.keyVersion);
+    });
+
+    it('does not refetch for a window that had already closed when the map was fetched', async () => {
+      attach();
+      // Served a window the deployment had already closed, or read by a clock
+      // running ahead: refetching would only bring the same map back.
+      store().replace(
+        youngWith([{ keyVersion: 4, key: material(4), acceptedUntil: at(NOW - 120_000) }]),
+      );
+
+      await expect(run()).resolves.toBe('fresh');
+      expect(getSightingKey).not.toHaveBeenCalled();
+    });
+
+    it('keeps a young map while every acceptedUntil is still ahead', async () => {
+      attach();
+      const stored = youngWith([{ keyVersion: 1, key: material(1), acceptedUntil: at(NOW + 1) }]);
+      store().replace(stored);
+
+      await expect(run()).resolves.toBe('fresh');
+      expect(getSightingKey).not.toHaveBeenCalled();
+      expect(store().read()).toEqual(stored);
+    });
+
+    it('keeps a young map whose previous versions carry no acceptedUntil', async () => {
+      attach();
+      store().replace(youngWith([{ keyVersion: 1, key: material(1) }]));
+
+      await expect(run()).resolves.toBe('fresh');
+      expect(getSightingKey).not.toHaveBeenCalled();
+    });
+
+    it('stores the window each fetched previous version carries', async () => {
+      attach();
+      const fetched = {
+        ...FETCHED,
+        previous: [{ keyVersion: 3, key: material(3), acceptedUntil: at(NOW + 86_400_000) }],
+      };
+      getSightingKey.mockResolvedValue(fetched);
+
+      await expect(run()).resolves.toBe('fetched');
+      expect(store().read()?.previous).toEqual(fetched.previous);
+    });
   });
 
   it('refetches a key stamped in the future rather than trusting it indefinitely', async () => {
@@ -258,5 +326,66 @@ describe('runSightingKeySync', () => {
     expect(readSightingKeys(base)).toBeUndefined();
     await run();
     expect(readSightingKeys(base)?.current.keyVersion).toBe(FETCHED.keyVersion);
+  });
+
+  describe('the overlap anchor', () => {
+    const DAY = SIGHTING_KEY_MAX_AGE_MS;
+    const OVERLAP_MAX = 90 * DAY;
+    const rotating = (previous: SightingKeyResponse['previous']): SightingKeyResponse => ({
+      keyVersion: 5,
+      algorithm: 'hmac-sha256',
+      key: material(5),
+      previous,
+    });
+    const yearsOut = new Date(NOW + 5 * 365 * DAY).toISOString();
+
+    it('keeps the instant a version was first held across refetches, and stamps a new one', async () => {
+      attach();
+      getSightingKey.mockResolvedValue(
+        rotating([{ keyVersion: 4, key: material(4), acceptedUntil: yearsOut }]),
+      );
+      await run(NOW);
+
+      getSightingKey.mockResolvedValue(
+        rotating([
+          { keyVersion: 4, key: material(4), acceptedUntil: yearsOut },
+          { keyVersion: 3, key: material(3), acceptedUntil: yearsOut },
+        ]),
+      );
+      await run(NOW + DAY);
+
+      expect(store().read()?.previousFirstSeenAtMs).toEqual({ '4': NOW, '3': NOW + DAY });
+    });
+
+    it('stops using a version 90 days after it was first held, however often the map is refetched', async () => {
+      attach();
+      getSightingKey.mockResolvedValue(
+        rotating([{ keyVersion: 4, key: material(4), acceptedUntil: yearsOut }]),
+      );
+      for (let day = 0; day < 90; day++) {
+        await run(NOW + day * DAY);
+      }
+      const used = (now: number) =>
+        readSightingKeys(base, { now: () => now })?.previous.map((p) => p.keyVersion);
+      expect(used(NOW + OVERLAP_MAX - 1)).toEqual([4]);
+
+      await run(NOW + OVERLAP_MAX);
+      expect(store().read()?.fetchedAtMs).toBe(NOW + OVERLAP_MAX);
+      expect(used(NOW + OVERLAP_MAX)).toEqual([]);
+    });
+
+    it('starts the window again for a version another endpoint issued', async () => {
+      attach();
+      store().replace({
+        ...STORED(NOW - DAY),
+        endpointFingerprint: endpointFingerprint(OTHER.endpoint),
+        previousFirstSeenAtMs: { '1': 0 },
+      });
+      getSightingKey.mockResolvedValue(
+        rotating([{ keyVersion: 1, key: material(1), acceptedUntil: yearsOut }]),
+      );
+      await run(NOW);
+      expect(store().read()?.previousFirstSeenAtMs).toEqual({ '1': NOW });
+    });
   });
 });

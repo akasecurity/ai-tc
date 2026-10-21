@@ -62,6 +62,18 @@ describe('shieldPointers over sighting tokens', () => {
     ]);
   });
 
+  it('blanks a token under a previous key version exactly as one under the current', () => {
+    const alias = ['[[aka:fp:v', '11.', FP, ']]'].join('');
+    const text = `${TOKEN} ${alias}`;
+    expect(shieldPointers(text)).toEqual({
+      text: ' '.repeat(text.length),
+      spans: [
+        { start: 0, end: TOKEN.length },
+        { start: TOKEN.length + 1, end: text.length },
+      ],
+    });
+  });
+
   it('leaves a token with a malformed fingerprint visible', () => {
     const short = ['[[aka:fp:v1.', FP.slice(1), ']]'].join('');
     expect(shieldPointers(short).spans).toEqual([]);

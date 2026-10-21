@@ -15,6 +15,7 @@ import {
   createSightingKeyStore,
   readSightingKeys,
   SIGHTING_KEY_FILENAME,
+  SIGHTING_KEY_OVERLAP_MAX_MS,
   sightingKeyEndpointFingerprint,
 } from '../../src/vault/sighting-keys.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
@@ -215,12 +216,42 @@ describe('keychain custody', () => {
   });
 });
 
+const NOW = Date.parse('2026-10-14T09:00:00.000Z');
+const LATER = '2026-10-21T09:00:00.000Z';
+
 describe('readSightingKeys', () => {
+  it('hands out a previous version only before the instant it stops being accepted', () => {
+    attachTo(ENDPOINT_A);
+    createSightingKeyStore('file', dir).replace(
+      stored({
+        keyVersion: 5,
+        fetchedAtMs: NOW,
+        previous: [
+          { keyVersion: 4, key: material(4), acceptedUntil: LATER },
+          { keyVersion: 3, key: material(3), acceptedUntil: new Date(NOW).toISOString() },
+          { keyVersion: 2, key: material(2), acceptedUntil: '2026-10-13T09:00:00.000Z' },
+          { keyVersion: 1, key: material(1) },
+        ],
+      }),
+    );
+
+    const versions = (now: number): number[] | undefined =>
+      readSightingKeys(base, { now: () => now })?.previous.map((p) => p.keyVersion);
+    expect(versions(NOW)).toEqual([4]);
+    expect(versions(NOW - 1)).toEqual([4, 3]);
+    expect(versions(Date.parse(LATER))).toEqual([]);
+  });
+
   it('hands out the current and previous versions as raw bytes', () => {
     attachTo(ENDPOINT_A);
-    createSightingKeyStore('file', dir).replace(stored());
+    createSightingKeyStore('file', dir).replace(
+      stored({
+        fetchedAtMs: NOW,
+        previous: [{ keyVersion: 1, key: material(3), acceptedUntil: LATER }],
+      }),
+    );
 
-    const keys = readSightingKeys(base);
+    const keys = readSightingKeys(base, { now: () => NOW });
 
     expect(keys?.current.keyVersion).toBe(2);
     expect(keys?.current.key).toBeInstanceOf(Uint8Array);
@@ -231,10 +262,89 @@ describe('readSightingKeys', () => {
 
   it('reads an absent previous list as empty', () => {
     attachTo(ENDPOINT_A);
-    const withoutPrevious = stored();
+    const windowed = stored({
+      fetchedAtMs: NOW,
+      previous: [{ keyVersion: 1, key: material(3), acceptedUntil: LATER }],
+    });
+    createSightingKeyStore('file', dir).replace(windowed);
+    expect(readSightingKeys(base, { now: () => NOW })?.previous).toHaveLength(1);
+
+    const withoutPrevious = { ...windowed };
     delete withoutPrevious.previous;
     createSightingKeyStore('file', dir).replace(withoutPrevious);
-    expect(readSightingKeys(base)?.previous).toEqual([]);
+    expect(readSightingKeys(base, { now: () => NOW })?.previous).toEqual([]);
+  });
+
+  it('never hands out a previous version without an acceptedUntil', () => {
+    attachTo(ENDPOINT_A);
+    createSightingKeyStore('file', dir).replace(
+      stored({ fetchedAtMs: NOW, previous: [{ keyVersion: 1, key: material(3) }] }),
+    );
+    expect(readSightingKeys(base, { now: () => NOW })?.previous).toEqual([]);
+  });
+
+  it('stops using a previous version 90 days after its map was fetched, whatever it asks', () => {
+    attachTo(ENDPOINT_A);
+    const yearsOut = new Date(NOW + 5 * 365 * 86_400_000).toISOString();
+    createSightingKeyStore('file', dir).replace(
+      stored({
+        fetchedAtMs: NOW,
+        previous: [{ keyVersion: 1, key: material(3), acceptedUntil: yearsOut }],
+      }),
+    );
+
+    const versions = (now: number): number[] | undefined =>
+      readSightingKeys(base, { now: () => now })?.previous.map((p) => p.keyVersion);
+    expect(versions(NOW + SIGHTING_KEY_OVERLAP_MAX_MS - 1)).toEqual([1]);
+    expect(versions(NOW + SIGHTING_KEY_OVERLAP_MAX_MS)).toEqual([]);
+  });
+
+  it('counts the 90 days from when the machine first held a version, not from the last fetch', () => {
+    attachTo(ENDPOINT_A);
+    const yearsOut = new Date(NOW + 5 * 365 * 86_400_000).toISOString();
+    createSightingKeyStore('file', dir).replace(
+      stored({
+        fetchedAtMs: NOW + SIGHTING_KEY_OVERLAP_MAX_MS - 1_000,
+        previousFirstSeenAtMs: { '1': NOW },
+        previous: [{ keyVersion: 1, key: material(3), acceptedUntil: yearsOut }],
+      }),
+    );
+
+    const versions = (now: number): number[] | undefined =>
+      readSightingKeys(base, { now: () => now })?.previous.map((p) => p.keyVersion);
+    expect(versions(NOW + SIGHTING_KEY_OVERLAP_MAX_MS - 1)).toEqual([1]);
+    expect(versions(NOW + SIGHTING_KEY_OVERLAP_MAX_MS)).toEqual([]);
+  });
+
+  it('reads an acceptedUntil with a numeric UTC offset', () => {
+    attachTo(ENDPOINT_A);
+    createSightingKeyStore('file', dir).replace(
+      stored({
+        fetchedAtMs: NOW,
+        previous: [{ keyVersion: 1, key: material(3), acceptedUntil: '2026-10-14T14:30:00+05:30' }],
+      }),
+    );
+
+    const versions = (now: number): number[] | undefined =>
+      readSightingKeys(base, { now: () => now })?.previous.map((p) => p.keyVersion);
+    expect(versions(NOW - 1)).toEqual([1]);
+    expect(versions(NOW)).toEqual([]);
+  });
+
+  it('hands out the previous versions newest first, at most four', () => {
+    attachTo(ENDPOINT_A);
+    const previous = [1, 6, 3, 5, 2, 4].map((keyVersion) => ({
+      keyVersion,
+      key: material(keyVersion),
+      acceptedUntil: LATER,
+    }));
+    createSightingKeyStore('file', dir).replace(
+      stored({ keyVersion: 7, fetchedAtMs: NOW, previous }),
+    );
+
+    expect(readSightingKeys(base, { now: () => NOW })?.previous.map((p) => p.keyVersion)).toEqual([
+      6, 5, 4, 3,
+    ]);
   });
 
   it('hands out nothing on a machine that is not attached, whatever is stored', () => {

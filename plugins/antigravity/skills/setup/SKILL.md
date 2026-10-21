@@ -206,6 +206,7 @@ Before the options, state in your own words: this machine is attached to an
 organization, and the question is whether to report the credentials AKA's
 scans find here to that organization. Say what a sighting carries, exactly:
 A credential sighting carries only a hash or ciphertext of the value, never the value itself.
+While the organization rotates its sighting key, a sighting also carries hashes of the same value under the older key versions it still accepts, within the same consent.
 Say that this answer covers credential sightings only: it changes nothing else
 an attached machine sends, which is described in the dashboard's Settings. The
 answer can be changed later on the dashboard's Settings page.

@@ -10,6 +10,23 @@ import { Provider } from '../shared/Provider.tsx';
 import { EmptyState } from './chips.tsx';
 import { GROUPS, harnessRows, type InventoryView, needsAttention, typeRows } from './data.ts';
 import { Ico } from './Ico.tsx';
+import type { IconName } from './icons.ts';
+
+/** An entry after the harnesses or asset types that opens a page of its own. */
+export interface InventoryNavLink {
+  key: string;
+  label: string;
+  icon: IconName;
+  /** Tailwind classes for the icon tile. */
+  fg: string;
+  bg: string;
+  /** null when the count is not known. */
+  count: number | null;
+  attention: number;
+  /** True while the host shows the page this entry opens. */
+  selected?: boolean | undefined;
+  onSelect: () => void;
+}
 
 export interface InventoryNavProps {
   harnesses: HarnessSummary[];
@@ -27,9 +44,13 @@ export interface InventoryNavProps {
   isLoading?: boolean | undefined;
   /**
    * Set when the host cannot read the harness and asset lists. The reason is shown
-   * in their place, and nothing is counted or summarised from the lists it lacks.
+   * in their place, and nothing is counted from the lists it lacks: the summary is
+   * a lower bound over what is still readable (the projects and the host links),
+   * or "Not available" when none of that needs review.
    */
   assetsRefusal?: string | undefined;
+  /** Entries the host adds after the list, in either view; each counts toward the attention summary. */
+  links?: readonly InventoryNavLink[] | undefined;
 }
 
 export function InventoryNav({
@@ -44,12 +65,34 @@ export function InventoryNav({
   onSelectType,
   isLoading,
   assetsRefusal,
+  links = [],
 }: InventoryNavProps) {
   const empty = harnesses.length === 0 && projects.length === 0 && assetGroups.length === 0;
   // Every project and asset once, counted the way the tables count them.
-  const attention = GROUPS.reduce(
-    (n, g) => n + typeRows(g.type, projects, assetGroups).filter(needsAttention).length,
-    0,
+  const linkAttention = links.reduce((n, link) => n + link.attention, 0);
+  const groupAttention = GROUPS.map((g) => ({
+    type: g.type,
+    count: typeRows(g.type, projects, assetGroups).filter(needsAttention).length,
+  }));
+  const attention = groupAttention.reduce((n, g) => n + g.count, 0) + linkAttention;
+  // Under a refusal, what is still counted: the projects and the host links.
+  const knownAttention =
+    (groupAttention.find((g) => g.type === 'project')?.count ?? 0) + linkAttention;
+  const linkRows = links.map((link) => (
+    <NavRow
+      key={link.key}
+      icon={<TileIcon icon={link.icon} fg={link.fg} bg={link.bg} />}
+      label={link.label}
+      count={link.count}
+      attention={link.attention}
+      selected={link.selected ?? false}
+      onSelect={link.onSelect}
+    />
+  ));
+  const linkList = linkRows.length > 0 && (
+    <ul aria-label="Pages" className="mt-0.5 flex flex-col gap-0.5">
+      {linkRows}
+    </ul>
   );
 
   return (
@@ -60,9 +103,19 @@ export function InventoryNav({
           {isLoading && empty ? (
             <span className="ml-auto text-xs text-text-3">…</span>
           ) : assetsRefusal !== undefined ? (
-            <span className="ml-auto text-xs text-text-3" title={assetsRefusal}>
-              Not available
-            </span>
+            knownAttention > 0 ? (
+              <span
+                className="ml-auto inline-flex items-center gap-1.5 text-xs font-semibold text-sev-high-ink"
+                title={assetsRefusal}
+              >
+                <Ico name="flag" className="size-3.5" />
+                {`At least ${String(knownAttention)} to review`}
+              </span>
+            ) : (
+              <span className="ml-auto text-xs text-text-3" title={assetsRefusal}>
+                Not available
+              </span>
+            )
           ) : (
             <span
               className={cn(
@@ -91,7 +144,7 @@ export function InventoryNav({
         </SegmentedControl>
       </div>
 
-      <nav aria-label={view === 'harness' ? 'Harnesses' : 'Asset types'} className="p-2">
+      <nav aria-label="Inventory" className="p-2">
         {isLoading && empty ? (
           <div className="px-3 py-6 text-center text-xs text-text-3">Loading inventory…</div>
         ) : view === 'harness' ? (
@@ -100,7 +153,7 @@ export function InventoryNav({
           ) : harnesses.length === 0 ? (
             <EmptyState message="No harnesses detected" />
           ) : (
-            <ul className="flex flex-col gap-0.5">
+            <ul aria-label="Harnesses" className="flex flex-col gap-0.5">
               {harnesses.map((h) => {
                 const rows = harnessRows(h);
                 return (
@@ -120,24 +173,14 @@ export function InventoryNav({
             </ul>
           )
         ) : (
-          <ul className="flex flex-col gap-0.5">
+          <ul aria-label="Asset types" className="flex flex-col gap-0.5">
             {GROUPS.map((g) => {
               const rows = typeRows(g.type, projects, assetGroups);
               const unreadable = assetsRefusal !== undefined && g.type !== 'project';
               return (
                 <NavRow
                   key={g.type}
-                  icon={
-                    <span
-                      className={cn(
-                        'grid size-6.5 shrink-0 place-items-center rounded-md',
-                        g.bg,
-                        g.fg,
-                      )}
-                    >
-                      <Ico name={g.icon} className="size-3.5" />
-                    </span>
-                  }
+                  icon={<TileIcon icon={g.icon} fg={g.fg} bg={g.bg} />}
                   label={g.label}
                   count={unreadable ? null : rows.length}
                   attention={unreadable ? 0 : rows.filter(needsAttention).length}
@@ -150,8 +193,17 @@ export function InventoryNav({
             })}
           </ul>
         )}
+        {linkList}
       </nav>
     </Card>
+  );
+}
+
+function TileIcon({ icon, fg, bg }: { icon: IconName; fg: string; bg: string }) {
+  return (
+    <span className={cn('grid size-6.5 shrink-0 place-items-center rounded-md', bg, fg)}>
+      <Ico name={icon} className="size-3.5" />
+    </span>
   );
 }
 

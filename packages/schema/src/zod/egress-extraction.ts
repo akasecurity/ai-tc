@@ -4,7 +4,7 @@
 // module, both scan pipelines, and the persistence writer.
 import * as z from 'zod';
 
-import { SIGHTING_TOKEN_ANCHORED } from './event.ts';
+import { SIGHTING_TOKEN_ANCHORED, SightingAliases } from './event.ts';
 import { VariableName } from './finding.ts';
 import {
   DataClass,
@@ -68,6 +68,7 @@ export const EgressCredentialRef = z.discriminatedUnion('kind', [
     .object({
       kind: z.literal('literal'),
       token: z.string().regex(SIGHTING_TOKEN_ANCHORED),
+      aliases: SightingAliases.optional(),
       ruleId: z.string().min(1).max(256),
     })
     .strict(),

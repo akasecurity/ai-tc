@@ -22,7 +22,7 @@ import type {
   FingerprintKey,
   LocalDatabase,
   ScanSighting,
-  SightingKey,
+  SightingKeys,
 } from '@akasecurity/persistence';
 import {
   computeFindingKey,
@@ -531,9 +531,10 @@ export interface ScanPathOptions {
   // without vault consent, and the scan then stores the file as it would with
   // no vault at all. Omitted, nothing is vaulted.
   vault?: AtRestVault | undefined;
-  // With a key, each secret found is also reduced to its sighting token, in
-  // memory, and listed in the result's `sightings`. Omitted, none is computed.
-  sightingKey?: SightingKey | undefined;
+  // With keys, each secret found is also reduced to its sighting token, and its
+  // tokens under the previous versions held, in memory, and listed in the
+  // result's `sightings`. Omitted, none is computed.
+  sightingKeys?: SightingKeys | undefined;
 }
 
 // Per-file detail for machine consumers (`aka scan --format json`, CI gates).
@@ -560,7 +561,7 @@ export interface ScanPathResult {
   // The Data Shares forward is handed this list so that a scoped attachment
   // can hold the register to each repository in it.
   nestedRepositories: string[];
-  // The secrets found, as sighting tokens; empty unless `sightingKey` was given.
+  // The secrets found, as sighting tokens; empty unless `sightingKeys` was given.
   sightings: ScanSighting[];
 }
 
@@ -713,7 +714,7 @@ export async function scanPathIntoStore(
     scanned++;
     // Egress rides every file whose content was read, before the finding
     // early-out below — a file with no detection match still has destinations.
-    const fileEgress = extractFileEgress(file, text, opts.sightingKey !== undefined);
+    const fileEgress = extractFileEgress(file, text, opts.sightingKeys !== undefined);
     if (fileEgress) egressFiles.push(fileEgress);
 
     // Files legitimately contain vault pointers (the plugin's Write/Edit hook
@@ -728,8 +729,8 @@ export async function scanPathIntoStore(
       shielded.text,
     );
     if (matches.length === 0) continue;
-    if (opts.sightingKey) {
-      const found = secretSightingsOf(opts.sightingKey, matches, file);
+    if (opts.sightingKeys) {
+      const found = secretSightingsOf(opts.sightingKeys, matches, file);
       sightings.push(...found.sightings);
       if (fileEgress) {
         fileEgress.endpoints = withLiteralCredentialRefs(fileEgress.endpoints, found.spans);

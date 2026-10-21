@@ -331,3 +331,26 @@ describe('EgressCredentialRef', () => {
     expect(ResolvedEgressHit.shape.credentialRefs.safeParse(refs.slice(1)).success).toBe(true);
   });
 });
+
+describe('EgressCredentialRef aliases', () => {
+  const fp = (fill: string, version: number): string =>
+    ['[[aka:fp:v', String(version), '.', fill.repeat(43), ']]'].join('');
+
+  it('lets a literal ref carry its value under each previous key version, up to the cap', () => {
+    const ref = { kind: 'literal', token: fp('A', 3), ruleId: 'r', aliases: [fp('B', 2)] };
+    expect(EgressCredentialRef.parse(ref)).toEqual(ref);
+    const many = Array.from({ length: 5 }, (_, i) => fp('C', i + 1));
+    expect(EgressCredentialRef.safeParse({ ...ref, aliases: many }).success).toBe(false);
+    expect(EgressCredentialRef.safeParse({ ...ref, aliases: ['plain'] }).success).toBe(false);
+  });
+
+  it('gives a variable ref no aliases', () => {
+    expect(
+      EgressCredentialRef.safeParse({
+        kind: 'variable',
+        variableName: 'STRIPE_KEY',
+        aliases: [fp('A', 1)],
+      }).success,
+    ).toBe(false);
+  });
+});

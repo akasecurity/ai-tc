@@ -108,6 +108,20 @@ export const RedactFallback = BuiltinPolicyId.extract(['monitor', 'warn', 'block
 });
 export type RedactFallback = z.infer<typeof RedactFallback>;
 
+// The models an organization approves. `allowlist` refuses a model whose id is not in `approved`.
+// The ids are kept as the organization listed them; the consumer folds both sides before comparing
+// them, and reads an empty list as no policy. The 1,000-id cap is enforced on parse, so a longer list
+// fails the whole bundle rather than this field alone: the device then keeps the bundle it had. A
+// control plane validating with this schema cannot send one; the cap bounds what a hand-written
+// policy cache can make every check fold.
+export const ModelPolicy = z
+  .object({
+    mode: z.literal('allowlist'),
+    approved: z.array(z.string().min(1).max(512)).max(1_000),
+  })
+  .meta({ id: 'ModelPolicy' });
+export type ModelPolicy = z.infer<typeof ModelPolicy>;
+
 export const PolicyBundle = z
   .object({
     version: z.string(),
@@ -159,6 +173,9 @@ export const PolicyBundle = z
     // control plane), so no name resolution stands between the decision and the
     // comparison.
     prohibitedModels: z.array(z.string()).optional(),
+    // Optional so an older backend, and an older on-disk cache, still parses; absent leaves every
+    // model approved.
+    modelPolicy: ModelPolicy.optional(),
     // What a resolved `redact` becomes on a field the host cannot rewrite, as
     // the ORGANIZATION would have it. Merged raise-only against the device's own
     // `WorkspaceSettings.redactFallback` (see strongerRedactFallback below), so
@@ -232,6 +249,7 @@ export const POLICY_BUNDLE_SHAPE_ID: string = [
     .flatMap((member) => ('shape' in member ? Object.keys(member.shape) : []))
     .map((key) => `policies.target.${key}`),
   ...Object.keys(ExceptionBundleEntry.shape).map((key) => `exceptions.${key}`),
+  ...Object.keys(ModelPolicy.shape).map((key) => `modelPolicy.${key}`),
 ]
   .sort()
   .join(',');

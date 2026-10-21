@@ -36,6 +36,13 @@ export function isSightingShareConsentValid(
 export const SIGHTING_SHARE_PAYLOAD_NOTE =
   'A credential sighting carries only a hash or ciphertext of the value, never the value itself.';
 
+/**
+ * What a sighting adds while a key rotation is in its overlap window. Shown
+ * wherever the user is asked to consent, beside the payload note.
+ */
+export const SIGHTING_SHARE_ROTATION_NOTE =
+  'While the organization rotates its sighting key, a sighting also carries hashes of the same value under the older key versions it still accepts, within the same consent.';
+
 /** How this machine is connected: not attached, or the credential's attachment mode. */
 export type SightingShareMode = 'standalone' | AttachmentMode;
 

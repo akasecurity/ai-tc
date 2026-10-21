@@ -12,7 +12,7 @@ import { GROUPS, harnessRows, type InventoryView, needsAttention, typeRows } fro
 import { Ico } from './Ico.tsx';
 import type { IconName } from './icons.ts';
 
-/** An entry under the asset types, By type, that opens a page of its own. */
+/** An entry after the harnesses or asset types that opens a page of its own. */
 export interface InventoryNavLink {
   key: string;
   label: string;
@@ -23,6 +23,8 @@ export interface InventoryNavLink {
   /** null when the count is not known. */
   count: number | null;
   attention: number;
+  /** True while the host shows the page this entry opens. */
+  selected?: boolean | undefined;
   onSelect: () => void;
 }
 
@@ -45,7 +47,7 @@ export interface InventoryNavProps {
    * in their place, and nothing is counted or summarised from the lists it lacks.
    */
   assetsRefusal?: string | undefined;
-  /** Entries the host adds after the asset types; each counts toward the attention summary. */
+  /** Entries the host adds after the list, in either view; each counts toward the attention summary. */
   links?: readonly InventoryNavLink[] | undefined;
 }
 
@@ -65,11 +67,23 @@ export function InventoryNav({
 }: InventoryNavProps) {
   const empty = harnesses.length === 0 && projects.length === 0 && assetGroups.length === 0;
   // Every project and asset once, counted the way the tables count them.
+  const linkAttention = links.reduce((n, link) => n + link.attention, 0);
   const attention =
     GROUPS.reduce(
       (n, g) => n + typeRows(g.type, projects, assetGroups).filter(needsAttention).length,
       0,
-    ) + links.reduce((n, link) => n + link.attention, 0);
+    ) + linkAttention;
+  const linkRows = links.map((link) => (
+    <NavRow
+      key={link.key}
+      icon={<TileIcon icon={link.icon} fg={link.fg} bg={link.bg} />}
+      label={link.label}
+      count={link.count}
+      attention={link.attention}
+      selected={link.selected ?? false}
+      onSelect={link.onSelect}
+    />
+  ));
 
   return (
     <Card className="flex w-60 shrink-0 flex-col self-start overflow-hidden shadow-sm">
@@ -79,9 +93,19 @@ export function InventoryNav({
           {isLoading && empty ? (
             <span className="ml-auto text-xs text-text-3">…</span>
           ) : assetsRefusal !== undefined ? (
-            <span className="ml-auto text-xs text-text-3" title={assetsRefusal}>
-              Not available
-            </span>
+            linkAttention > 0 ? (
+              <span
+                className="ml-auto inline-flex items-center gap-1.5 text-xs font-semibold text-sev-high-ink"
+                title={assetsRefusal}
+              >
+                <Ico name="flag" className="size-3.5" />
+                {`At least ${String(linkAttention)} to review`}
+              </span>
+            ) : (
+              <span className="ml-auto text-xs text-text-3" title={assetsRefusal}>
+                Not available
+              </span>
+            )
           ) : (
             <span
               className={cn(
@@ -114,30 +138,33 @@ export function InventoryNav({
         {isLoading && empty ? (
           <div className="px-3 py-6 text-center text-xs text-text-3">Loading inventory…</div>
         ) : view === 'harness' ? (
-          assetsRefusal !== undefined ? (
-            <EmptyState message={assetsRefusal} />
-          ) : harnesses.length === 0 ? (
-            <EmptyState message="No harnesses detected" />
-          ) : (
-            <ul className="flex flex-col gap-0.5">
-              {harnesses.map((h) => {
-                const rows = harnessRows(h);
-                return (
-                  <NavRow
-                    key={h.id}
-                    icon={<Provider id={h.id} size={26} />}
-                    label={h.label}
-                    count={rows.length}
-                    attention={rows.filter(needsAttention).length}
-                    selected={h.id === harness}
-                    onSelect={() => {
-                      onSelectHarness(h.id);
-                    }}
-                  />
-                );
-              })}
-            </ul>
-          )
+          <>
+            {assetsRefusal !== undefined ? (
+              <EmptyState message={assetsRefusal} />
+            ) : harnesses.length === 0 ? (
+              <EmptyState message="No harnesses detected" />
+            ) : (
+              <ul className="flex flex-col gap-0.5">
+                {harnesses.map((h) => {
+                  const rows = harnessRows(h);
+                  return (
+                    <NavRow
+                      key={h.id}
+                      icon={<Provider id={h.id} size={26} />}
+                      label={h.label}
+                      count={rows.length}
+                      attention={rows.filter(needsAttention).length}
+                      selected={h.id === harness}
+                      onSelect={() => {
+                        onSelectHarness(h.id);
+                      }}
+                    />
+                  );
+                })}
+              </ul>
+            )}
+            {linkRows.length > 0 && <ul className="mt-0.5 flex flex-col gap-0.5">{linkRows}</ul>}
+          </>
         ) : (
           <ul className="flex flex-col gap-0.5">
             {GROUPS.map((g) => {
@@ -146,17 +173,7 @@ export function InventoryNav({
               return (
                 <NavRow
                   key={g.type}
-                  icon={
-                    <span
-                      className={cn(
-                        'grid size-6.5 shrink-0 place-items-center rounded-md',
-                        g.bg,
-                        g.fg,
-                      )}
-                    >
-                      <Ico name={g.icon} className="size-3.5" />
-                    </span>
-                  }
+                  icon={<TileIcon icon={g.icon} fg={g.fg} bg={g.bg} />}
                   label={g.label}
                   count={unreadable ? null : rows.length}
                   attention={unreadable ? 0 : rows.filter(needsAttention).length}
@@ -167,31 +184,19 @@ export function InventoryNav({
                 />
               );
             })}
-            {links.map((link) => (
-              <NavRow
-                key={link.key}
-                icon={
-                  <span
-                    className={cn(
-                      'grid size-6.5 shrink-0 place-items-center rounded-md',
-                      link.bg,
-                      link.fg,
-                    )}
-                  >
-                    <Ico name={link.icon} className="size-3.5" />
-                  </span>
-                }
-                label={link.label}
-                count={link.count}
-                attention={link.attention}
-                selected={false}
-                onSelect={link.onSelect}
-              />
-            ))}
+            {linkRows}
           </ul>
         )}
       </nav>
     </Card>
+  );
+}
+
+function TileIcon({ icon, fg, bg }: { icon: IconName; fg: string; bg: string }) {
+  return (
+    <span className={cn('grid size-6.5 shrink-0 place-items-center rounded-md', bg, fg)}>
+      <Ico name={icon} className="size-3.5" />
+    </span>
   );
 }
 

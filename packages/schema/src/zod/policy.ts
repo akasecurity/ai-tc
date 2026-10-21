@@ -110,7 +110,10 @@ export type RedactFallback = z.infer<typeof RedactFallback>;
 
 // The models an organization approves. `allowlist` refuses a model whose id is not in `approved`.
 // The ids are kept as the organization listed them; the consumer folds both sides before comparing
-// them, and reads an empty list as no policy.
+// them, and reads an empty list as no policy. The 1,000-id cap is enforced on parse, so a longer list
+// fails the whole bundle rather than this field alone: the device then keeps the bundle it had. A
+// control plane validating with this schema cannot send one; the cap bounds what a hand-written
+// policy cache can make every check fold.
 export const ModelPolicy = z
   .object({
     mode: z.literal('allowlist'),

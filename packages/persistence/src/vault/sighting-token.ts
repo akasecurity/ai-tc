@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto';
 
-import { stripInvisiblePadding } from '@akasecurity/schema';
+import { SIGHTING_ALIASES_MAX, stripInvisiblePadding } from '@akasecurity/schema';
 
 import type { SightingKey, SightingKeys } from './sighting-keys.ts';
 
@@ -28,11 +28,12 @@ export interface SightingTokens {
 
 /**
  * The value's token under the current version and, as `aliases`, under each
- * previous version `keys` holds, in the order it holds them. No `aliases`
- * member when there are none.
+ * previous version `keys` holds, in the order it holds them and at most
+ * {@link SIGHTING_ALIASES_MAX}. No `aliases` member when there are none.
  */
 export function sightingTokens(keys: SightingKeys, raw: string): SightingTokens {
   const token = sightingToken(keys.current, raw);
-  if (keys.previous.length === 0) return { token };
-  return { token, aliases: keys.previous.map((key) => sightingToken(key, raw)) };
+  const previous = keys.previous.slice(0, SIGHTING_ALIASES_MAX);
+  if (previous.length === 0) return { token };
+  return { token, aliases: previous.map((key) => sightingToken(key, raw)) };
 }

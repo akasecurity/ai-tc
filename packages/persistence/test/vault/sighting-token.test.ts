@@ -43,6 +43,12 @@ describe('sightingToken', () => {
     expect(a).not.toBe(b);
   });
 
+  it('carries at most SIGHTING_ALIASES_MAX aliases, whatever the keys hold', () => {
+    const previous = [6, 5, 4, 3, 2].map((version) => keyOf(version, version));
+    const { aliases } = sightingTokens({ current: keyOf(7, 9), previous }, value);
+    expect(aliases).toEqual([6, 5, 4, 3].map((v) => expectedToken(keyOf(v, v), value)));
+  });
+
   it('never contains the value', () => {
     expect(sightingToken(keyOf(1, 4), value)).not.toContain(value);
   });

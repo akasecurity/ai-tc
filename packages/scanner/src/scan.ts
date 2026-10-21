@@ -133,11 +133,15 @@ interface LedgerContext {
 // skipped while sharing was off, while attached elsewhere or while their
 // repository was not enrolled, are re-read once that changes, so their
 // sightings are sent.
-/** `3` for the current version alone, `3+2,1` with the previous versions in use. */
+/**
+ * `3` for the current version alone, `3+2,1` with the previous versions in use.
+ * It changes when a window closes as well as when one opens, so the scan after
+ * a previous version lapses reads every file again once.
+ */
 function keyVersionsMaterial(keys: SightingKeys): string {
   const current = String(keys.current.keyVersion);
   if (keys.previous.length === 0) return current;
-  const previous = keys.previous.map((k) => k.keyVersion);
+  const previous = keys.previous.map((k) => k.keyVersion).sort((a, b) => b - a);
   return `${current}+${previous.join(',')}`;
 }
 

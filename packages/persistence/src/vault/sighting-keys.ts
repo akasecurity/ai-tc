@@ -43,33 +43,35 @@ export interface SightingKeys {
   previous: SightingKey[];
 }
 
-/** The longest a previous version is used for, counted from when its map was fetched. */
+/** The longest a previous version is used for, counted from when this machine first held it. */
 export const SIGHTING_KEY_OVERLAP_MAX_MS = 90 * 24 * 60 * 60 * 1000;
 
 /**
- * The instant a previous version stops being used: its `acceptedUntil`, but no
- * later than SIGHTING_KEY_OVERLAP_MAX_MS after its map was fetched. NaN when it
- * has no `acceptedUntil` or one that does not parse.
+ * When this machine first held `keyVersion` as a previous version: its
+ * `previousFirstSeenAtMs` entry, or the map's fetch time for a map stored
+ * without one.
  */
-export function previousVersionUsableUntil(
-  version: { acceptedUntil?: string | undefined },
-  fetchedAtMs: number,
+export function previousVersionFirstSeenAtMs(
+  stored: Pick<StoredSightingKeys, 'fetchedAtMs' | 'previousFirstSeenAtMs'>,
+  keyVersion: number,
 ): number {
-  if (version.acceptedUntil === undefined) return Number.NaN;
-  return Math.min(Date.parse(version.acceptedUntil), fetchedAtMs + SIGHTING_KEY_OVERLAP_MAX_MS);
+  return stored.previousFirstSeenAtMs?.[String(keyVersion)] ?? stored.fetchedAtMs;
 }
 
 /**
- * Whether a previous version is used at `nowMs`: only before the instant
- * `previousVersionUsableUntil` gives. A version without a readable
- * `acceptedUntil` is never used.
+ * The instant a previous version stops being used: its `acceptedUntil`, but no
+ * later than SIGHTING_KEY_OVERLAP_MAX_MS after this machine first held it. NaN
+ * when it has no `acceptedUntil` or one that does not parse.
  */
-export function isPreviousVersionAccepted(
-  version: { acceptedUntil?: string | undefined },
-  nowMs: number,
-  fetchedAtMs: number,
-): boolean {
-  return nowMs < previousVersionUsableUntil(version, fetchedAtMs);
+export function previousVersionUsableUntil(
+  stored: Pick<StoredSightingKeys, 'fetchedAtMs' | 'previousFirstSeenAtMs'>,
+  version: { keyVersion: number; acceptedUntil?: string | undefined },
+): number {
+  if (version.acceptedUntil === undefined) return Number.NaN;
+  return Math.min(
+    Date.parse(version.acceptedUntil),
+    previousVersionFirstSeenAtMs(stored, version.keyVersion) + SIGHTING_KEY_OVERLAP_MAX_MS,
+  );
 }
 
 export interface SightingKeyStore {
@@ -198,7 +200,7 @@ export function sightingKeysOf(stored: StoredSightingKeys, nowMs: number): Sight
   return {
     current: { keyVersion: stored.keyVersion, key: bytes(stored.key) },
     previous: (stored.previous ?? [])
-      .filter((p) => isPreviousVersionAccepted(p, nowMs, stored.fetchedAtMs))
+      .filter((p) => nowMs < previousVersionUsableUntil(stored, p))
       .sort((a, b) => b.keyVersion - a.keyVersion)
       .slice(0, SIGHTING_ALIASES_MAX)
       .map((p) => ({ keyVersion: p.keyVersion, key: bytes(p.key) })),

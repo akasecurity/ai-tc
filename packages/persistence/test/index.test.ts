@@ -164,6 +164,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'parseForwardHealth',
   'planSightingShare',
   'policyAssignmentRefusal',
+  'previousVersionFirstSeenAtMs',
   'previousVersionUsableUntil',
   'promptId',
   'pruneSessionAccountState',

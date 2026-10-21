@@ -1131,11 +1131,18 @@ export type SightingKeyResponse = z.infer<typeof SightingKeyResponse>;
  * The sighting key as this machine stores it: the response it was given, the
  * epoch-ms instant it was fetched, and the sha256 hex of the endpoint it was
  * fetched from. A local custody shape, never on a wire.
+ *
+ * `previousFirstSeenAtMs` maps a previous version's number to the epoch-ms
+ * instant this machine first held it as a previous version. A refetch carries
+ * it forward, so it does not move while the version stays in the map.
  */
 export const StoredSightingKeys = SightingKeyResponse.and(
   z.object({
     fetchedAtMs: z.number().int().nonnegative(),
     endpointFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+    previousFirstSeenAtMs: z
+      .record(z.string().regex(/^[1-9][0-9]*$/), z.number().int().nonnegative())
+      .optional(),
   }),
 );
 export type StoredSightingKeys = z.infer<typeof StoredSightingKeys>;

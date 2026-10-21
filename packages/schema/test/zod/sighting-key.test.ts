@@ -193,6 +193,28 @@ describe('previous versions and their overlap window', () => {
     }
   });
 
+  it('stores when the machine first held each previous version, keyed by its number', () => {
+    const map = {
+      ...body({ previous: [{ keyVersion: 1, key: material(3), acceptedUntil: until }] }),
+      fetchedAtMs: 1,
+      endpointFingerprint: 'a'.repeat(64),
+    };
+    expect(StoredSightingKeys.parse({ ...map, previousFirstSeenAtMs: { '1': 5 } })).toMatchObject({
+      previousFirstSeenAtMs: { '1': 5 },
+    });
+    expect(StoredSightingKeys.safeParse({ ...map, previousFirstSeenAtMs: { v1: 5 } }).success).toBe(
+      false,
+    );
+    expect(
+      StoredSightingKeys.safeParse({ ...map, previousFirstSeenAtMs: { '1': -1 } }).success,
+    ).toBe(false);
+  });
+
+  it('takes no first-seen instant from the deployment', () => {
+    const parsed = SightingKeyResponse.parse({ ...body(), previousFirstSeenAtMs: { '1': 5 } });
+    expect(parsed).not.toHaveProperty('previousFirstSeenAtMs');
+  });
+
   it('stores the instant with the map', () => {
     const stored = StoredSightingKeys.parse({
       ...body({ previous: [{ keyVersion: 1, key: material(3), acceptedUntil: until }] }),

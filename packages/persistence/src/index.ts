@@ -340,6 +340,7 @@ export type { SightingKey, SightingKeys, SightingKeyStore } from './vault/sighti
 export {
   clearSightingKeys,
   createSightingKeyStore,
+  previousVersionFirstSeenAtMs,
   previousVersionUsableUntil,
   readSightingKeys,
   SIGHTING_KEY_FILENAME,

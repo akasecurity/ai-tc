@@ -299,6 +299,23 @@ describe('readSightingKeys', () => {
     expect(versions(NOW + SIGHTING_KEY_OVERLAP_MAX_MS)).toEqual([]);
   });
 
+  it('counts the 90 days from when the machine first held a version, not from the last fetch', () => {
+    attachTo(ENDPOINT_A);
+    const yearsOut = new Date(NOW + 5 * 365 * 86_400_000).toISOString();
+    createSightingKeyStore('file', dir).replace(
+      stored({
+        fetchedAtMs: NOW + SIGHTING_KEY_OVERLAP_MAX_MS - 1_000,
+        previousFirstSeenAtMs: { '1': NOW },
+        previous: [{ keyVersion: 1, key: material(3), acceptedUntil: yearsOut }],
+      }),
+    );
+
+    const versions = (now: number): number[] | undefined =>
+      readSightingKeys(base, { now: () => now })?.previous.map((p) => p.keyVersion);
+    expect(versions(NOW + SIGHTING_KEY_OVERLAP_MAX_MS - 1)).toEqual([1]);
+    expect(versions(NOW + SIGHTING_KEY_OVERLAP_MAX_MS)).toEqual([]);
+  });
+
   it('reads an acceptedUntil with a numeric UTC offset', () => {
     attachTo(ENDPOINT_A);
     createSightingKeyStore('file', dir).replace(

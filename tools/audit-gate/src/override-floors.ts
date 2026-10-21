@@ -1,5 +1,5 @@
 // Reviews the floors in the root `pnpm.overrides`: an override whose value is a
-// lower bound (`^x.y.z`, `~x.y.z` or `>=x.y.z`) on a package the lockfile
+// single lower bound (`^x.y.z`, `~x.y.z` or `>=x.y.z`) on a package the lockfile
 // resolves. A floor is stale when its package (or the major it names) is gone
 // from the lockfile, or when resolving the workspace without the floors puts
 // nothing below it. Exact pins, aliases and removals are not floors and are not
@@ -41,6 +41,7 @@ export interface OverrideReview {
 export type LockfileVersions = Map<string, Version[]>;
 
 const VERSION = /^(\d+)(?:\.(\d+)(?:\.(\d+)(?:-([0-9A-Za-z.-]+))?)?)?$/;
+const FLOOR_OPERATOR = /^(?:\^|~|>=)/;
 const FLOOR = /^(?:\^|~|>=)\s*(\S+)$/;
 
 export function parseVersion(text: string): Version | undefined {
@@ -62,7 +63,27 @@ export function compareVersions(a: Version, b: Version): number {
   // A prerelease sorts before its release.
   if (a.prerelease === '') return 1;
   if (b.prerelease === '') return -1;
-  return a.prerelease < b.prerelease ? -1 : 1;
+  return comparePrerelease(a.prerelease.split('.'), b.prerelease.split('.'));
+}
+
+const NUMERIC = /^\d+$/;
+
+// Semver precedence: identifiers compare left to right, numeric ones by value
+// and below any alphanumeric one, and a shorter list sorts first when it is a
+// prefix of the longer.
+function comparePrerelease(a: string[], b: string[]): number {
+  for (let i = 0; i < Math.min(a.length, b.length); i += 1) {
+    const left = a[i] ?? '';
+    const right = b[i] ?? '';
+    if (left === right) continue;
+    const leftNumeric = NUMERIC.test(left);
+    const rightNumeric = NUMERIC.test(right);
+    if (leftNumeric && rightNumeric) return Number(left) - Number(right);
+    if (leftNumeric) return -1;
+    if (rightNumeric) return 1;
+    return left < right ? -1 : 1;
+  }
+  return a.length - b.length;
 }
 
 export const formatVersion = (version: Version): string =>
@@ -90,7 +111,12 @@ export function parseOverrideFloors(overrides: Record<string, unknown>): {
     if (typeof value !== 'string') continue;
     const bound = FLOOR.exec(value.trim());
     const minimum = bound?.[1] === undefined ? undefined : parseVersion(bound[1]);
-    if (minimum === undefined) continue;
+    if (minimum === undefined) {
+      if (FLOOR_OPERATOR.test(value.trim())) {
+        unchecked.push({ selector, floor: value, why: 'the value is not a single lower bound' });
+      }
+      continue;
+    }
 
     if (selector.includes('>')) {
       unchecked.push({ selector, floor: value, why: 'a parent-scoped selector is not reviewed' });
@@ -184,6 +210,19 @@ export function reviewOverrideFloors(
   current: LockfileVersions,
   floorless: LockfileVersions | string,
 ): Pick<OverrideReview, 'stale' | 'unchecked'> {
+  // An empty parse cannot tell a package that left the tree from a lockfile
+  // whose shape was not read, and calling every floor stale would tell the
+  // reader to remove live ones.
+  if (current.size === 0) {
+    return {
+      stale: [],
+      unchecked: floors.map((floor) => ({
+        selector: floor.selector,
+        floor: floor.floor,
+        why: 'no versions could be read from pnpm-lock.yaml',
+      })),
+    };
+  }
   const stale: StaleOverride[] = [];
   const unchecked: StaleOverride[] = [];
   for (const floor of floors) {

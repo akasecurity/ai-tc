@@ -21,12 +21,18 @@ import type {
 } from '@akasecurity/schema';
 
 // One version for the v1 heuristics below; bump on any behavior change.
-const RULE_VERSION = '1';
+const RULE_VERSION = '2';
 
 // First-executable-token basenames that identify a recognizable, widely-known
-// tool — the v1 stand-in for the future known-hooks registry. Deliberately
-// SMALL: a bare project script (guard.sh) is exactly what the rule should
-// surface until a registry can vouch for it.
+// tool or language runtime — the v1 stand-in for the future known-hooks
+// registry. Deliberately SMALL: a bare project script (guard.sh) is exactly
+// what the rule should surface until a registry can vouch for it.
+//
+// Tradeoff: a runtime only vouches for a script file it is handed. The same
+// runtime given inline code (`bash -c …`, `python3 -c …`) is still attributed
+// as hook-unknown — see INLINE_CODE_FLAGS. `bun x <pkg>` and `uv run <pkg>`
+// delegate to a package and are NOT caught by hook-external-egress; a
+// known-hooks registry is the later fix for that.
 const KNOWN_TOOLS = new Set([
   'prettier',
   'eslint',
@@ -40,11 +46,31 @@ const KNOWN_TOOLS = new Set([
   'npm',
   'pnpm',
   'yarn',
+  'bun',
+  'bunx',
+  'deno',
+  'python3',
+  'uv',
+  'bash',
+  'sh',
   'make',
   'git',
   'jq',
   'echo',
 ]);
+
+// Per-runtime flags that make the next argument inline code rather than a
+// script path (`-s` makes a shell read its program from stdin). A quoted body
+// glued to the flag (`-c'cmd'`) matches too. Matched only among the leading
+// flags, before the first positional argument.
+const INLINE_CODE_FLAGS: Record<string, RegExp> = {
+  bash: /^-[A-Za-z]*[cs][A-Za-z]*(['"].*)?$/,
+  sh: /^-[A-Za-z]*[cs][A-Za-z]*(['"].*)?$/,
+  python3: /^-[A-Za-z]*c[A-Za-z]*(['"].*)?$/,
+  node: /^(-[ep]|--eval|--print)$/,
+  bun: /^(-e|-p|--eval|--print)$/,
+  bunx: /^(-e|-p|--eval|--print)$/,
+};
 
 // Network-egress primitives inside a hook command. Hooks receive prompt/tool
 // payloads on stdin, so a command that can ship bytes off the machine is the
@@ -78,7 +104,7 @@ export const CONFIG_POSTURE_RULES: readonly InspectionDefinitionInput[] = [
     name: 'Unknown hook — not attributable to a plugin or known tool',
     category: 'config',
     // medium, not high: with a deliberately tiny allowlist this v1 heuristic
-    // fires on ordinary interpreter hooks (python3 x.py) and compound commands
+    // fires on ordinary hooks it cannot attribute, such as compound commands
     // (cd … && tool); 'high' is reserved for egress, which is genuinely
     // dangerous. Revisit when the known-hooks registry replaces the allowlist.
     severity: 'medium',
@@ -154,7 +180,31 @@ function isUnknown(hook: HookScanEntry): boolean {
   if (hook.scope === 'plugin') return false;
   const token = firstExecutableToken(hook.command);
   if (token === undefined) return true;
-  return !KNOWN_TOOLS.has(basename(token));
+  const name = basename(token);
+  if (!KNOWN_TOOLS.has(name)) return true;
+  return hasInlineCode(name, hook.command);
+}
+
+// True when a known runtime is invoked with inline code (`bash -c …`), which
+// the runtime itself does not vouch for. Only flags before the first
+// positional argument count; `deno eval` is the subcommand form, and a bare
+// `-` argument reads the program from stdin.
+function hasInlineCode(name: string, command: string): boolean {
+  const tokens = command.trim().split(/\s+/);
+  const start = tokens.findIndex((t) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t));
+  const args = tokens.slice(start + 1).map((t) => t.replace(/^['"]|['"]$/g, ''));
+  if (name === 'deno') {
+    const subcommand = args.find((a) => !a.startsWith('-'));
+    return subcommand === 'eval';
+  }
+  const flag = INLINE_CODE_FLAGS[name];
+  if (flag === undefined) return false;
+  for (const arg of args) {
+    if (arg === '-') return true;
+    if (arg === '--' || !arg.startsWith('-')) return false;
+    if (flag.test(arg)) return true;
+  }
+  return false;
 }
 
 // The first token that isn't an env assignment (FOO=bar cmd …). Known v1 gap:

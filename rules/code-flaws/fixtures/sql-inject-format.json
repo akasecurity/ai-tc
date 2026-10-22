@@ -10,6 +10,61 @@
     "shouldMatch": true
   },
   {
+    "label": "single-line %s statement at offset 0 of the text",
+    "text": "SELECT * FROM t WHERE id = %s",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 0,
+        "end": 29
+      }
+    ]
+  },
+  {
+    "label": "single-line #{} statement at offset 0 of the text",
+    "text": "SELECT * FROM t WHERE id = #{id}",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 0,
+        "end": 32
+      }
+    ]
+  },
+  {
+    "label": "PHP sprintf heredoc with a %s placeholder on one line",
+    "text": "$sql = <<<SQL\n  SELECT * FROM t WHERE id = %s\nSQL;",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 14,
+        "end": 45
+      }
+    ]
+  },
+  {
+    "label": "known gap: a prose line after the first that starts with a sql phrase and carries ${} still matches",
+    "text": "Example:\ndelete from the cache ${dir} when it fills up",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 9,
+        "end": 37
+      }
+    ]
+  },
+  {
+    "label": "Ruby heredoc with a %s placeholder on one line",
+    "text": "sql = <<~SQL\n  SELECT * FROM t WHERE id = %s\nSQL",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 13,
+        "end": 44
+      }
+    ]
+  },
+  {
     "label": "safe parameterized query with ? placeholder",
     "text": "cursor.execute(\"SELECT * FROM users WHERE id = ?\", [user_id])",
     "shouldMatch": false
@@ -42,6 +97,98 @@
   {
     "label": "JSON dictionary whose values start with SQL words",
     "text": "{\"id-1\":\"select 1\",\"id-2\":\"where 2\",\"id-3\":\"update 3\"}",
+    "shouldMatch": false
+  },
+  {
+    "label": "parameterized query followed by a type assertion",
+    "text": "const r = db.prepare(\"SELECT id FROM t WHERE value=? AND k=?\").get(x) as { id: string };",
+    "shouldMatch": false
+  },
+  {
+    "label": "parameterized query followed by an object literal",
+    "text": "expect(db.prepare(\"SELECT n FROM t WHERE value=?\").get(1)).toEqual({ n: 1 });",
+    "shouldMatch": false
+  },
+  {
+    "label": "braces after the closing quote of a %s query do not matter",
+    "text": "q = \"SELECT * FROM t WHERE a = %s\" % (x,); y = {\"k\": 1}",
+    "shouldMatch": true
+  },
+  {
+    "label": "Python f-string where-fragment opening on a new line",
+    "text": "clause = f\"\"\"\n  WHERE id = {uid}\n\"\"\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "% format where-fragment opening on a new line",
+    "text": "clause = \"\"\"\n  WHERE id = %s\n\"\"\" % uid",
+    "shouldMatch": true
+  },
+  {
+    "label": "format-style heredoc body with an f-string placeholder",
+    "text": "q = \"\"\"\nSELECT * FROM t WHERE id = {uid}\n\"\"\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "heredoc body without a placeholder",
+    "text": "sql = <<~SQL\n  SELECT * FROM t WHERE id = 1\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "Ruby heredoc with a #{} placeholder",
+    "text": "q = <<~SQL\n  SELECT * FROM t WHERE id = #{id}\nSQL",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 11,
+        "end": 45
+      }
+    ]
+  },
+  {
+    "label": "Ruby heredoc with a blank line after the opener: span starts on the SQL line",
+    "text": "q = <<~SQL\n\n  SELECT * FROM t WHERE id = #{id}\nSQL",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 12,
+        "end": 46
+      }
+    ]
+  },
+  {
+    "label": "dbt/Jinja model line is a table reference, not user input",
+    "text": "select * from {{ ref('orders') }}",
+    "shouldMatch": false
+  },
+  {
+    "label": "prose line with braces",
+    "text": "Select the id from the {list} of users",
+    "shouldMatch": false
+  },
+  {
+    "label": "prose line with a %s",
+    "text": "select the option from %s and press enter",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: heredoc statement split across lines with a %s placeholder is not matched",
+    "text": "sql = <<~SQL\n  SELECT *\n  FROM t\n  WHERE id = %s\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: heredoc statement split across lines with a #{} placeholder is not matched by this rule (sql-inject-interp covers it)",
+    "text": "sql = <<~SQL\n  SELECT *\n  FROM t\n  WHERE id = #{id}\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: unquoted parenthesized statement is not matched",
+    "text": "(SELECT * FROM t WHERE id = #{x})",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: interpolation-first statement is not matched",
+    "text": "#{prefix} UPDATE t SET a = #{x}",
     "shouldMatch": false
   }
 ]

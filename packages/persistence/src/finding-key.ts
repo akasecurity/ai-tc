@@ -55,3 +55,14 @@ export function computeFindingKey(input: FindingKeyInput): string {
     .update(`${input.ruleId}\0${normalizedPath}\0${input.valueFingerprint}`)
     .digest('hex');
 }
+
+// The key for a configuration-posture finding (a rule fired against one hook
+// command). A re-scan that finds the same command under the same rule
+// reconciles onto the same `inspection_findings` row through the
+// `ON CONFLICT (finding_key)` upsert, instead of inserting one row per scan.
+// The leading domain tag makes a practical collision with the at-rest key
+// space above impossible; the separation is by construction of the hashed
+// input, not a structural guarantee.
+export function computeConfigPostureFindingKey(ruleId: string, command: string): string {
+  return createHash('sha256').update(`config-posture\0${ruleId}\0${command}`).digest('hex');
+}

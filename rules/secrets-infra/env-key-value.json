@@ -6,7 +6,7 @@
   "severity": "high",
   "matcher": {
     "type": "regex",
-    "pattern": "\\b[A-Za-z0-9_]*(?:API_KEY|API_SECRET|SECRET_KEY|SECRET|TOKEN|PASSWORD|(?<![A-Za-z])PASS|CREDENTIALS|PRIVATE_KEY|ENCRYPTION_KEY|SIGNING_KEY)\\s*=\\s*[\"']?(?!\\$(?!2[aby]\\$|argon2id?\\$))(?![()<>{}\\[\\]`%\\\\|;,*])(?!(?:true|false|null|none|nil|undefined|yes|no|on|off|bearer|basic|string|required|changeme|redacted|example)(?![A-Za-z0-9_]))(?![A-Za-z_]\\w*(?:\\.[A-Za-z_]\\w*)+(?![\\w.+/=-]))(?![^\\s\"']*[()\\[\\]{}`])([^\\s\"'()\\[\\]{}`;]{4,})",
+    "pattern": "\\b[A-Za-z0-9_]*(?:API_KEY|API_SECRET|SECRET_KEY|SECRET|TOKEN|PASSWORD|(?<![A-Za-z])PASS|CREDENTIALS|PRIVATE_KEY|ENCRYPTION_KEY|SIGNING_KEY)\\s*=\\s*[\"']?(?!\\$(?!2[aby]\\$|argon2id?\\$))(?![()<>{}\\[\\]`%\\\\|;,*])(?!(?:true|false|null|none|nil|undefined|yes|no|on|off|bearer|basic|string|required|changeme|redacted|example|await|typeof|new|this|void|yield|async|function)(?![A-Za-z0-9_-]))(?![A-Za-z_]\\w*(?:\\.[A-Za-z_]\\w*)+(?![\\w.+/=-]))(?![^\\s\"']*[()\\[\\]{}`])([^\\s\"'()\\[\\]{}`;]{4,})",
     "flags": "gi",
     "captureGroup": 1
   },

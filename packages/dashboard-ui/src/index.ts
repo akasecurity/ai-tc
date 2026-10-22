@@ -241,6 +241,7 @@ export {
   CredentialsListView,
   type CredentialsListViewProps,
 } from './credentials/CredentialsListView.tsx';
+export { credentialLabel, credentialName } from './credentials/name.ts';
 export type {
   CredentialDetailModel,
   CredentialLinkedFinding,

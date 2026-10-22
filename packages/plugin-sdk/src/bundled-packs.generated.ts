@@ -140,7 +140,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'code-flaws',
     name: 'Code Security Flaws',
-    version: '0.1.2',
+    version: '0.1.3',
     rawRules: [
       codeFlawsSqlInjectConcat,
       codeFlawsSqlInjectConcatDot,
@@ -308,7 +308,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'core-pii',
     name: 'Core PII',
-    version: '0.2.2',
+    version: '0.2.3',
     rawRules: [
       corePiiEmail,
       corePiiSsn,
@@ -399,7 +399,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'secrets-infra',
     name: 'Infrastructure Secrets',
-    version: '0.2.1',
+    version: '0.2.2',
     rawRules: [
       secretsInfraSshPrivateKey,
       secretsInfraDbConnectionString,

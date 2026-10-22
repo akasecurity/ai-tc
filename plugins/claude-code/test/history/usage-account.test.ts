@@ -102,6 +102,7 @@ async function start(
     {
       version: '0.0.0-test',
       harnessInterface: undefined,
+      claudeConfigDir: undefined,
       handleSessionStart,
       triggerReconcile: () => undefined,
       emit: () => Promise.resolve(),

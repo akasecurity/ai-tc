@@ -21,6 +21,8 @@ export interface SessionStartDeps {
   readonly version: string | undefined;
   /** The surface the host names on its own subprocess environment, when it names one. */
   readonly harnessInterface: string | undefined;
+  /** The user config directory CLAUDE_CONFIG_DIR names, when it names one. */
+  readonly claudeConfigDir: string | undefined;
   readonly handleSessionStart: typeof handleSessionStart;
   readonly triggerReconcile: typeof triggerReconcile;
   readonly emit: (output: HookOutput) => Promise<void>;
@@ -78,6 +80,9 @@ export async function runSessionStart(
     // absent when the host stamps nothing, which reads as unknown rather than
     // as a terminal session.
     harnessInterface: deps.harnessInterface,
+    // The config directory the session is running from, so the config scan
+    // reads the profile in use rather than ~/.claude.
+    claudeConfigDir: deps.claudeConfigDir,
     // A session whose login is a work subscription, or cannot be told yet, leaves
     // its root to the reconcile: the session start leaves a stub with no attributes,
     // and the root is on disk only once a reconcile pass writes it. The pass keys it

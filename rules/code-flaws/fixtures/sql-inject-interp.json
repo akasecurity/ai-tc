@@ -10,6 +10,28 @@
     "shouldMatch": true
   },
   {
+    "label": "single-line statement at offset 0 of the text",
+    "text": "SELECT * FROM t WHERE id = #{id}",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 0,
+        "end": 29
+      }
+    ]
+  },
+  {
+    "label": "known gap: a prose line after the first that starts with a sql word and carries interpolation still matches",
+    "text": "Example:\nselect #{name} from the menu",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 9,
+        "end": 18
+      }
+    ]
+  },
+  {
     "label": "Ruby safe parameterized query",
     "text": "User.where('id = ?', params[:id])",
     "shouldMatch": false
@@ -33,6 +55,86 @@
   {
     "label": "JSON array of quoted SQL words with no interpolation",
     "text": "[\"select 1\",\"insert 2\",\"update 3\",\"delete 4\",\"where 5\"]",
+    "shouldMatch": false
+  },
+  {
+    "label": "shell command with a SQL word in an argument and a shell variable",
+    "text": "tool jobs update-oidc $P",
+    "shouldMatch": false,
+    "filePath": "src/run.php"
+  },
+  {
+    "label": "shell echo with a hyphenated SQL word and a shell variable",
+    "text": "echo \"auto-update is $STATE\"",
+    "shouldMatch": false,
+    "filePath": "src/run.php"
+  },
+  {
+    "label": "Ruby interpolation in an UPDATE string",
+    "text": "q = \"UPDATE users SET name = '#{name}' WHERE id = 1\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "Ruby heredoc with interpolation in a SELECT",
+    "text": "sql = <<~SQL\n  SELECT * FROM t WHERE id = #{id}\nSQL",
+    "shouldMatch": true
+  },
+  {
+    "label": "PHP heredoc with a variable in a SELECT",
+    "text": "$sql = <<<SQL\n  SELECT * FROM t WHERE id = $id\nSQL;",
+    "shouldMatch": true
+  },
+  {
+    "label": "Ruby heredoc without interpolation",
+    "text": "sql = <<~SQL\n  SELECT * FROM t WHERE id = 1\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "prose line opening with a hyphenated SQL word and a variable",
+    "text": "update-oidc is $STATE",
+    "shouldMatch": false,
+    "filePath": "src/run.php"
+  },
+  {
+    "label": "Ruby heredoc with a blank line after the opener: span starts on the SQL line",
+    "text": "q = <<~SQL\n\n  SELECT * FROM t WHERE id = #{id}\nSQL",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 12,
+        "end": 43
+      }
+    ]
+  },
+  {
+    "label": "where on its own heredoc line with interpolation",
+    "text": "sql = <<~SQL\n  SELECT *\n  FROM t\n  WHERE id = #{id}\nSQL",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 33,
+        "end": 48
+      }
+    ]
+  },
+  {
+    "label": "dbt/Jinja model line",
+    "text": "select * from {{ ref('orders') }}",
+    "shouldMatch": false
+  },
+  {
+    "label": "prose line with a sql word and no placeholder",
+    "text": "Select the id from the list of users",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: unquoted parenthesized statement is not matched",
+    "text": "(SELECT * FROM t WHERE id = #{x})",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: interpolation-first statement is not matched",
+    "text": "#{prefix} UPDATE t SET a = #{x}",
     "shouldMatch": false
   }
 ]

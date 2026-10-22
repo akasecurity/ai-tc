@@ -1,0 +1,48 @@
+name: CI retry
+
+# Re-runs the failed jobs of a CI run once, automatically.
+#
+# Why: the suite's timing-sensitive tests fail now and then on a loaded hosted
+# runner and pass on the same commit when run again (about 140 failed-then-green
+# job re-runs in 30 days). Each one leaves a red X on a PR or on main until a
+# person presses "Re-run failed jobs". A genuine failure fails again and stays
+# red, so this changes how long a flake is visible, not what is reported.
+#
+# Bounded to ONE retry: only attempt 1 of a run is retried (`run_attempt == 1`),
+# so a run that fails twice is final and nobody pays for a loop. Only the failed
+# jobs run again (`--failed`), not the whole workflow.
+#
+# Safety: `workflow_run` executes in the base repository's context with a write
+# token, so this workflow checks out nothing and runs no code from the pull
+# request. It reads the id of the finished run and asks GitHub to re-run it.
+# `actions: write` is the one permission that call needs.
+#
+# `cancelled` is not retried: a run superseded by a newer push is cancelled on
+# purpose. `merge_group` runs are not retried either: a failed queue entry is
+# dropped and re-queued, and a retry would hold the queue.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  retry-failed-jobs:
+    name: Re-run failed CI jobs once
+    if: >-
+      ${{ github.event.workflow_run.conclusion == 'failure'
+      && github.event.workflow_run.run_attempt == 1
+      && github.event.workflow_run.event != 'merge_group' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Re-run the failed jobs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: gh run rerun "$RUN_ID" --failed

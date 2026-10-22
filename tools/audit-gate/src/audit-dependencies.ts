@@ -19,6 +19,8 @@
 // format and process are documented in CONTRIBUTING.md ("Dependency
 // advisories and waivers"); every waiver names the mode it applies to via
 // "scope", so a waiver held for one audit is never flagged stale by the other.
+// The workspace report also lists root `pnpm.overrides` floors that no longer
+// hold anything up; that section never changes the exit code.
 //
 // Exit codes:
 //   0 — no blocking advisories (clean, or every hit waived)
@@ -51,6 +53,7 @@ import {
   WaiverConfigError,
   waiversFor,
 } from './lib.ts';
+import { type OverrideReview, reviewRootOverrides } from './override-floors.ts';
 
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const WAIVERS_PATH = join(REPO_ROOT, '.github', 'audit-waivers.json');
@@ -169,6 +172,20 @@ function runArtifactAudit(): AuditPayload {
   });
 }
 
+// Re-resolves a copy of the workspace with the override floors removed. A
+// review is informational, so a failure here is reported, never retried.
+function resolveWithoutFloors(dir: string): void {
+  const result = spawnSync(
+    'pnpm',
+    ['install', '--lockfile-only', '--ignore-scripts', '--no-frozen-lockfile'],
+    { ...SPAWN_OPTIONS, cwd: dir, timeout: 120_000 },
+  );
+  if (result.error) throw new Error(`could not spawn pnpm: ${result.error.message}`);
+  if (result.status !== 0) {
+    throw new Error(`${result.stdout}\n${result.stderr}`);
+  }
+}
+
 function failReport(mode: AuditMode, message: string, exitCode: number): void {
   writeFileSync(
     REPORT_PATHS[mode],
@@ -203,7 +220,12 @@ function main(): void {
   const { blocking, waived, nonBlocking, stale } = classification;
 
   const counts = payload.metadata?.vulnerabilities ?? {};
-  writeFileSync(reportPath, buildReport({ mode, counts, ...classification }) + '\n');
+  const overrides: OverrideReview | undefined =
+    mode === 'workspace' ? reviewRootOverrides(REPO_ROOT, resolveWithoutFloors) : undefined;
+  writeFileSync(
+    reportPath,
+    buildReport({ mode, counts, ...classification, ...(overrides && { overrides }) }) + '\n',
+  );
 
   for (const advisory of blocking) {
     const id = advisoryId(advisory);
@@ -213,6 +235,9 @@ function main(): void {
   }
   for (const { waiver, why } of stale) {
     print(`::notice::stale ${mode} audit waiver ${waiver.advisory} — ${why}`);
+  }
+  for (const { selector, floor, why } of overrides?.stale ?? []) {
+    print(`::notice::stale pnpm.overrides floor "${selector}": "${floor}" — ${why}`);
   }
 
   if (blocking.length > 0) {

@@ -22,6 +22,7 @@ import {
   MAX_GROWTH_RATIO,
   OVER_BUDGET_READINGS,
   POLYNOMIAL_PROBES,
+  SAMPLED_GROWTH,
   superlinearGrowth,
   windowReadingMs,
   worstProbeMs,
@@ -378,8 +379,11 @@ function describeBreach(breach: GrowthBreach): string {
 // inflate it, and the rounding the window bounds is the one error that runs
 // the other way. One doubling over the ratio is not a breach by itself: the
 // growth has to persist over the next doubling, which is what separates a
-// quadratic curve from a linear one with a step in it. The scripted-clock
-// suites below pin each of these.
+// quadratic curve from a linear one with a step in it. Nor is one doubling
+// under it a clearance: a pair over SAMPLED_GROWTH is read with the next
+// doubling too, and the two are judged together, because a quadratic rule can
+// read under the ratio on the pair alone on a loaded machine. The
+// scripted-clock suites below pin each of these.
 
 // What a failing bundled rule is told. An `over-budget` breach is a statement
 // about cost at one size and says nothing about the shape of the curve; a
@@ -790,15 +794,22 @@ describe('the probe battery itself', () => {
       ],
     ];
 
+    // What a breach has to show: a cost over the budget, or growth past the
+    // ratio on the second doubling and past its square across both.
+    const showsGrowth = (breach: GrowthBreach): boolean => {
+      if (breach.reason === 'over-budget') return true;
+      const nextMs = breach.nextMs ?? 0;
+      return (
+        nextMs / Math.max(breach.largeMs, 1e-6) > MAX_GROWTH_RATIO &&
+        nextMs / Math.max(breach.smallMs, 1e-6) > MAX_GROWTH_RATIO ** 2
+      );
+    };
+
     it.each(superlinear)('catches %s', (_label, rule) => {
       const breach = measuredGrowth(rule);
       expect(breach, 'the growth tier passed a pattern that is superlinear at scale').toBeDefined();
       if (!breach) return;
-      expect(
-        breach.reason === 'over-budget' ||
-          breach.largeMs / Math.max(breach.smallMs, 1e-6) > MAX_GROWTH_RATIO,
-        describeBreach(breach),
-      ).toBe(true);
+      expect(showsGrowth(breach), describeBreach(breach)).toBe(true);
     });
 
     it.each(superlinear)(
@@ -813,11 +824,7 @@ describe('the probe battery itself', () => {
           'the growth tier passed a pattern that is superlinear at scale',
         ).toBeDefined();
         if (!breach) return;
-        expect(
-          breach.reason === 'over-budget' ||
-            breach.largeMs / Math.max(breach.smallMs, 1e-6) > MAX_GROWTH_RATIO,
-          describeBreach(breach),
-        ).toBe(true);
+        expect(showsGrowth(breach), describeBreach(breach)).toBe(true);
       },
     );
 
@@ -1164,8 +1171,39 @@ describe('the probe battery itself', () => {
   describe('the growth tier judges the budget at the pair, and the next doubling on its ratio', () => {
     const OVER_BUDGET_MS = BUDGET_MS + 20;
 
-    it('a pair under the ratio is not measured at the next doubling: 31 / 90', () => {
-      runCleared([...cheapClimb(), ...firstPass(31, 90)]);
+    it('a pair that grew linearly is not measured at the next doubling: 45 / 90', () => {
+      runCleared([...cheapClimb(), ...firstPass(45, 90)]);
+    });
+
+    it('a pair at the line a quadratic next doubling would carry is not measured at it', () => {
+      // SAMPLED_GROWTH times 4 is the square of the ratio, so a pair that grew by
+      // no more than it cannot reach that square on one more quadratic doubling.
+      expect(SAMPLED_GROWTH * 4).toBe(MAX_GROWTH_RATIO ** 2);
+      runCleared([...cheapClimb(), ...firstPass(10, 10 * SAMPLED_GROWTH)]);
+    });
+
+    it('a pair under the ratio whose growth carries on is superlinear: 3 / 8.4 / 37', () => {
+      // 2.8x, then 4.4x: a quadratic rule whose linear part still weighs on the
+      // pair. 12.3x over the two doublings, against the ratio's square of 9.
+      const breach = runBreached([
+        ...cheapClimb(),
+        ...firstPass(3, 8.4),
+        ...confirmPass(3, 8.4, 37),
+      ]);
+      // The clock accumulates, so these readings are differences of sums.
+      expect(breach).toMatchObject({ reason: 'superlinear', smallMs: 3 });
+      expect(breach.largeMs).toBeCloseTo(8.4);
+      expect(breach.nextMs).toBeCloseTo(37);
+    });
+
+    it('a pair under the ratio is not a breach when the two doublings stay under its square: 3 / 7.2 / 25', () => {
+      // 2.4x, then 3.5x: over the ratio on the second doubling, 8.3x over the two.
+      runCleared([...cheapClimb(), ...firstPass(3, 7.2), ...confirmPass(3, 7.2, 25)]);
+    });
+
+    it('two doublings past the square are not a breach when the second is under the ratio: 3 / 20 / 58', () => {
+      // 6.7x, then 2.9x: 19x over the two, all of it a step in the first.
+      runCleared([...cheapClimb(), ...firstPass(3, 20), ...confirmPass(3, 20, 58)]);
     });
 
     it('a pair whose larger text reads under the floor is cleared on that one scan', () => {

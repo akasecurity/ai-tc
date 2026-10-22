@@ -34,14 +34,13 @@ const ITEM: CredentialListItem = {
   endpointCount: 4,
   lastRotated: null,
   lastSeen: '2026-10-21T11:00:00.000Z',
-  status: 'ok',
+  exposedAt: null,
 };
 
 const DETAIL: CredentialDetailModel = {
   ...ITEM,
   ruleId: 'secrets/github-pat',
   firstSeen: '2026-10-01T00:00:00.000Z',
-  exposedAt: null,
   sightingCount: 9,
   reference: null,
   projects: ['acme/api', 'acme/web'],
@@ -111,7 +110,7 @@ describe('CredentialsListView', () => {
   });
 
   it('marks an exposed credential Exposed', () => {
-    list({ items: [{ ...ITEM, status: 'exposed' }] });
+    list({ items: [{ ...ITEM, exposedAt: '2026-10-21T09:00:00.000Z' }] });
     const cells = [...mounted.host.querySelectorAll('tbody td')].map((td) => td.textContent.trim());
     expect(cells.at(-1)).toBe('Exposed');
   });
@@ -511,9 +510,12 @@ describe('CredentialDetailView', () => {
   });
 
   it('says an exposed credential is Exposed and when it was first seen in a live session', () => {
-    detail({ ...DETAIL, status: 'exposed', exposedAt: '2026-10-21T09:00:00.000Z' });
-    expect(text()).toContain('Exposed');
-    expect(text()).toContain('seen in a live LLM session, first 3 hours ago');
+    detail({ ...DETAIL, exposedAt: '2026-10-21T09:00:00.000Z' });
+    // The badge in the header, then one sentence that leads with the word, not a second headline.
+    expect(text()).toContain(
+      'Exposed — this value was seen in a live LLM session, first 3 hours ago.',
+    );
+    expect(text().split('Exposed')).toHaveLength(3);
   });
 
   it('says nothing of exposure for a credential no live session carried', () => {

@@ -474,7 +474,7 @@ export interface HookHandlerOptions {
  * about the part it did scan — so it never throws, since a throw here would
  * cost the hook that answer. Stdout and the exit code are untouched.
  */
-export function countPartialScan(count: () => void = spawnFailOpenCount): void {
+export function countFailOpen(count: () => void = spawnFailOpenCount): void {
   try {
     count();
   } catch {

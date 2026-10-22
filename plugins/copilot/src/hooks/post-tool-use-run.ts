@@ -57,7 +57,7 @@ import {
   baseMetadata,
   callKind,
   callScopeKey,
-  countPartialScan,
+  countFailOpen,
   parseJson,
   writeNotice,
 } from './shared.ts';
@@ -156,7 +156,7 @@ export const runPostToolUse: HookHandler = async (event, stdin, options = {}) =>
   // Part of the result reached the model with no verdict on it: a field whose
   // bounded scan did not finish, or text the walk bounds left out. Neither is
   // withheld on this host, so both are counted like any fail-open.
-  if (outcome.unscanned) countPartialScan(options.countFailOpen);
+  if (outcome.unscanned) countFailOpen(options.countFailOpen);
 
   const decision = responseDecision(dialect, outcome);
   // Set only on a dialect whose stdout has no field to carry it, so this never

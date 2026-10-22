@@ -53,13 +53,7 @@ import { detectDialect, readSessionId } from './dialect.ts';
 import type { HookEvent } from './event-name.ts';
 import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
 import type { HookHandler } from './shared.ts';
-import {
-  baseMetadata,
-  captureScopeKey,
-  countPartialScan,
-  parseJson,
-  writeNotice,
-} from './shared.ts';
+import { baseMetadata, captureScopeKey, countFailOpen, parseJson, writeNotice } from './shared.ts';
 import {
   claimStoreUnavailableWarning,
   openGatewayOrNull,
@@ -169,7 +163,7 @@ export const runUserPromptSubmit: HookHandler = async (event, stdin, options = {
 
   // Neither host can stop a prompt, so one whose scan did not finish was sent
   // with no verdict on it — counted like any fail-open.
-  if (result.scanIncomplete !== undefined) countPartialScan(options.countFailOpen);
+  if (result.scanIncomplete !== undefined) countFailOpen(options.countFailOpen);
 
   const decision = promptDecision(capture.event, dialect, result);
   // Set only on a dialect whose stdout has no field to carry it, so this never

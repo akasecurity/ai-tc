@@ -123,7 +123,7 @@ export function resolveRepoIdentity(cwd: string): { url: string; name: string } 
  * longer would — the rows a self-heal should fold into the repository's real
  * project.
  *
- * Today that is exactly one shape: a remote in this repository's config that
+ * Today that is exactly one shape: the remote the OLD resolver picked, where it
  * names a location on local disk rather than a remote address. `remoteUrl` used
  * to take `origin` unconditionally, and git writes a local-disk `origin` for a
  * submodule checked out inside a linked worktree (it points at the parent
@@ -131,12 +131,23 @@ export function resolveRepoIdentity(cwd: string): { url: string; name: string } 
  * instead of the repository it is a clone of. Those rows render as a project
  * named after the submodule directory, one per worktree.
  *
- * The urls are read from the config rather than reconstructed from the gitdir,
- * so what comes back is byte-for-byte what the old resolver would have stored —
- * a fold keyed on these matches the real rows or nothing, and can never match a
- * row belonging to some other repository. A path is posix-normalized for the
- * same reason the identity fallback is: the store's path patterns are written
- * with `/`.
+ * AT MOST ONE URL, AND ONLY THE ONE THAT WAS PICKED. It is read from the config
+ * through the OLD rule — `origin`, else the first remote in config order — and
+ * never from the other remotes beside it. That is the whole safety argument: a
+ * local-path remote the old resolver did NOT pick was never this checkout's
+ * identity, and it can easily be another repository's. A sibling clone added as
+ * `git remote add scratch ~/src/scratch` has `~/src/scratch` as its own project
+ * identity, because a repository with no address keys on its root path — so
+ * returning it here would hand a LIVE row to a sweep that repoints its events
+ * and deletes it, on every session in the first repository.
+ *
+ * NOTHING THAT IS STILL THE IDENTITY either. Where the picked remote is also
+ * what `remoteUrl` picks today — a checkout whose only remote is a local path —
+ * the row it keys is current rather than superseded, and folding it would
+ * delete the project the session is writing to.
+ *
+ * A path is posix-normalized for the same reason the identity fallback is: the
+ * store's path patterns are written with `/`.
  *
  * Empty for an ordinary checkout, whose remotes are all addresses. Same pure,
  * never-spawns-git, never-throws contract as `resolveRepo`.
@@ -146,10 +157,16 @@ export function resolveSupersededProjectUrls(cwd: string): string[] {
     const root = findGitRoot(cwd);
     if (!root) return [];
     const ctx = resolveGitContext(root);
-    const config = ctx ? safeRead(ctx.configPath) : undefined;
-    if (config === undefined) return [];
-    const local = Object.values(parseRemoteUrls(config)).filter((url) => !namesARemoteAddress(url));
-    return [...new Set(local.map((url) => url.split(sep).join('/')))];
+    const config = ctx === undefined ? undefined : safeRead(ctx.configPath);
+    if (config === undefined || ctx === undefined) return [];
+    const remotes = parseRemoteUrls(config);
+    // The OLD rule, spelled out here rather than shared with `remoteUrl`: that
+    // function implements the NEW one now, and this has to keep answering what
+    // the resolver this heals actually wrote.
+    const picked = remotes.origin ?? Object.values(remotes)[0];
+    if (picked === undefined || namesARemoteAddress(picked)) return [];
+    if (picked === remoteUrl(ctx)) return [];
+    return [picked.split(sep).join('/')];
   } catch {
     return [];
   }

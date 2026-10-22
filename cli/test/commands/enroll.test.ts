@@ -965,18 +965,18 @@ describe('aka enroll --repo', () => {
       expect(storedScope()).toEqual(fresh());
     });
 
-    // The sharper half. `Host github.com` rewriting a REAL host is ordinary on
-    // a machine behind a corporate proxy, and there the obvious-looking key is
-    // the wrong one. Without this the user enrols `github.com/...`, every local
-    // checkout stamps the proxy host, and nothing ever matches.
-    it('refuses the obvious key where a block rewrites the real host', async () => {
-      UNSAFE_TEST_ONLY_setSshHostAliases(new Map([['github.com', 'gh.internal.corp']]));
+    // The other half, and it lands the OPPOSITE way on purpose. A `Host` block
+    // on a real forge name redirects the transport, not the repository (it is
+    // how GitHub documents working around a blocked port 22), so the forge name
+    // stays the key and the obvious spelling is the right one. Enrolling it
+    // must therefore succeed, not be "corrected" to an endpoint no other
+    // machine shares.
+    it('accepts the forge key even where a block rewrites that host', async () => {
+      UNSAFE_TEST_ONLY_setSshHostAliases(new Map([['github.com', 'ssh.github.com']]));
       attach({ scope: fresh() });
       const io = recorder();
-      expect(await runEnroll(['--repo', WORK_REPO], deps(io))).toBe(1);
-      expect(io.errors()).toContain('is not how that repository is keyed');
-      expect(io.errors()).toContain('its key is gh.internal.corp/acme/payments-api');
-      expect(storedScope()).toEqual(fresh());
+      expect(await runEnroll(['--repo', WORK_REPO], deps(io))).toBe(0);
+      expect(identities()).toEqual([WORK_REPO]);
     });
 
     // The control: with no alias in force the same key enrols cleanly, so the

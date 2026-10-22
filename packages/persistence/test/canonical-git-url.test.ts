@@ -109,6 +109,20 @@ describe('resolveSshHost', () => {
     expect(resolveSshHost('gh')).toBe('github.com');
   });
 
+  // N3. ssh_config evaluates a `Match` condition per connection; this parser
+  // interprets none of them, so a conditional HostName must not be applied.
+  it('ends a Host block at a Match line', () => {
+    sshConfig(
+      'Host work\n  User git\nMatch exec "test -f ~/.vpn"\n  HostName github.example.internal\n',
+    );
+    expect(resolveSshHost('work')).toBe('work');
+  });
+
+  it('still reads a Host block that FOLLOWS a Match block', () => {
+    sshConfig('Match exec "true"\n  HostName ignored.example\nHost gh\n  HostName github.com\n');
+    expect(resolveSshHost('gh')).toBe('github.com');
+  });
+
   it('matches an alias case-insensitively, as ssh does', () => {
     sshConfig('Host GitHub-Personal\n  HostName GitHub.com\n');
     expect(resolveSshHost('github-personal')).toBe('github.com');
@@ -155,6 +169,38 @@ describe('canonicalGitUrl — the one reduction every surface shares', () => {
     for (const forge of ['gitlab.com', 'bitbucket.org']) {
       expect(canonicalGitUrl(`https://${forge}/Acme/App.git`)).toBe(`${forge}/acme/app`);
     }
+  });
+
+  // P3. ssh_config governs SSH alone, and a block on a real forge name
+  // redirects the transport rather than naming another repository.
+  describe('an alias is resolved only where ssh would read it', () => {
+    beforeEach(() => {
+      // GitHub's documented workaround for networks that block port 22.
+      sshConfig('Host github.com\n  Hostname ssh.github.com\n  Port 443\n');
+    });
+
+    it('leaves every transport of a forge host on that host', () => {
+      for (const remote of [
+        'https://github.com/Acme/App.git',
+        'http://github.com/Acme/App.git',
+        'git://github.com/Acme/App.git',
+        'git@github.com:Acme/App.git',
+        'ssh://git@github.com/Acme/App.git',
+      ]) {
+        expect(canonicalGitUrl(remote)).toBe('github.com/acme/app');
+      }
+      // And the scope key with it, so an org enrolment of github.com still
+      // covers this machine — the silent no-forward this guards against.
+      expect(canonicalRepoUrl('https://github.com/acme/app')).toBe('github.com/acme/app');
+    });
+
+    it('still resolves an alias that is NOT a forge name, over ssh only', () => {
+      sshConfig('Host gh-personal\n  HostName github.com\n');
+      expect(canonicalGitUrl('git@gh-personal:Acme/App.git')).toBe('github.com/acme/app');
+      // ...and not over https, where ssh_config has no say. The host stands as
+      // written, so the path case is not folded either.
+      expect(canonicalGitUrl('https://gh-personal/Acme/App.git')).toBe('gh-personal/Acme/App');
+    });
   });
 
   it('KEEPS the path case on a host not known to ignore it', () => {

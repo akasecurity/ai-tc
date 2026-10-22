@@ -98,6 +98,49 @@ describe('resolveSupersededProjectUrls', () => {
     expect(resolveSupersededProjectUrls(checkout)).toEqual([posix(localOrigin)]);
   });
 
+  // P2. The old resolver stored `origin ?? first` and nothing else, so a
+  // local-path remote BESIDE that one was never this checkout's identity —
+  // and is very likely another repository's, which the sweep would delete.
+  it('never reports a local-path remote the old resolver would not have picked', () => {
+    const sibling = join(root, 'scratch');
+    const checkout = submoduleCheckout(
+      'app',
+      'app.gitdir',
+      `[remote "origin"]\n\turl = git@github.com:acme/app.git\n` +
+        `[remote "scratch"]\n\turl = ${sibling}\n`,
+    );
+
+    // `origin` is an address, so the old resolver picked it and there is no
+    // stale row to fold. The sibling is a live project in its own right.
+    expect(resolveSupersededProjectUrls(checkout)).toEqual([]);
+  });
+
+  it('never reports a local path that is STILL the identity', () => {
+    // Only remote, so `remoteUrl` picks it today too: the row it keys is the
+    // one this session writes to, and folding it would delete that project.
+    const localOnly = join(root, 'parent', '.git', 'modules', 'oss');
+    const checkout = submoduleCheckout(
+      'oss',
+      'oss.gitdir',
+      `[remote "origin"]\n\turl = ${localOnly}\n`,
+    );
+
+    expect(resolveRepoIdentity(checkout)?.url).toBe(localOnly);
+    expect(resolveSupersededProjectUrls(checkout)).toEqual([]);
+  });
+
+  it('reports the first remote when there is no `origin`, matching the old rule', () => {
+    const localFirst = join(root, 'parent', '.git', 'modules', 'oss');
+    const checkout = submoduleCheckout(
+      'oss',
+      'oss.gitdir',
+      `[remote "alpha"]\n\turl = ${localFirst}\n` +
+        `[remote "github"]\n\turl = git@github.com:acme/app.git\n`,
+    );
+
+    expect(resolveSupersededProjectUrls(checkout)).toEqual([posix(localFirst)]);
+  });
+
   it('is empty for an ordinary checkout, whose remotes are all addresses', () => {
     const checkout = submoduleCheckout(
       'app',

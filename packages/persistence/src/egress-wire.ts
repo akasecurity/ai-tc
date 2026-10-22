@@ -38,8 +38,13 @@ import { resolveSshHost } from './ssh-hosts.ts';
  *
  * Bumping it re-buckets every project on the receiving side, so it moves only
  * when the canonical form itself does.
+ *
+ * v2 → v3: the canonical form changed twice. A path is now folded on a host in
+ * `CASE_INSENSITIVE_FORGES`, and an SSH `Host` alias resolves to the host it
+ * names. Repositories touched by either digest differently than they did, which
+ * is exactly the case the paragraph above refuses to leave unversioned.
  */
-const PROJECT_KEY_DIGEST_VERSION = 'v2';
+export const PROJECT_KEY_DIGEST_VERSION = 'v3';
 
 // A `git:` URL in scp form — `[user@]host:path`, which has no `://` and whose
 // first colon separates host from path. Anchored on a host that cannot contain
@@ -136,10 +141,40 @@ export function parseGitRemote(
   // repository must reduce to one host, or the identity, the scope key and the
   // wire digest below each split per spelling. See `resolveSshHost` for how
   // narrow that resolution is (literal aliases only, memoized, fail-open).
-  const host = resolveSshHost(written);
+  //
+  // TWO GUARDS, and each closes a way the resolution would otherwise move a
+  // host it has no business moving:
+  //
+  //   - ONLY AN SSH REMOTE. git consults ~/.ssh/config for ssh transports
+  //     alone, so an `https://`, `http://` or `git://` remote must be read as
+  //     written. Resolving those re-keyed clones ssh never touches.
+  //   - NEVER A HOST THAT IS ITSELF A FORGE. A `Host` block on a real forge
+  //     name redirects the TRANSPORT, not the repository: GitHub documents
+  //     `Host github.com` / `Hostname ssh.github.com` for networks that block
+  //     port 22, and the repositories reached through it are github.com's.
+  //     Honouring it would key every repository on that machine under an
+  //     endpoint no other machine shares.
+  //
+  // Together they make the port-443 config a no-op for identity on both
+  // transports, which is what `main` did before aliases were resolved at all.
+  const host =
+    isSshTransport(trimmed, scheme !== null) && !CASE_INSENSITIVE_FORGES.has(written)
+      ? resolveSshHost(written)
+      : written;
   const bare = trimSlashes((scheme === null ? scp?.[2] : scheme[2]) ?? '');
   const path = bare.endsWith(GIT_SUFFIX) ? bare.slice(0, -GIT_SUFFIX.length) : bare;
   return { host, path: CASE_INSENSITIVE_FORGES.has(host) ? path.toLowerCase() : path };
+}
+
+/**
+ * Whether `remote` is carried over SSH, which is the only transport git reads
+ * `~/.ssh/config` for. An scp-style remote (no scheme) always is; a scheme-form
+ * one is only where the scheme names ssh.
+ */
+function isSshTransport(remote: string, hasScheme: boolean): boolean {
+  if (!hasScheme) return true;
+  const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(remote)?.[1]?.toLowerCase() ?? '';
+  return scheme === 'ssh' || scheme === 'git+ssh' || scheme === 'ssh+git';
 }
 
 /**
@@ -446,7 +481,7 @@ function isEnrollableKey(key: string): boolean {
  * some, a key with one path segment among them.
  *
  * A typed key is accepted only when it is ALREADY canonical:
- * `canonicalRepoUrl('https://' + key)` must give back exactly the key. Keys are
+ * `canonicalRepoUrl('ssh://' + key)` must give back exactly the key. Keys are
  * compared byte for byte, so a key that is almost canonical — a capitalised
  * host, a trailing slash, a `.git` suffix — would look like a key and match
  * nothing a checkout stamps. It is refused rather than repaired, so the
@@ -488,7 +523,13 @@ function isEnrollableKey(key: string): boolean {
  */
 export function enrollableRepoKey(input: string): string | undefined {
   const value = input.trim();
-  const typed = canonicalRepoUrl(`https://${value}`) === value ? value : undefined;
+  // `ssh://`, not `https://`. A TYPED key names no transport, so it has to be
+  // judged by the rule a CHECKOUT's key is built under — and alias resolution
+  // runs for ssh alone (see `parseGitRemote`). Judging it as https would accept
+  // an alias spelling such as `gh-personal/acme/app`, which no checkout on this
+  // machine stamps, and store an enrolment that matches nothing. The scheme is a
+  // probe here and reaches no network.
+  const typed = canonicalRepoUrl(`ssh://${value}`) === value ? value : undefined;
   const key = canonicalRepoUrl(value) ?? typed;
   return key !== undefined && isEnrollableKey(key) ? key : undefined;
 }

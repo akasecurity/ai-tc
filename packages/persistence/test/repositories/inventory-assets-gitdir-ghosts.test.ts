@@ -23,10 +23,6 @@ describe('gitdir ghost rows', () => {
   it('are hidden from listProjects and the project stat', async () => {
     db.sourceProject.upsert({ url: REAL, name: 'app', attributes: {} }, Date.now());
     db.sourceProject.upsert(
-      { url: '/home/dev/parent/.git/modules/oss', name: 'oss', attributes: {} },
-      Date.now(),
-    );
-    db.sourceProject.upsert(
       {
         url: '/home/dev/parent/.git/worktrees/confident-wu-b7173e/modules/oss',
         name: 'oss',
@@ -45,13 +41,34 @@ describe('gitdir ghost rows', () => {
   it('are hidden in the Windows separator flavor too', async () => {
     db.sourceProject.upsert({ url: REAL, name: 'app', attributes: {} }, Date.now());
     db.sourceProject.upsert(
-      { url: 'C:\\dev\\parent\\.git\\modules\\oss', name: 'oss', attributes: {} },
+      {
+        url: 'C:\\dev\\parent\\.git\\worktrees\\wt\\modules\\oss',
+        name: 'oss',
+        attributes: {},
+      },
       Date.now(),
     );
 
     const { items } = await db.inventoryAssets.listProjects();
 
     expect(items.map((p) => p.name)).toEqual(['app']);
+  });
+
+  // P5. The SHARED submodule gitdir is a legitimate identity: a submodule whose
+  // only remote is that path keys on it and new events attach to it, so hiding
+  // it would leave a project being written to that no read surface can reach.
+  it('leave the SHARED submodule gitdir visible, since it can be a live identity', async () => {
+    db.sourceProject.upsert({ url: REAL, name: 'app', attributes: {} }, Date.now());
+    db.sourceProject.upsert(
+      { url: '/home/dev/parent/.git/modules/oss', name: 'oss', attributes: {} },
+      Date.now(),
+    );
+
+    const { items } = await db.inventoryAssets.listProjects();
+    const stats = await db.inventoryAssets.getInventoryStats();
+
+    expect(items.map((p) => p.name).sort()).toEqual(['app', 'oss']);
+    expect(stats.byType.project).toBe(2);
   });
 
   // The control. Without it a filter that hid EVERY path-keyed row, or every

@@ -27,6 +27,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { UNSAFE_TEST_ONLY_setManagedSettingsPaths } from '../../../persistence/src/managed-settings.ts';
+import { UNSAFE_TEST_ONLY_setSshHostAliases } from '../../../persistence/src/ssh-hosts.ts';
 import { renderAttachedStatus } from '../../src/attached/status.ts';
 import {
   attachmentScopeLines,
@@ -1005,5 +1006,56 @@ describe('renderAttachedStatus — work subscriptions on a scoped attachment', (
     const out = status();
     expect(out).not.toMatch(/^ {2}(user|work) {2,}/m);
     expect(out).not.toContain(LEARNED);
+  });
+});
+
+// P1. Enrolment is matched byte for byte, so an entry stored under a spelling
+// the canonical rules no longer produce enrols nothing while still being
+// listed. That silence is the failure Architecture principles §8 exists to end,
+// so the list names such an entry rather than rendering it like any other.
+describe('an enrolled key no checkout now stamps', () => {
+  const STALE_NOTE = 'NOT a key this machine now stamps';
+
+  it('is named for a path case a folding forge no longer keeps', () => {
+    // Stored before the path-case rule landed. A checkout of it now stamps
+    // `github.com/acme/payments-api`, so this entry enrols nothing.
+    const scope = { endpoint: ENDPOINT, entries: [entry('github.com/Acme/Payments-API')] };
+    const lines = attachmentScopeLines(scope, ENDPOINT);
+    expect(lines.join('\n')).toContain(STALE_NOTE);
+    expect(lines.join('\n')).toContain('aka enroll');
+  });
+
+  it('is named for an alias spelling, while that alias is in force', () => {
+    // The note is a statement about THIS machine: with the alias defined, no
+    // checkout stamps the alias spelling any more.
+    UNSAFE_TEST_ONLY_setSshHostAliases(new Map([['gh-personal', 'github.com']]));
+    try {
+      const scope = { endpoint: ENDPOINT, entries: [entry('gh-personal/acme/payments-api')] };
+      expect(attachmentScopeLines(scope, ENDPOINT).join('\n')).toContain(STALE_NOTE);
+    } finally {
+      UNSAFE_TEST_ONLY_setSshHostAliases(new Map());
+    }
+  });
+
+  it('is NOT named for that alias spelling where no such alias is defined', () => {
+    // ...and with no alias, a checkout really does stamp it. The note must not
+    // fire on a spelling that is merely unusual.
+    const scope = { endpoint: ENDPOINT, entries: [entry('gh-personal/acme/payments-api')] };
+    expect(attachmentScopeLines(scope, ENDPOINT).join('\n')).not.toContain(STALE_NOTE);
+  });
+
+  // The control. Without it a note printed on EVERY row would pass the case
+  // above, and the list would cry wolf on a healthy enrolment.
+  it('is NOT named for a key the current rules produce', () => {
+    const scope = { endpoint: ENDPOINT, entries: [entry(WORK_REPO)] };
+    expect(attachmentScopeLines(scope, ENDPOINT).join('\n')).not.toContain(STALE_NOTE);
+  });
+
+  it('is NOT named for an account entry, which is not a repository key', () => {
+    const scope = {
+      endpoint: ENDPOINT,
+      entries: [{ kind: 'workspace', identity: 'acme-workspace', enrolledAt: ENROLLED_AT }],
+    };
+    expect(attachmentScopeLines(scope, ENDPOINT).join('\n')).not.toContain(STALE_NOTE);
   });
 });

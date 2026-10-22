@@ -217,6 +217,54 @@ describe(`the ${MANAGED_SEAM} test-only seam`, () => {
   );
 });
 
+// The two seams `ssh-hosts.ts` carries, held to the same standard as the
+// managed-settings one above and for a sharper reason: `setSshHostAliases`
+// changes what a SHIPPED identity function answers (`canonicalGitUrl`, and so
+// the project id, the scope key and the wire digest), so a product caller would
+// not merely read a different machine — it would decide which repository a
+// capture belongs to. `setSshConfigPath` moves the file that answer is read
+// from, which is the same power by another route.
+const SSH_SEAMS = [
+  { seam: 'UNSAFE_TEST_ONLY_setSshHostAliases', guard: 'test/setup/no-ssh-aliases.ts' },
+  { seam: 'UNSAFE_TEST_ONLY_setSshConfigPath', guard: null },
+];
+
+const SSH_DEFINITION = 'packages/persistence/src/ssh-hosts.ts';
+
+describe.each(SSH_SEAMS)('the $seam test-only seam', ({ seam, guard }) => {
+  it(
+    'is named by exactly one shipped source file — the one that defines it',
+    () => {
+      // An exact set of one, not a floor, for the reason the managed seam gives:
+      // a floor lets the next product caller in beside the definition, and a
+      // product caller is the entire failure mode.
+      expect(
+        filesNamingSeam(seam)
+          .filter((file) => !isTestFile(file))
+          .sort(),
+      ).toEqual([SSH_DEFINITION]);
+    },
+    TREE_WALK_TIMEOUT_MS,
+  );
+
+  it('is not re-exported from the package entry point', () => {
+    expect(readFileSync(join(REPO_ROOT, ENTRY), 'utf8')).not.toContain(seam);
+  });
+
+  it(
+    'is reached by test code, so this suite is not guarding an absence',
+    () => {
+      // The positive control. Without it, deleting the seam and every caller
+      // leaves both assertions above passing over a workspace where the thing
+      // guarded does not exist.
+      const tests = filesNamingSeam(seam).filter(isTestFile);
+      expect(tests.length).toBeGreaterThan(0);
+      if (guard !== null) expect(tests).toContain(guard);
+    },
+    TREE_WALK_TIMEOUT_MS,
+  );
+});
+
 describe('isTestFile', () => {
   // The classifier decides which side of the rule a file lands on, so its own
   // edges are pinned rather than assumed. Wrong in the excusing direction and a

@@ -776,9 +776,26 @@ Three rules hold it together:
   `remoteWithoutCredentials`), so it could never derive it. Resolving it here or
   not at all is the whole choice, which is why it is done here. Only a LITERAL
   alias is stored: lookup is an exact map hit, so a pattern entry would sit
-  under the key `*` and answer only a host spelled `*`. Memoized once per
-  process, `Host`/`HostName` alone, fail-open — a failure answers the host as
-  written, and a machine with no config is unaffected in every respect.
+  under the key `*` and answer only a host spelled `*`; a `Match` line ends the
+  block before it, since its condition is evaluated per connection and this
+  parser interprets none. Memoized once per process — so the staleness window is
+  the CALLER's lifetime, one event for a hook and one restart for the dashboard
+  (stated at the memo). Fail-open, and a machine with no config is unaffected in
+  every respect.
+
+  **TWO GUARDS BOUND IT, and both exist because a `HostName` can redirect a
+  TRANSPORT rather than name a repository.** It runs for SSH remotes only, since
+  git consults that file for no other transport — resolving an `https://` remote
+  re-keys a clone ssh never touches. And it never resolves a host that is itself
+  a forge: GitHub documents `Host github.com` / `Hostname ssh.github.com` for
+  networks blocking port 22, and the repositories behind it are still
+  github.com's. Without both, that one ordinary config re-keyed every repository
+  on the machine — HTTPS clones included — to an endpoint no other machine
+  shares, and every org enrolment of `github.com/…` silently stopped matching.
+  A TYPED key names no transport, so `enrollableRepoKey` judges it as `ssh://`:
+  it has to be read under the rule a checkout's key is built with, or an alias
+  spelling would be accepted and enrol nothing.
+
 - **The remote picked is an ADDRESS where one exists.** git does not guarantee
   `origin` names a forge: a submodule checked out inside a linked worktree gets
   an `origin` pointing at the parent repository's gitdir on local disk, with the
@@ -794,15 +811,38 @@ canonical row, and repoints `audit_events`, `share_call_site`, `project_file` an
 `file_access_override` first. A future change to the reduction inherits that
 sweep; one made without it would strand every row in the store.
 
-Two rows it CANNOT fold are the gitdir-path identities the `origin` defect
+The rows it CANNOT fold are the gitdir-path identities the `origin` defect
 minted, because nothing in SQL can tell which repository a local directory was a
-clone of. Those are handled from both ends instead:
-`resolveSupersededProjectUrls` reads them back out of the checkout's own config —
-byte for byte what the old resolver stored, so a fold keyed on them matches that
-row or nothing — and the SessionStart and scan passes hand them to
-`reconcileWorktreeProjects`. A checkout deleted before a session next runs in it
-never gets that, so `GHOST_PROJECT_FILTER` also refuses any url inside a `.git`
-directory outright: git's own storage is never a project.
+clone of. Those are handled from both ends instead.
+`resolveSupersededProjectUrls` reads one back out of the checkout's own config
+and the SessionStart and scan passes hand it to `reconcileWorktreeProjects`.
+**AT MOST ONE, and only the remote the OLD resolver picked** (`origin`, else the
+first in config order), never the other local-path remotes beside it: one the
+old resolver did not pick was never this checkout's identity, and it is very
+likely another repository's — a sibling added as `git remote add scratch
+~/src/scratch` keys on exactly that path, so handing it over would delete a LIVE
+project and repoint its events, on every session in the first repository. Nor
+one that is still the identity, which a checkout whose only remote is a local
+path has.
+
+`GHOST_PROJECT_FILTER` is the backstop for a checkout deleted before a session
+next runs in it, and it is scoped to a PER-WORKTREE gitdir
+(`<repo>/.git/worktrees/…`) rather than to `.git/` at large. The shared
+`<repo>/.git/modules/<name>` is a legitimate identity — a submodule whose only
+remote is that path keys on it, new events attach to it, and it reads the same
+from every worktree — so hiding it would leave a project being written to that
+no read surface can reach, which is worse than the duplicate it removes.
+
+**The ENROLMENT LIST does not move with the key, and that is the one surface
+where a mismatch is still silent.** `AttachmentScopeEntry.identity` is a plain
+string matched byte for byte (`scopeVerdict` is `keys.has(key)`), nothing
+rewrites a stored entry, and a re-key therefore leaves an entry that is listed
+as enrolled while enrolling nothing. `aka status` names such an entry — an
+identity that is not `enrollableRepoKey`'s own answer is one no checkout here
+stamps — so the state is reported rather than silent, but the entry is NOT
+rewritten and re-enrolment is a human step. Anything that changes the canonical
+form again inherits that, and a sweep over the stored entries is the fix this
+still owes.
 
 **A near miss is REPORTED rather than silently stored.** `aka enroll` refuses a
 typed key that is not how the repository is really keyed and names the spelling

@@ -101,18 +101,26 @@ const VALID_HARNESS_IDS: ReadonlySet<string> = new Set(HarnessIdSchema.options);
 // Ghosts minted on Windows carry `\`-separated urls (the old resolver never
 // normalized its path fallback), so both separator flavors are filtered.
 //
-// A url pointing INSIDE a repository's own `.git` directory is the second,
-// from a different resolver defect: git gives a submodule checked
-// out inside a linked worktree an `origin` on local disk — the parent
-// repository's gitdir — and a resolver that took `origin` unconditionally
-// recorded the checkout under that directory, once per worktree, named after
-// the submodule folder. `resolveSupersededProjectUrls` + the SessionStart sweep
-// fold those rows into the repository they are a clone of, but only when a
-// session next runs in that checkout; a worktree deleted before that never
-// gets one, so the read views refuse the shape outright. A `.git` directory is
-// git's own storage and is never a project in its own right.
+// A url pointing inside a repository's PER-WORKTREE gitdir
+// (`<repo>/.git/worktrees/<name>/…`) is the second, from a different resolver
+// defect: git gives a submodule checked out inside a linked worktree an
+// `origin` on local disk, and a resolver that took `origin` unconditionally
+// recorded the checkout under that directory — once per worktree, named after
+// the submodule folder, which is the duplicate this filter exists to stop.
+// `resolveSupersededProjectUrls` + the SessionStart sweep fold those rows into
+// the repository they are a clone of, but only when a session next runs in that
+// checkout; a worktree deleted before that never gets one, so the read views
+// refuse the shape outright.
+//
+// It is scoped to `worktrees/` deliberately and NOT to `.git/` at large. The
+// SHARED `<repo>/.git/modules/<name>` is a legitimate identity: a submodule
+// whose only remote is that path keys on it (remoteUrl is "a preference, not a
+// filter"), new events attach to it, and it is the same string from every
+// worktree — so hiding it would leave a project being written to with no row
+// any read surface can reach, which is worse than the duplicate. A per-worktree
+// gitdir is never stable in that way, which is what separates the two.
 const GHOST_PROJECT_FILTER =
-  "(url IS NULL OR (url NOT LIKE '%/.claude/worktrees/%' AND url NOT LIKE '%\\.claude\\worktrees\\%' AND url NOT LIKE '%/.git/%' AND url NOT LIKE '%\\.git\\%'))";
+  "(url IS NULL OR (url NOT LIKE '%/.claude/worktrees/%' AND url NOT LIKE '%\\.claude\\worktrees\\%' AND url NOT LIKE '%/.git/worktrees/%' AND url NOT LIKE '%\\.git\\worktrees\\%'))";
 
 // Display labels per resolved HarnessId, derived at read time. REAL scanned
 // harness rows carry only a machine-ish title ('claude-code') and no label

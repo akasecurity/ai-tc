@@ -1405,7 +1405,9 @@ function identityFromInput(input: string, cwd: string): Identity {
     };
   }
   const shownInput = printableForTerminal(typed, ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH);
-  const respelled = typed.includes(':') ? undefined : canonicalRepoUrl(`https://${typed}`);
+  // `ssh://` for the reason `enrollableRepoKey` gives: a typed key names no
+  // transport, and alias resolution runs for ssh alone.
+  const respelled = typed.includes(':') ? undefined : canonicalRepoUrl(`ssh://${typed}`);
   if (
     respelled !== undefined &&
     respelled !== typed &&

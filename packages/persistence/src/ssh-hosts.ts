@@ -50,8 +50,19 @@ const MAX_INCLUDE_DEPTH = 16;
 
 // One parse per process. The map is small (a handful of aliases) and the file is
 // read on the capture path, so re-reading it per project resolution would be a
-// file read per event. The price is staleness: an alias added after the first
-// read is not seen until the next process, which for a hook is the next event.
+// file read per event.
+//
+// THE PRICE IS STALENESS, AND HOW LONG IT LASTS IS THE CALLER'S LIFETIME, not
+// this module's. A hook and a CLI command are one short process each, so an
+// edit to `~/.ssh/config` is picked up by the next event — near enough to
+// immediate. The DASHBOARD is not: `web-ui`'s server is long-lived and reaches
+// here through the Scan page's forward (`forwardProjectEgress` →
+// `nestedRepositoryKey` → `canonicalRepoUrl`), so an edit made while it runs is
+// not seen until that process restarts, and a project scanned in the meantime
+// keys under the old spelling while the same repository keys correctly from a
+// hook. That is accepted rather than overlooked: a stat-per-resolution would
+// put a syscall back on the capture path to track a file that changes maybe
+// once a year, and the disagreement heals on the next restart.
 let cached: ReadonlyMap<string, string> | undefined;
 
 // A PINNED map, which is read instead of the file when it is set. Test-only.
@@ -146,6 +157,15 @@ function parseInto(
     const keyword = match?.[1]?.toLowerCase();
     const value = match?.[2]?.trim() ?? '';
     if (keyword === undefined || value === '') continue;
+    // A `Match` block ends the `Host` block before it. Its conditions (`exec`,
+    // `host`, `user`…) are evaluated per connection and this parser interprets
+    // none of them, so carrying the aliases across would apply a CONDITIONAL
+    // `HostName` unconditionally — mapping a host on the strength of a rule
+    // that may never fire.
+    if (keyword === 'match') {
+      aliases = [];
+      continue;
+    }
     if (keyword === 'host') {
       aliases = value
         .split(/\s+/)

@@ -21,6 +21,7 @@
 import { readFileSync } from 'node:fs';
 
 import { handleSessionStart } from '@akasecurity/plugin-runtime';
+import { readClaudeAccountEnv } from '@akasecurity/plugin-sdk/account';
 
 import { pluginBuild } from '../build-info.ts';
 import { triggerReconcile } from '../history/reconcile-trigger.ts';
@@ -70,6 +71,7 @@ async function main(): Promise<void> {
     // beside the running script — read once either way.
     version: harnessVersion() ?? pluginBuild()?.version,
     harnessInterface: harnessInterface(),
+    claudeConfigDir: readClaudeAccountEnv().configDir,
     handleSessionStart,
     triggerReconcile,
     emit,

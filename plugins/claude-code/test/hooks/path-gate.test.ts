@@ -286,7 +286,11 @@ describe('the path gate and the protected-path list', () => {
     }
   });
 
-  it('forwards when it cannot tell where the settings are', () => {
+  it('forwards when it cannot tell where the settings are', (ctx) => {
+    // Git Bash on Windows derives HOME from the user profile when it is unset,
+    // so the gate always finds a home there.
+    if (process.platform === 'win32')
+      ctx.skip('the shell derives HOME from the profile on Windows');
     const env = Object.fromEntries(Object.entries(GATE_ENV).filter(([key]) => key !== 'HOME'));
     expect(runGate(ordinary, undefined, env).stdout.startsWith('FORWARDED')).toBe(true);
     // The control: with a home that holds nothing, the same call is quiet.

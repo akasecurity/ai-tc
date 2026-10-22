@@ -12,6 +12,8 @@
 import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 
+import type { OverrideReview, StaleOverride } from './override-floors.ts';
+
 // The gate runs in one of two modes — `pnpm audit` over the workspace
 // lockfile, or `npm audit` over an end-user resolution of the published CLI's
 // runtime dependencies — and every waiver names the mode it applies to.
@@ -573,6 +575,24 @@ export const REPORT_STYLES: Record<
   },
 };
 
+const overrideLine = ({ selector, floor, why }: StaleOverride): string =>
+  `- ${mdEscape(selector)}: ${mdEscape(floor)} — ${mdEscape(why)}`;
+
+function overrideSections({ stale, unchecked, error }: OverrideReview): string[] {
+  const lines: string[] = [];
+  if (stale.length > 0) {
+    lines.push(`## Stale override floors (${String(stale.length)}) — remove these`, '');
+    lines.push(...stale.map(overrideLine), '');
+  }
+  if (error !== undefined || unchecked.length > 0) {
+    const count = unchecked.length > 0 ? ` (${String(unchecked.length)})` : '';
+    lines.push(`## Override floors not checked${count}`, '');
+    if (error !== undefined) lines.push(mdEscape(error), '');
+    if (unchecked.length > 0) lines.push(...unchecked.map(overrideLine), '');
+  }
+  return lines;
+}
+
 export function buildReport({
   mode,
   counts,
@@ -580,7 +600,12 @@ export function buildReport({
   waived,
   stale,
   nonBlocking,
-}: Classification & { mode: AuditMode; counts: Record<string, number> }): string {
+  overrides,
+}: Classification & {
+  mode: AuditMode;
+  counts: Record<string, number>;
+  overrides?: OverrideReview;
+}): string {
   const style = REPORT_STYLES[mode];
   const lines = [`# ${style.title}`, ''];
   const totals = Object.entries(counts)
@@ -624,6 +649,8 @@ export function buildReport({
     }
     lines.push('');
   }
+
+  if (overrides !== undefined) lines.push(...overrideSections(overrides));
 
   if (nonBlocking.length > 0) {
     lines.push(`## Below the gate (${String(nonBlocking.length)}, non-blocking)`, '');

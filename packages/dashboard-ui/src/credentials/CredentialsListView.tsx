@@ -18,6 +18,7 @@ import {
 import { Ico } from '../inventory/Ico.tsx';
 import { relativeTime } from '../lib/relativeTime.ts';
 import { SearchField } from '../shared/SearchField.tsx';
+import { credentialLabel, credentialName } from './name.ts';
 import type { CredentialListItem } from './types.ts';
 
 export interface CredentialsListViewProps {
@@ -146,16 +147,26 @@ export function CredentialsListView({
                 <TableRow
                   key={item.id}
                   className="cursor-pointer"
-                  aria-label={`View credential ${item.variableName ?? item.kind}`}
+                  aria-label={`View credential ${credentialName(item).text}`}
                   onClick={() => {
                     onSelect(item.id);
                   }}
                 >
                   <TableCell>
-                    <div className="font-mono text-xs font-semibold text-text">
-                      {item.variableName ?? 'Unnamed'}
+                    <div
+                      className={cn(
+                        'text-xs font-semibold text-text',
+                        credentialName(item).isVariable && 'font-mono',
+                      )}
+                    >
+                      {credentialName(item).text}
                     </div>
-                    <div className="text-xs text-text-3">{item.kind}</div>
+                    <div className="text-xs text-text-3">
+                      {item.kind}
+                      {credentialLabel(item) !== null && item.variableName !== null && (
+                        <span className="font-mono"> · {item.variableName}</span>
+                      )}
+                    </div>
                   </TableCell>
                   <TableCell className="text-xs">{item.provider ?? '—'}</TableCell>
                   <TableCell className="text-xs text-text-2">{item.owner ?? '—'}</TableCell>

@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod';
 
 /**
  * A status a credential can carry. `rotation_overdue`: a rotation policy is set

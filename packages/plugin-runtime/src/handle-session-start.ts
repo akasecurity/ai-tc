@@ -76,6 +76,11 @@ export interface SessionStartInput {
   // Injectable for tests only (keeps the config scan off the test machine's
   // real ~/.claude); adapters omit it and the scanner resolves os.homedir().
   homeDir?: string | undefined;
+  // The user config directory Claude Code's CLAUDE_CONFIG_DIR names, when it
+  // names one: the config scan then reads settings, hooks, skills, plugins and
+  // .claude.json from it instead of the home directory. Given by the Claude
+  // Code adapter, which reads the variable; omitted, the scan reads ~/.claude.
+  claudeConfigDir?: string | undefined;
   // False for a session whose activity this machine must not record: a web chat
   // on a personal device. The inventory pass still runs, and with it the device
   // report an attached gateway sends from it, and so do the maintenance passes
@@ -390,7 +395,11 @@ async function recordConfigInventory(
 ): Promise<void> {
   try {
     if (!input.sessionId) return;
-    const scan = resolveConfigInventory({ cwd: input.cwd, homeDir: input.homeDir });
+    const scan = resolveConfigInventory({
+      cwd: input.cwd,
+      homeDir: input.homeDir,
+      claudeConfigDir: input.claudeConfigDir,
+    });
     // Pure posture pass over the scan (hook conflicts / unknown hooks /
     // external egress). Findings reference their rule by (ruleId, version)
     // natural key; persistence resolves the definition ids — so definitions

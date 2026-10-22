@@ -24,6 +24,7 @@ import {
   toCaptureDefinitionInput,
 } from '@akasecurity/schema';
 
+import { computeConfigPostureFindingKey } from './finding-key.ts';
 import { captureId } from './ids.ts';
 
 /**
@@ -933,6 +934,9 @@ export function openLocalDatabase(
         // A finding whose definition isn't in the record is a caller bug;
         // skipping it keeps the write untorn rather than failing the scan.
         if (!definitionId) continue;
+        // Keyed on (rule, command), so a re-scan that finds the same hook
+        // moves the existing row onto this scan and keeps its first detection
+        // time, rather than inserting a new finding every session.
         inspectionFindings.insertFinding({
           id: randomUUID(),
           auditEventId: record.scanEvent.id,
@@ -941,6 +945,7 @@ export function openLocalDatabase(
           maskedMatch: finding.maskedMatch,
           actionTaken: finding.actionTaken,
           confidence: finding.confidence,
+          findingKey: computeConfigPostureFindingKey(finding.ruleId, finding.maskedMatch),
         });
       }
     });

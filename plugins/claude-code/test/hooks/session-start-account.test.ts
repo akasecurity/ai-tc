@@ -57,6 +57,7 @@ function deps(overrides: Partial<SessionStartDeps> = {}): SessionStartDeps {
   return {
     version: '0.0.0-test',
     harnessInterface: undefined,
+    claudeConfigDir: undefined,
     handleSessionStart,
     triggerReconcile: () => undefined,
     emit: () => Promise.resolve(),
@@ -417,6 +418,25 @@ describe('the session root at session start', () => {
     );
     expect(handed).toHaveLength(1);
     expect(handed[0]?.accountBasis).toBe(basis);
+  });
+});
+
+describe('the config directory handed to the session start', () => {
+  it('reaches the scan the session start runs', async () => {
+    dev.attach();
+    const handed: Parameters<SessionStartDeps['handleSessionStart']>[0][] = [];
+    await runSessionStart(
+      payload(dev.transcript(randomUUID()), 'startup'),
+      deps({
+        claudeConfigDir: '/profiles/work',
+        handleSessionStart: (input, config) => {
+          handed.push(input);
+          return handleSessionStart(input, config);
+        },
+      }),
+    );
+    expect(handed).toHaveLength(1);
+    expect(handed[0]?.claudeConfigDir).toBe('/profiles/work');
   });
 });
 

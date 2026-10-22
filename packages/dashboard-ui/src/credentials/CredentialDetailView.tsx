@@ -1,13 +1,15 @@
 'use client';
-import { harnessFromTool } from '@akasecurity/schema';
-import { Badge, Button, Card, SeverityBadge } from '@akasecurity/ui-kit';
-import type { ReactNode } from 'react';
+import { CREDENTIAL_LABEL_MAX_LENGTH, harnessFromTool } from '@akasecurity/schema';
+import { Badge, Button, Card, cn, Input, SeverityBadge } from '@akasecurity/ui-kit';
+import { type ReactNode, useEffect, useId, useRef, useState } from 'react';
 
 import { Ico } from '../inventory/Ico.tsx';
 import type { IconName } from '../inventory/icons.ts';
 import { relativeTime } from '../lib/relativeTime.ts';
 import { MetaItem, SectionLabel } from '../shared/DetailFields.tsx';
 import { PROVIDERS } from '../shared/Provider.tsx';
+import { RefusalReason, refusedControlProps } from '../shared/Refusal.tsx';
+import { credentialLabel, credentialName } from './name.ts';
 import type { CredentialDetailModel } from './types.ts';
 
 export interface CredentialDetailViewProps {
@@ -16,6 +18,164 @@ export interface CredentialDetailViewProps {
   onOpenFinding: (id: string) => void;
   /** The instant relative times are measured against, in epoch milliseconds. */
   renderedAt: number;
+  /**
+   * Saves a label, or clears it with null. Rejects when the save fails, which
+   * keeps the editor open. Omit it and no edit control is shown.
+   */
+  onSaveLabel?: ((label: string | null) => Promise<void>) | undefined;
+  /** Why the last label save failed. Without it a failed save shows a generic message. */
+  labelError?: string | undefined;
+  /**
+   * Why this reader may not label the credential. Set, the control shows
+   * locked with this reason beside it; absent, it works.
+   */
+  labelRefusal?: string | undefined;
+  /** The longest label the host accepts; `CREDENTIAL_LABEL_MAX_LENGTH` when omitted. */
+  labelMaxLength?: number | undefined;
+}
+
+const SAVE_FAILED = "Couldn't save the label.";
+const REFUSED = "You can't label this credential.";
+
+function LabelEditor({
+  label,
+  onSave,
+  error,
+  maxLength,
+  refusal: rawRefusal,
+}: {
+  label: string | null;
+  onSave: (label: string | null) => Promise<void>;
+  error: string | undefined;
+  maxLength: number;
+  refusal: string | undefined;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const reasonId = useId();
+  const trigger = useRef<HTMLButtonElement>(null);
+  const refusal =
+    rawRefusal === undefined ? undefined : rawRefusal.trim() === '' ? REFUSED : rawRefusal;
+  // A refusal that arrives with the editor open (a save the host just
+  // refused) replaces the form, so the draft goes with it.
+  if (refusal !== undefined && draft !== null) setDraft(null);
+  const editing = draft !== null;
+  const wasEditing = useRef(false);
+
+  // Closing the editor, by any path, unmounts the input that held focus; hand
+  // it back to the control that opened it, not to the page body.
+  useEffect(() => {
+    if (wasEditing.current && !editing) trigger.current?.focus();
+    wasEditing.current = editing;
+  }, [editing]);
+
+  const open = () => {
+    setFailed(false);
+    setDraft(label ?? '');
+  };
+  const close = () => {
+    setDraft(null);
+  };
+  const save = async (next: string | null) => {
+    if (next !== null && next.length > maxLength) {
+      setFailed(true);
+      return;
+    }
+    setSaving(true);
+    try {
+      await onSave(next);
+      close();
+    } catch {
+      setFailed(true);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const openLabel = label === null ? 'Add label' : 'Rename';
+  if (refusal !== undefined) {
+    return (
+      <div className="flex flex-col items-end gap-1">
+        <Button
+          ref={trigger}
+          variant="outline"
+          size="sm"
+          {...refusedControlProps(reasonId, refusal, 'hover:bg-surface')}
+        >
+          {openLabel}
+        </Button>
+        <RefusalReason id={reasonId} dataSlot="credential-label-reason">
+          {refusal}
+        </RefusalReason>
+      </div>
+    );
+  }
+  if (draft === null) {
+    return (
+      <Button ref={trigger} variant="outline" size="sm" onClick={open}>
+        {openLabel}
+      </Button>
+    );
+  }
+  const trimmed = draft.trim();
+  const tooLong = trimmed.length > maxLength;
+  return (
+    <form
+      className="flex flex-col gap-1.5"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (trimmed !== '') void save(trimmed);
+      }}
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          aria-label="Credential label"
+          autoFocus
+          value={draft}
+          maxLength={maxLength}
+          disabled={saving}
+          className="w-64"
+          onChange={(e) => {
+            setDraft(e.target.value);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') close();
+          }}
+        />
+        <Button type="submit" size="sm" disabled={saving || trimmed === '' || tooLong}>
+          Save
+        </Button>
+        {label !== null && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={saving}
+            onClick={() => {
+              void save(null);
+            }}
+          >
+            Clear label
+          </Button>
+        )}
+        <Button type="button" variant="ghost" size="sm" disabled={saving} onClick={close}>
+          Cancel
+        </Button>
+      </div>
+      {failed ? (
+        <p role="alert" className="text-xs text-sev-critical-ink">
+          {error ?? SAVE_FAILED}
+        </p>
+      ) : (
+        tooLong && (
+          <p role="alert" className="text-xs text-sev-critical-ink">
+            {`Labels are limited to ${String(maxLength)} characters.`}
+          </p>
+        )
+      )}
+    </form>
+  );
 }
 
 // A sighting names the tool that sent it (`claude-code`); the label map is keyed
@@ -64,6 +224,10 @@ export function CredentialDetailView({
   onBack,
   onOpenFinding,
   renderedAt,
+  onSaveLabel,
+  labelError,
+  labelMaxLength,
+  labelRefusal,
 }: CredentialDetailViewProps) {
   const detectedOnly = c.reference === null;
   return (
@@ -78,12 +242,27 @@ export function CredentialDetailView({
         <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-sev-high-fill text-sev-high-ink">
           <Ico name="key" className="size-5" />
         </span>
-        <div className="min-w-0">
-          <h2 className="truncate font-mono text-lg font-semibold text-text">
-            {c.variableName ?? 'Unnamed'}
+        <div className="min-w-0 flex-1">
+          <h2
+            className={cn(
+              'truncate text-lg font-semibold text-text',
+              credentialName(c).isVariable && 'font-mono',
+            )}
+          >
+            {credentialName(c).text}
           </h2>
           <div className="text-xs text-text-3">{c.kind}</div>
         </div>
+        {onSaveLabel !== undefined && (
+          <LabelEditor
+            key={c.id}
+            label={credentialLabel(c)}
+            onSave={onSaveLabel}
+            error={labelError}
+            refusal={labelRefusal}
+            maxLength={labelMaxLength ?? CREDENTIAL_LABEL_MAX_LENGTH}
+          />
+        )}
       </div>
 
       {detectedOnly && (
@@ -104,6 +283,11 @@ export function CredentialDetailView({
       <div>
         <SectionLabel>Details</SectionLabel>
         <div className="grid grid-cols-2 gap-x-6 gap-y-4 md:grid-cols-4">
+          {credentialLabel(c) !== null && c.variableName !== null && (
+            <MetaItem label="Variable">
+              <span className="font-mono text-xs">{c.variableName}</span>
+            </MetaItem>
+          )}
           <MetaItem label="Provider">{c.provider ?? '—'}</MetaItem>
           <MetaItem label="Reference">
             {c.reference === null ? '—' : <span className="font-mono text-xs">{c.reference}</span>}

@@ -1,8 +1,12 @@
 // @vitest-environment jsdom
+import { CREDENTIAL_LABEL_MAX_LENGTH } from '@akasecurity/schema';
 import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { CredentialDetailView } from '../../src/credentials/CredentialDetailView.tsx';
+import {
+  CredentialDetailView,
+  type CredentialDetailViewProps,
+} from '../../src/credentials/CredentialDetailView.tsx';
 import {
   CredentialsListView,
   type CredentialsListViewProps,
@@ -20,6 +24,8 @@ const RENDERED_AT = Date.parse('2026-10-21T12:00:00.000Z');
 const ITEM: CredentialListItem = {
   id: 'cred-1',
   variableName: 'GITHUB_TOKEN',
+  label: null,
+  displayName: 'GITHUB_TOKEN',
   kind: 'GitHub token',
   provider: 'GitHub',
   owner: null,
@@ -101,6 +107,29 @@ describe('CredentialsListView', () => {
     expect(cells).toEqual(['GITHUB_TOKENGitHub token', 'GitHub', '—', '2', '3', '4', '—']);
   });
 
+  it('shows the display name, with the variable beside the kind once a label names it', () => {
+    list({
+      items: [
+        { ...ITEM, id: 'cred-1', label: 'Deploy bot', displayName: 'Deploy bot' },
+        {
+          ...ITEM,
+          id: 'cred-2',
+          variableName: null,
+          displayName: 'GitHub token · acme/api',
+        },
+      ],
+      total: 2,
+    });
+    const names = [...mounted.host.querySelectorAll('tbody tr')].map(
+      (tr) => tr.querySelector('td')?.textContent,
+    );
+    expect(names).toEqual([
+      'Deploy botGitHub token · GITHUB_TOKEN',
+      'GitHub token · acme/apiGitHub token',
+    ]);
+    expect(text()).not.toContain('Unnamed');
+  });
+
   it('opens a credential on click and exports on request', () => {
     const props = list();
     act(() => {
@@ -160,7 +189,13 @@ describe('CredentialsListView', () => {
 });
 
 describe('CredentialDetailView', () => {
-  function detail(credential: CredentialDetailModel = DETAIL) {
+  function detail(
+    credential: CredentialDetailModel = DETAIL,
+    label: Pick<
+      CredentialDetailViewProps,
+      'onSaveLabel' | 'labelError' | 'labelRefusal' | 'labelMaxLength'
+    > = {},
+  ) {
     const onBack = vi.fn();
     const onOpenFinding = vi.fn();
     renderRoot(
@@ -170,10 +205,228 @@ describe('CredentialDetailView', () => {
         onBack={onBack}
         onOpenFinding={onOpenFinding}
         renderedAt={RENDERED_AT}
+        {...label}
       />,
     );
     return { onBack, onOpenFinding };
   }
+
+  const labelInput = () =>
+    mounted.host.querySelector<HTMLInputElement>('input[aria-label="Credential label"]');
+
+  function type(value: string) {
+    const input = labelInput();
+    if (!input) throw new Error('no label input');
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  }
+
+  async function submit() {
+    await act(async () => {
+      button('Save')?.click();
+      await Promise.resolve();
+    });
+  }
+
+  it('shows no label control without a save callback', () => {
+    detail();
+    expect(button('Add label')).toBeUndefined();
+    expect(button('Rename')).toBeUndefined();
+  });
+
+  it('heads a labelled credential with its label and keeps the variable as a detail', () => {
+    detail({ ...DETAIL, label: 'Deploy bot', displayName: 'Deploy bot' });
+    expect(mounted.host.querySelector('h2')?.textContent).toBe('Deploy bot');
+    expect(text()).toContain('Variable');
+    expect(text()).toContain('GITHUB_TOKEN');
+  });
+
+  it('heads an unnamed credential with its kind and project, never Unnamed', () => {
+    detail({ ...DETAIL, variableName: null, displayName: 'GitHub token · acme/api' });
+    expect(mounted.host.querySelector('h2')?.textContent).toBe('GitHub token · acme/api');
+    expect(text()).not.toContain('Unnamed');
+  });
+
+  it('saves a trimmed label and closes the editor', async () => {
+    const onSaveLabel = vi.fn<(label: string | null) => Promise<void>>().mockResolvedValue();
+    detail(DETAIL, { onSaveLabel });
+    act(() => {
+      button('Add label')?.click();
+    });
+    expect(labelInput()?.maxLength).toBe(120);
+    type('   ');
+    expect(button('Save')?.disabled).toBe(true);
+    type('  Deploy bot ');
+    await submit();
+    expect(onSaveLabel).toHaveBeenCalledWith('Deploy bot');
+    expect(labelInput()).toBeNull();
+  });
+
+  it('clears a label, and cancels without saving', async () => {
+    const onSaveLabel = vi.fn<(label: string | null) => Promise<void>>().mockResolvedValue();
+    detail({ ...DETAIL, label: 'Deploy bot', displayName: 'Deploy bot' }, { onSaveLabel });
+    act(() => {
+      button('Rename')?.click();
+    });
+    expect(labelInput()?.value).toBe('Deploy bot');
+    act(() => {
+      button('Cancel')?.click();
+    });
+    expect(labelInput()).toBeNull();
+    expect(onSaveLabel).not.toHaveBeenCalled();
+    act(() => {
+      button('Rename')?.click();
+    });
+    await act(async () => {
+      button('Clear label')?.click();
+      await Promise.resolve();
+    });
+    expect(onSaveLabel).toHaveBeenCalledWith(null);
+  });
+
+  it('shows a refused label control locked, with the reason, and opens no editor', () => {
+    const onSaveLabel = vi.fn<(label: string | null) => Promise<void>>().mockResolvedValue();
+    detail(DETAIL, { onSaveLabel, labelRefusal: 'You do not have enough permissions.' });
+    const control = button('Add label');
+    expect(control?.getAttribute('aria-disabled')).toBe('true');
+    const reason = mounted.host.querySelector('[data-slot="credential-label-reason"]');
+    expect(reason?.textContent).toBe('You do not have enough permissions.');
+    expect(control?.getAttribute('aria-describedby')).toBe(reason?.id);
+    act(() => {
+      control?.click();
+    });
+    expect(labelInput()).toBeNull();
+    expect(onSaveLabel).not.toHaveBeenCalled();
+  });
+
+  it('heads a credential with a blank display name by its kind, and a blank label counts as none', () => {
+    detail({ ...DETAIL, variableName: null, label: '', displayName: '' });
+    expect(mounted.host.querySelector('h2')?.textContent).toBe('GitHub token');
+    detail({ ...DETAIL, label: '  ', displayName: 'GITHUB_TOKEN' }, { onSaveLabel: vi.fn() });
+    expect(mounted.host.querySelector('h2')?.className).toContain('font-mono');
+    expect(button('Add label')).toBeDefined();
+    expect(text()).not.toContain('Variable');
+  });
+
+  it('bounds the label at CREDENTIAL_LABEL_MAX_LENGTH when the host names no length', () => {
+    detail(DETAIL, { onSaveLabel: vi.fn(), labelMaxLength: undefined });
+    act(() => {
+      button('Add label')?.click();
+    });
+    expect(labelInput()?.maxLength).toBe(CREDENTIAL_LABEL_MAX_LENGTH);
+  });
+
+  it("bounds the label at the host's length when it names one", () => {
+    detail(DETAIL, { onSaveLabel: vi.fn(), labelMaxLength: 40 });
+    act(() => {
+      button('Add label')?.click();
+    });
+    expect(labelInput()?.maxLength).toBe(40);
+  });
+
+  it('says why Save is off for a stored label longer than the bound', () => {
+    const long = 'x'.repeat(50);
+    detail(
+      { ...DETAIL, label: long, displayName: long },
+      { onSaveLabel: vi.fn(), labelMaxLength: 40 },
+    );
+    act(() => {
+      button('Rename')?.click();
+    });
+    expect(button('Save')?.disabled).toBe(true);
+    expect(mounted.host.querySelector('[role="alert"]')?.textContent).toBe(
+      'Labels are limited to 40 characters.',
+    );
+  });
+
+  it('closes the editor onto the locked control when a refusal arrives, keeping focus', () => {
+    const onSaveLabel = vi.fn<(label: string | null) => Promise<void>>().mockResolvedValue();
+    detail(DETAIL, { onSaveLabel });
+    act(() => {
+      button('Add label')?.click();
+    });
+    expect(labelInput()).not.toBeNull();
+    detail(DETAIL, { onSaveLabel, labelRefusal: 'You do not have enough permissions.' });
+    expect(labelInput()).toBeNull();
+    expect(button('Add label')?.getAttribute('aria-disabled')).toBe('true');
+    expect(document.activeElement).toBe(button('Add label'));
+  });
+
+  it('gives a blank refusal a reason rather than an empty line', () => {
+    detail(DETAIL, { onSaveLabel: vi.fn(), labelRefusal: '  ' });
+    const control = button('Add label');
+    expect(control?.getAttribute('aria-disabled')).toBe('true');
+    expect(mounted.host.querySelector('[data-slot="credential-label-reason"]')?.textContent).toBe(
+      "You can't label this credential.",
+    );
+  });
+
+  it('says a save failed when the host gives no reason, and clears it on reopening', async () => {
+    const onSaveLabel = vi
+      .fn<(label: string | null) => Promise<void>>()
+      .mockRejectedValue(new Error('refused'));
+    detail(DETAIL, { onSaveLabel });
+    act(() => {
+      button('Add label')?.click();
+    });
+    expect(mounted.host.querySelector('[role="alert"]')).toBeNull();
+    type('Deploy bot');
+    await submit();
+    expect(mounted.host.querySelector('[role="alert"]')?.textContent).toBe(
+      "Couldn't save the label.",
+    );
+    act(() => {
+      button('Cancel')?.click();
+    });
+    act(() => {
+      button('Add label')?.click();
+    });
+    expect(mounted.host.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it('returns focus to the label control after a save, a cancel and Escape', async () => {
+    const onSaveLabel = vi.fn<(label: string | null) => Promise<void>>().mockResolvedValue();
+    detail(DETAIL, { onSaveLabel });
+    act(() => {
+      button('Add label')?.click();
+    });
+    type('Deploy bot');
+    await submit();
+    expect(document.activeElement).toBe(button('Add label'));
+    act(() => {
+      button('Add label')?.click();
+    });
+    act(() => {
+      button('Cancel')?.click();
+    });
+    expect(document.activeElement).toBe(button('Add label'));
+    act(() => {
+      button('Add label')?.click();
+    });
+    act(() => {
+      labelInput()?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(labelInput()).toBeNull();
+    expect(document.activeElement).toBe(button('Add label'));
+  });
+
+  it('keeps the editor open with the host error when a save fails', async () => {
+    const onSaveLabel = vi
+      .fn<(label: string | null) => Promise<void>>()
+      .mockRejectedValue(new Error('refused'));
+    detail(DETAIL, { onSaveLabel, labelError: 'You need permission to label credentials.' });
+    act(() => {
+      button('Add label')?.click();
+    });
+    type('Deploy bot');
+    await submit();
+    expect(labelInput()?.value).toBe('Deploy bot');
+    expect(mounted.host.querySelector('[role="alert"]')?.textContent).toBe(
+      'You need permission to label credentials.',
+    );
+  });
 
   it('marks a credential no secrets manager references as detected only', () => {
     detail();

@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 
 import type {
   ConfigFileScanEntry,
@@ -19,16 +19,52 @@ import { remoteWithoutCredentials, resolveRepoIdentity } from './repo.ts';
  * Inputs for one config-inventory scan. `homeDir` is injectable for tests;
  * production callers omit it (node:os homedir — the same environment door the
  * inventory resolver already uses via hostname(), NOT process.env).
+ *
+ * `claudeConfigDir` is the user config directory when Claude Code's
+ * `CLAUDE_CONFIG_DIR` names one: settings, hooks, skills, plugins and
+ * `.claude.json` are all read from it rather than from `<home>/.claude` and
+ * `<home>/.claude.json`. The adapter reads the variable and passes it here, so
+ * this module never reads the environment.
  */
 export interface ResolveConfigInventoryInput {
   cwd: string;
   homeDir?: string | undefined;
+  claudeConfigDir?: string | undefined;
+}
+
+/**
+ * The config directory an override names: empty or blank is no override, a
+ * leading `~/` expands to `home`, and the result is made absolute and resolved
+ * through symlinks. `usable` is false when it still is not a readable directory.
+ */
+function resolveConfigDirOverride(
+  raw: string | undefined,
+  home: string,
+): { path: string; usable: boolean } | undefined {
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const trimmed = raw.trim();
+  const expanded =
+    trimmed === '~' ? home : trimmed.startsWith('~/') ? join(home, trimmed.slice(2)) : trimmed;
+  const absolute = resolve(expanded);
+  try {
+    const real = realpathSync(absolute);
+    if (statSync(real).isDirectory()) {
+      readdirSync(real);
+      return { path: real, usable: true };
+    }
+  } catch {
+    // Falls through to the unusable result.
+  }
+  return { path: absolute, usable: false };
 }
 
 /**
  * Scan the machine's Claude Code configuration surface — registered hooks and
  * installed skills — into a {@link ConfigScanResult} (the meta-model config
  * inventory).
+ *
+ * `~/.claude` and `~/.claude.json` below stand for the user config directory
+ * and the `.claude.json` beside it, which `claudeConfigDir` moves.
  *
  * Sources, each parsed independently and fail-open (a malformed file becomes an
  * `errors` entry, never a throw — dropping one source must not lose the rest):
@@ -86,7 +122,16 @@ export function resolveConfigInventory(input: ResolveConfigInventoryInput): Conf
   };
   try {
     const home = input.homeDir ?? homedir();
-    const claudeDir = join(home, '.claude');
+    const override = resolveConfigDirOverride(input.claudeConfigDir, home);
+    if (override !== undefined && !override.usable) {
+      scan.errors.push({
+        source: override.path,
+        reason:
+          'CLAUDE_CONFIG_DIR does not name a readable directory; the user config was not scanned',
+      });
+    }
+    const claudeDir = override?.path ?? join(home, '.claude');
+    const claudeJson = join(override?.path ?? home, '.claude.json');
 
     // The repo identity — folded into project/local-scope identity for skills
     // (as the `project:` source surrogate) AND MCP servers (as the scope
@@ -113,7 +158,7 @@ export function resolveConfigInventory(input: ResolveConfigInventoryInput): Conf
     // malformed file must be noted here or it vanishes silently.
     const projectOrigin = { scope: 'project' as const, project: repoIdentity };
     collectMcpFile(scan, join(input.cwd, '.mcp.json'), projectOrigin, { recordErrors: true });
-    collectUserClaudeJson(scan, join(home, '.claude.json'), input.cwd, repoIdentity);
+    collectUserClaudeJson(scan, claudeJson, input.cwd, repoIdentity);
     collectMcpFile(scan, join(claudeDir, 'settings.json'), { scope: 'user' });
     collectMcpFile(scan, join(input.cwd, '.claude', 'settings.json'), projectOrigin);
     collectMcpFile(scan, join(input.cwd, '.claude', 'settings.local.json'), {

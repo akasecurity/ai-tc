@@ -48,5 +48,32 @@
     "label": "IP embedded in a wildcard-DNS hostname",
     "text": "curl http://app.203.0.113.7.nip.io/",
     "shouldMatch": true
+  },
+  {
+    "label": "loopback address with a port",
+    "text": "listening on 127.0.0.1:8080",
+    "shouldMatch": false
+  },
+  {
+    "label": "unspecified bind address",
+    "text": "bind 0.0.0.0",
+    "shouldMatch": false
+  },
+  {
+    "label": "loopback range beyond 127.0.0.1",
+    "text": "proxy at 127.1.2.3",
+    "shouldMatch": false
+  },
+  {
+    "label": "public address reported beside a loopback address",
+    "text": "scan 203.0.113.7 then 127.0.0.1",
+    "shouldMatch": true,
+    "expectedSpans": [{ "start": 5, "end": 16 }]
+  },
+  {
+    "label": "public address reported after a loopback address",
+    "text": "127.0.0.1 then 203.0.113.7",
+    "shouldMatch": true,
+    "expectedSpans": [{ "start": 15, "end": 26 }]
   }
 ]

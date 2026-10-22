@@ -58,7 +58,6 @@ import {
 // reconciler's NO_PROJECT_CWD sentinel.
 const NO_PROJECT_CWD = '/nonexistent/aka-reconciler/no-project';
 
-
 // The reconciler's `ensureInventory` can win the hourly posture throttle just
 // as SessionStart's can, so its gateway resolution carries the same build
 // identity — an attached posture report without it clears the control plane's

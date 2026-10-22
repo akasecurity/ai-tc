@@ -1712,7 +1712,7 @@ const PUBLISH_JOBS = [
     id: 'publish-homebrew-tap',
     repo: 'akasecurity/homebrew-tap',
     path: 'Formula/aka.rb',
-    failStep: 'Fail if the Homebrew release app is not configured',
+    failStep: 'Warn if the Homebrew release app is not configured',
     reportStep: 'Report an unconfigured Homebrew release app',
     mintStep: 'Mint a token for the Homebrew tap',
     mintId: 'tap-token',
@@ -1724,7 +1724,7 @@ const PUBLISH_JOBS = [
     id: 'publish-scoop-bucket',
     repo: 'akasecurity/scoop-bucket',
     path: 'bucket/aka.json',
-    failStep: 'Fail if the Scoop release app is not configured',
+    failStep: 'Warn if the Scoop release app is not configured',
     reportStep: 'Report an unconfigured Scoop release app',
     mintStep: 'Mint a token for the Scoop bucket',
     mintId: 'bucket-token',
@@ -2272,8 +2272,10 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
   });
 
   // A released binary whose formula was never pushed is a tap serving the
-  // previous version with a green tick on the run that should have moved it.
-  it('fails closed on the canonical repository when the app is not configured', () => {
+  // previous version, so the canonical repository gets a warning annotation
+  // naming what an admin must set. It is a warning rather than a failure: an
+  // unset credential is an admin task, and a red job on every tag hid real ones.
+  it('warns on the canonical repository when the app is not configured', () => {
     const step = stepNamed(publishJob(), target.failStep);
     const gate = ifOf(step, `the ${target.id} fail-closed step`);
     const script = scriptOf(step);
@@ -2283,21 +2285,20 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
     expect(gate).toBe(
       `github.repository == 'akasecurity/ai-tc' && env.${APP_CONFIGURED_ENV} != 'true'`,
     );
-    expect(script).toMatch(/^echo "::error::/m);
-    // Both halves of the configuration, so whoever reads the red run knows there
-    // are two things to set rather than one.
+    expect(script).toMatch(/^echo "::warning::/m);
+    // Both halves of the configuration, so whoever reads the annotation knows
+    // there are two things to set rather than one.
     expect(script).toContain(APP_CLIENT_ID_VAR);
     expect(script).toContain(APP_PRIVATE_KEY_SECRET);
-    expect(script).toMatch(/\bexit 1\b/);
   });
 
-  // Run, not read: `exit 0 # exit 1` and a bare `false` both satisfy a pattern.
-  it('exits non-zero, naming its target, when it runs', (ctx) => {
+  // Run, not read: a bare `false` or a trailing `exit 1` would still be missed by a pattern.
+  it('exits zero, naming its target, when it runs', (ctx) => {
     requirePosixShell(ctx);
     const { status, stdout } = runStepScript(stepNamed(publishJob(), target.failStep));
 
-    expect(status).toBe(1);
-    expect(stdout).toMatch(/^::error::/);
+    expect(status).toBe(0);
+    expect(stdout).toMatch(/^::warning::/);
     expect(stdout).toContain(target.repo);
     expect(stdout).toContain(target.path);
   });
@@ -2396,7 +2397,7 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
         // annotation line and nowhere else.
         const naming = block.split('\n').filter((line) => new RegExp(`\\b${name}\\b`).test(line));
         expect(
-          naming.filter((line) => !/^echo ["']::(?:error|notice)::/.test(line.trim())),
+          naming.filter((line) => !/^echo ["']::(?:error|warning|notice)::/.test(line.trim())),
           `a run: block names ${name} outside an annotation`,
         ).toEqual([]);
       }

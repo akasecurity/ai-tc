@@ -68,13 +68,13 @@ and do not copy its text elsewhere. The one-paragraph versions below say when a 
 
 ## Where the rest lives
 
-| Topic | File |
-| --- | --- |
-| Dependency advisories and waivers; package dependency rules (the allowed import graph) | [dependencies.md](conventions/dependencies.md) |
-| UI components, tonal tokens, time and locale rendering | [frontend.md](conventions/frontend.md) |
-| Adding a workspace package (lint, tsconfig, vitest guards, checklist) | [new-package.md](conventions/new-package.md) |
-| Releasing, release channels, the binary channel | [releasing.md](conventions/releasing.md) |
-| Testing: coverage floors, benchmarks, store scale, guards, fixtures, Server Action and page tests | [testing.md](conventions/testing.md) |
+| Topic                                                                                             | File                                           |
+| ------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| Dependency advisories and waivers; package dependency rules (the allowed import graph)            | [dependencies.md](conventions/dependencies.md) |
+| UI components, tonal tokens, time and locale rendering                                            | [frontend.md](conventions/frontend.md)         |
+| Adding a workspace package (lint, tsconfig, vitest guards, checklist)                             | [new-package.md](conventions/new-package.md)   |
+| Releasing, release channels, the binary channel                                                   | [releasing.md](conventions/releasing.md)       |
+| Testing: coverage floors, benchmarks, store scale, guards, fixtures, Server Action and page tests | [testing.md](conventions/testing.md)           |
 
 Package dependency rule in one line: store-reading packages read the local SQLite store
 through `@akasecurity/persistence` and never import an HTTP client or an ORM; Drizzle is

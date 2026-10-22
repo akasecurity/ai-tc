@@ -29,7 +29,11 @@ export interface CredentialListItem {
   lastRotated: string | null;
   /** ISO time it was last seen. */
   lastSeen: string;
-  status: CredentialStatus;
+  /**
+   * ISO time it was first seen in a live LLM session; null when it never was.
+   * The credential's status follows from it: read it through `credentialStatus`.
+   */
+  exposedAt: string | null;
 }
 
 export interface CredentialTeamUsage {
@@ -50,8 +54,6 @@ export interface CredentialDetailModel extends CredentialListItem {
   ruleId: string;
   /** ISO time it was first seen. */
   firstSeen: string;
-  /** ISO time it was first seen in a live LLM session; null when it never was. */
-  exposedAt: string | null;
   sightingCount: number;
   /** The secrets-manager reference; null marks a credential as detected only. */
   reference: string | null;

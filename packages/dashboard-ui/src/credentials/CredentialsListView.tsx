@@ -20,11 +20,17 @@ import { relativeTime } from '../lib/relativeTime.ts';
 import { SearchField } from '../shared/SearchField.tsx';
 import { CredentialStatusBadge } from './CredentialStatusBadge.tsx';
 import { credentialLabel, credentialName } from './name.ts';
+import { credentialStatus } from './status.ts';
 import type { CredentialListItem, CredentialStatus } from './types.ts';
 
 export interface CredentialsListViewProps {
   items: CredentialListItem[];
-  /** Credentials matching the search across every page. */
+  /**
+   * Credentials matching the search and the status filter across every page:
+   * the count behind the rows shown, which the header and the pager both
+   * render. A total without the status filter applied pages over the wrong
+   * count.
+   */
   total: number;
   /**
    * The current query. A new query must start again at the first page: the view
@@ -217,7 +223,7 @@ export function CredentialsListView({
                     {item.lastRotated === null ? '—' : relativeTime(item.lastRotated, renderedAt)}
                   </TableCell>
                   <TableCell>
-                    <CredentialStatusBadge status={item.status} />
+                    <CredentialStatusBadge status={credentialStatus(item)} />
                   </TableCell>
                 </TableRow>
               ))}

@@ -11,6 +11,7 @@ import { PROVIDERS } from '../shared/Provider.tsx';
 import { RefusalReason, refusedControlProps } from '../shared/Refusal.tsx';
 import { CredentialStatusBadge } from './CredentialStatusBadge.tsx';
 import { credentialLabel, credentialName } from './name.ts';
+import { credentialStatus } from './status.ts';
 import type { CredentialDetailModel } from './types.ts';
 
 export interface CredentialDetailViewProps {
@@ -254,7 +255,7 @@ export function CredentialDetailView({
           </h2>
           <div className="text-xs text-text-3">{c.kind}</div>
         </div>
-        <CredentialStatusBadge status={c.status} />
+        <CredentialStatusBadge status={credentialStatus(c)} />
         {onSaveLabel !== undefined && (
           <LabelEditor
             key={c.id}
@@ -269,10 +270,10 @@ export function CredentialDetailView({
 
       {c.exposedAt !== null && (
         <div className="rounded-lg border border-sev-critical-ink/30 bg-sev-critical-fill p-3">
-          <div className="text-xs font-semibold text-sev-critical-ink">Exposed</div>
           <p className="text-xs text-text-2">
-            This value was seen in a live LLM session, first {relativeTime(c.exposedAt, renderedAt)}
-            . Its linked finding below follows the most recent session that carried it.
+            <span className="font-semibold text-sev-critical-ink">Exposed</span> — this value was
+            seen in a live LLM session, first {relativeTime(c.exposedAt, renderedAt)}. Its linked
+            finding below follows the most recent session that carried it.
           </p>
         </div>
       )}

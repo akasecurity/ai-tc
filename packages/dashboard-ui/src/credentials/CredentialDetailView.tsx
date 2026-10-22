@@ -9,6 +9,7 @@ import { relativeTime } from '../lib/relativeTime.ts';
 import { MetaItem, SectionLabel } from '../shared/DetailFields.tsx';
 import { PROVIDERS } from '../shared/Provider.tsx';
 import { RefusalReason, refusedControlProps } from '../shared/Refusal.tsx';
+import { CredentialStatusBadge } from './CredentialStatusBadge.tsx';
 import { credentialLabel, credentialName } from './name.ts';
 import type { CredentialDetailModel } from './types.ts';
 
@@ -253,6 +254,7 @@ export function CredentialDetailView({
           </h2>
           <div className="text-xs text-text-3">{c.kind}</div>
         </div>
+        <CredentialStatusBadge status={c.status} />
         {onSaveLabel !== undefined && (
           <LabelEditor
             key={c.id}
@@ -264,6 +266,16 @@ export function CredentialDetailView({
           />
         )}
       </div>
+
+      {c.exposedAt !== null && (
+        <div className="rounded-lg border border-sev-critical-ink/30 bg-sev-critical-fill p-3">
+          <div className="text-xs font-semibold text-sev-critical-ink">Exposed</div>
+          <p className="text-xs text-text-2">
+            This value was seen in a live LLM session, first {relativeTime(c.exposedAt, renderedAt)}
+            . Its linked finding below follows the most recent session that carried it.
+          </p>
+        </div>
+      )}
 
       {detectedOnly && (
         <div className="rounded-lg border border-border bg-surface-2 p-3">
@@ -352,8 +364,8 @@ export function CredentialDetailView({
         <SectionLabel>Linked findings</SectionLabel>
         {c.findings.length === 0 ? (
           <p className="text-xs text-text-3">
-            No findings. A finding links here when a capture that carried this value raised one
-            under its rule.
+            No findings. A finding links here when a live LLM session carries this value, or when a
+            capture that carried it raised one under its rule.
           </p>
         ) : (
           <ul className="flex flex-col gap-1.5">

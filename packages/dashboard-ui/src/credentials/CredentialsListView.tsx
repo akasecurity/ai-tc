@@ -18,8 +18,9 @@ import {
 import { Ico } from '../inventory/Ico.tsx';
 import { relativeTime } from '../lib/relativeTime.ts';
 import { SearchField } from '../shared/SearchField.tsx';
+import { CredentialStatusBadge } from './CredentialStatusBadge.tsx';
 import { credentialLabel, credentialName } from './name.ts';
-import type { CredentialListItem } from './types.ts';
+import type { CredentialListItem, CredentialStatus } from './types.ts';
 
 export interface CredentialsListViewProps {
   items: CredentialListItem[];
@@ -32,6 +33,10 @@ export interface CredentialsListViewProps {
    */
   search: string;
   onSearch: (value: string) => void;
+  /** The status the list is filtered to; null lists every credential. A new filter starts again at the first page. */
+  status?: CredentialStatus | null | undefined;
+  /** Omit it and no status filter is shown. */
+  onStatusChange?: ((status: CredentialStatus | null) => void) | undefined;
   onSelect: (id: string) => void;
   onExport: () => void;
   exporting?: boolean | undefined;
@@ -57,7 +62,14 @@ const COLUMNS = [
   'Teams',
   'Endpoints',
   'Last rotated',
+  'Status',
 ] as const;
+
+const STATUS_FILTERS: readonly { value: CredentialStatus | null; label: string }[] = [
+  { value: null, label: 'All' },
+  { value: 'exposed', label: 'Exposed' },
+  { value: 'ok', label: 'OK' },
+];
 const NUMERIC = new Set<string>(['Projects', 'Teams', 'Endpoints']);
 
 /** The credential ledger: one row per detected value, newest first. */
@@ -66,6 +78,8 @@ export function CredentialsListView({
   total,
   search,
   onSearch,
+  status = null,
+  onStatusChange,
   onSelect,
   onExport,
   exporting = false,
@@ -112,6 +126,24 @@ export function CredentialsListView({
         </Button>
       </div>
 
+      {onStatusChange !== undefined && (
+        <div role="group" aria-label="Filter by status" className="flex flex-wrap gap-1.5">
+          {STATUS_FILTERS.map((f) => (
+            <Button
+              key={f.label}
+              variant={status === f.value ? 'solid' : 'outline'}
+              size="sm"
+              aria-pressed={status === f.value}
+              onClick={() => {
+                onStatusChange(f.value);
+              }}
+            >
+              {f.label}
+            </Button>
+          ))}
+        </div>
+      )}
+
       {refused ? (
         <p role="alert" className="py-10 text-center text-sm text-text-3">
           {error}
@@ -126,9 +158,11 @@ export function CredentialsListView({
         <p className="py-10 text-center text-sm text-text-3">
           {!emptyLedger
             ? 'These rows moved while you were reading. Step back to see the rest.'
-            : search.trim() === ''
-              ? 'No credentials have been seen yet. They appear here once an attached machine shares a sighting.'
-              : 'Nothing matches this search.'}
+            : search.trim() !== ''
+              ? 'Nothing matches this search.'
+              : status !== null
+                ? 'No credentials have this status.'
+                : 'No credentials have been seen yet. They appear here once an attached machine shares a sighting.'}
         </p>
       ) : (
         <div className="overflow-x-auto">
@@ -181,6 +215,9 @@ export function CredentialsListView({
                   </TableCell>
                   <TableCell className="text-xs text-text-2">
                     {item.lastRotated === null ? '—' : relativeTime(item.lastRotated, renderedAt)}
+                  </TableCell>
+                  <TableCell>
+                    <CredentialStatusBadge status={item.status} />
                   </TableCell>
                 </TableRow>
               ))}

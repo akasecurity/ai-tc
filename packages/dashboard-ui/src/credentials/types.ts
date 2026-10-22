@@ -2,6 +2,9 @@
 // records onto these; the views never see a value or its fingerprint.
 import type { Severity } from '@akasecurity/schema';
 
+/** `exposed`: the value was seen in a live LLM session. `ok`: no status applies. */
+export type CredentialStatus = 'exposed' | 'ok';
+
 export interface CredentialListItem {
   id: string;
   /** The variable the value was last seen assigned to, when a scan named one. */
@@ -26,6 +29,7 @@ export interface CredentialListItem {
   lastRotated: string | null;
   /** ISO time it was last seen. */
   lastSeen: string;
+  status: CredentialStatus;
 }
 
 export interface CredentialTeamUsage {
@@ -46,6 +50,8 @@ export interface CredentialDetailModel extends CredentialListItem {
   ruleId: string;
   /** ISO time it was first seen. */
   firstSeen: string;
+  /** ISO time it was first seen in a live LLM session; null when it never was. */
+  exposedAt: string | null;
   sightingCount: number;
   /** The secrets-manager reference; null marks a credential as detected only. */
   reference: string | null;

@@ -241,11 +241,13 @@ export {
   CredentialsListView,
   type CredentialsListViewProps,
 } from './credentials/CredentialsListView.tsx';
+export { CredentialStatusBadge } from './credentials/CredentialStatusBadge.tsx';
 export { credentialLabel, credentialName } from './credentials/name.ts';
 export type {
   CredentialDetailModel,
   CredentialLinkedFinding,
   CredentialListItem,
+  CredentialStatus,
   CredentialTeamUsage,
 } from './credentials/types.ts';
 

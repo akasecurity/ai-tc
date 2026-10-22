@@ -6,7 +6,7 @@
   "severity": "high",
   "matcher": {
     "type": "regex",
-    "pattern": "([\"'`])\\s*\\b(?:select|insert|update|delete|where)\\b(?:(?!\\1)[^\\n])*?(?:#\\{|\\$[a-z_])|(?<=\\n)[ \\t]*(?:select|insert|update|delete|where)\\s[^\\n]*?(?:#\\{|\\$[a-z_])",
+    "pattern": "([\"'`])\\s*\\b(?:select|insert|update|delete|where)\\b(?:(?!\\1)[^\\n])*?(?:#\\{|\\$[a-z_])|(?<=^|\\n)[ \\t]*(?:select|insert|update|delete|where)\\s[^\\n]*?(?:#\\{|\\$[a-z_])",
     "flags": "gi"
   },
   "examples": [

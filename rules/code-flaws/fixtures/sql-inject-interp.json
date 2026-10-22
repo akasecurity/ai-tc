@@ -10,6 +10,28 @@
     "shouldMatch": true
   },
   {
+    "label": "single-line statement at offset 0 of the text",
+    "text": "SELECT * FROM t WHERE id = #{id}",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 0,
+        "end": 29
+      }
+    ]
+  },
+  {
+    "label": "known gap: a prose line after the first that starts with a sql word and carries interpolation still matches",
+    "text": "Example:\nselect #{name} from the menu",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 9,
+        "end": 18
+      }
+    ]
+  },
+  {
     "label": "Ruby safe parameterized query",
     "text": "User.where('id = ?', params[:id])",
     "shouldMatch": false

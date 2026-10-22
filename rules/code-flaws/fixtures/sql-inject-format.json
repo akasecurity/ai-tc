@@ -10,6 +10,61 @@
     "shouldMatch": true
   },
   {
+    "label": "single-line %s statement at offset 0 of the text",
+    "text": "SELECT * FROM t WHERE id = %s",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 0,
+        "end": 29
+      }
+    ]
+  },
+  {
+    "label": "single-line #{} statement at offset 0 of the text",
+    "text": "SELECT * FROM t WHERE id = #{id}",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 0,
+        "end": 32
+      }
+    ]
+  },
+  {
+    "label": "PHP sprintf heredoc with a %s placeholder on one line",
+    "text": "$sql = <<<SQL\n  SELECT * FROM t WHERE id = %s\nSQL;",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 14,
+        "end": 45
+      }
+    ]
+  },
+  {
+    "label": "known gap: a prose line after the first that starts with a sql phrase and carries ${} still matches",
+    "text": "Example:\ndelete from the cache ${dir} when it fills up",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 9,
+        "end": 37
+      }
+    ]
+  },
+  {
+    "label": "Ruby heredoc with a %s placeholder on one line",
+    "text": "sql = <<~SQL\n  SELECT * FROM t WHERE id = %s\nSQL",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 13,
+        "end": 44
+      }
+    ]
+  },
+  {
     "label": "safe parameterized query with ? placeholder",
     "text": "cursor.execute(\"SELECT * FROM users WHERE id = ?\", [user_id])",
     "shouldMatch": false
@@ -68,11 +123,6 @@
     "label": "% format where-fragment opening on a new line",
     "text": "clause = \"\"\"\n  WHERE id = %s\n\"\"\" % uid",
     "shouldMatch": true
-  },
-  {
-    "label": "known gap: heredoc body with a %s placeholder and no quote anchor is not matched (line-start branch only takes #{ and ${)",
-    "text": "sql = <<~SQL\n  SELECT * FROM t WHERE id = %s\nSQL",
-    "shouldMatch": false
   },
   {
     "label": "format-style heredoc body with an f-string placeholder",

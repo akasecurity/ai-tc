@@ -191,7 +191,14 @@ describe(`${SOURCE_FILE}'s emit() shape enumeration`, () => {
 // The other half of the doc: CLAUDE.md's hook-contract bullet for this host
 // ---------------------------------------------------------------------------
 
-const CONVENTIONS = readFileSync(new URL('../../../CLAUDE.md', import.meta.url), 'utf8');
+const CONVENTIONS_DIR = new URL('../../../conventions/', import.meta.url);
+const CONVENTIONS = [
+  readFileSync(new URL('../../../CLAUDE.md', import.meta.url), 'utf8'),
+  ...readdirSync(CONVENTIONS_DIR)
+    .filter((name) => name.endsWith('.md'))
+    .sort()
+    .map((name) => readFileSync(new URL(name, CONVENTIONS_DIR), 'utf8')),
+].join('\n');
 
 /**
  * The bullet, sliced out by its own bold lead. Throws unless it occurs exactly

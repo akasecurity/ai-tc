@@ -17,7 +17,7 @@
  * going through `emit` — that is `fail-open.e2e.test.ts`'s ground, which reads
  * what the built scripts really print.
  */
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -135,7 +135,16 @@ function shapesSentence(section: string): { count: string; body: string } {
 const codeSpansOf = (text: string): string[] =>
   [...text.matchAll(/`([^`]+)`/gu)].flatMap((m) => (m[1] === undefined ? [] : [m[1]]));
 
-const SECTION = sectionOf(readFileSync(join(REPO_ROOT, CONVENTIONS_DOC), 'utf8'), SECTION_HEADING);
+// The conventions text: CLAUDE.md followed by the long-form files it links to.
+const CONVENTIONS_DIR = join(REPO_ROOT, 'conventions');
+const CONVENTIONS_TEXT = [
+  readFileSync(join(REPO_ROOT, CONVENTIONS_DOC), 'utf8'),
+  ...readdirSync(CONVENTIONS_DIR)
+    .filter((name) => name.endsWith('.md'))
+    .sort()
+    .map((name) => readFileSync(join(CONVENTIONS_DIR, name), 'utf8')),
+].join('\n');
+const SECTION = sectionOf(CONVENTIONS_TEXT, SECTION_HEADING);
 const SENTENCE = shapesSentence(SECTION);
 
 const EVENTS = Object.entries(SHAPE_FIELD_BY_EVENT);

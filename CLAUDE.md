@@ -2137,7 +2137,13 @@ repeats its scan until the clock has advanced by `GROWTH_WINDOW_STEPS` measured 
 reads the cost per scan (`windowReadingMs`), which bounds the rounding to one step in that
 many; a pair whose larger text reads under the 5 ms floor beyond one step is cleared after
 a few scans rather than a window. Both sides of a ratio are the FASTEST of their windows,
-taken in the same rounds, since what load adds to work only ever adds. The step is measured
+taken in the same rounds, since what load adds to work only ever adds. Growth is judged over
+two doublings, never one: a pair is read with the next doubling whenever it grew by more than
+`SAMPLED_GROWTH` (the ratio's square over 4, so a quadratic next doubling could carry it), and
+is superlinear when the second doubling grew past `MAX_GROWTH_RATIO` and the two together past
+its square. One doubling cleared a quadratic control on the Windows leg: under load that
+pattern reads 2.8x to 3.3x on the pair, under the ratio before any clock error, and 13x or more
+over the two against a line of 9, where a linear rule reads 4x. The step is measured
 by `packages/detections/test/helpers/growth-clock.ts`, a step it cannot measure is refused
 rather than read, and the controls run on the native clock and on a forced 16 ms step. The
 pair a ratio compares keeps all of its rounds when the next doubling goes over budget. The

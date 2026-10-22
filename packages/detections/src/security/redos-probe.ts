@@ -637,8 +637,27 @@ function ratio(smallerMs: number, largerMs: number): number {
   return largerMs / Math.max(smallerMs, 1e-6);
 }
 
-function isSuperlinear(smallMs: number, largeMs: number): boolean {
-  return largeMs >= GROWTH_FLOOR_MS && ratio(smallMs, largeMs) > MAX_GROWTH_RATIO;
+// What a quadratic cost grows by per doubling: the shape this tier exists to
+// catch, and the yardstick for how far a next doubling might carry a pair.
+const QUADRATIC_GROWTH = 4;
+
+// The least a pair may grow by and still be sampled with the next doubling: the
+// ratio from which a quadratic next doubling would carry the two doublings
+// together past MAX_GROWTH_RATIO per doubling. A linear pair, near 2, is under it.
+export const SAMPLED_GROWTH = MAX_GROWTH_RATIO ** 2 / QUADRATIC_GROWTH;
+
+function maySuperlinear(smallMs: number, largeMs: number): boolean {
+  return largeMs >= GROWTH_FLOOR_MS && ratio(smallMs, largeMs) > SAMPLED_GROWTH;
+}
+
+// Growth over the pair and the doubling after it: more than MAX_GROWTH_RATIO
+// per doubling across the two together, and more than it on the second alone.
+function isSuperlinear(smallMs: number, largeMs: number, nextMs: number): boolean {
+  return (
+    maySuperlinear(smallMs, largeMs) &&
+    ratio(largeMs, nextMs) > MAX_GROWTH_RATIO &&
+    ratio(smallMs, nextMs) > MAX_GROWTH_RATIO ** 2
+  );
 }
 
 // The verdict on the pair `small` and `small * 2` chars of one corpus, and the
@@ -646,24 +665,32 @@ function isSuperlinear(smallMs: number, largeMs: number): boolean {
 //
 // The first pass samples the pair alone, the larger text first in each round.
 // A larger reading at or over the budget is an `over-budget` breach; the budget
-// is judged at this size and at no other. A pair at or under the ratio is
+// is judged at this size and at no other. A pair at or under SAMPLED_GROWTH is
 // cleared without scanning anything larger, and so is a pair whose larger text
 // reads under GROWTH_FLOOR_MS beyond the clock's rounding, as soon as one
 // reading shows it: that is under the budget too, and the ratio is not judged
 // below the floor. Reading the larger text first is what lets that clear a
 // cheap pair before the smaller text has been read at all.
 //
-// A pair over the ratio is sampled again in a second pass, together with the
-// doubling after it, and is a `superlinear` breach only if both ratios read
-// over MAX_GROWTH_RATIO on that pass's readings. One doubling cannot tell
-// growth that persists from a step: a cost that is linear on both sides of a
-// threshold between the two sizes reads a against 2a + c there, which is any
-// ratio above 2 depending on the step. The next doubling separates the two by
-// the shape of the curve. Past a step, a linear cost at most doubles again,
-// whatever the first ratio was and whatever the scan costs. A polynomial cost
-// does the opposite, because its highest term takes a larger share as the
-// input grows: a quadratic rule that read 3.1x reads closer to 4x on the next
-// doubling, a cubic one closer to 8x.
+// A pair over SAMPLED_GROWTH is sampled again in a second pass, together with
+// the doubling after it, and is a `superlinear` breach only if, on that pass's
+// readings, the second doubling grew by more than MAX_GROWTH_RATIO and the two
+// together by more than its square. One doubling cannot tell growth that
+// persists from a step: a cost that is linear on both sides of a threshold
+// between the two sizes reads a against 2a + c there, which is any ratio above
+// 2 depending on the step. The next doubling separates the two by the shape of
+// the curve. Past a step, a linear cost at most doubles again, whatever the
+// first ratio was and whatever the scan costs. A polynomial cost does the
+// opposite, because its highest term takes a larger share as the input grows: a
+// quadratic rule that read 3.1x reads closer to 4x on the next doubling, a cubic
+// one closer to 8x.
+//
+// Nor is one doubling enough to clear a pair. Where the polynomial term has not
+// yet taken over, a quadratic rule reads under MAX_GROWTH_RATIO on the pair —
+// 2.8x to 3.3x was read on a loaded machine for a rule that reads 4x idle — and
+// a clock that advances in coarse steps moves a single ratio further than that
+// margin. Over the two doublings the same rule reads 13x or more against a line
+// of 9, and a linear one 4x, so the verdict on growth is judged across both.
 //
 // The matchers stop at MAX_MATCHES_PER_RULE. That bounds how many matches a
 // scan makes, not what each match costs: on a corpus that matches at every
@@ -692,7 +719,7 @@ function judgePair(
       breach: { reason: 'over-budget', ...pair, smallMs: firstSmallMs, largeMs: firstLargeMs },
     };
   }
-  if (!isSuperlinear(firstSmallMs, firstLargeMs)) return {};
+  if (!maySuperlinear(firstSmallMs, firstLargeMs)) return {};
 
   const nextChars = pair.largeChars * 2;
   const [smallMs, largeMs, nextMs] = readings(
@@ -703,9 +730,7 @@ function judgePair(
     stepMs,
     { keepOthers: true },
   ).ms;
-  if (ratio(largeMs, nextMs) <= MAX_GROWTH_RATIO || !isSuperlinear(smallMs, largeMs)) {
-    return { nextMs };
-  }
+  if (!isSuperlinear(smallMs, largeMs, nextMs)) return { nextMs };
   return { breach: { reason: 'superlinear', ...pair, smallMs, largeMs, nextChars, nextMs } };
 }
 
@@ -713,7 +738,8 @@ function judgePair(
  * The first breach `judgePair` reports on `rule`, or `undefined` when it
  * reports none. A breach is a pair whose larger reading is at or over the
  * budget, or one whose cost grows by more than `MAX_GROWTH_RATIO` per doubling
- * across two consecutive doublings, the larger reading of the pair at
+ * across the pair and the doubling after it together, and by more than it on
+ * that second doubling alone, the larger reading of the pair at
  * `GROWTH_FLOOR_MS` or more.
  *
  * Each corpus climbs from `GROWTH_START_CHARS` by doubling, one reading per

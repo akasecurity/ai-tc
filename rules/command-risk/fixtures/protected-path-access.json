@@ -1,0 +1,68 @@
+[
+  {
+    "label": "a protected file",
+    "text": "protected-path-access:/home/agent/Documents/passwords.txt",
+    "shouldMatch": true,
+    "eventKind": "tool_use",
+    "expectedSpans": [
+      {
+        "start": 0,
+        "end": 57
+      }
+    ]
+  },
+  {
+    "label": "a protected folder",
+    "text": "protected-path-access:/home/agent/Vault",
+    "shouldMatch": true,
+    "eventKind": "tool_use",
+    "expectedSpans": [
+      {
+        "start": 0,
+        "end": 39
+      }
+    ]
+  },
+  {
+    "label": "a Windows path",
+    "text": "protected-path-access:C:/Users/me/Secrets/keys.txt",
+    "shouldMatch": true,
+    "eventKind": "tool_use",
+    "expectedSpans": [
+      {
+        "start": 0,
+        "end": 50
+      }
+    ]
+  },
+  {
+    "label": "a bare path with no marker",
+    "text": "/home/agent/Documents/passwords.txt",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "the marker with nothing after it",
+    "text": "protected-path-access:",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "the marker inside a longer command",
+    "text": "cat protected-path-access:/home/agent/a.txt",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "the marker followed by a second line",
+    "text": "protected-path-access:/home/agent/a.txt\nrm -rf /",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "the marker on text a tool wrote",
+    "text": "protected-path-access:/home/agent/Documents/passwords.txt",
+    "shouldMatch": false,
+    "eventKind": "code_change"
+  }
+]

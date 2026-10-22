@@ -6,14 +6,22 @@
 // Hook entry files run main() on import and must never be imported by tests;
 // this module has no such side effect.
 
+import { homedir } from 'node:os';
+
 import type { PluginConfig, VaultGlue } from '@akasecurity/plugin-sdk';
 import {
   createPluginRuntime,
   createVaultGlue,
   LARGE_INPUT_THRESHOLD_CHARS,
   loadConfig,
+  realpathBestEffort,
 } from '@akasecurity/plugin-sdk';
-import { isVaultConsentValid, pointerTokenScanner, SOURCE_TOOL } from '@akasecurity/schema';
+import {
+  isVaultConsentValid,
+  pointerTokenScanner,
+  protectedPathsOf,
+  SOURCE_TOOL,
+} from '@akasecurity/schema';
 
 import { REVEAL_DISCLOSURE_LEAD } from '../exception-guidance.ts';
 import type { PointersByText } from '../mod/findings-log.ts';
@@ -43,6 +51,7 @@ import {
   isSyntheticField,
   scannableInputFields,
 } from './pre-tool-use-fields.ts';
+import { PROTECTED_PATH_TOOLS, protectedPathFields } from './protected-path-fields.ts';
 import type { HookOutput } from './shared.ts';
 import { baseMetadata, captureScopeKey, getString } from './shared.ts';
 import { captureStamped } from './stamped-capture.ts';
@@ -132,7 +141,14 @@ export async function runPreToolUse(
   // (see scannableInputFields' own comment), so this free path has narrowed
   // to a tool_input with no string keys at all — most MCP calls, having some
   // key, now do pay the store-open cost below.
-  const fields = scannableInputFields(toolName, toolInput);
+  //
+  // The user's protected paths add their own fields to a Read, Grep, Glob or
+  // Bash call. They are looked for here, ahead of the early return, because a
+  // Read of a file no credential rule is about has no other field at all.
+  const fields = [
+    ...scannableInputFields(toolName, toolInput),
+    ...protectedFieldsOf(toolName, toolInput, getString(input, 'cwd'), loadConfigOnce),
+  ];
   if (fields.length === 0) return 'nothing-to-scan';
 
   const config = loadConfigOnce();
@@ -435,6 +451,29 @@ export async function runPreToolUse(
     });
   }
   return 'finished';
+}
+
+// The fields for the paths this call names that the user protected. A fault here
+// costs only this check: the call is still scanned for everything else.
+function protectedFieldsOf(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  cwd: string | undefined,
+  loadConfigOnce: () => PluginConfig,
+): ReturnType<typeof protectedPathFields> {
+  if (!PROTECTED_PATH_TOOLS.has(toolName)) return [];
+  try {
+    const entries = protectedPathsOf(loadConfigOnce().settings);
+    if (entries.length === 0) return [];
+    return protectedPathFields(toolName, toolInput, {
+      entries,
+      home: homedir(),
+      cwd,
+      realpath: realpathBestEffort,
+    });
+  } catch {
+    return [];
+  }
 }
 
 // Whether a handoff note still vouches for the call the hook is shown. The note

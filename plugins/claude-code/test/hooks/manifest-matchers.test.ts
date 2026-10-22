@@ -17,6 +17,7 @@ import { BASELINE_HOOK_EVENTS, HOST_FLOORS } from '@akasecurity/plugin-sdk';
 import { describe, expect, it } from 'vitest';
 
 import { scannableInputFields, SCANNED_TOOL_NAMES } from '../../src/hooks/pre-tool-use-fields.ts';
+import { PROTECTED_PATH_TOOLS } from '../../src/hooks/protected-path-fields.ts';
 import { SUBAGENT_TOOLS } from '../../src/hooks/subagent-tools.ts';
 import { SCANNED_RESPONSE_TOOL_NAMES } from '../../src/hooks/tool-response.ts';
 
@@ -91,19 +92,30 @@ describe('the PreToolUse matcher selects every tool the hook can act on', () => 
     expect(SUBAGENT_TOOLS.has('Agent'), 'the current spelling is in the set').toBe(true);
   });
 
-  it('sends Read and Grep through the path gate, never straight to node', () => {
+  it('sends Read, Grep and Glob through the path gate, never straight to node', () => {
     // The gate is the cost argument: node takes 70-120 ms to start, and Read
     // is the most frequent tool call there is. A Read matched by the node entry
     // would pay that on every call (or, matched by both, run the check twice).
     const gate = entryMatcher(preToolUseEntryRunning('path-gate.sh'), 'PreToolUse');
     const node = entryMatcher(preToolUseEntryRunning('pre-tool-use.js'), 'PreToolUse');
-    for (const tool of ['Read', 'Grep']) {
+    for (const tool of ['Read', 'Grep', 'Glob']) {
       expect(gate.test(tool), `${tool} reaches the gate`).toBe(true);
       expect(node.test(tool), `${tool} skips the direct node entry`).toBe(false);
     }
     // And the gate takes nothing else: every other tool's check lives in node.
     expect(gate.test('Bash')).toBe(false);
     expect(gate.test('Write')).toBe(false);
+  });
+
+  it('selects every tool the protected-path list governs', () => {
+    // Derived from the set the pipeline checks, so a tool added there and
+    // forgotten in the manifest fails here instead of never being spawned for.
+    const matcher = matcherFor('PreToolUse');
+    const missed = [...PROTECTED_PATH_TOOLS].filter((tool) => !matcher.test(tool));
+    expect(missed, 'governed tools the hook is never spawned for').toEqual([]);
+    expect([...PROTECTED_PATH_TOOLS]).toEqual(
+      expect.arrayContaining(['Read', 'Grep', 'Glob', 'Bash']),
+    );
   });
 
   it('matches the dynamic handlers the static table cannot speak for', () => {
@@ -119,7 +131,7 @@ describe('the PreToolUse matcher selects every tool the hook can act on', () => 
     // The control: a matcher rewritten to `.*` would pass every assertion above
     // while removing the bound the hook's own cost argument rests on.
     const matcher = matcherFor('PreToolUse');
-    expect(matcher.test('Glob')).toBe(false);
+    expect(matcher.test('LS')).toBe(false);
     expect(matcher.test('TodoWrite')).toBe(false);
     for (const tool of SUBSTRING_NEIGHBOURS) expect(matcher.test(tool), tool).toBe(false);
   });
@@ -170,7 +182,7 @@ describe('the PostToolUse matcher selects every tool whose output the hook scans
 function alternatives(event: string): { names: string[]; patterns: string[] } {
   // An event may carry SEVERAL entries, each with its own hook command: on
   // PreToolUse the scanning hook rides the anchored alternation and the
-  // credential-path gate rides a bare `Read|Grep`. The tools the event reaches
+  // credential-path gate rides a bare `Read|Grep|Glob`. The tools the event reaches
   // are therefore the union over every entry, and reading only the first one
   // reports the gate's tools as missing.
   const names = new Set<string>();
@@ -189,10 +201,17 @@ function alternatives(event: string): { names: string[]; patterns: string[] } {
 }
 
 describe('each matcher names only tools its hook acts on', () => {
-  it('PreToolUse: the field table, the spawn tools, MultiEdit and the mcp__ family', () => {
+  it('PreToolUse: the field table, the protected-path tools, the spawn tools, MultiEdit and the mcp__ family', () => {
     const { names, patterns } = alternatives('PreToolUse');
     expect(names).toEqual(
-      [...new Set([...SCANNED_TOOL_NAMES, ...SUBAGENT_TOOLS, 'MultiEdit'])].sort(),
+      [
+        ...new Set([
+          ...SCANNED_TOOL_NAMES,
+          ...PROTECTED_PATH_TOOLS,
+          ...SUBAGENT_TOOLS,
+          'MultiEdit',
+        ]),
+      ].sort(),
     );
     expect(patterns).toEqual(['mcp__.*']);
     // MultiEdit is in no table, so its place in the matcher rests on the

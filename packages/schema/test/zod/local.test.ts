@@ -23,8 +23,11 @@ import {
   isScopeKeyEnrolled,
   isWebChatAccountGrantValid,
   isWebChatCaptureConsentValid,
+  MAX_PROTECTED_PATH_ENTRIES,
+  MAX_PROTECTED_PATH_ENTRY_CHARS,
   MODEL_JUDGE_PAYLOAD_VERSION,
   parseAttachmentScope,
+  protectedPathsOf,
   resolveScope,
   scopeFilterOf,
   scopeVerdict,
@@ -65,7 +68,7 @@ describe('WorkspaceSettings (versioned, default-filled)', () => {
     // it. The version is a changelog marker that nothing reads, which is exactly
     // why a change to it needs a test that names the number. The next field that
     // bumps it changes this literal on purpose.
-    expect(WORKSPACE_SETTINGS_SPEC_VERSION).toBe(10);
+    expect(WORKSPACE_SETTINGS_SPEC_VERSION).toBe(11);
   });
 
   it('enables in-place Data Shares extraction by default', () => {
@@ -1474,5 +1477,60 @@ describe('findingMatchLabel', () => {
   it('drops the name when the masked match leaves no room for it', () => {
     const masked = 's'.repeat(26);
     expect(findingMatchLabel({ maskedMatch: masked, variableName: 'API_KEY' }, 28)).toBe(masked);
+  });
+});
+
+// A list of folders and file name globs a tool call may not touch unflagged. It
+// is a security control a user types by hand, so the two failure modes that
+// matter are an old settings.json that must keep parsing, and a bad list that
+// must not cost every other setting.
+describe('protectedPaths', () => {
+  it('is absent by default, and an older settings.json without it still parses', () => {
+    expect(WorkspaceSettings.parse({}).protectedPaths).toBeUndefined();
+    expect(protectedPathsOf(WorkspaceSettings.parse({}))).toEqual([]);
+    const old = WorkspaceSettings.parse({
+      specVersion: 10,
+      policy: 'warn',
+      runMode: 'standalone',
+    });
+    expect(old.policy).toBe('warn');
+    expect(protectedPathsOf(old)).toEqual([]);
+  });
+
+  it('round-trips a list, trimming each entry', () => {
+    const parsed = WorkspaceSettings.parse({
+      protectedPaths: ['~/Documents', '  **/passwords*.txt  ', String.raw`C:\Users\me\Secrets`],
+    });
+    expect(protectedPathsOf(parsed)).toEqual([
+      '~/Documents',
+      '**/passwords*.txt',
+      String.raw`C:\Users\me\Secrets`,
+    ]);
+    expect(WorkspaceSettings.parse(JSON.parse(JSON.stringify(parsed)))).toEqual(parsed);
+  });
+
+  it('keeps a list at the bounds and reads one past them as no list', () => {
+    const atLimit = Array.from({ length: MAX_PROTECTED_PATH_ENTRIES }, (_, i) => `/p/${String(i)}`);
+    expect(protectedPathsOf(WorkspaceSettings.parse({ protectedPaths: atLimit }))).toHaveLength(
+      MAX_PROTECTED_PATH_ENTRIES,
+    );
+    const longest = 'x'.repeat(MAX_PROTECTED_PATH_ENTRY_CHARS);
+    expect(protectedPathsOf(WorkspaceSettings.parse({ protectedPaths: [longest] }))).toEqual([
+      longest,
+    ]);
+    expect(
+      protectedPathsOf(WorkspaceSettings.parse({ protectedPaths: [...atLimit, '/one/more'] })),
+    ).toEqual([]);
+    expect(protectedPathsOf(WorkspaceSettings.parse({ protectedPaths: [`${longest}x`] }))).toEqual(
+      [],
+    );
+  });
+
+  it('reads a malformed list as none without losing the rest of the file', () => {
+    for (const bad of [[''], ['   '], [1], 'not-a-list', { a: 1 }, null]) {
+      const parsed = WorkspaceSettings.parse({ policy: 'warn', protectedPaths: bad });
+      expect(parsed.policy, JSON.stringify(bad)).toBe('warn');
+      expect(protectedPathsOf(parsed), JSON.stringify(bad)).toEqual([]);
+    }
   });
 });

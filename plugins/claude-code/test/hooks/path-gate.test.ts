@@ -3,11 +3,19 @@
 // error and no finding, so the property under test is the one that matters:
 // the gate forwards every input `mayNameCredentialFile` would capture.
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { applyOnboarding } from '@akasecurity/persistence';
 import { afterAll, describe, expect, it } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
@@ -34,11 +42,15 @@ chmodSync(gate, 0o755);
 const fakeNode = join(dir, 'node');
 writeFileSync(fakeNode, '#!/bin/sh\nprintf "FORWARDED %s\\n" "$1"\ncat\n');
 chmodSync(fakeNode, 0o755);
-const GATE_ENV = hostEnvWithShim(dir);
+// A home with no ~/.aka, so the cases that predate protected paths run with none
+// configured whatever the developer's own machine holds.
+const EMPTY_HOME = mkdtempSync(join(tmpdir(), 'aka-path-gate-home-'));
+const GATE_ENV = { ...hostEnvWithShim(dir), HOME: EMPTY_HOME };
 // The gate joins with '/', which Git Bash on Windows accepts after a backslash path.
 const FORWARD_LINE = `FORWARDED ${dir}/pre-tool-use.js\n`;
 afterAll(() => {
   removeTree(dir);
+  removeTree(EMPTY_HOME);
 });
 
 // Windows runs hooks under Git Bash, whose sh is on PATH rather than at /bin.
@@ -63,8 +75,9 @@ function payload(tool: string, toolInput: Record<string, unknown>, extra = {}): 
 function runGate(
   stdin: string,
   shell = SHELLS[0] ?? 'sh',
+  env: NodeJS.ProcessEnv = GATE_ENV,
 ): { status: number | null; stdout: string } {
-  const run = spawnSync(shell, [gate], { input: stdin, encoding: 'utf8', env: GATE_ENV });
+  const run = spawnSync(shell, [gate], { input: stdin, encoding: 'utf8', env });
   // A shell that failed to start is a broken test, not a gate that stayed quiet.
   if (run.error) throw run.error;
   return { status: run.status, stdout: run.stdout };
@@ -200,5 +213,88 @@ describe('the path gate keeps node out of the ordinary call', () => {
     // through node: slower for that project, never a dropped check.
     const stdin = payload('Read', { file_path: '/repo/src/a.ts' }, { cwd: '/srv/environment' });
     expect(forwards(stdin)).toBe(true);
+  });
+});
+
+// The user's protected paths are not credential names, so the gate cannot tell
+// from the payload whether a Read matters: it asks whether any are configured.
+// A path the list covers that the gate drops is a silent miss, so the property
+// is the same superset one: wherever the list is non-empty, everything goes to
+// node; wherever it is empty or absent, nothing extra does.
+describe('the path gate and the protected-path list', () => {
+  const homes: string[] = [];
+  afterAll(() => {
+    for (const home of homes) removeTree(home);
+  });
+
+  /** A home whose settings.json holds exactly `settings`, or none when undefined. */
+  function homeWith(settings: string | undefined): string {
+    const home = mkdtempSync(join(tmpdir(), 'aka-path-gate-settings-'));
+    homes.push(home);
+    if (settings !== undefined) {
+      mkdirSync(join(home, '.aka', 'settings'), { recursive: true });
+      writeFileSync(join(home, '.aka', 'settings', 'settings.json'), settings);
+    }
+    return home;
+  }
+
+  /** A home whose settings.json the product's own writer produced for `list`. */
+  function homeSaved(list: string[]): string {
+    const home = homeWith(undefined);
+    applyOnboarding({ protectedPaths: list }, join(home, '.aka'));
+    return home;
+  }
+
+  const ordinary = payload('Read', { file_path: '/home/agent/proj/src/index.ts' });
+  const gateEnv = (home: string): NodeJS.ProcessEnv => ({ ...GATE_ENV, HOME: home });
+  const forwardsWith = (home: string, shell?: string, stdin = ordinary): boolean =>
+    runGate(stdin, shell, gateEnv(home)).stdout.startsWith('FORWARDED');
+
+  it('control: an ordinary Read stays out of node when the list is empty', () => {
+    expect(forwardsWith(homeSaved([]))).toBe(false);
+  });
+
+  it.each(SHELLS)('forwards every call once the list holds an entry, under %s', (shell) => {
+    const home = homeSaved(['~/Documents', '**/passwords*.txt']);
+    expect(forwardsWith(home, shell)).toBe(true);
+    expect(forwardsWith(home, shell, payload('Grep', { pattern: 'x', path: '/srv' }))).toBe(true);
+    expect(forwardsWith(home, shell, payload('Glob', { pattern: '**/*.md' }))).toBe(true);
+    // Handed on unchanged, trailing newlines included.
+    const stdin = `${ordinary}\n\n`;
+    expect(runGate(stdin, shell, gateEnv(home)).stdout).toBe(`${FORWARD_LINE}${stdin}`);
+  });
+
+  it('does not forward when the file has no list, an empty one, or no file at all', () => {
+    expect(forwardsWith(homeWith(undefined))).toBe(false);
+    expect(forwardsWith(homeWith(JSON.stringify({ policy: 'block' })))).toBe(false);
+    expect(forwardsWith(homeWith(JSON.stringify({ protectedPaths: [] })))).toBe(false);
+    expect(forwardsWith(homeWith('{"protectedPaths":[ ]}'))).toBe(false);
+    expect(forwardsWith(homeWith('{\n  "protectedPaths" :\n  [\n\t\n  ]\n}\n'))).toBe(false);
+    expect(forwardsWith(homeWith('{"protectedPaths":null}'))).toBe(false);
+  });
+
+  it('reads the list however the file is laid out', () => {
+    const layouts = [
+      '{"protectedPaths":["/srv/x"]}',
+      '{"protectedPaths": ["/srv/x"]}',
+      '{\n  "protectedPaths": [\n    "/srv/x"\n  ]\n}\n',
+      '{\r\n\t"protectedPaths"\t:\r\n\t[\r\n\t\t"/srv/x"\r\n\t]\r\n}',
+      '{"policy":"block","protectedPaths":["/srv/x"],"runMode":"standalone"}',
+    ];
+    for (const layout of layouts) {
+      expect(forwardsWith(homeWith(layout)), layout).toBe(true);
+    }
+  });
+
+  it('forwards when it cannot tell where the settings are', () => {
+    const env = Object.fromEntries(Object.entries(GATE_ENV).filter(([key]) => key !== 'HOME'));
+    expect(runGate(ordinary, undefined, env).stdout.startsWith('FORWARDED')).toBe(true);
+    // The control: with a home that holds nothing, the same call is quiet.
+    expect(forwardsWith(homeWith(undefined))).toBe(false);
+  });
+
+  it('still forwards a credential path when no list is configured', () => {
+    const stdin = payload('Read', { file_path: '/home/agent/proj/.env' });
+    expect(forwardsWith(homeWith(undefined), undefined, stdin)).toBe(true);
   });
 });

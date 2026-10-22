@@ -1116,7 +1116,10 @@ export class AttachedDataGateway
             return;
           }
           const one = wire[j];
-          if (one === undefined) continue;
+          if (one === undefined) {
+            recordForwardDrops(this.deps.dataDir, 1, at);
+            continue;
+          }
           const single = await this.deps.forward.run(() => this.deps.client.recordAuditEvent(one));
           if (single.ok) {
             delivered.push(event);

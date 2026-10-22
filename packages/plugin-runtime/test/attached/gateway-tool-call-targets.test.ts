@@ -54,13 +54,19 @@ afterEach(() => {
   rmSync(base, { recursive: true, force: true });
 });
 
-function build(bundle: () => Promise<PolicyBundle>): {
+function build(
+  bundle: () => Promise<PolicyBundle>,
+  opts: { batchAccepts?: number } = {},
+): {
   gateway: AttachedDataGateway;
   wire: RecordAuditEventRequest[];
+  singles: RecordAuditEventRequest[];
 } {
   const wire: RecordAuditEventRequest[] = [];
+  const singles: RecordAuditEventRequest[] = [];
   const local = {
     recordToolCalls: () => Promise.resolve(),
+    recordAuditEvent: () => Promise.resolve(),
     markAuditEventsDelivered: () => undefined,
     getPolicyBundle: bundle,
     close: () => Promise.resolve(),
@@ -68,7 +74,11 @@ function build(bundle: () => Promise<PolicyBundle>): {
   const client = {
     recordAuditEvents: (events: readonly RecordAuditEventRequest[]) => {
       wire.push(...events);
-      return Promise.resolve({ accepted: events.length });
+      return Promise.resolve({ accepted: opts.batchAccepts ?? events.length });
+    },
+    recordAuditEvent: (event: RecordAuditEventRequest) => {
+      singles.push(event);
+      return Promise.resolve();
     },
   } as unknown as AttachedClient;
   const gateway = new AttachedDataGateway({
@@ -79,7 +89,7 @@ function build(bundle: () => Promise<PolicyBundle>): {
     forward: passthrough,
     attachment: { mode: 'machine', keys: new Set<string>() },
   });
-  return { gateway, wire };
+  return { gateway, wire, singles };
 }
 
 const toolCall = (toolUseId: string, target: string | undefined): ToolCallInput => ({
@@ -159,5 +169,41 @@ describe('attached gateway: a forwarded tool-call target', () => {
     expect(targetOf(wire[0])).toBeUndefined();
     expect(wire[0]?.attributes).toMatchObject({ tool_name: 'Bash' });
     expect(JSON.stringify(wire)).not.toContain(orgValue);
+  });
+
+  it('redacts the target on the single-event forward', async () => {
+    const { gateway, singles } = build(() => Promise.resolve(bundleOf([orgRule])));
+    try {
+      await gateway.recordAuditEvent({
+        id: 'tool-single',
+        eventType: 'tool_call',
+        startedAt: '2026-10-01T10:00:00.000Z',
+        parentId: 'sess-t',
+        rootSessionId: 'sess-t',
+        attributes: { tool_name: 'Bash', target: `export K=${orgValue}` },
+      });
+    } finally {
+      await gateway.close();
+    }
+
+    expect(singles).toHaveLength(1);
+    expect(targetOf(singles[0])).toBe(`export K=${FAIL_CLOSED_MARKER}`);
+    expect(JSON.stringify(singles)).not.toContain(orgValue);
+  });
+
+  it('sends the redacted copy on the one-at-a-time retry after a short batch accept', async () => {
+    const { gateway, wire, singles } = build(() => Promise.resolve(bundleOf([orgRule])), {
+      batchAccepts: 0,
+    });
+    try {
+      await gateway.recordToolCalls([toolCall('t-retry', `curl -H "X-Key: ${orgValue}" api`)]);
+    } finally {
+      await gateway.close();
+    }
+
+    expect(wire).toHaveLength(1);
+    expect(singles).toHaveLength(1);
+    expect(targetOf(singles[0])).toBe(`curl -H "X-Key: ${FAIL_CLOSED_MARKER}" api`);
+    expect(JSON.stringify(singles)).not.toContain(orgValue);
   });
 });

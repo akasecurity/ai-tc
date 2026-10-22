@@ -241,9 +241,14 @@ export {
   CredentialsListView,
   type CredentialsListViewProps,
 } from './credentials/CredentialsListView.tsx';
+export {
+  CREDENTIAL_DISMISS_REASONS,
+  credentialDismissReasonLabel,
+} from './credentials/dismissal.ts';
 export { credentialLabel, credentialName } from './credentials/name.ts';
 export type {
   CredentialDetailModel,
+  CredentialDismissal,
   CredentialLinkedFinding,
   CredentialListItem,
   CredentialTeamUsage,

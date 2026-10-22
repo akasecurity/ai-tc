@@ -308,7 +308,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'core-pii',
     name: 'Core PII',
-    version: '0.2.2',
+    version: '0.2.3',
     rawRules: [
       corePiiEmail,
       corePiiSsn,

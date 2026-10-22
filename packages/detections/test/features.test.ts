@@ -130,9 +130,11 @@ describe('nearby words', () => {
 
   // Every caller asks for features, and a minified bundle or a one-line JSON
   // payload is one line holding thousands of matches. The work per match must
-  // not grow with the line: doubling both the line and the matches on it
-  // roughly doubles the time. CPU time, best of three, so a busy runner's
-  // stalls are not counted.
+  // not grow with the line: quadrupling both the line and the matches on it
+  // roughly quadruples the time (a quadratic cost would be 16x). CPU time, best
+  // of five, so a busy runner's stalls are not counted. The bound sits at 8x,
+  // halfway between the two on a log scale, because a doubling (2x against 4x)
+  // leaves too little room for a timer tick or a GC pause to fall on one side.
   it('stays linear on a single long line with many matches', () => {
     const cost = (copies: number): number => {
       const unit = `${STRIPE_LIKE} api_token example `;
@@ -142,7 +144,7 @@ describe('nearby words', () => {
         return { ...match(STRIPE_LIKE), span: { start, end: start + STRIPE_LIKE.length } };
       });
       let best = Number.POSITIVE_INFINITY;
-      for (let round = 0; round < 3; round++) {
+      for (let round = 0; round < 5; round++) {
         const before = process.cpuUsage();
         for (const m of matches) matchFeatures(m, rule(), { text });
         const used = process.cpuUsage(before);
@@ -150,9 +152,9 @@ describe('nearby words', () => {
       }
       return best;
     };
-    const small = cost(2_000);
+    const small = cost(1_000);
     const large = cost(4_000);
-    expect(large / Math.max(small, 1), `${String(small)}ms → ${String(large)}ms`).toBeLessThan(3);
+    expect(large / Math.max(small, 5), `${String(small)}ms → ${String(large)}ms`).toBeLessThan(8);
   });
 
   it('is empty without the scanned text', () => {

@@ -957,7 +957,16 @@ changes. The gaps that exist today:
   **Empty stdout is in none of those lists.** That same reference's `preToolUse` decision
   table reads "Empty output uses default behavior", which hands the call to the host's own
   permission flow — so silence here is §1's fail-open unchanged, and the adapter writes
-  **nothing on every path that reaches no verdict**. It is NOT unmeasured; the earlier
+  **no hook output on every path that reaches no verdict**. The one thing it may still put
+  on stdout there is a **progress line**, `{"type":"progress","message":…}`. The same
+  reference documents these for every command hook as display-only timeline output that the
+  host removes from stdout before it parses what is left, so on their own they leave that
+  output empty. A notice on the CLI dialect goes out as one, ahead of any decision object,
+  with a copy on stderr, because a recorded 1.0.98 `-p` session showed an exit-0 hook's
+  stderr only in the debug log. They are written on the CLI dialect only: VS Code documents
+  no progress line, and there invalid JSON is a non-blocking warning, so an extra line beside
+  a deny or a rewrite could cost the decision. No recording yet shows one rendered. That
+  empty output is the no-opinion is NOT unmeasured; the earlier
   reading that it might be is retracted, and `plugins/copilot/test/fixtures/cli/README.md`
   records under "Settled by the vendor reference" which questions the docs answer and which a
   recording still owes.

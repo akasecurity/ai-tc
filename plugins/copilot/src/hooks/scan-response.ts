@@ -162,12 +162,13 @@ export async function scanResponseFields(
  *
  * Same shape and the same reason as `PreToolUseDecision` and `PromptDecision`:
  * the CLI's `postToolUse` output has no message field, so the text comes back
- * as `notice` for stderr there and rides stdout under VS Code.
+ * as `notice` there, for a progress line and a stderr copy, and rides stdout
+ * under VS Code.
  */
 export interface ResponseDecision {
   /** The payload for stdout, or null to write nothing. */
   output: HookOutput | null;
-  /** Text for stderr, set only where the dialect's stdout cannot carry it. */
+  /** Notice text, set only where the dialect's payload cannot carry it. */
   notice?: string;
 }
 

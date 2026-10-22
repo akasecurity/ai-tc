@@ -73,7 +73,7 @@ Then point VS Code at the unpacked folder in your user settings:
 The setup skill's [Known limitations](https://github.com/akasecurity/ai-tc/blob/main/plugins/copilot/skills/setup/SKILL.md#known-limitations) section is the authority on what AKA can do on each surface. In brief:
 
 - **Only a tool call can be stopped.** Prompts and tool results are captured, scanned and recorded, so a secret in either shows up as a finding, but neither is ever blocked or rewritten.
-- **AKA's notices are not shown to you.** On the Copilot CLI in `-p` mode they appeared only in the debug log; in VS Code, only in the "GitHub Copilot Chat Hooks" output channel.
+- **AKA's notices may not be shown to you.** On the Copilot CLI they are sent as hook progress lines, which the Copilot hooks reference documents as shown in the CLI timeline; that has not yet been observed on a real install, and an earlier build's notices appeared only in the debug log in `-p` mode. In VS Code they appear only in the "GitHub Copilot Chat Hooks" output channel. A deny is the one message that carries its own reason, so set `redactFallback` to `block` where a flagged command must not pass silently.
 - **No setup wizard and no history backfill yet.** Use the `aka` CLI directly (`aka init`, `aka detections`, `aka scan`), and nothing reads the sessions that happened before the plugin was installed.
 
 ## Where your data lives

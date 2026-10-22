@@ -210,7 +210,10 @@ function formatMode(mode: number): string {
  * decision — a second write there would concatenate into something that does not
  * parse, which the host reads as no opinion and would cost the very enforcement
  * this is warning about. stderr has no such contract and is the channel the rule
- * quarantine already warns on.
+ * quarantine already warns on. Callers pass `noticeWriter(dialect)`, which on
+ * the CLI also sends it as a progress line: that line is the one exception to
+ * the single object, because the host removes it before parsing (see
+ * `progressLine` in ./shared.ts).
  *
  * Called from every hook that loads config. On this host that list is led by
  * `pre-tool-use`, whose stdout carries a VERDICT or nothing — there is no

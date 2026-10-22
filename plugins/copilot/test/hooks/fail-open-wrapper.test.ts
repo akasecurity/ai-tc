@@ -34,7 +34,16 @@ import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { HookOutput } from '../../src/hooks/shared.ts';
-import { emit, runHookFailOpen, WATCHDOG_MS, writeNotice } from '../../src/hooks/shared.ts';
+import {
+  emit,
+  noticeWriter,
+  progressLine,
+  runHookFailOpen,
+  takeQueuedProgress,
+  WATCHDOG_MS,
+  writeNotice,
+} from '../../src/hooks/shared.ts';
+import { readCliStdout } from '../helpers/cli-stdout.ts';
 
 /**
  * A payload for the `failOpen` seam.
@@ -498,15 +507,36 @@ describe('emit — resolves on the FLUSH, not on handing bytes to the stream', (
 });
 
 describe('writeNotice — the channel a verdict cannot share', () => {
-  it('writes the message with a trailing newline', () => {
+  // Every case drains the queue first and last: it is module state, and a
+  // notice another case queued would otherwise read as this case's.
+  afterEach(() => {
+    takeQueuedProgress();
+  });
+
+  it('writes the message to stderr with a trailing newline', () => {
     // The newline is the convention this module chose and the opposite of
     // `storeRedirectedMessage`'s, which carries its own — so it is asserted
     // rather than left to the caller to discover.
+    takeQueuedProgress();
     const written: string[] = [];
-    writeNotice('AKA flagged sensitive content', (text) => {
+    writeNotice('AKA flagged sensitive content', 'vscode', (text) => {
       written.push(text);
     });
     expect(written).toEqual(['AKA flagged sensitive content\n']);
+  });
+
+  it('queues a progress line on the CLI dialect, and only there', () => {
+    // The CLI's stderr was recorded reaching only its debug log, so the copy
+    // the user can see is the progress line. VS Code gets none: its harness
+    // documents no progress line, and an extra one beside a decision there
+    // could cost the decision.
+    takeQueuedProgress();
+    writeNotice('cli notice', 'cli', () => undefined);
+    writeNotice('vscode notice', 'vscode', () => undefined);
+    writeNotice('no dialect', undefined, () => undefined);
+    expect(takeQueuedProgress()).toEqual(['cli notice']);
+    // Taking empties the queue, so a notice is written once.
+    expect(takeQueuedProgress()).toEqual([]);
   });
 
   it('swallows a writer that throws, because a throw here would DENY', () => {
@@ -514,24 +544,120 @@ describe('writeNotice — the channel a verdict cannot share', () => {
     // inside `main()`, so an escaping error would reach the wrapper's catch —
     // or, on the store-unavailable path, leave the hook exiting non-zero, which
     // on the Copilot CLI is a deny. Losing the notice is the lesser outcome.
+    takeQueuedProgress();
     expect(() => {
-      writeNotice('boom', () => {
+      writeNotice('boom', 'cli', () => {
         throw new Error('EPIPE');
       });
     }).not.toThrow();
+    // And a stderr that throws does not cost the copy the user can see.
+    expect(takeQueuedProgress()).toEqual(['boom']);
   });
 
   it('really does write through the default path', () => {
-    // The control on both cases above: they inject a writer, so neither can see
+    // The control on the cases above: they inject a writer, so none can see
     // that the default is wired to stderr at all. A `writeNotice` whose default
     // was a no-op would pass them and silently drop every shipped notice.
     const spy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     try {
-      writeNotice('to stderr');
+      writeNotice('to stderr', 'cli');
       expect(spy).toHaveBeenCalledWith('to stderr\n');
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe('noticeWriter — self-terminated text, routed like a notice', () => {
+  afterEach(() => {
+    takeQueuedProgress();
+  });
+
+  it('writes the text as given to stderr and queues it without its newline on the CLI', () => {
+    takeQueuedProgress();
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      noticeWriter('cli')('store redirected\n');
+      noticeWriter('vscode')('not queued\n');
+      expect(spy.mock.calls.map((call) => call[0])).toEqual(['store redirected\n', 'not queued\n']);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(takeQueuedProgress()).toEqual(['store redirected']);
+  });
+});
+
+describe('runHookFailOpen — queued notices become progress lines on stdout', () => {
+  afterEach(() => {
+    takeQueuedProgress();
+  });
+
+  it('writes them ahead of the decision, in ONE write the host can still parse', async () => {
+    takeQueuedProgress();
+    const deny: HookOutput = { permissionDecision: 'deny', permissionDecisionReason: 'r' };
+    const run = await driveWrapper(() => {
+      writeNotice('first', 'cli', () => undefined);
+      writeNotice('second', 'cli', () => undefined);
+      return Promise.resolve(deny);
+    });
+    // One write, so an exit cannot land between the notices and the verdict.
+    expect(run.writes).toHaveLength(1);
+    // Ahead of the object, as the reference writes it ("before writing the
+    // final output"): the host strips a progress line wherever it sits, but
+    // only the documented order is one anybody has said works.
+    expect(run.writes[0]).toBe(
+      `${progressLine('first')}${progressLine('second')}${JSON.stringify(deny)}`,
+    );
+    expect(run.exits).toEqual([0]);
+    expect(readCliStdout(run.writes[0] ?? '')).toEqual({
+      progress: ['first', 'second'],
+      rest: JSON.stringify(deny),
+      output: deny,
+    });
+  });
+
+  it('writes them with no decision, which leaves the hook output EMPTY', async () => {
+    // The warn path on the CLI: the user is told, and the host still reads no
+    // verdict, so the call goes to its own permission flow exactly as before.
+    takeQueuedProgress();
+    const run = await driveWrapper(() => {
+      writeNotice('AKA flagged sensitive content', 'cli', () => undefined);
+      return Promise.resolve(undefined);
+    });
+    expect(run.exits).toEqual([0]);
+    expect(run.writes).toEqual([progressLine('AKA flagged sensitive content')]);
+    const read = readCliStdout(run.writes.join(''));
+    expect(read.progress).toEqual(['AKA flagged sensitive content']);
+    expect(read.output).toBeUndefined();
+  });
+
+  it('writes nothing for a VS Code notice, whose payload carries its own', async () => {
+    // The control on the case above: the progress write is the CLI dialect's,
+    // so a body that only wrote a VS Code-dialect notice leaves stdout empty.
+    takeQueuedProgress();
+    noDecision(
+      await driveWrapper(() => {
+        writeNotice('vscode notice', 'vscode', () => undefined);
+        return Promise.resolve(undefined);
+      }),
+    );
+  });
+
+  it('still writes what was queued when the watchdog fires', async () => {
+    // A notice already produced is worth showing even when the body then
+    // stalls; it is not a verdict, so it cannot turn the timeout into one.
+    takeQueuedProgress();
+    const run = await driveWrapper(
+      () => {
+        writeNotice('before the stall', 'cli', () => undefined);
+        return new Promise<undefined>(() => undefined);
+      },
+      undefined,
+      5,
+    );
+    expect(run.exits).toEqual([0]);
+    expect(run.writes).toEqual([progressLine('before the stall')]);
+    expect(run.counts).toBe(1);
   });
 });
 

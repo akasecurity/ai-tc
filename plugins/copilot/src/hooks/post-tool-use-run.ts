@@ -6,7 +6,8 @@
  * stdin:   CLI    { sessionId, timestamp, cwd, toolName, toolArgs, toolResult }
  *          VSCode { hook_event_name, session_id, cwd, tool_name, tool_input,
  *                   tool_response }
- * output, CLI:     undefined, always — every notice goes to stderr
+ * output, CLI:     undefined, always — every notice is a progress line
+ *                  (see `progressLine` in ./shared.ts), with a stderr copy
  * output, VS Code: { systemMessage } → a note, or undefined
  *
  * **THIS HOOK WITHHOLDS NOTHING AND REWRITES NOTHING.** The tool has already
@@ -52,7 +53,14 @@ import { detectDialect, readSessionId, readToolCall } from './dialect.ts';
 import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
 import { responseDecision, scanResponseFields } from './scan-response.ts';
 import type { HookHandler } from './shared.ts';
-import { baseMetadata, callKind, callScopeKey, parseJson, writeNotice } from './shared.ts';
+import {
+  baseMetadata,
+  callKind,
+  callScopeKey,
+  noticeWriter,
+  parseJson,
+  writeNotice,
+} from './shared.ts';
 import {
   claimStoreUnavailableWarning,
   openGatewayOrNull,
@@ -103,18 +111,19 @@ export const runPostToolUse: HookHandler = async (event, stdin, options = {}) =>
   const config = loadConfig(options.akaHome);
   const sessionId = readSessionId(dialect, input);
   // A symlinked store path redirects the corpus without failing anything; say
-  // so once per session on stderr, so this hook's stdout contract is untouched.
-  warnIfStoreRedirected(config, sessionId);
+  // so once per session, on stderr and, on the CLI, as a progress line, which
+  // the host strips before reading this hook's output.
+  warnIfStoreRedirected(config, sessionId, noticeWriter(dialect));
 
   const gateway = openGatewayOrNull(config);
   if (gateway === null) {
     // Nothing is being scanned or recorded — say so once per session rather
-    // than looking protected. On the CLI that has to be stderr: `systemMessage`
+    // than looking protected. On the CLI that has to be a progress line: `systemMessage`
     // is not an output field there, so the same object on stdout is dropped.
     if (claimStoreUnavailableWarning(config.dataDir, sessionId)) {
       const message = storeUnavailableMessage(config.dbPath);
       if (dialect === 'vscode') return { systemMessage: message };
-      writeNotice(message);
+      writeNotice(message, dialect);
     }
     return undefined;
   }
@@ -147,6 +156,6 @@ export const runPostToolUse: HookHandler = async (event, stdin, options = {}) =>
   const decision = responseDecision(dialect, outcome);
   // Set only on a dialect whose stdout has no field to carry it, so this never
   // competes with the payload below for the single JSON object stdout takes.
-  if (decision.notice !== undefined) writeNotice(decision.notice);
+  if (decision.notice !== undefined) writeNotice(decision.notice, dialect);
   return decision.output ?? undefined;
 };

@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -17,7 +17,15 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..'
 /** Path of the conventions doc, relative to the repo root. */
 export const CONVENTIONS_DOC = 'CLAUDE.md';
 
-/** The conventions doc's text. Throws if it is missing or empty. */
+/** Directory, relative to the repo root, holding the long-form sections `CLAUDE.md` links to. */
+export const CONVENTIONS_DIR = 'conventions';
+
+/**
+ * The conventions text: `CLAUDE.md` followed by every file under `conventions/`, in name
+ * order. Headings keep their original level and text across the split, so a guard slicing
+ * on a heading line reads the same section it always did. Throws if `CLAUDE.md` is missing
+ * or empty, or the directory holds no file.
+ */
 export function readConventions() {
   const path = join(REPO_ROOT, CONVENTIONS_DOC);
   let text;
@@ -27,7 +35,17 @@ export function readConventions() {
     throw new Error(`Could not read ${CONVENTIONS_DOC} at ${path}.`, { cause });
   }
   if (text.trim() === '') throw new Error(`${CONVENTIONS_DOC} is empty.`);
-  return text;
+  const dir = join(REPO_ROOT, CONVENTIONS_DIR);
+  let names;
+  try {
+    names = readdirSync(dir)
+      .filter((name) => name.endsWith('.md'))
+      .sort();
+  } catch (cause) {
+    throw new Error(`Could not read ${CONVENTIONS_DIR}/ at ${dir}.`, { cause });
+  }
+  if (names.length === 0) throw new Error(`${CONVENTIONS_DIR}/ holds no .md file.`);
+  return [text, ...names.map((name) => readFileSync(join(dir, name), 'utf8'))].join('\n');
 }
 
 /**

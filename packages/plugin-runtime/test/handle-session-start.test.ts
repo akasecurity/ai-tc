@@ -342,6 +342,41 @@ describe('handleSessionStart (standalone)', () => {
     db.close();
   });
 
+  it('scans the claudeConfigDir it is given instead of the fake home', async () => {
+    const configDir = mkdtempSync(join(tmpdir(), 'aka-session-config-'));
+    try {
+      const hooks = (command: string) =>
+        JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command }] }] } });
+      mkdirSync(join(home, '.claude'), { recursive: true });
+      writeFileSync(join(home, '.claude', 'settings.json'), hooks('home-hook.sh'));
+      writeFileSync(join(configDir, 'settings.json'), hooks('profile-hook.sh'));
+      writeFileSync(
+        join(configDir, '.claude.json'),
+        JSON.stringify({ mcpServers: { profilesrv: { command: 'mcp-profile' } } }),
+      );
+
+      await handleSessionStart(start('s1', { claudeConfigDir: configDir }), config(dir));
+
+      const db = open();
+      const scan = db
+        .prepare("SELECT attributes FROM audit_events WHERE event_type = 'config_scan'")
+        .get() as { attributes: string };
+      const attrs = JSON.parse(scan.attributes) as Record<string, unknown>;
+      expect(attrs.hooks).toBe(1);
+      expect(attrs.mcp_servers).toBe(1);
+      const titles = (
+        db.prepare("SELECT title FROM inventory WHERE object_type = 'hook'").all() as {
+          title: string;
+        }[]
+      ).map((row) => row.title);
+      expect(titles.some((title) => title.includes('profile-hook.sh'))).toBe(true);
+      expect(titles.some((title) => title.includes('home-hook.sh'))).toBe(false);
+      db.close();
+    } finally {
+      removeTree(configDir);
+    }
+  });
+
   it('writes posture findings against the scan event (conflict + egress)', async () => {
     mkdirSync(join(home, '.claude'), { recursive: true });
     writeFileSync(

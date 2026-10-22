@@ -377,6 +377,70 @@ describe('recordConfigScan → configInventoryReport round-trip', () => {
     expect(report.topics.find((t) => t.topic === 'hooks')?.attention).toBe('1 egress');
   });
 
+  it('re-scanning the same hooks re-observes one keyed finding per (rule, command)', () => {
+    const unknownDef = {
+      ruleId: 'hook-unknown',
+      version: '1',
+      name: 'Unknown hook — not attributable to a plugin or known tool',
+      category: 'config' as const,
+      severity: 'medium' as const,
+      definition: '{}',
+    };
+    const commands = ['/path/noop.sh', 'bun /path/noop.ts'];
+    const base = Date.parse('2026-01-01T00:00:00.000Z');
+    const scanIds = ['scan-1', 'scan-2', 'scan-3'];
+    scanIds.forEach((scanId, i) => {
+      const rec = record(
+        scanResult({
+          scannedAt: new Date(base + i * 60_000).toISOString(),
+          hooks: commands.map((command) => ({ event: 'Stop', command, scope: 'user' })),
+        }),
+        scanId,
+      );
+      rec.definitions = [unknownDef];
+      rec.findings = commands.map((command) => ({
+        ruleId: 'hook-unknown',
+        version: '1',
+        span: { start: 0, end: command.length },
+        maskedMatch: command,
+        actionTaken: 'warn' as const,
+        confidence: 0.6,
+      }));
+      db.recordConfigScan(rec);
+    });
+
+    const rows = store
+      .openRaw()
+      .prepare(
+        `SELECT f.masked_match AS maskedMatch, f.finding_key AS findingKey,
+                f.audit_event_id AS auditEventId, f.first_detected_at AS firstDetectedAt
+           FROM inspection_findings f
+           JOIN inspection_definitions d ON d.id = f.inspection_definition_id
+          WHERE d.rule_id = 'hook-unknown'
+          ORDER BY f.masked_match`,
+      )
+      .all() as {
+      maskedMatch: string;
+      findingKey: string | null;
+      auditEventId: string;
+      firstDetectedAt: number;
+    }[];
+
+    // Positive control: both hooks were recorded.
+    expect(rows.map((r) => r.maskedMatch)).toEqual(commands);
+    for (const row of rows) {
+      expect(row.findingKey).not.toBeNull();
+      // Moved onto the latest scan, first detection kept from the first.
+      expect(row.auditEventId).toBe('scan-3');
+      expect(row.firstDetectedAt).toBe(base);
+    }
+    expect(new Set(rows.map((r) => r.findingKey)).size).toBe(2);
+
+    // The read surface still correlates the latest scan's findings.
+    const report = db.configInventoryReport();
+    expect(report.hooks.map((h) => h.status)).toEqual(['unknown', 'unknown']);
+  });
+
   it('a finding without its definition in the record is skipped, not torn', () => {
     const rec = record(scanResult(), 'scan-1');
     rec.findings = [

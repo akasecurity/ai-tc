@@ -2,7 +2,15 @@
 // (src/hooks/*.ts run main() on import and hang vitest collection). Identical
 // to plugins/claude-code/src/hooks/store-health.test.ts — no harness-specific
 // logic here.
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -77,10 +85,40 @@ describe('claimStoreUnavailableWarning — once per session', () => {
     expect(claimStoreUnavailableWarning(dir, 'sess-1')).toBe(false);
   });
 
-  it('a NEW session warns again (single overwritten marker, not an accumulating set)', () => {
+  it('a NEW session warns again', () => {
     expect(claimStoreUnavailableWarning(dir, 'sess-1')).toBe(true);
     expect(claimStoreUnavailableWarning(dir, 'sess-2')).toBe(true);
     expect(claimStoreUnavailableWarning(dir, 'sess-2')).toBe(false);
+  });
+
+  it('two sessions alternating claims each warn exactly once', () => {
+    const warned = ['sess-1', 'sess-2', 'sess-1', 'sess-2', 'sess-1', 'sess-2'].filter((id) =>
+      claimStoreUnavailableWarning(dir, id),
+    );
+    expect(warned).toEqual(['sess-1', 'sess-2']);
+  });
+
+  it('keeps a bounded id list, newest last, and evicts the oldest', () => {
+    for (let i = 0; i < 100; i += 1) claimStoreUnavailableWarning(dir, `s${String(i)}`);
+    const ids = readFileSync(join(dir, 'store-warning-last-session'), 'utf8').split('\n');
+    expect(ids).toHaveLength(32);
+    expect(ids.at(-1)).toBe('s99');
+    expect(ids).not.toContain('s0');
+    expect(claimStoreUnavailableWarning(dir, 's0')).toBe(true);
+  });
+
+  it('reads a marker written by an older build that held a single id', () => {
+    writeFileSync(join(dir, 'store-warning-last-session'), 's1');
+    expect(claimStoreUnavailableWarning(dir, 's1')).toBe(false);
+    expect(claimStoreUnavailableWarning(dir, 's2')).toBe(true);
+  });
+
+  it('refuses an id carrying a newline: it always warns and is never recorded', () => {
+    expect(claimStoreUnavailableWarning(dir, 'a\nb')).toBe(true);
+    expect(claimStoreUnavailableWarning(dir, 'a\nb')).toBe(true);
+    expect(claimStoreUnavailableWarning(dir, 'a')).toBe(true);
+    expect(claimStoreUnavailableWarning(dir, 'b')).toBe(true);
+    expect(claimStoreUnavailableWarning(dir, 'a')).toBe(false);
   });
 
   it('with no session id it cannot dedupe and always warns', () => {
@@ -118,6 +156,47 @@ describe('warnIfStoreRedirected — a symlinked store path is surfaced', () => {
   it('derives the store home from dataDir exactly as the layout builds it', () => {
     const home = join(dir, 'somewhere');
     expect(dataDirOf(home)).toBe(join(home, 'data'));
+  });
+
+  it('two sessions alternating each get the redirect warning exactly once', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('unprivileged symlink creation is not available on Windows');
+      return;
+    }
+    const victim = join(dir, 'victim-alt');
+    mkdirSync(victim, { mode: 0o755 });
+    const home = join(dir, 'linked-home-alt');
+    symlinkSync(victim, home);
+    mkdirSync(dataDirOf(home), { recursive: true });
+    const config = configFor(dataDirOf(home));
+    const written: string[] = [];
+    for (const id of ['s1', 's2', 's1', 's2', 's1', 's2']) {
+      warnIfStoreRedirected(config, id, (m) => written.push(m));
+    }
+    expect(written).toHaveLength(2);
+  });
+
+  it('a session id carrying a newline cannot dedupe: it warns every time and is never recorded', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('unprivileged symlink creation is not available on Windows');
+      return;
+    }
+    const victim = join(dir, 'victim-newline');
+    mkdirSync(victim, { mode: 0o755 });
+    const home = join(dir, 'linked-home-newline');
+    symlinkSync(victim, home);
+    mkdirSync(dataDirOf(home), { recursive: true });
+    const config = configFor(dataDirOf(home));
+    const written: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      warnIfStoreRedirected(config, 's1\ns2', (m) => written.push(m));
+    }
+    expect(written).toHaveLength(3);
+    // The ids the newline would have split into are not recorded either, so a
+    // genuine session of the same name still gets its own warning.
+    warnIfStoreRedirected(config, 's1', (m) => written.push(m));
+    warnIfStoreRedirected(config, 's2', (m) => written.push(m));
+    expect(written).toHaveLength(5);
   });
 
   it('says nothing at all when no store path is a symlink', (ctx) => {

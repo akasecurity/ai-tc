@@ -376,7 +376,9 @@ These are the **shipped product's** egress paths. Repo CI additionally talks to 
 registry: `.github/workflows/audit.yml` (via `tools/audit-gate`) runs `pnpm audit` on every
 PR and daily, sending the workspace dependency graph — package names and versions,
 including the `@akasecurity/*` workspace importers — to the registry's audit endpoint; it
-also resolves and audits the published CLI's runtime dependency ranges with `npm` in a
+re-resolves a scratch copy of the workspace manifests with `pnpm install --lockfile-only`
+to review the root `pnpm.overrides` floors, which fetches package metadata from the
+registry; it also resolves and audits the published CLI's runtime dependency ranges with `npm` in a
 temp dir, sending that (public-package) graph the same way. The binary channel's packaging
 is the second such path: `cli/scripts/package-sea.mjs` shells out to `npm install` to place
 the Next standalone server's runtime dependencies (`next`, `react`, `react-dom` and their

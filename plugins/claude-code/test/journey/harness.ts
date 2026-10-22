@@ -449,6 +449,9 @@ export class SetupJourney {
       HOME: this.home,
       // Windows resolves the home dir from USERPROFILE; keep both in lockstep.
       USERPROFILE: this.home,
+      // Cleared so a profile exported on the host cannot redirect the scripts
+      // away from this throwaway home.
+      CLAUDE_CONFIG_DIR: undefined,
       // Stub judge first on PATH so apply-suppressions' `claude -p` spawn hits it,
       // never a live model. Joined with path.delimiter: a literal ':' is one
       // malformed entry on Windows, which puts the shim dir on PATH nowhere.

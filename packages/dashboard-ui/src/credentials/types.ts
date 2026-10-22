@@ -1,6 +1,6 @@
 // The shapes the credential views render. A host maps its own credential
 // records onto these; the views never see a value or its fingerprint.
-import type { Severity } from '@akasecurity/schema';
+import type { CredentialStatus, Severity } from '@akasecurity/schema';
 
 export interface CredentialListItem {
   id: string;
@@ -17,15 +17,33 @@ export interface CredentialListItem {
   /** The detecting rule's short label, such as "GitHub token". */
   kind: string;
   provider: string | null;
-  /** Null until a secrets manager supplies one. */
+  /** Who answers for it; null when nobody has said. */
   owner: string | null;
   projectCount: number;
   teamCount: number;
   endpointCount: number;
-  /** ISO time; null until a secrets manager supplies one. */
+  /** ISO date or time it was last rotated; null when nobody has said. */
   lastRotated: string | null;
   /** ISO time it was last seen. */
   lastSeen: string;
+  /** Whole days between rotations; null when no policy is set. */
+  rotationPolicyDays: number | null;
+  /** What needs attention; empty when nothing does. */
+  statuses: CredentialStatus[];
+}
+
+/** How many credentials each status chip covers under the current search, whatever chip is on. */
+export interface CredentialStatusCounts {
+  all: number;
+  byStatus: Record<CredentialStatus, number>;
+}
+
+/** What an administrator enters about a credential. Null clears a field. */
+export interface CredentialRotationInput {
+  owner: string | null;
+  /** ISO date, `YYYY-MM-DD`. */
+  lastRotated: string | null;
+  rotationPolicyDays: number | null;
 }
 
 export interface CredentialTeamUsage {
@@ -49,6 +67,8 @@ export interface CredentialDetailModel extends CredentialListItem {
   sightingCount: number;
   /** The secrets-manager reference; null marks a credential as detected only. */
   reference: string | null;
+  /** ISO time the policy next falls due; null when no policy is set. */
+  rotationDueAt: string | null;
   projects: string[];
   teams: CredentialTeamUsage[];
   /** Source tool ids, such as "claude-code"; an id the registry does not know is shown as sent. */

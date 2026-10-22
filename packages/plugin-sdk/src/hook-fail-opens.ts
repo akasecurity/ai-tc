@@ -14,10 +14,12 @@ import { ensureDataDirSync, writeOwnerOnlyFileSync } from '@akasecurity/persiste
  * not being written to. This tally is the trace.
  *
  * It counts two things. The first is a throw that ESCAPES a hook's main() —
- * one the code did not anticipate. The second is a PARTIAL SCAN: a response
- * hook that acted on what it did scan but let the rest of the content through
- * unscanned, because the response-scan deadline cut the scan short or the
- * response size bound cut text out of the fields before the scan began. Both
+ * one the code did not anticipate. The second is a PARTIAL SCAN: a hook that
+ * acted on what it did scan but let the rest of the content through
+ * unscanned, because the response-scan deadline cut the scan short, the
+ * response size bound cut text out of the fields before the scan began, or —
+ * on a host with no channel to refuse it — a bounded scan of a large field did
+ * not finish. Both
  * are content the host received with no verdict on it, which is what "failed
  * open" means to the person reading `aka status`; a partial scan is just the
  * case where some of the content did get one.

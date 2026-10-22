@@ -39,7 +39,8 @@
  * worker under the hook's deadline; one that does not finish comes back with
  * `scanIncomplete` set and no findings, and is reported as unscanned rather
  * than as clean. There is nothing to refuse: the output already reached the
- * model.
+ * model. A result any part of which went unscanned is counted in the hook
+ * fail-open tally `aka status` renders.
  *
  * This module is the handler and nothing else: it reads neither argv's event
  * token nor stdin, and never exits. `./post-tool-use.ts` is the entry that
@@ -52,7 +53,14 @@ import { detectDialect, readSessionId, readToolCall } from './dialect.ts';
 import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
 import { responseDecision, scanResponseFields } from './scan-response.ts';
 import type { HookHandler } from './shared.ts';
-import { baseMetadata, callKind, callScopeKey, parseJson, writeNotice } from './shared.ts';
+import {
+  baseMetadata,
+  callKind,
+  callScopeKey,
+  countPartialScan,
+  parseJson,
+  writeNotice,
+} from './shared.ts';
 import {
   claimStoreUnavailableWarning,
   openGatewayOrNull,
@@ -74,7 +82,8 @@ const OWN_EVENTS: ReadonlySet<string> = new Set(['postToolUse', 'PostToolUse']);
 /**
  * The tool-result handler. `options.akaHome` points the store and settings at
  * another home and `options.scanWorkerUrl` the bounded scan at another worker;
- * the entry passes neither.
+ * the entry passes neither. `options.countFailOpen` replaces the detached
+ * count a partial scan is recorded through.
  */
 export const runPostToolUse: HookHandler = async (event, stdin, options = {}) => {
   if (event !== undefined && !OWN_EVENTS.has(event)) return undefined;
@@ -143,6 +152,11 @@ export const runPostToolUse: HookHandler = async (event, stdin, options = {}) =>
   } finally {
     await runtime.close();
   }
+
+  // Part of the result reached the model with no verdict on it: a field whose
+  // bounded scan did not finish, or text the walk bounds left out. Neither is
+  // withheld on this host, so both are counted like any fail-open.
+  if (outcome.unscanned) countPartialScan(options.countFailOpen);
 
   const decision = responseDecision(dialect, outcome);
   // Set only on a dialect whose stdout has no field to carry it, so this never

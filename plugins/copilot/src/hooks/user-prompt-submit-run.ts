@@ -37,8 +37,9 @@
  * back with `scanIncomplete` set and no findings. With no channel to stop the
  * prompt, refusing it is not available — but reading the empty findings as
  * clean would tell the user nothing about a prompt nobody checked. So it is
- * reported as unscanned (`promptDecision`), and the runtime records the row
- * with no content and the refusal stamped on it.
+ * reported as unscanned (`promptDecision`), the runtime records the row with
+ * no content and the refusal stamped on it, and the prompt is counted in the
+ * hook fail-open tally `aka status` renders.
  *
  * This module is the handler and nothing else: it reads neither argv's event
  * token nor stdin, and never exits. `./user-prompt-submit.ts` is the entry that
@@ -52,7 +53,13 @@ import { detectDialect, readSessionId } from './dialect.ts';
 import type { HookEvent } from './event-name.ts';
 import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
 import type { HookHandler } from './shared.ts';
-import { baseMetadata, captureScopeKey, parseJson, writeNotice } from './shared.ts';
+import {
+  baseMetadata,
+  captureScopeKey,
+  countPartialScan,
+  parseJson,
+  writeNotice,
+} from './shared.ts';
 import {
   claimStoreUnavailableWarning,
   openGatewayOrNull,
@@ -87,7 +94,8 @@ const ONBOARDING_NUDGE =
 /**
  * The prompt handler. `options.akaHome` points the store and settings at
  * another home and `options.scanWorkerUrl` the bounded scan at another worker;
- * the entry passes neither.
+ * the entry passes neither. `options.countFailOpen` replaces the detached
+ * count a partial scan is recorded through.
  */
 export const runUserPromptSubmit: HookHandler = async (event, stdin, options = {}) => {
   if (event !== undefined && !isOwnEvent(event)) return undefined;
@@ -158,6 +166,10 @@ export const runUserPromptSubmit: HookHandler = async (event, stdin, options = {
   } finally {
     await runtime.close();
   }
+
+  // Neither host can stop a prompt, so one whose scan did not finish was sent
+  // with no verdict on it — counted like any fail-open.
+  if (result.scanIncomplete !== undefined) countPartialScan(options.countFailOpen);
 
   const decision = promptDecision(capture.event, dialect, result);
   // Set only on a dialect whose stdout has no field to carry it, so this never

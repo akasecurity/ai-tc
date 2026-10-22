@@ -83,11 +83,18 @@ const stripComments = (source) =>
 /** @param {string} binding */
 const setupEntryFor = (binding) =>
   new RegExp(String.raw`setupFiles\s*:\s*\[[^\]]*\b${binding}\b[^\]]*\]`);
+/**
+ * Every regex metacharacter in `text`, escaped, so a path is matched as the
+ * literal it is. Escaping only `.` happened to be enough for today's two
+ * subjects and would silently mis-match the first one to carry a `+`, `(` or
+ * `?` — and a guard that quietly matches nothing reports green.
+ * @param {string} text
+ */
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
+
 /** @param {string} rel */
 const guardUrlFor = (rel) =>
-  new RegExp(
-    String.raw`new URL\(\s*'([^']*${rel.replace(/\//g, '/').replace(/\./g, String.raw`\.`)})'\s*,\s*import\.meta\.url\s*\)`,
-  );
+  new RegExp(String.raw`new URL\(\s*'([^']*${escapeRegExp(rel)})'\s*,\s*import\.meta\.url\s*\)`);
 
 /**
  * Every workspace package, by name, with its declared edges and test script.

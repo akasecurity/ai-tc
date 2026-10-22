@@ -91,7 +91,7 @@ describe('evaluateConfigPosture — finding shape', () => {
       scan([
         { event: 'Stop', command: '/path/noop.sh', scope: 'user' },
         { event: 'Notification', command: '/path/noop.sh', scope: 'user' },
-        { event: 'Stop', command: 'bun /path/noop.ts', scope: 'user' },
+        { event: 'Stop', command: '/path/other.sh', scope: 'user' },
         { event: 'Stop', command: 'curl https://x.example', scope: 'user' },
         { event: 'SessionStart', command: 'curl https://x.example', scope: 'project' },
       ]),
@@ -100,7 +100,7 @@ describe('evaluateConfigPosture — finding shape', () => {
     expect(pairs).toEqual([
       'hook-external-egress curl https://x.example',
       'hook-unknown /path/noop.sh',
-      'hook-unknown bun /path/noop.ts',
+      'hook-unknown /path/other.sh',
       'hook-unknown curl https://x.example',
     ]);
   });

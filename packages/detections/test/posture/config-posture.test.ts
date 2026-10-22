@@ -86,6 +86,25 @@ describe('evaluateConfigPosture — finding shape', () => {
     expect(conflicts[0]?.maskedMatch).toBe('eslint --fix "$FILE"');
   });
 
+  it('a command registered on several events yields one finding per rule', () => {
+    const findings = evaluateConfigPosture(
+      scan([
+        { event: 'Stop', command: '/path/noop.sh', scope: 'user' },
+        { event: 'Notification', command: '/path/noop.sh', scope: 'user' },
+        { event: 'Stop', command: 'bun /path/noop.ts', scope: 'user' },
+        { event: 'Stop', command: 'curl https://x.example', scope: 'user' },
+        { event: 'SessionStart', command: 'curl https://x.example', scope: 'project' },
+      ]),
+    );
+    const pairs = findings.map((f) => `${f.ruleId} ${f.maskedMatch}`).sort();
+    expect(pairs).toEqual([
+      'hook-external-egress curl https://x.example',
+      'hook-unknown /path/noop.sh',
+      'hook-unknown bun /path/noop.ts',
+      'hook-unknown curl https://x.example',
+    ]);
+  });
+
   it('every finding cites an existing definition by natural key', () => {
     const defs = new Set(configPostureDefinitions().map((d) => `${d.ruleId}@${d.version}`));
     const findings = evaluateConfigPosture(

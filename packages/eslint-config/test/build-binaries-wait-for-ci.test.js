@@ -5,7 +5,15 @@
 // cases RUN the step, with `gh`, `sleep` and `date` stubbed, rather than read it.
 
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -23,6 +31,18 @@ import {
 } from './helpers/workflow-yaml.js';
 
 const BASH = '/bin/bash';
+/**
+ * Skip on a host that cannot run the extracted shell (Windows runs this package
+ * too). A skip rather than a bare return: a returning body is a PASSING body, so
+ * every executing case would report as covered while asserting nothing.
+ * @param {{ skip: (note?: string) => void }} ctx
+ */
+function requirePosixShell(ctx) {
+  if (process.platform === 'win32' || !existsSync(BASH)) {
+    ctx.skip(`needs ${BASH}; the gate step is POSIX shell, as GitHub runs it`);
+  }
+}
+
 const HEAD_SHA = '0123456789abcdef0123456789abcdef01234567';
 
 const workflow = () =>
@@ -51,7 +71,7 @@ function runGate(row) {
   const dir = mkdtempSync(join(tmpdir(), 'wait-for-ci-'));
   SCRATCH_DIRS.push(dir);
   const bin = join(dir, 'bin');
-  execFileSync('/bin/mkdir', [bin]);
+  mkdirSync(bin);
   const stub = (name, body) => {
     const file = join(bin, name);
     writeFileSync(file, `#!/bin/bash\n${body}\n`);
@@ -85,27 +105,37 @@ function runGate(row) {
 }
 
 describe('build-binaries wait-for-ci gate', () => {
-  it('asks for the pull_request ci.yml run of the head sha', () => {
+  it('asks for the pull_request ci.yml run of the head sha', (ctx) => {
+    requirePosixShell(ctx);
     const { args } = runGate('completed success');
     expect(args).toContain('--workflow ci.yml');
     expect(args).toContain(`--commit ${HEAD_SHA}`);
     expect(args).toContain('--event pull_request');
   });
 
-  it('builds when ci.yml completed successfully', () => {
+  it('builds when ci.yml completed successfully', (ctx) => {
+    requirePosixShell(ctx);
     expect(runGate('completed success').outputs).toBe('ci_ok=true');
   });
 
-  it.each(['completed failure', 'completed cancelled', 'completed skipped', 'completed timed_out'])(
-    'stands down on `%s`, saying why',
-    (row) => {
+  // `it.each` hands its body no TestContext, so a per-case skip needs a plain
+  // `it` per row.
+  for (const row of [
+    'completed failure',
+    'completed cancelled',
+    'completed skipped',
+    'completed timed_out',
+  ]) {
+    it(`stands down on \`${row}\`, saying why`, (ctx) => {
+      requirePosixShell(ctx);
       const { outputs, stdout } = runGate(row);
       expect(outputs).toBe('ci_ok=false');
       expect(stdout).toContain('::notice::');
-    },
-  );
+    });
+  }
 
-  it('builds anyway when no ci.yml run appears inside the window', () => {
+  it('builds anyway when no ci.yml run appears inside the window', (ctx) => {
+    requirePosixShell(ctx);
     const { outputs, stdout } = runGate('');
     expect(outputs).toBe('ci_ok=true');
     expect(stdout).toContain('building without waiting');
@@ -126,7 +156,7 @@ describe('build-binaries wait-for-ci gate', () => {
     const wait = jobOf(workflow(), 'wait-for-ci');
     expect(ifOf(wait, 'wait-for-ci')).toBe("github.event_name == 'pull_request'");
     const step = stepsOf(wait).find((s) => s.id === 'wait');
-    expect(envOf(step, 'the wait step').HEAD_SHA).toBe('${{ github.event.pull_request.head.sha }}');
+    expect(envOf(step).HEAD_SHA).toBe('${{ github.event.pull_request.head.sha }}');
   });
 
   it('has no push trigger, so there is no ungated push path', () => {

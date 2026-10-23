@@ -968,7 +968,7 @@ changes. The gaps that exist today:
   a deny or a rewrite could cost the decision. No recording yet shows one rendered. Both
   readings rest on CLI 1.0.55 or later, the build the reference dates the strip to; an older
   CLI's handling of a progress line beside a decision is unmeasured, and the setup skill states
-  that floor. That empty output is the no-opinion is NOT unmeasured; the earlier
+  that floor. That empty output is the no-opinion. It is NOT unmeasured; the earlier
   reading that it might be is retracted, and `plugins/copilot/test/fixtures/cli/README.md`
   records under "Settled by the vendor reference" which questions the docs answer and which a
   recording still owes.

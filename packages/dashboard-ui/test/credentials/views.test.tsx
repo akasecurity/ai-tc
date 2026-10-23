@@ -49,7 +49,6 @@ const DETAIL: CredentialDetailModel = {
   sightingCount: 9,
   reference: null,
   rotationDueAt: null,
-  exposedAt: null,
   projects: ['acme/api', 'acme/web'],
   teams: [
     { name: 'Payments', userCount: 2 },
@@ -590,26 +589,19 @@ describe('CredentialDetailView', () => {
     expect(onBack).toHaveBeenCalledTimes(1);
   });
 
-  it('says an exposed credential is Exposed and when it was first seen in a live session', () => {
-    detail({ ...DETAIL, statuses: ['exposed'], exposedAt: '2026-10-21T09:00:00.000Z' });
-    // The badge in the header, then one sentence that leads with the word, not a second headline.
+  it('says an exposed credential is Exposed in one sentence beside its badge', () => {
+    detail({ ...DETAIL, statuses: ['exposed'] });
     expect(text()).toContain(
-      'Exposed — this value was seen in a live LLM session, first 3 hours ago.',
+      'Exposed — this value was seen in a live LLM session. Its linked finding below follows the most recent session that carried it.',
     );
+    // The badge in the header, then the note's lead word, not a second headline.
     expect(text().split('Exposed')).toHaveLength(3);
   });
 
-  it('keeps the Exposed note when the status is set without a time, leaving out when', () => {
-    detail({ ...DETAIL, statuses: ['exposed'], exposedAt: null });
-    expect(text()).toContain(
-      'Exposed — this value was seen in a live LLM session. Its linked finding below',
-    );
-  });
-
-  it('says nothing of exposure for a credential no live session carried', () => {
-    detail();
+  it('says nothing of exposure for a credential whose statuses do not carry it', () => {
+    detail({ ...DETAIL, statuses: ['rotation_overdue'] });
     expect(text()).not.toContain('Exposed');
-    expect(text()).not.toContain('live LLM session, first');
+    expect(text()).not.toContain('live LLM session');
   });
 
   it('says why a credential has no linked findings', () => {

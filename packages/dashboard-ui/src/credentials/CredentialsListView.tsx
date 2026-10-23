@@ -21,7 +21,7 @@ import { relativeTime } from '../lib/relativeTime.ts';
 import { SearchField } from '../shared/SearchField.tsx';
 import { CredentialStatusBadge } from './CredentialStatusBadge.tsx';
 import { credentialLabel, credentialName } from './name.ts';
-import { CREDENTIAL_STATUS, credentialStatusLabel } from './status.ts';
+import { CREDENTIAL_STATUS, credentialStatusState } from './status.ts';
 import type { CredentialListItem, CredentialStatusCounts } from './types.ts';
 
 export interface CredentialsListViewProps {
@@ -155,7 +155,7 @@ export function CredentialsListView({
           {!emptyLedger
             ? 'These rows moved while you were reading. Step back to see the rest.'
             : status !== null
-              ? `No credentials are ${credentialStatusLabel(status).toLowerCase()}${search.trim() === '' ? '.' : ' in this search.'}`
+              ? `No credentials are ${credentialStatusState(status)}${search.trim() === '' ? '.' : ' in this search.'}`
               : search.trim() === ''
                 ? 'No credentials have been seen yet. They appear here once an attached machine shares a sighting.'
                 : 'Nothing matches this search.'}

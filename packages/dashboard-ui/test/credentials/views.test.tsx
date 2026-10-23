@@ -187,7 +187,7 @@ describe('CredentialsListView', () => {
   it('ignores a status filter passed without chips, which would strand the reader', () => {
     list({ items: [], total: 0, status: 'rotation_overdue' });
     expect(text()).toContain('No credentials have been seen yet');
-    expect(text()).not.toContain('rotation overdue');
+    expect(text()).not.toContain('overdue for rotation');
   });
 
   it('names a filter status this build does not know as sent, rather than failing the list', () => {
@@ -202,10 +202,12 @@ describe('CredentialsListView', () => {
 
   it('says no credential carries the status when the chip matches nothing', () => {
     list({ items: [], total: 0, status: 'rotation_overdue', onStatus: vi.fn() });
-    expect(text()).toContain('No credentials are rotation overdue.');
+    expect(text()).toContain('No credentials are overdue for rotation.');
     expect(text()).not.toContain('No credentials have been seen yet');
     list({ items: [], total: 0, status: 'rotation_overdue', onStatus: vi.fn(), search: 'stripe' });
-    expect(text()).toContain('No credentials are rotation overdue in this search.');
+    expect(text()).toContain('No credentials are overdue for rotation in this search.');
+    list({ items: [], total: 0, status: 'exposed', onStatus: vi.fn() });
+    expect(text()).toContain('No credentials are exposed.');
   });
 
   it('shows the display name, with the variable beside the kind once a label names it', () => {

@@ -48,6 +48,7 @@ import commandRiskCurlPipeShell from '../../../rules/command-risk/curl-pipe-shel
 import commandRiskGitForcePush from '../../../rules/command-risk/git-force-push.json';
 import commandRiskGitResetHard from '../../../rules/command-risk/git-reset-hard.json';
 import commandRiskPkillBroad from '../../../rules/command-risk/pkill-broad.json';
+import commandRiskProtectedPathAccess from '../../../rules/command-risk/protected-path-access.json';
 import commandRiskRmRfHomeOrShared from '../../../rules/command-risk/rm-rf-home-or-shared.json';
 import coreCodeContextDbTableName from '../../../rules/core-code-context/db-table-name.json';
 import coreCodeContextFeatureFlag from '../../../rules/core-code-context/feature-flag.json';
@@ -217,6 +218,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       commandRiskCurlPipeShell,
       commandRiskCredentialFileRead,
       commandRiskCredentialFileAccess,
+      commandRiskProtectedPathAccess,
     ],
     shortNames: {
       'command-risk/pkill-broad': 'Broad pkill',
@@ -226,6 +228,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       'command-risk/curl-pipe-shell': 'Curl piped to shell',
       'command-risk/credential-file-read': 'Credential file read',
       'command-risk/credential-file-access': 'Credential file read',
+      'command-risk/protected-path-access': 'Protected path access',
     },
   },
   {

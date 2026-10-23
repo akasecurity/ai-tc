@@ -18,7 +18,15 @@
 // built script DOES write, so silence is a decision rather than a failure.
 // Neither half survives without the other.
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
@@ -32,6 +40,7 @@ import {
   tooLargeToScanMessage,
   unscannedWorkerUnavailableMessage,
 } from '../../src/exception-guidance.ts';
+import { readCliStdout } from '../helpers/cli-stdout.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { ruleExample } from '../helpers/rule-example.ts';
 import { withTempHome } from '../helpers/run-hook.ts';
@@ -111,6 +120,31 @@ function soleObject(run: HookRun): unknown {
 function noObject(run: HookRun): void {
   expect(run.status, run.stderr).toBe(0);
   expect(run.stdout).toBe('');
+}
+
+/**
+ * Assert a CLI-dialect run reached no verdict but DID say something, and
+ * return what it said.
+ *
+ * On the CLI a notice goes out as progress lines on stdout, which the host
+ * strips before it parses the rest (see `readCliStdout`). So a run here has two
+ * halves, asserted separately: what is left for the host to parse must be
+ * EMPTY, which is the no-opinion, and the progress lines must not be, which is
+ * the positive control. Reading stdout whole would let a verdict hide among
+ * notices, or a notice pass for a verdict.
+ *
+ * The stderr copy is asserted too. It is the debug log's trace, and a build
+ * that dropped it would leave a `-p` run with no trace of the notice at all if
+ * that mode turns out not to render progress lines.
+ */
+function cliNotice(run: HookRun): string {
+  expect(run.status, run.stderr).toBe(0);
+  const read = readCliStdout(run.stdout);
+  expect(read.output).toBeUndefined();
+  expect(read.progress).not.toEqual([]);
+  const text = read.progress.join('\n');
+  for (const message of read.progress) expect(run.stderr).toContain(message);
+  return text;
 }
 
 /**
@@ -236,12 +270,12 @@ describe.each(DIALECTS)(
       //
       // Which channel carries the notice is the dialect's, and the assertion
       // follows it rather than searching both: VS Code documents
-      // `systemMessage` on stdout, the CLI documents no message field at all
-      // and so gets stderr. Asserting the OTHER channel is empty in each case is
-      // what stops the CLI drifting back to a payload the host discards.
+      // `systemMessage` on stdout, the CLI documents no message field but does
+      // document progress lines, which it strips before parsing. Asserting the
+      // CLI's parsed output is empty is what stops it drifting back to a
+      // payload the host discards.
       if (d.event === 'preToolUse') {
-        noObject(run);
-        expect(run.stderr).toContain('could not open its local store');
+        expect(cliNotice(run)).toContain('could not open its local store');
       } else {
         const decided = soleObject(run) as Record<string, unknown>;
         expect(String(decided.systemMessage)).toContain('could not open its local store');
@@ -281,17 +315,17 @@ describe.each(DIALECTS)('pre-tool-use enforcement [$event]', (d) => {
   }
 
   /**
-   * The message this dialect's user actually sees, read from the channel that
-   * dialect has one on: stdout's `systemMessage` under VS Code, stderr on the
-   * CLI, whose documented `preToolUse` output has no message field.
+   * The message this dialect's user is meant to see, read from the channel
+   * that dialect has one on: stdout's `systemMessage` under VS Code, progress
+   * lines on the CLI, whose documented `preToolUse` output has no message field.
    *
    * Reading the dialect's own channel rather than concatenating both is the
    * point — a CLI build that went back to putting a `systemMessage` on stdout
-   * would satisfy a both-channels search and fail here, which is the direction
-   * that matters.
+   * would fail `readCliStdout`'s output check, which is the direction that
+   * matters.
    */
   function notice(run: HookRun): string {
-    if (d.event === 'preToolUse') return run.stderr;
+    if (d.event === 'preToolUse') return cliNotice(run);
     const decided = soleObject(run) as Record<string, unknown>;
     return String(decided.systemMessage);
   }
@@ -324,11 +358,10 @@ describe.each(DIALECTS)('pre-tool-use enforcement [$event]', (d) => {
     const run = enforce('redact', COMMAND);
     // Per dialect, because `not.toContain` against an empty string asserts
     // NOTHING — the vacuity CLAUDE.md §1 names. On the CLI the claim is that
-    // stdout is exactly empty; only on VS Code, where a payload really is
-    // written, does forbidding the three keys inside it mean anything.
-    if (d.event === 'preToolUse') {
-      noObject(run);
-    } else {
+    // what the host parses is exactly empty (`notice` asserts it, beside the
+    // progress line that carries the warning); only on VS Code, where a payload
+    // really is written, does forbidding the three keys inside it mean anything.
+    if (d.event !== 'preToolUse') {
       expect(run.status, run.stderr).toBe(0);
       expect(run.stdout).not.toBe('');
       expect(run.stdout).not.toContain('permissionDecision');
@@ -340,9 +373,7 @@ describe.each(DIALECTS)('pre-tool-use enforcement [$event]', (d) => {
 
   it('WARNS under a warn policy, naming the rule, and still with no verdict', () => {
     const run = enforce('warn', COMMAND);
-    if (d.event === 'preToolUse') {
-      noObject(run);
-    } else {
+    if (d.event !== 'preToolUse') {
       expect(run.status, run.stderr).toBe(0);
       expect(run.stdout).not.toBe('');
       expect(run.stdout).not.toContain('permissionDecision');
@@ -508,16 +539,13 @@ describe.each(CAPTURE_HOOKS)('$script — fails open by EXITING 0 and saying not
     }, `aka-copilot-corrupt-${hook.script}-`);
 
     // The CLI has no message field on any of these three events, so its notice
-    // is stderr and stdout stays exactly empty. On VS Code the two that can
-    // speak carry it on stdout; `session-start.js` never emits on either host.
-    if (event === hook.cli || hook.script === 'session-start.js') {
+    // is a progress line and what the host parses stays empty. On VS Code the
+    // two that can speak carry it on stdout. `session-start.js` has no
+    // store-unavailable notice, so it writes nothing on either host.
+    if (hook.script === 'session-start.js') {
       noObject(run);
-      // The positive control for the empty stdout: the notice went to stderr
-      // instead, so the silence on stdout is the channel choice, not a hook
-      // that said nothing at all. `session-start.js` has no such notice.
-      if (hook.script !== 'session-start.js') {
-        expect(run.stderr).toContain('could not open its local store');
-      }
+    } else if (event === hook.cli) {
+      expect(cliNotice(run)).toContain('could not open its local store');
     } else {
       const decided = soleObject(run) as Record<string, unknown>;
       expect(String(decided.systemMessage)).toContain('could not open its local store');
@@ -617,14 +645,11 @@ describe.each(DIALECTS.map((d) => (d.event === 'preToolUse' ? 'cli' : 'vscode'))
 
     /** The channel this dialect actually has for a message on these events. */
     function notice(run: HookRun): string {
-      if (isCli) {
-        // The CLI documents no message field on either event, so stdout must be
-        // exactly empty — asserted rather than ignored, because a build that
-        // drifted back to a stdout `systemMessage` would still satisfy a search
-        // across both channels.
-        expect(run.stdout).toBe('');
-        return run.stderr;
-      }
+      // The CLI documents no message field on either event, so what it parses
+      // must be empty — asserted rather than ignored, because a build that
+      // drifted back to a stdout `systemMessage` would still satisfy a search
+      // across both channels.
+      if (isCli) return cliNotice(run);
       return String((soleObject(run) as Record<string, unknown>).systemMessage);
     }
 
@@ -756,10 +781,7 @@ describe.each(DIALECTS.map((d) => (d.event === 'preToolUse' ? 'cli' : 'vscode'))
 
     /** The message on this dialect's own channel; the other one stays empty of it. */
     function notice(run: HookRun): string {
-      if (isCli) {
-        noObject(run);
-        return run.stderr;
-      }
+      if (isCli) return cliNotice(run);
       return String((soleObject(run) as Record<string, unknown>).systemMessage);
     }
 
@@ -822,10 +844,7 @@ describe.each(DIALECTS.map((d) => (d.event === 'preToolUse' ? 'cli' : 'vscode'))
     );
 
     function notice(run: HookRun): string {
-      if (isCli) {
-        noObject(run);
-        return run.stderr;
-      }
+      if (isCli) return cliNotice(run);
       return String((soleObject(run) as Record<string, unknown>).systemMessage);
     }
 
@@ -987,5 +1006,114 @@ describe('the recorded VS Code shapes through the built hooks', () => {
       'AKA flagged sensitive content in run_in_terminal input (command-risk/credential-file-read).',
     );
     expect(JSON.stringify(decided)).not.toContain('permissionDecision');
+  });
+});
+
+// ─── The CLI's notice channel: progress lines on stdout ─────────────────────
+//
+// The Copilot CLI shows a hook's stderr only in its debug log (recorded on
+// 1.0.98, `-p` mode), so on that dialect each notice also goes out as a
+// `{"type":"progress","message":…}` line, which the hooks reference documents
+// as display-only timeline output that the host removes before parsing the
+// decision. The rows above read every CLI notice through `cliNotice`; these
+// cover the two shapes they do not reach — a notice from the hook that never
+// emits a payload, and a notice that shares stdout with a rewrite.
+
+describe('session-start — a notice with no payload behind it', () => {
+  /**
+   * A home whose `data` directory is a symlink, which makes the session start
+   * say the store is redirected. The link is built by the test itself rather
+   * than shipped, and a platform that refuses one skips rather than passing.
+   */
+  function redirectedHome(dir: string): string | undefined {
+    const home = join(dir, 'home');
+    const target = join(dir, 'elsewhere');
+    mkdirSync(join(home, '.aka'), { recursive: true });
+    mkdirSync(target);
+    try {
+      symlinkSync(target, join(home, '.aka', 'data'), 'junction');
+    } catch {
+      return undefined;
+    }
+    return home;
+  }
+
+  it('[cli] writes the store-redirect notice as a progress line, and no output', (ctx) => {
+    const run = withTempHome((dir) => {
+      const home = redirectedHome(dir);
+      if (home === undefined) return undefined;
+      return runScript(
+        'session-start.js',
+        'sessionStart',
+        home,
+        JSON.stringify(capturePayload('session-start.js', 'sessionStart', '')),
+      );
+    }, 'aka-copilot-sessionstart-redirect-cli-');
+    if (run === undefined) {
+      ctx.skip('this platform refused to create the directory link');
+      return;
+    }
+    expect(cliNotice(run)).toContain('redirect');
+  });
+
+  it('[vscode] keeps stdout empty, since that dialect gets no progress line', (ctx) => {
+    // The control on the case above, and on the dialect split: the same notice
+    // under VS Code reaches stderr only. A progress line here would sit in a
+    // stdout that dialect is not documented to strip.
+    const run = withTempHome((dir) => {
+      const home = redirectedHome(dir);
+      if (home === undefined) return undefined;
+      return runScript(
+        'session-start.js',
+        'SessionStart',
+        home,
+        JSON.stringify(capturePayload('session-start.js', 'SessionStart', '')),
+      );
+    }, 'aka-copilot-sessionstart-redirect-vscode-');
+    if (run === undefined) {
+      ctx.skip('this platform refused to create the directory link');
+      return;
+    }
+    noObject(run);
+    expect(run.stderr).toContain('redirect');
+  });
+});
+
+describe('pre-tool-use [cli] — a notice beside a rewrite', () => {
+  it('keeps modifiedArgs parseable with the redact notice on a progress line ahead of it', () => {
+    // A redact policy on the call's DESCRIPTION, which the CLI can rewrite in
+    // place: stdout carries both the notice and the rewrite. The reference
+    // calls a progress line ahead of the final object "the intended pattern",
+    // and `readCliStdout` reads it the way it says the host does. If the
+    // object stopped parsing, the host would fall to default behavior and the
+    // unmasked description would reach the model.
+    const run = withTempHome((home) => {
+      seedPolicy(home, 'redact');
+      const payload = {
+        sessionId: SESSION_ID,
+        timestamp: 1788547866483,
+        cwd: '/tmp',
+        toolName: 'bash',
+        toolArgs: { command: 'echo hello', description: `uses ${FIXTURE.example}` },
+      };
+      return runHook('preToolUse', home, JSON.stringify(payload));
+    }, 'aka-copilot-redact-description-cli-');
+    expect(run.status, run.stderr).toBe(0);
+    // The whole stdout is NOT one JSON document: the rewrite reaches the host
+    // only because the CLI strips the progress line first, which the
+    // reference dates to 1.0.55. This is the support floor the setup skill
+    // states, pinned so a change that relies on it less, or more, is seen.
+    expect(() => JSON.parse(run.stdout) as unknown).toThrow();
+    const read = readCliStdout(run.stdout);
+    expect(read.progress.join('\n')).toContain('AKA redacted');
+    expect(read.progress.join('\n')).toContain(RULE_ID);
+    const output = read.output as { modifiedArgs?: Record<string, unknown> } | undefined;
+    expect(output?.modifiedArgs?.command).toBe('echo hello');
+    expect(typeof output?.modifiedArgs?.description).toBe('string');
+    // The stderr copy is kept beside the progress line.
+    expect(run.stderr).toContain('AKA redacted');
+    for (const message of read.progress) expect(run.stderr).toContain(message);
+    expectNoEchoOf(run.stdout, FIXTURE.example);
+    expectNoEchoOf(run.stderr, FIXTURE.example);
   });
 });

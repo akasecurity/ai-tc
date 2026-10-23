@@ -161,7 +161,7 @@ jobs:
           if git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
             echo "${GITHUB_SHA} is on main"
           else
-            echo "::error::plugin-claude-v${PKG_VERSION} tags ${GITHUB_SHA}, which main does not contain. Do not move or delete the tag. If the release pull request merges with a merge commit, re-run this run's failed jobs after it merges; otherwise release the next patch version, tagged on the commit that merge puts on main."
+            echo "::error::${GITHUB_REF_NAME} is at ${GITHUB_SHA}, which main does not contain, so stable ${PKG_VERSION} cannot publish from it. Do not move or delete a release tag. If the release pull request merges with a merge commit, re-run this run's failed jobs after it merges; otherwise release the next patch version, tagged on the commit that merge puts on main."
             exit 1
           fi
 

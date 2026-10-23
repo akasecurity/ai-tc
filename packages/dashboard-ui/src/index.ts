@@ -246,11 +246,14 @@ export {
   credentialDismissReasonLabel,
 } from './credentials/dismissal.ts';
 export { credentialLabel, credentialName } from './credentials/name.ts';
+export { CREDENTIAL_STATUS } from './credentials/status.ts';
 export type {
   CredentialDetailModel,
   CredentialDismissal,
   CredentialLinkedFinding,
   CredentialListItem,
+  CredentialRotationInput,
+  CredentialStatusCounts,
   CredentialTeamUsage,
 } from './credentials/types.ts';
 

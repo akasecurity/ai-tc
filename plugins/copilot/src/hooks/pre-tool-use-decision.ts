@@ -240,7 +240,8 @@ export type PreToolUseOutput =
  * `permissionDecision`, `permissionDecisionReason`, `modifiedArgs` — and
  * `systemMessage` appears nowhere in it, so a message put on stdout there is
  * dropped by the host and the user is told nothing at all. On that dialect the
- * text comes back as `notice` and the caller writes it to stderr.
+ * text comes back as `notice` and the caller writes it as a progress line, with
+ * a copy on stderr (see `writeNotice` in ./shared.ts).
  *
  * `output: null` is the no-opinion, and it is a REAL answer rather than a
  * failure: empty `preToolUse` output is documented as "default behavior", which
@@ -254,7 +255,7 @@ export type PreToolUseOutput =
 export interface PreToolUseDecision {
   /** The payload for stdout, or null to write nothing. */
   output: PreToolUseOutput | null;
-  /** Text for stderr, set only where the dialect's stdout cannot carry it. */
+  /** Notice text, set only where the dialect's payload cannot carry it. */
   notice?: string;
 }
 
@@ -411,11 +412,12 @@ export function decidePreToolUse(
     // The shipped `redactFallback` is `warn`, so this is the common path for a
     // redact policy on command text — not a corner. On the CLI it is the case
     // with NO stdout payload at all: there is no verdict to emit (the call is
-    // being let through) and no field to carry the reason, so stdout stays
-    // empty and the reason goes to stderr. The finding is recorded either way;
-    // what varies is the CHANNEL the reason is written to — and on the CLI that
-    // channel was seen only in the debug log (in `-p` mode), not in front of a human, so this is
-    // not two ways of telling the user. See `SystemMessageOutput` in ./shared.ts.
+    // being let through) and no field to carry the reason, so the hook output
+    // stays empty and the reason goes out as a progress line, with a copy on
+    // stderr. The finding is recorded either way; what varies is the CHANNEL
+    // the reason is written to. On the CLI the progress line is documented but
+    // not yet observed on screen, and the stderr copy was seen only in the debug
+    // log (in `-p` mode). See `SystemMessageOutput` in ./shared.ts.
     const message = warnMessage(toolName, warnedRules);
     return dialect === 'cli'
       ? { output: null, notice: message }

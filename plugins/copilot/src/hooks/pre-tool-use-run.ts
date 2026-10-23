@@ -51,7 +51,14 @@ import {
   scannableFieldsFor,
 } from './pre-tool-use-decision.ts';
 import type { HookHandler } from './shared.ts';
-import { baseMetadata, callKind, callScopeKey, parseJson, writeNotice } from './shared.ts';
+import {
+  baseMetadata,
+  callKind,
+  callScopeKey,
+  noticeWriter,
+  parseJson,
+  writeNotice,
+} from './shared.ts';
 import {
   claimStoreUnavailableWarning,
   openGatewayOrNull,
@@ -107,8 +114,9 @@ export const runPreToolUse: HookHandler = async (event, stdin, options = {}) => 
   const config = loadConfig(options.akaHome);
   const sessionId = readSessionId(dialect, input);
   // A symlinked store path redirects the corpus without failing anything; say
-  // so once per session on stderr, so this hook's stdout contract is untouched.
-  warnIfStoreRedirected(config, sessionId);
+  // so once per session, on stderr and, on the CLI, as a progress line, which
+  // the host strips before reading this hook's output.
+  warnIfStoreRedirected(config, sessionId, noticeWriter(dialect));
   const gateway = openGatewayOrNull(config);
   if (gateway === null) {
     // The store is gone, so nothing was scanned and there is no verdict to
@@ -119,7 +127,7 @@ export const runPreToolUse: HookHandler = async (event, stdin, options = {}) => 
     if (claimStoreUnavailableWarning(config.dataDir, sessionId)) {
       const message = storeUnavailableMessage(config.dbPath);
       if (dialect === 'vscode') return { systemMessage: message };
-      writeNotice(message);
+      writeNotice(message, dialect);
     }
     return undefined;
   }
@@ -179,6 +187,6 @@ export const runPreToolUse: HookHandler = async (event, stdin, options = {}) => 
   // `notice` is set only on a dialect whose stdout has no field to carry it, so
   // this never competes with the payload below for the single JSON object
   // stdout takes.
-  if (decision.notice !== undefined) writeNotice(decision.notice);
+  if (decision.notice !== undefined) writeNotice(decision.notice, dialect);
   return decision.output ?? undefined;
 };

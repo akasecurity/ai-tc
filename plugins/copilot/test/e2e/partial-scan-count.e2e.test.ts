@@ -8,8 +8,9 @@
  * the tally it leaves is read back — the same file `aka status` renders.
  *
  * Each case also pins what the host sees, exit code and stdout, since counting
- * must change neither: on the CLI's `postToolUse` stdout stays empty, and on VS
- * Code it carries only the notice it carried before.
+ * must change neither: on the CLI the hook output stays empty, with the notice
+ * carried as a progress line the host strips before parsing, and on VS Code
+ * stdout carries only the notice it carried before.
  *
  * A count is written by a DETACHED child the hook does not wait on, so it is
  * awaited rather than read straight after the hook exits. "Counts nothing" is
@@ -31,6 +32,7 @@ import {
   unscannedPastWalkLimitsMessage,
   unscannedWorkerUnavailableMessage,
 } from '../../src/exception-guidance.ts';
+import { readCliStdout } from '../helpers/cli-stdout.ts';
 
 // test/e2e -> plugins/copilot
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -145,11 +147,16 @@ describe.each(DIALECTS)(
       ...d.result(response),
     });
 
-    /** What the host reads on stdout: nothing on the CLI, one note on VS Code. */
+    /**
+     * What the host reads on stdout: on the CLI no output, with the notice as a
+     * progress line beside it; on VS Code one note.
+     */
     function expectNotice(run: HookRun, message: string): void {
       expect(run.status, run.stderr).toBe(0);
       if (isCli) {
-        expect(run.stdout).toBe('');
+        const { output, progress } = readCliStdout(run.stdout);
+        expect(output).toBeUndefined();
+        expect(progress).toContain(message);
         expect(run.stderr).toContain(message);
       } else {
         expect(JSON.parse(run.stdout)).toEqual({ systemMessage: message });

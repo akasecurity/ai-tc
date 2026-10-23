@@ -30,7 +30,9 @@ import { PROVIDERS } from '../shared/Provider.tsx';
 import { RefusalReason, refusedControlProps } from '../shared/Refusal.tsx';
 import { CREDENTIAL_DISMISS_REASONS, credentialDismissReasonLabel } from './dismissal.ts';
 import { credentialLabel, credentialName } from './name.ts';
-import type { CredentialDetailModel } from './types.ts';
+import { RotationEditor } from './RotationEditor.tsx';
+import { credentialStatusLabel } from './status.ts';
+import type { CredentialDetailModel, CredentialRotationInput } from './types.ts';
 
 export interface CredentialDetailViewProps {
   credential: CredentialDetailModel;
@@ -66,7 +68,19 @@ export interface CredentialDetailViewProps {
   onDelete?: (() => Promise<void>) | undefined;
   /** Why the last dismiss, restore or delete failed. Without it a failure shows a generic message. */
   actionError?: string | undefined;
+  /**
+   * Saves the owner, last rotation and rotation policy together. Rejects when
+   * the save fails, which keeps the editor open. Omit it and no edit control is shown.
+   */
+  onSaveRotation?: ((input: CredentialRotationInput) => Promise<void>) | undefined;
+  /** Why the last rotation save failed. Without it a failed save shows a generic message. */
+  rotationError?: string | undefined;
+  /** Why this reader may not edit the rotation details; set, the control shows locked. */
+  rotationRefusal?: string | undefined;
 }
+
+const MANAGED =
+  'A secrets manager holds this credential, so its owner, rotation date and policy come from there.';
 
 const SAVE_FAILED = "Couldn't save the label.";
 const REFUSED = "You can't label this credential.";
@@ -469,6 +483,9 @@ export function CredentialDetailView({
   onRestore,
   onDelete,
   actionError,
+  onSaveRotation,
+  rotationError,
+  rotationRefusal,
 }: CredentialDetailViewProps) {
   const detectedOnly = c.reference === null;
   const [dialog, setDialog] = useState<'dismiss' | 'delete' | null>(null);
@@ -494,7 +511,14 @@ export function CredentialDetailView({
           >
             {credentialName(c).text}
           </h2>
-          <div className="text-xs text-text-3">{c.kind}</div>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-text-3">
+            {c.kind}
+            {c.statuses.map((s) => (
+              <Badge key={s} variant="medium">
+                {credentialStatusLabel(s)}
+              </Badge>
+            ))}
+          </div>
         </div>
         {onSaveLabel !== undefined && (
           <LabelEditor
@@ -598,7 +622,8 @@ export function CredentialDetailView({
           </div>
           <p className="text-xs text-text-3">
             AKA found this value in your organization&apos;s activity. No secrets manager holds a
-            reference to it, so its owner, rotation date and policy are unknown.
+            reference to it, so its owner, rotation date and policy are whatever an administrator
+            enters here.
           </p>
         </div>
       )}
@@ -619,6 +644,14 @@ export function CredentialDetailView({
           <MetaItem label="Last rotated">
             {c.lastRotated === null ? '—' : relativeTime(c.lastRotated, renderedAt)}
           </MetaItem>
+          <MetaItem label="Rotation policy">
+            {c.rotationPolicyDays === null
+              ? '—'
+              : `Every ${String(c.rotationPolicyDays)} ${c.rotationPolicyDays === 1 ? 'day' : 'days'}`}
+          </MetaItem>
+          <MetaItem label="Rotation due">
+            {c.rotationDueAt === null ? '—' : relativeTime(c.rotationDueAt, renderedAt)}
+          </MetaItem>
           <MetaItem label="First seen">{relativeTime(c.firstSeen, renderedAt)}</MetaItem>
           <MetaItem label="Last seen">{relativeTime(c.lastSeen, renderedAt)}</MetaItem>
           <MetaItem label="Sightings">{String(c.sightingCount)}</MetaItem>
@@ -626,6 +659,22 @@ export function CredentialDetailView({
             <span className="font-mono text-xs">{c.ruleId}</span>
           </MetaItem>
         </div>
+        {onSaveRotation !== undefined && (
+          <div className="mt-4">
+            <RotationEditor
+              key={c.id}
+              current={{
+                owner: c.owner,
+                lastRotated: c.lastRotated,
+                rotationPolicyDays: c.rotationPolicyDays,
+              }}
+              onSave={onSaveRotation}
+              error={rotationError}
+              refusal={detectedOnly ? rotationRefusal : MANAGED}
+              renderedAt={renderedAt}
+            />
+          </div>
+        )}
       </div>
 
       <div>

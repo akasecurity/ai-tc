@@ -84,6 +84,14 @@ export const CAPABILITY_MATRIX: readonly Capability[] = [
   },
   {
     surface: 'cli',
+    event: 'preToolUse',
+    subject: 'warn notice',
+    channel: 'warn',
+    verified: false,
+    note: 'Sent as a hook progress line, which the hooks reference documents as display-only text in the CLI timeline and strips before reading the decision, so the call still goes to the host permission flow. Never observed on screen; the stderr copy reached only the debug log in a recorded 1.0.98 -p session. Every other AKA hook notice on every CLI event takes the same route; the degraded-scan line from the SDK is the exception and still goes to stderr only.',
+  },
+  {
+    surface: 'cli',
     event: 'sessionStart',
     subject: 'session',
     channel: 'none',

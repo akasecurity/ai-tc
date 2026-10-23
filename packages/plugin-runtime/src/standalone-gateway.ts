@@ -456,8 +456,9 @@ export class StandaloneDataGateway
     canonicalId: string,
     headRoot: string,
     worktreeRoot: string,
+    supersededUrls: readonly string[] = [],
   ): Promise<void> {
-    this.db.reconcileWorktreeProjects(canonicalId, headRoot, worktreeRoot);
+    this.db.reconcileWorktreeProjects(canonicalId, headRoot, worktreeRoot, supersededUrls);
     return Promise.resolve();
   }
 

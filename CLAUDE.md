@@ -65,6 +65,11 @@ and do not copy its text elsewhere. The one-paragraph versions below say when a 
 7. **A command spawned by bare name goes through the planner** — use `planBareCommand`
    (`@akasecurity/plugin-sdk/bare-command`); never build a shell command line from external
    text. See [bare-command.md](conventions/bare-command.md).
+8. **A project's identity is the repository, not the remote string** — every identity
+   (project id, scope key, wire digest) goes through the one pure `canonicalGitUrl`
+   reduction, and nothing reached from it may read a file. See
+   [project-identity.md](conventions/project-identity.md) before touching a repository key
+   or the inventory's project ids.
 
 ## Where the rest lives
 

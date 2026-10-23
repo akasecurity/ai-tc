@@ -56,7 +56,18 @@ Keep these package boundaries intact — a forbidden import across a package wal
                      layout/settings/fingerprint file I/O, plus the egress wire
                      projection — toEgressIngestRequest / hashProjectKey, the one
                      place an EgressIngestRequest is built, pure and beside the cap
-                     helpers it applies — NO fetch client, NO Drizzle)
+                     helpers it applies — NO fetch client, NO Drizzle.
+                     repo-key.ts holds the repository-identity canonicalization,
+                     split out of egress-wire.ts — which re-exports all of it —
+                     because that module reaches a SQLite repository for the cap
+                     helpers, and a parameter property there is syntax Node's
+                     strip-only loader refuses: any module a raw-Node child or
+                     worker loads would fail AT LOAD the moment it imported a key
+                     helper from it. It is also PURE and must stay so: web-ui
+                     compiles this package as its own source, so a file read
+                     reached from the reduction breaks the Windows binary build —
+                     see "A project's identity is the repository, not the remote
+                     string" in conventions/project-identity.md. Nothing under repo-key.ts but schema)
 @akasecurity/local-ops     → @akasecurity/schema, @akasecurity/persistence, @akasecurity/detections,
                      @akasecurity/plugin-sdk (repo-identity, project-file walkers, posix
                      path normalization, and the ReDoS gates the dashboard's folder

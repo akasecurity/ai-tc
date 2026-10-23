@@ -79,6 +79,8 @@ folders and files off-limits, add them to `protectedPaths` in `~/.aka/settings/s
   against the session's directory, and follows symlinks.
 
 Unless the `command-risk` pack's policy blocks, a protected path warns rather than stops the call.
+In a session connected through Remote Control, a protected path always blocks, whatever the policy;
+the denial says so, and a granted exception still allows the call.
 A Read, Grep, Glob or Bash call that names a protected path becomes a finding of
 `command-risk/protected-path-access`, handled by the `command-risk` pack's policy like any other
 finding (warn on a first install; block under a block policy; a redact follows the redact

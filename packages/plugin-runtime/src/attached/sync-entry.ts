@@ -1,4 +1,9 @@
-import { dataDir, defaultDataDir, settingsDir } from '@akasecurity/persistence';
+import {
+  dataDir,
+  defaultDataDir,
+  respellStoredEnrolments,
+  settingsDir,
+} from '@akasecurity/persistence';
 
 import type { CommandScan } from './command-sync.ts';
 import { runCommandSync } from './command-sync.ts';
@@ -39,6 +44,14 @@ export async function runAttachedSync(
   base: string = defaultDataDir(),
   deps: { scan?: CommandScan | undefined } = {},
 ): Promise<void> {
+  // FIRST, and ahead of every network job: re-keying a stored enrolment whose
+  // spelling this build no longer stamps is what makes that repository forward
+  // at all, so it must not sit behind whether a deployment answered. Local,
+  // idempotent and self-gating — on a machine whose keys are already canonical
+  // it reads settings.json and returns — so it carries no window of its own
+  // and never throws.
+  respellStoredEnrolments(base);
+
   let policyOutcome: PolicySyncOutcome | null = null;
   try {
     const result = await runPolicySync({

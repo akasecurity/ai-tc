@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, sep } from 'node:path';
 
-import { canonicalRepoUrl } from '@akasecurity/persistence';
+import { canonicalRepoUrl, namesARemoteAddress } from '@akasecurity/persistence';
 
 // Repo attribution for a captured event. The Security dashboard's Top-Sources
 // (by repo) and the recommendation engine both group findings by `repo`, but the
@@ -115,6 +115,60 @@ export function resolveRepoIdentity(cwd: string): { url: string; name: string } 
     };
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * The project identities a PREVIOUS resolver minted for `cwd` that this one no
+ * longer would — the rows a self-heal should fold into the repository's real
+ * project.
+ *
+ * Today that is exactly one shape: the remote the OLD resolver picked, where it
+ * names a location on local disk rather than a remote address. `remoteUrl` used
+ * to take `origin` unconditionally, and git writes a local-disk `origin` for a
+ * submodule checked out inside a linked worktree (it points at the parent
+ * repository's gitdir), so such a checkout was recorded under a directory path
+ * instead of the repository it is a clone of. Those rows render as a project
+ * named after the submodule directory, one per worktree.
+ *
+ * AT MOST ONE URL, AND ONLY THE ONE THAT WAS PICKED. It is read from the config
+ * through the OLD rule — `origin`, else the first remote in config order — and
+ * never from the other remotes beside it. That is the whole safety argument: a
+ * local-path remote the old resolver did NOT pick was never this checkout's
+ * identity, and it can easily be another repository's. A sibling clone added as
+ * `git remote add scratch ~/src/scratch` has `~/src/scratch` as its own project
+ * identity, because a repository with no address keys on its root path — so
+ * returning it here would hand a LIVE row to a sweep that repoints its events
+ * and deletes it, on every session in the first repository.
+ *
+ * NOTHING THAT IS STILL THE IDENTITY either. Where the picked remote is also
+ * what `remoteUrl` picks today — a checkout whose only remote is a local path —
+ * the row it keys is current rather than superseded, and folding it would
+ * delete the project the session is writing to.
+ *
+ * A path is posix-normalized for the same reason the identity fallback is: the
+ * store's path patterns are written with `/`.
+ *
+ * Empty for an ordinary checkout, whose remotes are all addresses. Same pure,
+ * never-spawns-git, never-throws contract as `resolveRepo`.
+ */
+export function resolveSupersededProjectUrls(cwd: string): string[] {
+  try {
+    const root = findGitRoot(cwd);
+    if (!root) return [];
+    const ctx = resolveGitContext(root);
+    const config = ctx === undefined ? undefined : safeRead(ctx.configPath);
+    if (config === undefined || ctx === undefined) return [];
+    const remotes = parseRemoteUrls(config);
+    // The OLD rule, spelled out here rather than shared with `remoteUrl`: that
+    // function implements the NEW one now, and this has to keep answering what
+    // the resolver this heals actually wrote.
+    const picked = remotes.origin ?? Object.values(remotes)[0];
+    if (picked === undefined || namesARemoteAddress(picked)) return [];
+    if (picked === remoteUrl(ctx)) return [];
+    return [picked.split(sep).join('/')];
+  } catch {
+    return [];
   }
 }
 
@@ -386,12 +440,32 @@ function safeRead(path: string): string | undefined {
   }
 }
 
-// The `origin` remote URL from the resolved git config (else any remote's).
+/**
+ * The remote URL to identify this repository by: `origin` where it names a
+ * remote ADDRESS, else the first remote in config order that does, else
+ * `origin`, else the first remote. Undefined when the config has no remote.
+ *
+ * WHY `origin` IS NOT TAKEN BLINDLY. git writes an `origin` that points at
+ * local disk in a layout this product meets routinely: a submodule checked out
+ * inside a linked worktree gets
+ * `origin = <parent>/.git/modules/<name>` — the parent repository's gitdir —
+ * while the real forge URL is left on a second remote. Taking `origin` there
+ * identifies the repository by a directory that exists on one machine, so it
+ * converges with no other clone, and the display name comes out as the
+ * submodule's directory rather than the repository's. Preferring an address
+ * costs nothing in the ordinary case, where `origin` is one.
+ *
+ * It is a PREFERENCE and not a filter: a repository whose only remote is a
+ * local path still gets that remote, because a local path is a better identity
+ * for it than no remote at all (which would fall back to the checkout path).
+ */
 function remoteUrl(ctx: GitContext): string | undefined {
   const config = safeRead(ctx.configPath);
   if (config === undefined) return undefined;
   const remotes = parseRemoteUrls(config);
-  return remotes.origin ?? Object.values(remotes)[0];
+  const ordered = remotes.origin === undefined ? [] : [remotes.origin];
+  for (const [name, url] of Object.entries(remotes)) if (name !== 'origin') ordered.push(url);
+  return ordered.find((url) => namesARemoteAddress(url)) ?? ordered[0];
 }
 
 // One repository, located from `cwd`: ONE ancestor walk (findGitRoot) and,

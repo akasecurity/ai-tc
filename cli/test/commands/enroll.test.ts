@@ -39,6 +39,8 @@ import {
 } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// Reached by relative path: the seam is deliberately not re-exported from the
+// package barrel, the same way the managed-settings pin is not.
 import { writeCodexAuth } from '../../../packages/plugin-sdk/test/helpers/fake-jwt.ts';
 import {
   fixtureEmail,
@@ -888,11 +890,23 @@ describe('aka enroll --repo', () => {
     expect(storedScope()).toEqual(fresh([enrolled()]));
   });
 
-  it('keeps the case of a path, which some hosts tell apart', async () => {
+  it('keeps the case of a path on a host that tells case apart', async () => {
     attach({ scope: fresh() });
     const io = recorder();
-    expect(await runEnroll(['--repo', 'github.com/Acme/Payments-API'], deps(io))).toBe(0);
-    expect(identities()).toEqual(['github.com/Acme/Payments-API']);
+    expect(await runEnroll(['--repo', 'git.example.com/Acme/Payments-API'], deps(io))).toBe(0);
+    expect(identities()).toEqual(['git.example.com/Acme/Payments-API']);
+  });
+
+  // On a forge that ignores case the same spelling names a key no checkout
+  // stamps, so it is refused and the real key is named — the same near-miss
+  // correction an alias gets.
+  it('refuses a capitalised path on a forge that folds case', async () => {
+    attach({ scope: fresh() });
+    const io = recorder();
+    expect(await runEnroll(['--repo', 'github.com/Acme/Payments-API'], deps(io))).toBe(1);
+    expect(io.errors()).toContain('is not how that repository is keyed');
+    expect(io.errors()).toContain(`its key is ${WORK_REPO}`);
+    expect(storedScope()).toEqual(fresh());
   });
 
   it.each([

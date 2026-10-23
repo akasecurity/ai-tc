@@ -34,10 +34,39 @@ import {
 // rule; a list would leave the next package to gain that edge silently
 // unguarded, which is the drift this whole class of bug comes from.
 
-const GUARD_REL = 'test/setup/no-managed-settings.ts';
-const GUARD_ABS = join(REPO_ROOT, ...GUARD_REL.split('/'));
-const SEAM = 'UNSAFE_TEST_ONLY_setManagedSettingsPaths';
 const PERSISTENCE = '@akasecurity/persistence';
+
+/**
+ * The process-wide pins this file derives the owing set for. One today: it
+ * declares, once per test file, that the machine has no administrator. It is
+ * read from an absolute system path a temp home cannot redirect, so it owes
+ * wiring to every package whose closure can load persistence, and a LIST of
+ * those packages would leave the next one to gain that edge silently
+ * unguarded — which is the whole reason this walks the closure instead.
+ *
+ * PARAMETERISED RATHER THAN COPIED, even at one row, and that is deliberate.
+ * A second walk is a second thing to keep in step, and a subject differs from
+ * its neighbours only in which file, seam and binding it names — so the table
+ * is what a second pin joins rather than something it reimplements. There was
+ * a second (an empty SSH alias map) until the identity reduction stopped
+ * reading `~/.ssh/config`; it is the shape to add back to the day an alias map
+ * can be handed in from callers outside the dashboard's graph, which §8's
+ * build constraint forbids today.
+ *
+ * `installs` is the call that proves the guard NEUTRALISES rather than merely
+ * imports — a file that imports a seam and never calls it wires and resolves
+ * perfectly while doing nothing.
+ */
+const SUBJECTS = [
+  {
+    what: 'no-managed-settings',
+    rel: 'test/setup/no-managed-settings.ts',
+    seam: 'UNSAFE_TEST_ONLY_setManagedSettingsPaths',
+    module: 'managed-settings.ts',
+    binding: 'noManagedSettingsGuard',
+    installs: String.raw`UNSAFE_TEST_ONLY_setManagedSettingsPaths\(\s*\[\s*\]\s*\)`,
+  },
+];
 
 /**
  * Strip comments, so prose naming the guard is never mistaken for live wiring.
@@ -50,10 +79,21 @@ const stripComments = (source) =>
 // Both halves matter: the entry proves the guard is wired into the run, and the
 // URL is where a wrong `../..` depth would hide — a binding that resolves
 // nowhere still reads as wiring.
-const SETUP_ENTRY = /setupFiles\s*:\s*\[[^\]]*\bnoManagedSettingsGuard\b[^\]]*\]/;
-const GUARD_URL = new RegExp(
-  String.raw`new URL\(\s*'([^']*test/setup/no-managed-settings\.ts)'\s*,\s*import\.meta\.url\s*\)`,
-);
+/** @param {string} binding */
+const setupEntryFor = (binding) =>
+  new RegExp(String.raw`setupFiles\s*:\s*\[[^\]]*\b${binding}\b[^\]]*\]`);
+/**
+ * Every regex metacharacter in `text`, escaped, so a path is matched as the
+ * literal it is. Escaping only `.` happened to be enough for the subjects this
+ * table has carried so far and would silently mis-match the first one to carry
+ * a `+`, `(` or `?` — and a guard that quietly matches nothing reports green.
+ * @param {string} text
+ */
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
+
+/** @param {string} rel */
+const guardUrlFor = (rel) =>
+  new RegExp(String.raw`new URL\(\s*'([^']*${escapeRegExp(rel)})'\s*,\s*import\.meta\.url\s*\)`);
 
 /**
  * Every workspace package, by name, with its declared edges and test script.
@@ -100,7 +140,10 @@ function reachesPersistence(name, byName, seen = new Set()) {
 }
 
 /** Every vitest package, tagged with whether it owes the guard and wires it. */
-function auditPackages() {
+/** @param {(typeof SUBJECTS)[number]} subject */
+function auditPackages(subject) {
+  const setupEntry = setupEntryFor(subject.binding);
+  const guardUrl = guardUrlFor(subject.rel);
   const byName = workspaceByName();
   return [...byName.entries()]
     .map(([name, { dir, testScript }]) => {
@@ -111,23 +154,24 @@ function auditPackages() {
         return { name, dir, owes, wired: false, resolved: null, hasConfig: false };
       }
       const source = stripComments(readFileSync(configAbs, 'utf8'));
-      const url = GUARD_URL.exec(source);
+      const url = guardUrl.exec(source);
       return {
         name,
         dir,
         owes,
         hasConfig: true,
-        wired: SETUP_ENTRY.test(source),
+        wired: setupEntry.test(source),
         resolved: url ? resolve(REPO_ROOT, dir, url[1]) : null,
       };
     })
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-const PACKAGES = auditPackages();
-const OWING = PACKAGES.filter((p) => p.owes);
+describe.each(SUBJECTS)('the $what guard', (subject) => {
+  const GUARD_ABS = join(REPO_ROOT, ...subject.rel.split('/'));
+  const PACKAGES = auditPackages(subject);
+  const OWING = PACKAGES.filter((p) => p.owes);
 
-describe('the no-managed-settings guard', () => {
   it('exists, and installs the seam rather than merely importing it', () => {
     // A guard file that imports the seam and never calls it wires perfectly,
     // resolves perfectly, and neutralises nothing — every assertion below would
@@ -135,7 +179,7 @@ describe('the no-managed-settings guard', () => {
     // developer's own machine.
     expect(existsSync(GUARD_ABS)).toBe(true);
     const source = readFileSync(GUARD_ABS, 'utf8');
-    expect(source).toMatch(new RegExp(String.raw`${SEAM}\(\s*\[\s*\]\s*\)`));
+    expect(source).toMatch(new RegExp(subject.installs));
   });
 
   it('reaches the seam by module path, never through the package barrel', () => {
@@ -157,7 +201,7 @@ describe('the no-managed-settings guard', () => {
       (m) => m[1],
     );
 
-    expect(specifiers).toEqual(['../../packages/persistence/src/managed-settings.ts']);
+    expect(specifiers).toEqual([`../../packages/persistence/src/${subject.module}`]);
   });
 
   it('is owed by the packages that can actually load the overlay', () => {

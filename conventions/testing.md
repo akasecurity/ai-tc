@@ -730,6 +730,15 @@ Five things about it are load-bearing:
   reached that way. Nothing covers this the way the `No-network` CI job covers
   shell-outs.
 
+### Why there is no no-ssh-aliases guard
+
+There was one — a third shared setup file pinning an empty SSH alias map, because
+`~/.ssh/config` sits outside the temp homes these suites build and a project id
+would otherwise depend on whose laptop ran them. It went with the mechanism: the
+identity reduction resolves no aliases and reads no file, so there is nothing to
+pin. Do not re-add the guard without first reading the build constraint in conventions/project-identity.md, which
+is what forbids the read it would be guarding.
+
 ### The PATH shim, and why it fails OPEN
 
 A suite that drives a **built** script cannot reach that script's spawn seams — they are

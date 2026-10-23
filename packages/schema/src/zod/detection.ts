@@ -150,8 +150,8 @@ export { Matcher, RegexMatcher };
 // parsed `Rule` objects in both the local SQLite store and the tenant Postgres
 // one — and were simply projected away here, which made this shape a
 // description of a rule the engine does not run. Half the bundled catalog is
-// affected: of 111 rules, 21 carry `postValidators`, 26 `appliesTo`, 18
-// `requiresNearby` (58 distinct rules), and all 111 carry `examples`.
+// affected: of 112 rules, 21 carry `postValidators`, 27 `appliesTo`, 18
+// `requiresNearby` (59 distinct rules), and all 112 carry `examples`.
 //
 // That gap is not cosmetic for anything that re-runs a rule from this shape. A
 // rule whose `postValidators` are dropped loses its false-positive guard and

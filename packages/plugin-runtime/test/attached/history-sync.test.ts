@@ -27,6 +27,7 @@ import type {
   IngestEvent,
   ManagedSettingsValues,
   RecordAuditEventRequest,
+  Rule,
 } from '@akasecurity/schema';
 import { HISTORY_SYNC_PAYLOAD_VERSION, MANAGED_SETTINGS_FILENAME } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -38,7 +39,11 @@ import type { AttachedClient } from '../../src/attached/gateway.ts';
 import { AttachedDataGateway } from '../../src/attached/gateway.ts';
 import type { HistorySyncResult } from '../../src/attached/history-sync.ts';
 import { runHistorySync } from '../../src/attached/history-sync.ts';
-import { encodedWireId, FAIL_CLOSED_MARKER } from '../../src/attached/outbound-encoder.ts';
+import {
+  createStoreOutboundEncoder,
+  encodedWireId,
+  FAIL_CLOSED_MARKER,
+} from '../../src/attached/outbound-encoder.ts';
 import { StandaloneDataGateway } from '../../src/standalone-gateway.ts';
 import {
   expectedToken,
@@ -2423,6 +2428,7 @@ describe('runHistorySync — secrets on the capture lane', () => {
       encoder: {
         encodeContent: (content) => Promise.resolve({ content, sightings: [] }),
         encodeEvent: (event) => Promise.resolve({ ...event, content: 'encoded' }),
+        redactContent: (content) => Promise.resolve(content),
         close: () => Promise.resolve(),
       },
     });
@@ -2504,6 +2510,7 @@ describe('runHistorySync — secrets on the capture lane', () => {
           attempts += 1;
           return Promise.resolve(undefined);
         },
+        redactContent: () => Promise.resolve(undefined),
         close: () => Promise.resolve(),
       },
     });
@@ -2549,6 +2556,7 @@ describe('runHistorySync — a held live capture on a default install', () => {
         encoder: {
           encodeContent: () => new Promise(() => undefined),
           encodeEvent: () => new Promise(() => undefined),
+          redactContent: () => new Promise(() => undefined),
           close: () => Promise.resolve(),
         },
         encodeBudgetMs: 1,
@@ -2594,6 +2602,74 @@ describe('runHistorySync — the sighting-sharing gate on resend', () => {
     expect(body).not.toContain(value);
     expect(body).not.toContain('[[aka:fp:');
     expect(l.captures.map((c) => c.content)).toEqual([`k ${FAIL_CLOSED_MARKER}`]);
+  });
+});
+
+describe('runHistorySync — tool-call targets on the structural lane', () => {
+  const orgValue = ['ACME', 'TOK', '3'.repeat(10)].join('');
+  const orgRule: Rule = {
+    specVersion: 1,
+    id: 'acme/internal-token',
+    name: 'Internal token',
+    category: 'secret',
+    severity: 'high',
+    matcher: { type: 'keyword', keywords: [orgValue], caseSensitive: true },
+  };
+
+  const seedToolCall = (id: string, target: string): void => {
+    const db = openLocalDatabase(dataDirOf(home));
+    try {
+      db.auditEvents.ensureSessionRoot('tc-session', new Date(T0 - 86_400_000).toISOString());
+      db.auditEvents.insertAuditEvent({
+        id,
+        eventType: 'tool_call',
+        rootSessionId: 'tc-session',
+        parentId: 'tc-session',
+        startedAt: new Date(T0 - 86_000_000).toISOString(),
+        attributes: { tool_name: 'Bash', target },
+      });
+    } finally {
+      db.close();
+    }
+  };
+
+  it('redacts a secret only an organization rule detects, and sends the call', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedToolCall('tc-org', `curl -H "X-Key: ${orgValue}" api`);
+    const l = lanesFor();
+
+    await run({
+      sendBatch: l.sendBatch,
+      sendCaptures: l.sendCaptures,
+      encoder: createStoreOutboundEncoder(home, {
+        loadRules: () => Promise.resolve([orgRule]),
+      }),
+    });
+
+    const call = l.structural.find((e) => e.id === 'tc-org');
+    expect(call?.attributes).toMatchObject({
+      tool_name: 'Bash',
+      target: `curl -H "X-Key: ${FAIL_CLOSED_MARKER}" api`,
+    });
+    expect(JSON.stringify(l.structural)).not.toContain(orgValue);
+  });
+
+  it('sends the call without its target when the scan cannot run', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedToolCall('tc-fail', `k=${orgValue}`);
+    const l = lanesFor();
+
+    await run({
+      sendBatch: l.sendBatch,
+      sendCaptures: l.sendCaptures,
+      encoder: createStoreOutboundEncoder(home, {
+        loadRules: () => Promise.reject(new Error('rules unreadable')),
+      }),
+    });
+
+    const call = l.structural.find((e) => e.id === 'tc-fail');
+    expect(call?.attributes).toEqual({ tool_name: 'Bash' });
+    expect(JSON.stringify(l.structural)).not.toContain(orgValue);
   });
 });
 

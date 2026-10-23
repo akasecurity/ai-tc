@@ -41,6 +41,9 @@ export const EXECUTABLE_REDACT_NOTE =
 // Woven into the deny message when a redact decision carried no redacted text
 // to put in place, so the block explains why the policy's redact could not be
 // applied rather than the call going out unmasked.
+export const REMOTE_PROTECTED_PATH_NOTE =
+  'This session is connected through Remote Control, where a protected path is always blocked. Use the path from a local session, remove it from protectedPaths in ~/.aka/settings/settings.json, or grant an exception below.';
+
 export const UNREDACTABLE_NOTE =
   'The redacted form of this input was unavailable, so the call is blocked rather than sent unmasked.';
 

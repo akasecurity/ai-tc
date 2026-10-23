@@ -42,7 +42,7 @@ import {
   denyUnresolvedPointerMessage,
 } from './pointer-substitution.ts';
 import type { PreToolUseOutput, ScannedField } from './pre-tool-use-decision.ts';
-import { decidePreToolUse } from './pre-tool-use-decision.ts';
+import { decidePreToolUse, REMOTE_PROTECTED_PATH_NOTE } from './pre-tool-use-decision.ts';
 import {
   fieldText,
   inputEventKind,
@@ -51,12 +51,12 @@ import {
   isSyntheticField,
   scannableInputFields,
 } from './pre-tool-use-fields.ts';
-import { PROTECTED_PATH_TOOLS, protectedPathFields } from './protected-path-fields.ts';
 import {
-  isRemoteControlSession,
   PROTECTED_PATH_RULE_ID,
-  REMOTE_PROTECTED_PATH_NOTE,
-} from './remote-session.ts';
+  PROTECTED_PATH_TOOLS,
+  protectedPathFields,
+} from './protected-path-fields.ts';
+import { isRemoteControlSession } from './remote-session.ts';
 import type { HookOutput } from './shared.ts';
 import { baseMetadata, captureScopeKey, getString } from './shared.ts';
 import { captureStamped } from './stamped-capture.ts';

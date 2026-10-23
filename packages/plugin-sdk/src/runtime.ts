@@ -225,8 +225,9 @@ export interface PluginRuntimeOptions {
   dataDir?: string | undefined;
   scanIsolation?: IsolatedScanOptions | undefined;
   largeInput?: LargeInputScanOptions | undefined;
-  // Rule ids whose findings resolve to at least `block` for this runtime, whatever
-  // the policy says. A finding the user excepted still resolves to `allow`.
+  // Rule ids whose findings resolve to `block` for this runtime, whatever the
+  // policy says, and then pass through the same degrade-then-cap step as any
+  // resolved action. A finding the user excepted still resolves to `allow`.
   blockRules?: ReadonlySet<string> | undefined;
 }
 
@@ -488,13 +489,15 @@ export function createPluginRuntime(
     // it in the hook instead is what left an escalated deny recorded as
     // 'redact'; a downgrade recorded that way would be worse still, claiming a
     // masking that never happened while the raw value went through.
-    if (blockRules?.has(finding.ruleId)) return 'block';
-    return resolveEnforcedAction(resolveAction(finding.ruleId, finding.category), {
-      policyMode,
-      redactFallback,
-      rewritable,
-      ceilingEnabled: ENFORCEMENT_CEILING_ENABLED,
-    });
+    return resolveEnforcedAction(
+      blockRules?.has(finding.ruleId) ? 'block' : resolveAction(finding.ruleId, finding.category),
+      {
+        policyMode,
+        redactFallback,
+        rewritable,
+        ceilingEnabled: ENFORCEMENT_CEILING_ENABLED,
+      },
+    );
   }
 
   function ruleNamesOf(findings: readonly MatchResult[]): Record<string, string> | undefined {
@@ -611,6 +614,7 @@ export function createPluginRuntime(
       // bypass — evaluating would only burn use budgets.
       if (ENFORCEMENT_CEILING_ENABLED && policyMode === 'warn') return { excepted, exceptionIds };
       const enforced = findings.filter((f) => {
+        if (blockRules?.has(f.ruleId)) return true;
         const action = resolveAction(f.ruleId, f.category);
         return action === 'block' || action === 'redact';
       });

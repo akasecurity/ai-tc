@@ -192,6 +192,34 @@ describe('protected paths in a PreToolUse call', () => {
       expect(await run('Read', { file_path: join(proj, 'a.txt') })).toEqual([]);
     });
 
+    it('lets a granted exception allow the call, as the denial says it can', async () => {
+      configure('warn', { protectedPaths: ['~/Documents'] });
+      expect(decisionOf(await run('Read', protectedRead()))).toBe('deny');
+      const db = openLocalDatabase(dataDir, { shippedRegexMatchers: shippedRegexMatchers() });
+      try {
+        const [blocked] = await db.exceptions.recentBlocked();
+        expect(blocked?.ruleId).toBe(RULE_ID);
+        if (blocked === undefined) return;
+        await db.exceptions.create({
+          ruleId: blocked.ruleId,
+          category: blocked.category,
+          valueFingerprint: blocked.valueFingerprint,
+          keyVersion: blocked.keyVersion,
+          maskedValue: blocked.maskedValue,
+          scope: 'permanent',
+          expiresAt: null,
+          maxUses: null,
+          justification: 'test grant',
+          conditions: null,
+          createdBy: 'tester',
+          createdVia: 'cli-approve',
+        });
+      } finally {
+        db.close();
+      }
+      expect(decisionOf(await run('Read', protectedRead()))).toBeUndefined();
+    });
+
     it('treats an empty variable as a local session', async () => {
       vi.stubEnv('CLAUDE_CODE_BRIDGE_SESSION_ID', '');
       configure('warn', { protectedPaths: ['~/Documents'] });

@@ -191,6 +191,7 @@ describe('attached gateway: secrets leave only as sighting tokens', () => {
       encoder: {
         encodeContent: () => Promise.reject(new Error('encoder fault')),
         encodeEvent: () => Promise.reject(new Error('encoder fault')),
+        redactContent: () => Promise.reject(new Error('encoder fault')),
         close: () => Promise.resolve(),
       },
     });
@@ -264,6 +265,7 @@ describe('attached gateway: secrets leave only as sighting tokens', () => {
         encoder: {
           encodeContent: () => new Promise(() => undefined),
           encodeEvent: () => new Promise(() => undefined),
+          redactContent: () => new Promise(() => undefined),
           close: () => Promise.resolve(),
         },
       });

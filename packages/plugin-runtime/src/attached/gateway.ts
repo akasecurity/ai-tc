@@ -86,6 +86,7 @@ import type { OutboundEncoder } from './outbound-encoder.ts';
 import { createStoreOutboundEncoder } from './outbound-encoder.ts';
 import { withoutScopeKey } from './scope-strip.ts';
 import { withScopedRepo } from './scoped-repo.ts';
+import { withRedactedTarget } from './wire-target.ts';
 import { REQUEST_TIMEOUT_MS, withTimeout } from './with-timeout.ts';
 
 /**
@@ -636,6 +637,16 @@ export class AttachedDataGateway
     }
   }
 
+  /** The copies of `events` sent: each target redacted by the encoder, then re-keyed. */
+  private async wireEvents<T extends AuditEventInput>(events: readonly T[]): Promise<T[]> {
+    const out: T[] = [];
+    for (const event of events) {
+      const redacted = await withRedactedTarget(event, (text) => this.encoder.redactContent(text));
+      out.push(reKeyForForward(redacted, this.remoteInventory));
+    }
+    return out;
+  }
+
   /** TOTAL, like `verdictFor`: a record it cannot read stays local. */
   private staysLocal(record: CaptureRecord): boolean {
     try {
@@ -903,9 +914,9 @@ export class AttachedDataGateway
     // offered by the drain (`started_at < backlogBefore`) and stays on this
     // machine.
     if (this.auditVerdict(event) === 'local') return;
-    const forwarded = await this.deps.forward.run(() =>
-      this.deps.client.recordAuditEvent(reKeyForForward(event, this.remoteInventory)),
-    );
+    const [wire] = await this.wireEvents([event]);
+    if (wire === undefined) return;
+    const forwarded = await this.deps.forward.run(() => this.deps.client.recordAuditEvent(wire));
     // The stamp is outside the local write's transaction, for the reason
     // `recordCapture` gives: the write is authoritative and commits whatever the
     // network does; only once the forward settles is there anything true to
@@ -1044,10 +1055,9 @@ export class AttachedDataGateway
         // because `reKeyForForward` rewrites inventory ids and the row is keyed
         // on neither.
         const chunk = inputs.slice(i, i + AUDIT_EVENT_BATCH_MAX).map((input) => toEvent(input));
+        const wire = await this.wireEvents(chunk);
         const forwarded = await this.deps.forward.run(() =>
-          this.deps.client.recordAuditEvents(
-            chunk.map((event) => reKeyForForward(event, this.remoteInventory)),
-          ),
+          this.deps.client.recordAuditEvents(wire),
         );
         if (forwarded.ok) {
           if (forwarded.value.accepted === chunk.length) {
@@ -1105,9 +1115,12 @@ export class AttachedDataGateway
             recordForwardDrops(this.deps.dataDir, inputs.length - i - j, at);
             return;
           }
-          const single = await this.deps.forward.run(() =>
-            this.deps.client.recordAuditEvent(reKeyForForward(event, this.remoteInventory)),
-          );
+          const one = wire[j];
+          if (one === undefined) {
+            recordForwardDrops(this.deps.dataDir, 1, at);
+            continue;
+          }
+          const single = await this.deps.forward.run(() => this.deps.client.recordAuditEvent(one));
           if (single.ok) {
             delivered.push(event);
             continue;

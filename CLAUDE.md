@@ -2831,37 +2831,14 @@ Five things about it are load-bearing:
   reached that way. Nothing covers this the way the `No-network` CI job covers
   shell-outs.
 
-### The no-ssh-aliases guard
+### Why there is no no-ssh-aliases guard
 
-`test/setup/no-ssh-aliases.ts` is the third shared setup file, wired beside the
-other two by every package that wires `no-managed-settings.ts`. It declares,
-once per test file, that the machine defines no SSH `Host` aliases.
-
-The reasoning is the managed-overlay one exactly: `~/.ssh/config` is an absolute
-path outside `~/.aka`, so the temp homes these suites build do not redirect it,
-and §8 reads it to reduce every clone of one repository to one identity. Without
-the pin, a project id and a scope key depend on whose laptop the suite ran on —
-a developer whose config carries `Host github.com` computes different keys than
-CI, which has no config at all, and CI stays green while their machine fails.
-
-Two things about it are load-bearing, and the second was learned the hard way:
-
-- **It imports ONE MODULE by relative path**, never the package barrel, for the
-  reason `no-managed-settings.ts` sets out at length.
-- **A suite ABOUT the parser cannot reach the real path by mocking `node:os`.**
-  This setup file imports `ssh-hosts.ts` before any test file runs, so the
-  module's `homedir` binding is already the real one by the time a `vi.mock`
-  could replace it — the mock is accepted and changes nothing. A suite that
-  mocked it therefore read the DEVELOPER'S OWN `~/.ssh/config`, passed the one
-  case whose alias happened to exist there and failed the rest, which is how
-  this was found. `UNSAFE_TEST_ONLY_setSshConfigPath` is the seam that works:
-  it moves the path the parser reads, and needs no mock. A CONSUMER suite that
-  merely wants an alias in force pins the map instead, with
-  `UNSAFE_TEST_ONLY_setSshHostAliases`, and restores the empty map afterwards.
-
-A CHILD PROCESS is outside it, exactly as it is outside the managed-settings
-pin, and for the same reason: the pin lives in one process's copy of the module,
-and a spawned hook loads its own with nothing set.
+There was one — a third shared setup file pinning an empty SSH alias map, because
+`~/.ssh/config` sits outside the temp homes these suites build and a project id
+would otherwise depend on whose laptop ran them. It went with the mechanism: the
+identity reduction resolves no aliases and reads no file, so there is nothing to
+pin. Do not re-add the guard without first reading §8's build constraint, which
+is what forbids the read it would be guarding.
 
 ### The PATH shim, and why it fails OPEN
 

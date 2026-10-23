@@ -15,13 +15,13 @@
 // it throws UnreadableAttachmentScopeError, so the caller writes nothing, and
 // unenrolling from it filters its stored entries like any other record's.
 //
-// Pure, bar one read. Run them inside applyOnboarding's updater, which hands
-// over the file the merge is about to land on, so two writers cannot lose each
-// other's edit. The one read is the sweep's: respellAttachmentScopeEntries asks
-// respelledRepoKey how a repository is keyed now, and an SSH alias is a host
-// only because ~/.ssh/config says so, so the first call on a process reads that
-// file (memoized after, and fail-open on a machine that has none). Nothing
-// writes.
+// Pure: no I/O at all, the sweep included. respellAttachmentScopeEntries asks
+// respelledRepoKey how a repository is keyed now, and that is string reduction
+// over the identity it is given — see ./repo-key.ts, which must stay free of
+// file reads because web-ui compiles this package as its own source. Run these
+// inside applyOnboarding's updater, which hands over the file the merge is about
+// to land on, so two writers cannot lose each other's edit; that settings.json
+// read is the caller's, inside the lock, and none of it happens here.
 import type { AttachmentScope, PluginWhoami } from '@akasecurity/schema';
 import { AttachmentScopeEntry, isAttachmentScopeValid } from '@akasecurity/schema';
 

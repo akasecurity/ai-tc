@@ -28,9 +28,9 @@ const HEX_64 = /^[0-9a-f]{64}$/;
 // every project on the receiving side, so it moves only when the canonical form
 // does, and only as a deliberate act.
 //
-// v2 → v3 when a path began folding on a case-insensitive forge and an SSH
-// `Host` alias began resolving. A change to either without a bump here is the
-// silent re-bucketing the constant exists to prevent.
+// v2 → v3 when a path began folding on a case-insensitive forge. A change to
+// the canonical form without a bump here is the silent re-bucketing the
+// constant exists to prevent.
 describe('PROJECT_KEY_DIGEST_VERSION', () => {
   it('is the version this build stamps into every project digest', () => {
     expect(PROJECT_KEY_DIGEST_VERSION).toBe('v3');

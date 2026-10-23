@@ -478,12 +478,12 @@ function isEnrollableKey(key: string): boolean {
  */
 export function enrollableRepoKey(input: string): string | undefined {
   const value = input.trim();
-  // `ssh://`, not `https://`. A TYPED key names no transport, so it has to be
-  // judged by the rule a CHECKOUT's key is built under — and alias resolution
-  // runs for ssh alone (see `parseGitRemote`). Judging it as https would accept
-  // an alias spelling such as `gh-personal/acme/app`, which no checkout on this
-  // machine stamps, and store an enrolment that matches nothing. The scheme is a
-  // probe here and reaches no network.
+  // `ssh://`, not `https://`. A TYPED key names no transport, so it is judged
+  // under the rule a CHECKOUT's key is built with, and the scp form is what a
+  // bare `host/owner/repo` reads as. The two schemes answer alike for every
+  // spelling this reduction converges today — the reduction is pure, so no
+  // transport is privileged — and ssh is kept because that is the form a key
+  // mirrors. The scheme is a probe here and reaches no network.
   const typed = canonicalRepoUrl(`ssh://${value}`) === value ? value : undefined;
   const key = canonicalRepoUrl(value) ?? typed;
   return key !== undefined && isEnrollableKey(key) ? key : undefined;
@@ -501,7 +501,7 @@ export function enrollableRepoKey(input: string): string | undefined {
  * sweep's job is precisely to write what enroll's refusal would have named.
  *
  * `ssh://`, for the reason `enrollableRepoKey` gives: a key names no transport,
- * and alias resolution runs for ssh alone. Text carrying a `:` is left alone —
+ * and an scp-form spelling is the one a key reads as. Text carrying a `:` is left alone —
  * it is a clone URL rather than a key, `enrollableRepoKey` already judges it
  * whole, and prefixing a scheme onto it would read its port or its scp path as
  * part of the host. The answer is always enrollable, so a spelling only ever
@@ -511,7 +511,7 @@ export function enrollableRepoKey(input: string): string | undefined {
  * enrollable key is its own canonical form, so this answers `undefined` for
  * every one of them and the two functions cannot disagree. That is what makes a
  * sweep built on it idempotent — a second pass finds nothing to do. Pure; no
- * I/O beyond the ssh alias map `parseGitRemote` memoizes.
+ * I/O — `parseGitRemote` reads nothing, and nothing here may.
  */
 export function respelledRepoKey(input: string): string | undefined {
   const value = input.trim();

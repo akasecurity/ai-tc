@@ -44,10 +44,10 @@ const CHILD = fileURLToPath(new URL('./settings-writer-child.ts', import.meta.ur
  * the thing that fails the run. At 30s it could never fire: vitest won the race
  * every time and a run where writers failed to boot died on a bare
  * `Test timed out in 20000ms`, naming neither the count nor which ones were
- * missing. Same trap CLAUDE.md records for the PATH shim's probe deadline.
+ * missing. Same trap conventions/testing.md records for the PATH shim's probe deadline.
  *
  * The headroom is still large. Seven writers boot in ~200ms locally, and
- * CLAUDE.md measures this package's CI factor at ~30x, so this is roughly two
+ * conventions/testing.md measures this package's CI factor at ~30x, so this is roughly two
  * orders of magnitude clear of a legitimate wait. Raising it past the
  * `testTimeout` buys nothing and costs the diagnosis.
  */

@@ -191,7 +191,14 @@ describe(`${SOURCE_FILE}'s emit() shape enumeration`, () => {
 // The other half of the doc: CLAUDE.md's hook-contract bullet for this host
 // ---------------------------------------------------------------------------
 
-const CONVENTIONS = readFileSync(new URL('../../../CLAUDE.md', import.meta.url), 'utf8');
+const CONVENTIONS_DIR = new URL('../../../conventions/', import.meta.url);
+const CONVENTIONS = [
+  readFileSync(new URL('../../../CLAUDE.md', import.meta.url), 'utf8'),
+  ...readdirSync(CONVENTIONS_DIR)
+    .filter((name) => name.endsWith('.md'))
+    .sort()
+    .map((name) => readFileSync(new URL(name, CONVENTIONS_DIR), 'utf8')),
+].join('\n');
 
 /**
  * The bullet, sliced out by its own bold lead. Throws unless it occurs exactly
@@ -203,7 +210,7 @@ function copilotBullet(): string {
   const at = CONVENTIONS.indexOf(lead);
   if (at === -1 || CONVENTIONS.slice(at + 1).includes(lead)) {
     throw new Error(
-      'CLAUDE.md: expected exactly one GitHub Copilot hook-contract bullet. It was reworded, ' +
+      'conventions/dependencies.md: expected exactly one GitHub Copilot hook-contract bullet. It was reworded, ' +
         'removed or duplicated, and this guard cannot read what it is meant to be asserting.',
     );
   }
@@ -230,7 +237,7 @@ function cliVerdictField(): string {
   return line.trim();
 }
 
-describe("CLAUDE.md's hook-contract bullet for this host", () => {
+describe('the hook-contract bullet for this host in conventions/dependencies.md', () => {
   const BULLET = copilotBullet();
 
   it('reads a bullet that is really there', () => {

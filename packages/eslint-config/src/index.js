@@ -17,7 +17,7 @@ export { commentNarrationPlugin, noProcessNarration } from './no-process-narrati
 const NO_NETWORK_MESSAGE =
   'ai-tc is local-first and makes no network calls — all data lives in the local SQLite store under ~/.aka. ' +
   'Do not use network primitives here; a genuinely local-only use (e.g. a 127.0.0.1 bind probe) may add a ' +
-  'file-scoped opt-out. See CLAUDE.md "No network calls".';
+  'file-scoped opt-out. See conventions/process-env-and-network.md.';
 
 // Client-side network globals. `no-restricted-globals` flags only a bare
 // reference that resolves to the global — never a property access such as
@@ -248,7 +248,7 @@ function drizzleSyntaxSelectors() {
   ];
 }
 
-// The store-reading wall (see CLAUDE.md "Package dependency rules"): Drizzle is
+// The store-reading wall (see conventions/dependencies.md): Drizzle is
 // imported ONLY by @akasecurity/schema, which uses it to DEFINE the local-store
 // and registry schemas. Every other package reads that store through
 // @akasecurity/persistence, which wraps node:sqlite — so a Drizzle import
@@ -261,7 +261,7 @@ function drizzleSyntaxSelectors() {
 const DRIZZLE_IMPORT_MESSAGE =
   'Drizzle is imported only by @akasecurity/schema, which uses it to define the local-store and ' +
   'registry schemas. Read the store through @akasecurity/persistence (node:sqlite) instead. ' +
-  'See CLAUDE.md "Package dependency rules".';
+  'See conventions/dependencies.md.';
 
 // This carries the network import bans forward alongside the Drizzle one.
 // `no-restricted-imports` does not merge across flat-config entries, and this is
@@ -563,8 +563,8 @@ function ambientLocaleSelectors(opts = {}) {
  * rather than a boolean: a file that legitimately binds a loopback socket needs
  * `node:http` and must keep every other transport banned. Pair it with the
  * matching `no-restricted-imports` value (`drizzleWallRules({ allow })`) so the
- * static and dynamic halves of the ban drop together, the way CLAUDE.md
- * "No network calls" requires.
+ * static and dynamic halves of the ban drop together, the way
+ * conventions/process-env-and-network.md requires.
  *
  * `ambientClockEveryModule` is the other direction — WIDENING rather than
  * lifting the clock ban, to every module in the package regardless of

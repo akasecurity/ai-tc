@@ -61,8 +61,8 @@ describe('the tap bootstrap handshake', () => {
     // that posted a well-formed handshake and installed nothing behind it.
     //
     // Asserted through the PORT rather than by reading `window.fetch` back:
-    // that global is banned in this repository (see CLAUDE.md "No network
-    // calls"), and the port is the better witness anyway — it is the channel
+    // that global is banned in this repository (see
+    // conventions/process-env-and-network.md), and the port is the better witness anyway — it is the channel
     // the bridge really listens on, and `patched` is the tap's own statement
     // that it hooked something.
     await import('../src/tap.ts');

@@ -133,7 +133,7 @@ const HOOKS: readonly HookCase[] = [
   },
 ];
 
-// CLAUDE.md §1: `action` is a CaptureResult field that never crosses the wire,
+// conventions/fail-open.md: `action` is a CaptureResult field that never crosses the wire,
 // and none of the shapes this package emits uses that key. This guards against
 // a refactor that starts serializing the internal decision object onto stdout.
 //
@@ -442,7 +442,7 @@ interface EnforcingHook {
   /**
    * The key the emitted JSON must carry per policy, or null where the hook
    * emits nothing at all. `monitor` is null for the two tool hooks because log
-   * IS silence — CLAUDE.md §1's "allow is the absence of output", reached
+   * IS silence — conventions/fail-open.md's "allow is the absence of output", reached
    * through a finding rather than through a fault.
    */
   readonly emits: Readonly<Record<BuiltinPolicyId, string | null>>;

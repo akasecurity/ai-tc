@@ -158,7 +158,7 @@ const ENFORCEMENT_KINDS: readonly EnforcementActionKind[] = ['blocked', 'redacte
 // the enum without a row here is a compile error — an omission the array shape
 // this replaced could not catch (see scanCoverage() below for the ordering,
 // which is derived from Provider.options). Keys are spelled through `HARNESS.X`
-// computed members per CLAUDE.md's "call sites spell HARNESS.ClaudeCode, not
+// computed members per conventions/contracts.md's "call sites spell HARNESS.ClaudeCode, not
 // the literal" rule — `Record<Provider, …>` exhaustiveness survives computed
 // member keys. Key order here is deliberately NOT Provider's declaration
 // order: scanCoverage() must derive the response order from Provider.options

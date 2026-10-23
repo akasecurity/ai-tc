@@ -62,7 +62,7 @@ const MIN_REASON_CHARS = 20;
  * Source with comments removed, so a mention in prose is never read as a call.
  *
  * A peer copy of `packages/eslint-config/test/effective-config.test.js`'s
- * stripper — a package wall blocks the import, and CLAUDE.md's rule for that is
+ * stripper — a package wall blocks the import, and conventions/testing.md's rule for that is
  * to copy it rather than reinvent it, which means copying the form that gets the
  * hard case right. The `[^:]` is that case: a bare `\/\/.*$` truncates at the
  * `//` in `'https://…'` and takes the rest of the LINE with it, so a real

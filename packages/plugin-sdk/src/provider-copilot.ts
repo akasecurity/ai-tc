@@ -11,7 +11,7 @@
  * process's environment says which.
  *
  * So this resolver reads NO environment at all — which is why this file carries
- * no `n/no-process-env` opt-out and is absent from CLAUDE.md §3's table. It
+ * no `n/no-process-env` opt-out and is absent from the table in conventions/process-env-and-network.md. It
  * answers `'unknown'`, unconditionally, and that is an honest answer rather
  * than a stub: recording `'github'` or `'openai'` here would be a fabricated
  * per-session fact that the cost attribution would then trust.

@@ -201,7 +201,7 @@ describe('setup.md step-3 model-judge consent gate', () => {
   //
   // Copied per suite rather than shared: these surfaces sit behind different
   // package walls and word the same field differently, the same reason
-  // expectNoEchoOf is copied rather than imported (CLAUDE.md, Testing).
+  // expectNoEchoOf is copied rather than imported (conventions/testing.md).
   const STEP3_DISCLOSURE: Record<keyof typeof TriageHit.shape, RegExp | null> = {
     rawMatch: /rawMatch|raw detected value/i,
     context: /transcript text on either side/i,

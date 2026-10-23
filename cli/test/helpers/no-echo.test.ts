@@ -31,7 +31,7 @@ const EMAIL = 'user@example.com';
 // The longest contiguous run of `raw` that `preview` discloses, derived rather
 // than read off the mask's current output — a literal here would assert that a
 // string this file built lacks a run of another string this file built, which
-// is the shape CLAUDE.md forbids for exactly this reason.
+// is the shape conventions/testing.md forbids for exactly this reason.
 function longestRevealedRun(preview: string, raw: string): number {
   let longest = 0;
   for (let i = 0; i < raw.length; i += 1) {

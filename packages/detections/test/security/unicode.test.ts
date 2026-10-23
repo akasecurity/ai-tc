@@ -415,7 +415,7 @@ describe('the slow path does not blow up on a large text with one format charact
   // single-digit milliseconds took multiple SECONDS with one leading BOM,
   // because the (now fixed) merge step was quadratic in the number of
   // findings. A fixed wall-clock ceiling is the wrong instrument for that —
-  // CLAUDE.md/CONTRIBUTING.md's own reasoning against fixed millisecond
+  // conventions/testing.md's and CONTRIBUTING.md's own reasoning against fixed millisecond
   // limits applies here: a shared or Windows CI runner can run this same
   // 60,000-finding scan tens of times slower than a dev machine, which would
   // cross any fixed ceiling generous enough to hold locally. A RATIO does

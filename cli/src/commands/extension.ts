@@ -47,8 +47,8 @@ function cliRoot(): string {
 // derived from the "key" field committed in plugins/browser-extension/
 // manifest.json (a public key, not a secret), which pins it across every
 // machine that builds the extension from source. Duplicated here rather than
-// imported: cli and plugins/* are sibling leaf packages (see CLAUDE.md's
-// package dependency rules — neither depends on the other), and the CLI
+// imported: cli and plugins/* are sibling leaf packages (see
+// conventions/dependencies.md: the package dependency rules — neither depends on the other), and the CLI
 // already hardcodes small per-plugin facts this way (see AGENT_PLUGINS in
 // packages/local-ops/src/registry.ts).
 //

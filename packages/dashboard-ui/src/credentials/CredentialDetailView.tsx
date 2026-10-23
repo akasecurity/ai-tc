@@ -287,12 +287,13 @@ export function CredentialDetailView({
         )}
       </div>
 
-      {c.statuses.includes('exposed') && c.exposedAt !== null && (
+      {c.statuses.includes('exposed') && (
         <div className="rounded-lg border border-sev-critical-ink/30 bg-sev-critical-fill p-3">
           <p className="text-xs text-text-2">
             <span className="font-semibold text-sev-critical-ink">Exposed</span> — this value was
-            seen in a live LLM session, first {relativeTime(c.exposedAt, renderedAt)}. Its linked
-            finding below follows the most recent session that carried it.
+            seen in a live LLM session
+            {c.exposedAt === null ? '' : `, first ${relativeTime(c.exposedAt, renderedAt)}`}. Its
+            linked finding below follows the most recent session that carried it.
           </p>
         </div>
       )}

@@ -599,6 +599,13 @@ describe('CredentialDetailView', () => {
     expect(text().split('Exposed')).toHaveLength(3);
   });
 
+  it('keeps the Exposed note when the status is set without a time, leaving out when', () => {
+    detail({ ...DETAIL, statuses: ['exposed'], exposedAt: null });
+    expect(text()).toContain(
+      'Exposed — this value was seen in a live LLM session. Its linked finding below',
+    );
+  });
+
   it('says nothing of exposure for a credential no live session carried', () => {
     detail();
     expect(text()).not.toContain('Exposed');

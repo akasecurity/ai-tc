@@ -72,7 +72,10 @@ export interface CredentialDetailModel extends CredentialListItem {
   reference: string | null;
   /** ISO time the policy next falls due; null when no policy is set. */
   rotationDueAt: string | null;
-  /** ISO time it was first seen in a live LLM session; null when it never was. */
+  /**
+   * ISO time it was first seen in a live LLM session, or null. `statuses` alone
+   * says whether it is exposed; this only dates the Exposed note.
+   */
   exposedAt: string | null;
   projects: string[];
   teams: CredentialTeamUsage[];

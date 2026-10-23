@@ -412,7 +412,12 @@
     "@akasecurity/audit-gate#test": {
       "dependsOn": ["build", "^build", "^typecheck"],
       "outputs": ["coverage/**"],
-      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/CLAUDE.md", "$TURBO_ROOT$/CONTRIBUTING.md"]
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/CLAUDE.md",
+        "$TURBO_ROOT$/conventions/*.md",
+        "$TURBO_ROOT$/CONTRIBUTING.md"
+      ]
     },
     // required-checks-gate parses CONTRIBUTING.md's gate table, including the
     // Enforced column its whole job compares against.

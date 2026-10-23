@@ -23,7 +23,9 @@ export const CONVENTIONS_DIR = 'conventions';
 /**
  * The conventions text: `CLAUDE.md` followed by every file under `conventions/`, in name
  * order. Headings keep their original level and text across the split, so a guard slicing
- * on a heading line reads the same section it always did. Throws if `CLAUDE.md` is missing
+ * on a heading line reads the same section it always did. The join is only safe while
+ * every heading stays unique across the documents: a repeated heading (a second
+ * `### Overview`, say) makes `sectionOf` throw in every suite that slices it. Throws if `CLAUDE.md` is missing
  * or empty, or the directory holds no file.
  */
 export function readConventions() {

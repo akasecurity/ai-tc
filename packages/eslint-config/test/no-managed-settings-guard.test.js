@@ -37,18 +37,25 @@ import {
 const PERSISTENCE = '@akasecurity/persistence';
 
 /**
- * The process-wide pins this file derives the owing set for. Both declare, once
- * per test file, that the machine is plain: no administrator, no SSH aliases.
- * Both are read from an absolute system path a temp home cannot redirect, so
- * both owe the same wiring to the same packages, and a LIST of those packages
- * would leave the next one to gain a persistence edge silently unguarded —
- * which is the whole reason this walks the closure instead.
+ * The process-wide pins this file derives the owing set for. One today: it
+ * declares, once per test file, that the machine has no administrator. It is
+ * read from an absolute system path a temp home cannot redirect, so it owes
+ * wiring to every package whose closure can load persistence, and a LIST of
+ * those packages would leave the next one to gain that edge silently
+ * unguarded — which is the whole reason this walks the closure instead.
  *
- * Parameterised rather than copied: a second walk is a second thing to keep in
- * step, and the two subjects differ only in which file, seam and binding they
- * name. `installs` is the call that proves the guard NEUTRALISES rather than
- * merely imports — a file that imports a seam and never calls it wires and
- * resolves perfectly while doing nothing.
+ * PARAMETERISED RATHER THAN COPIED, even at one row, and that is deliberate.
+ * A second walk is a second thing to keep in step, and a subject differs from
+ * its neighbours only in which file, seam and binding it names — so the table
+ * is what a second pin joins rather than something it reimplements. There was
+ * a second (an empty SSH alias map) until the identity reduction stopped
+ * reading `~/.ssh/config`; it is the shape to add back to the day an alias map
+ * can be handed in from callers outside the dashboard's graph, which §8's
+ * build constraint forbids today.
+ *
+ * `installs` is the call that proves the guard NEUTRALISES rather than merely
+ * imports — a file that imports a seam and never calls it wires and resolves
+ * perfectly while doing nothing.
  */
 const SUBJECTS = [
   {
@@ -77,9 +84,9 @@ const setupEntryFor = (binding) =>
   new RegExp(String.raw`setupFiles\s*:\s*\[[^\]]*\b${binding}\b[^\]]*\]`);
 /**
  * Every regex metacharacter in `text`, escaped, so a path is matched as the
- * literal it is. Escaping only `.` happened to be enough for today's two
- * subjects and would silently mis-match the first one to carry a `+`, `(` or
- * `?` — and a guard that quietly matches nothing reports green.
+ * literal it is. Escaping only `.` happened to be enough for the subjects this
+ * table has carried so far and would silently mis-match the first one to carry
+ * a `+`, `(` or `?` — and a guard that quietly matches nothing reports green.
  * @param {string} text
  */
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);

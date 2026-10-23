@@ -58,10 +58,12 @@ Limits of this install:
 - **The CLI warns that this install route is deprecated.** It says direct
   installs from a path are being replaced by `plugin@marketplace` installs.
   A marketplace install of this plugin has not been measured.
-- **Hook notices were not seen on the screen.** In `-p` mode, the only mode
-  observed, AKA's messages appeared only in the CLI's debug log, with debug
-  logging enabled (`--log-level debug --log-dir <dir>`). An interactive
-  session has not been measured.
+- **Hook notices may not be on the screen yet.** In a recorded `-p` session on
+  Copilot CLI 1.0.98, AKA's messages appeared only in the CLI's debug log, with
+  debug logging enabled (`--log-level debug --log-dir <dir>`). AKA now also
+  sends each one as a hook progress line, which the Copilot hooks reference
+  documents as shown in the CLI timeline. That has not been observed on a real
+  install, in `-p` mode or in an interactive session.
 - **Windows is unconfirmed.** The plugin has not been installed and run against
   a real Copilot CLI on Windows, so whether its hook commands survive that
   platform's shell is untested.
@@ -110,11 +112,12 @@ finding on the dashboard; **neither can be withheld or masked.** A `block` or
 `redact` policy on one of those is recorded as a finding and the text goes to
 the model unchanged. Under VS Code AKA returns the notice as a hook message,
 and it appears only in VS Code's "GitHub Copilot Chat Hooks" output channel: in
-the recorded session the chat showed nothing from AKA. On the CLI it writes the
-notice to stderr. In `-p` mode, the only mode observed, the CLI did not show a
-successful hook's stderr: it appeared only in Copilot's debug log, and only
-because debug logging was enabled (`--log-level debug`). Whether an interactive
-session shows it has not been measured. It never pretends it enforced.
+the recorded session the chat showed nothing from AKA. On the CLI it sends the
+notice as a hook progress line, which the hooks reference documents as shown in
+the CLI timeline, and writes a copy to stderr. Neither has been seen on screen:
+in a recorded `-p` session the stderr copy appeared only in Copilot's debug log,
+with debug logging enabled (`--log-level debug`), and that session predates AKA's
+use of progress lines. It never pretends it enforced.
 
 The reason is that neither host has a channel for it that has been seen to
 work: the CLI's `modifiedPrompt` and `modifiedResult` are documented and were
@@ -147,7 +150,13 @@ the only trace is a message.
 notice that a redact fell back to warn, as a hook message. In the recorded
 session VS Code accepted it and showed it only in the "GitHub Copilot Chat
 Hooks" output channel, so the user never saw it, and a warn there is hard to
-tell from `monitor`. A redact on `run_in_terminal`'s `explanation` or `goal`
+tell from `monitor`. VS Code's documentation lists that message field as shown
+to the user only for its older local hook harness. For the Copilot harness,
+which it describes as the default for new sessions from VS Code 1.143, it says
+the field is not part of the documented contract. That is a reading of the
+docs: no newer VS Code has been recorded. AKA sends no progress line there,
+because VS Code documents none and an unrecognised line could cost a deny or a
+rewrite. A redact on `run_in_terminal`'s `explanation` or `goal`
 takes the same fallback as one on its command, because rewriting them would
 need an allow that approves the command too. Set `redactFallback` to `block` if
 a redact on a terminal call has to be visible; a VS Code deny itself was never
@@ -173,19 +182,34 @@ what it guarantees is that no path exits non-zero.
 verdict that the tool executes, so printing one per clean call would suppress
 the approval prompts your own Copilot settings would have raised. AKA emits a
 verdict only to deny, rewrites arguments only through `modifiedArgs`, and
-otherwise stays out of the way. A warning it has is written to stderr, because
-the CLI documents no message field on this event.
+otherwise stays out of the way. A warning it has goes out as a hook progress
+line, because the CLI documents no message field on this event. The hooks
+reference says the CLI removes progress lines before it reads the decision, so
+a progress line on its own is still no verdict.
 
-**In `-p` mode a warn reached only the CLI's debug log, not the screen.** The
-hooks reference describes stderr surfacing for a FAILING hook ("logged as a
-hook failure") and says nothing about one that exits 0. Observed on Copilot
-CLI 1.0.98 in `-p` mode: a successful hook's stderr appears nowhere in the
-CLI's own output, and only in the debug log (`--log-level debug --log-dir
-<dir>`), as `[rust:hooks] [hook stderr] …` lines. So under `redactFallback:
-warn` — the shipped default — the call goes through and the notice is in that
-log rather than in front of you, which makes a warn hard to tell from
-`monitor` on this host. An interactive session has not been measured. Set
-`redactFallback` to `block` if a redact on command text has to be visible.
+**On the CLI a warn is a progress line, and nobody has seen one on screen
+yet.** The hooks reference describes stderr surfacing for a FAILING hook
+("logged as a hook failure") and says nothing about one that exits 0.
+Observed on Copilot CLI 1.0.98 in `-p` mode: a successful hook's stderr
+appears nowhere in the CLI's own output, and only in the debug log
+(`--log-level debug --log-dir <dir>`), as `[rust:hooks] [hook stderr] …`
+lines. So AKA now also sends every notice as a hook progress line, which the
+same reference documents as display-only status text in the CLI timeline.
+Whether it shows in `-p` mode, in an
+interactive session, or on the cloud coding agent has not been measured. Until
+it has, treat a warn under `redactFallback: warn` (the shipped default) as
+possibly invisible: the call goes through and the notice may reach only that
+log, which makes a warn hard to tell from `monitor`. Set `redactFallback` to
+`block` if a redact on command text has to be visible: a deny carries its
+reason, and the CLI was recorded printing it.
+
+**This needs Copilot CLI 1.0.55 or later.** The hooks reference dates the
+progress line, and the CLI removing it before reading the decision, to that
+release. AKA can write a progress line beside a decision, such as a rewritten
+description or a deny. How an older CLI reads that has not been measured, and
+if it reads the whole output as one object, it would ignore the decision. The
+call would then go through unmasked or undenied. The builds recorded here are
+1.0.83 and 1.0.98. Check yours with `copilot --version`.
 
 **The cloud coding agent is captured only where the repository asks for it.**
 It reads `.github/hooks/*.json` on the **default branch** and nowhere else, and
@@ -195,13 +219,13 @@ it has no local store of its own.
 attached to the organization's control plane, the Claude Code and Codex plugins
 print one line at session start: forwarding everything, forwarding for the
 enrolled repository the session is in, or local-only. This adapter's
-session-start hook has no message field on either surface, so it writes that
-line to **stderr**, together with its other once-per-session notices: that a
-newer AKA binary is on the machine than this plugin, that a warn-era store's
-block and redact categories were kept at warn, and that the store path is
-redirected. Its stdout stays empty. In `-p` mode the CLI did not show a
-successful hook's stderr (see above), so these lines were seen only in the
-debug log, with debug logging enabled; an interactive session is unmeasured.
+session-start hook has no message field on either surface. On the CLI it sends
+that line as a hook progress line, with a copy on **stderr**, together with its
+other once-per-session notices: that a newer AKA binary is on the machine than
+this plugin, that a warn-era store's block and redact categories were kept at
+warn, and that the store path is redirected. It writes no hook output. The
+progress line has not been seen on screen yet (see above). Under VS Code these
+lines go to stderr only.
 `aka status` shows whether this machine is attached, whether it sends
 everything or only enrolled repositories, and which repositories are enrolled.
 
@@ -212,6 +236,7 @@ everything or only enrolled repositories, and which repositories are enrolled.
 | cli     | preToolUse          | bash.command                      | block   | yes      | A deny on stdout with exit 0 blocks the call; masking command text would change what runs, so a redact policy follows redactFallback instead of rewriting.                                                                                                                                                                                                                                                                                                                                                                                                            |
 | cli     | preToolUse          | bash.description                  | rewrite | yes      | Model-authored prose that rides along with the call, rewritten in place through modifiedArgs. Scanned for secrets and PII only: the command-risk rules judge bash.command, never this prose.                                                                                                                                                                                                                                                                                                                                                                          |
 | cli     | preToolUse          | apply_patch.input                 | rewrite | no       | No payload for this tool was recorded, so the argument name is unverified; a wrong name costs a silent skip rather than a wrong answer.                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| cli     | preToolUse          | warn notice                       | warn    | no       | Sent as a hook progress line, which the hooks reference documents as display-only text in the CLI timeline and strips before reading the decision, so the call still goes to the host permission flow. Never observed on screen; the stderr copy reached only the debug log in a recorded 1.0.98 -p session. Every other AKA hook notice on every CLI event takes the same route; the degraded-scan line from the SDK is the exception and still goes to stderr only.                                                                                                 |
 | cli     | sessionStart        | session                           | none    | yes      | Opens the session root every later capture hangs off, and records the host, harness and project inventory. It decides nothing and emits nothing — there is no verdict to reach on a session start.                                                                                                                                                                                                                                                                                                                                                                    |
 | cli     | userPromptSubmitted | prompt                            | none    | yes      | Captured and scanned; nothing can be stopped or rewritten. modifiedPrompt is documented and was not observed from a command hook, so a block or redact policy is recorded and the prompt is sent unchanged.                                                                                                                                                                                                                                                                                                                                                           |
 | cli     | postToolUse         | toolResult                        | none    | yes      | Captured and scanned; nothing can be withheld. The tool has already run, and modifiedResult is documented but was not observed replacing what the model sees, so a finding is recorded and the output reaches the model unchanged.                                                                                                                                                                                                                                                                                                                                    |

@@ -6,7 +6,9 @@
  *          path rides argv[3]; see `MANIFEST_ARGV_INDEX` in ../build-info.ts.
  * stdin:   CLI    { sessionId, timestamp, cwd, source, initialPrompt? }
  *          VSCode { hook_event_name, session_id, cwd, source }
- * stdout:  NOTHING, on every path, on both dialects.
+ * stdout:  no hook output, on every path, on both dialects. On the CLI the
+ *          notices below also go out as progress lines, which the host strips
+ *          before reading the output (see `progressLine` in ./shared.ts).
  * stderr:  the session start's once-per-session notices (forwarding, stale
  *          plugin, warn-era cap) and the store-redirect warning, when any apply.
  *
@@ -67,7 +69,7 @@ import { SOURCE_TOOL } from '@akasecurity/schema';
 import { harnessVersionFromArgv, PLUGIN_PACKAGE, pluginBuild } from '../build-info.ts';
 import { readSessionStartFacts } from './session-start-payload.ts';
 import type { HookHandler } from './shared.ts';
-import { parseJson, writeNotice } from './shared.ts';
+import { noticeWriter, parseJson, writeNotice } from './shared.ts';
 import { warnIfStoreRedirected } from './store-health.ts';
 
 /**
@@ -100,8 +102,8 @@ export const runSessionStart: HookHandler = async (event, stdin, options = {}) =
   // in this package can live with because none of them reads `.provider`.
   const config = loadConfig(options.akaHome, resolveCopilotProvider);
   // A symlinked store path redirects the corpus without failing anything; say
-  // so once per session on stderr, so this hook's stdout silence is untouched.
-  warnIfStoreRedirected(config, facts.sessionId);
+  // so once per session, on stderr and, on the CLI, as a progress line.
+  warnIfStoreRedirected(config, facts.sessionId, noticeWriter(facts.dialect));
   // One version value feeds both the inventory stamp and the posture identity,
   // so the two can never disagree about which build is running: argv's manifest
   // when the hook command passes one (at slot THREE on this host), else the
@@ -123,11 +125,12 @@ export const runSessionStart: HookHandler = async (event, stdin, options = {}) =
   // claim): where this session's activity is forwarded, that a newer binary
   // recorded the mirror (so this session's plugin generation is outdated and
   // its installed-pack writes are gated), and that a warn-era store's
-  // block/redact categories were capped to warn. stderr, never stdout: this
-  // hook has no decision channel and no message field on either dialect, and
-  // an invented payload here would be read as a decision.
+  // block/redact categories were capped to warn. Never a payload: this hook has
+  // no decision channel and no message field on either dialect, and an
+  // invented payload here would be read as a decision. stderr, plus a progress
+  // line on the CLI, which is not a payload.
   const notice = sessionStartNotice(result);
-  if (notice !== undefined) writeNotice(notice);
+  if (notice !== undefined) writeNotice(notice, facts.dialect);
 
   return undefined;
 };

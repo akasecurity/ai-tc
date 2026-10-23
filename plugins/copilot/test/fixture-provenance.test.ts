@@ -244,16 +244,35 @@ describe('skills/setup/SKILL.md — the CLI version it cites is the one recorded
     return String(versions[0]);
   }
 
+  /**
+   * The minimum CLI the skill states, which is not a recording: the hooks
+   * reference dates progress lines, and their removal before the decision is
+   * read, to this release. The CLI fixtures README carries the citation.
+   */
+  const PROGRESS_LINE_FLOOR = '1.0.55';
+
   it('names only the build the plugin-install recordings were taken on', () => {
     const recorded = recordedInstallVersion(CLI_DIR);
+    const skill = readFileSync(SETUP_SKILL, 'utf8');
     // Every mention in the skill describes the install route or a behaviour
     // observed through it; none refers to the 1.0.83 payload recordings, so the
-    // whole file is held to the install recordings' build.
-    const mentioned = [
-      ...readFileSync(SETUP_SKILL, 'utf8').matchAll(/\bCLI\s+(\d+\.\d+\.\d+)/gu),
-    ].map((match) => match[1]);
+    // whole file is held to the install recordings' build. The one exception
+    // is the stated floor, and only in its "or later" form, so it cannot be
+    // read as a build anything was observed on.
+    const mentioned = [...skill.matchAll(/\bCLI\s+(\d+\.\d+\.\d+)(\s+or\s+later)?/gu)]
+      .filter((match) => !(match[1] === PROGRESS_LINE_FLOOR && match[2] !== undefined))
+      .map((match) => match[1]);
     // The positive control: with no mention at all, the check below is vacuous.
     expect(mentioned.length).toBeGreaterThan(0);
     expect(mentioned.filter((version) => version !== recorded)).toEqual([]);
+  });
+
+  it('states the progress-line floor the fixtures README cites', () => {
+    const skill = readFileSync(SETUP_SKILL, 'utf8');
+    expect(skill).toMatch(
+      new RegExp(`CLI ${PROGRESS_LINE_FLOOR.replaceAll('.', '\\.')} or later`, 'u'),
+    );
+    const readme = readFileSync(new URL('README.md', CLI_DIR), 'utf8');
+    expect(readme).toContain(`dates this to ${PROGRESS_LINE_FLOOR}`);
   });
 });

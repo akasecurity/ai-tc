@@ -45,14 +45,15 @@ import { isWebAccountKey } from './web-account.ts';
 // modelJudgeConsent; v5 added the secret-vault fields (vaultConsent,
 // vaultKeyCustody, vaultInlineReveal); v6 added historySyncConsent; v7 added
 // redactFallback; v8 added bodyRetention and webChatCapture; v9 added
-// attachmentScope; v10 added sightingShareConsent. Nothing reads it, and nothing re-stamps it — the
+// attachmentScope; v10 added sightingShareConsent; v11 added protectedPaths.
+// Nothing reads it, and nothing re-stamps it — the
 // `.default()` below only fills when the key is absent, and applyOnboarding's
 // merge preserves whatever an existing settings.json already carries. So an
 // already-onboarded machine keeps the version that first wrote its file,
 // however often this is bumped. Every field added so far has been
 // optional/defaulted (backward compatible), which is why no migration has been
 // needed. Re-stamp this on write before relying on it to gate one.
-export const WORKSPACE_SETTINGS_SPEC_VERSION = 10;
+export const WORKSPACE_SETTINGS_SPEC_VERSION = 11;
 
 // The payload-shape version the /aka:setup model-judge sends to the model API.
 // Recorded alongside a user's modelJudgeConsent so a consent granted against an
@@ -764,6 +765,32 @@ export const BodyRetention = z
   .meta({ id: 'BodyRetention' });
 export type BodyRetention = z.infer<typeof BodyRetention>;
 
+// The most entries a protected-path list holds, and the longest one. Both are
+// fat-finger and cost bounds rather than policy: the list is matched against
+// every file path a tool call names, so its size is a per-call cost.
+export const MAX_PROTECTED_PATH_ENTRIES = 256;
+export const MAX_PROTECTED_PATH_ENTRY_CHARS = 1024;
+
+// One entry of the protected-path list: an absolute folder or file (`/`, `~/`
+// or a drive letter), or a glob. The dialect is defined where it is matched,
+// in @akasecurity/plugin-sdk's protected-paths module; the contract here is
+// only the shape and the bounds.
+export const ProtectedPathEntry = z.string().trim().min(1).max(MAX_PROTECTED_PATH_ENTRY_CHARS);
+export type ProtectedPathEntry = z.infer<typeof ProtectedPathEntry>;
+
+// Each entry is judged on its own: one that is not a string, is blank, or is over
+// the length bound is dropped, and the list is cut at the entry cap, so one bad
+// entry never costs the others their protection.
+export const ProtectedPaths = z.array(z.unknown()).transform((entries) =>
+  entries
+    .flatMap((entry) => {
+      const parsed = ProtectedPathEntry.safeParse(entry);
+      return parsed.success ? [parsed.data] : [];
+    })
+    .slice(0, MAX_PROTECTED_PATH_ENTRIES),
+);
+export type ProtectedPaths = z.infer<typeof ProtectedPaths>;
+
 export const WorkspaceSettings = z.object({
   specVersion: z.number().int().positive().default(WORKSPACE_SETTINGS_SPEC_VERSION),
   runMode: RunMode.default('standalone'),
@@ -855,6 +882,17 @@ export const WorkspaceSettings = z.object({
     enabled: false,
     retainDays: BODY_RETENTION_DEFAULT_DAYS,
   }),
+  // Folders and file name globs whose files a tool call may not touch
+  // unflagged: a Read, Grep, Glob or Bash naming one becomes a finding under
+  // the command-risk pack's policy. Absent means none are protected, and
+  // protectedPathsOf is the one reader.
+  //
+  // A bad entry is dropped on its own (see ProtectedPaths); `.catch(undefined)`
+  // reads a value that is not a list at all as no list. A settings.json that
+  // fails this schema reads as the unonboarded defaults, and the next save
+  // writes those back over it, so a malformed value must not cost every other
+  // setting. Not a ManagedSettingKey.
+  protectedPaths: ProtectedPaths.optional().catch(undefined),
 });
 export type WorkspaceSettings = z.infer<typeof WorkspaceSettings>;
 
@@ -873,6 +911,11 @@ export function defaultWorkspaceSettings(): WorkspaceSettings {
  */
 export function webChatCaptureOf(settings: WorkspaceSettings): WebChatCapture {
   return settings.webChatCapture ?? WebChatCapture.parse({});
+}
+
+/** The protected-path list in force: empty when the file carries none. */
+export function protectedPathsOf(settings: WorkspaceSettings): readonly ProtectedPathEntry[] {
+  return settings.protectedPaths ?? [];
 }
 
 /**

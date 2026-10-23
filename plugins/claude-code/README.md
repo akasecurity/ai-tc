@@ -48,12 +48,47 @@ The plugin installs Claude Code hooks that run locally with no `node_modules`, a
   credential file (`.env`, a private key, `.netrc`, `credentials*`, `*auth.json`, shell rc files).
   Sensitive content in text a tool merely stores is masked in
   place; in text a tool acts on — a shell command, a URL, a search query, an MCP argument —
-  masking would change what runs, so the call is blocked instead.
+  masking would change what runs, so the call is blocked instead. A list of protected folders and
+  file name globs in `~/.aka/settings/settings.json` (`protectedPaths`) adds a check on the paths a
+  Read, Grep, Glob or Bash call names; see [Protected paths](#protected-paths).
 - **PostToolUse** — scan tool outputs and file reads (Bash, Read, WebFetch, Grep, WebSearch
   summaries and links, the report of a subagent run in the foreground, and the text blocks of any
   `mcp__*` tool's result) after they return. A subagent run in the background reports outside any
   tool result, so its report is not scanned.
 - **Stop** — reconcile token usage and finalize the session record.
+
+### Protected paths
+
+An agent can be asked to read and return local files that no detection rule would flag. To mark
+folders and files off-limits, add them to `protectedPaths` in `~/.aka/settings/settings.json`
+(up to 256 entries of at most 1024 characters; absent means none):
+
+```json
+{
+  "protectedPaths": ["~/Documents/Taxes", "C:\\Users\\me\\Vault", "**/passwords*.txt", ".ssh/*.pem"]
+}
+```
+
+- An absolute entry (`/`, `~/`, or a drive letter) protects that folder or file and everything
+  beneath it.
+- Any other entry is a glob read at any depth: `passwords*.txt` matches that file name anywhere,
+  `.ssh/*.pem` matches `.pem` files directly inside any `.ssh` folder. In a glob `*` matches any
+  run of characters within one path segment, `?` one character, and a segment that is exactly `**`
+  any number of segments. `[a-z]`, `{a,b}` and `!` are ordinary characters; there is no negation.
+- Matching ignores case, treats `\` and `/` alike, resolves `.` and `..`, places a relative path
+  against the session's directory, and follows symlinks.
+
+Unless the `command-risk` pack's policy blocks, a protected path warns rather than stops the call.
+A Read, Grep, Glob or Bash call that names a protected path becomes a finding of
+`command-risk/protected-path-access`, handled by the `command-risk` pack's policy like any other
+finding (warn on a first install; block under a block policy; a redact follows the redact
+fallback because a masked path reads a different file). For Bash the command text is screened for
+path-like words (`cat`, `cp`, `scp`, `tar`, `curl -T` and `--data @file`, redirects, `$HOME/…`,
+commands inside `$(…)` and `sh -c`). It cannot see a path built from a variable other than `$HOME`
+or by a subshell, a glob the shell expands, a directory entered with `cd`, or anything a script
+computes at run time, and a Grep or Glob over a parent of a protected file is not expanded. It is
+a screen over what a call says, not a sandbox. While the list is non-empty every Read, Grep and Glob
+starts the hook, which costs about a tenth of a second per call.
 
 It also adds slash commands for reports and setup (`/aka:health`, `/aka:findings`, `/aka:dashboard`, and more).
 

@@ -230,6 +230,7 @@ export {
   tokenizeText,
   tokenizeValue,
 } from './tokenize.ts';
+export { truncateTarget } from './truncate-target.ts';
 export type {
   AkaPluginAdapter,
   BlockedDetectionRef,

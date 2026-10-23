@@ -10,6 +10,7 @@
 // this module never touches @akasecurity/detections or the bundled packs
 // itself — it stays pure and cheap to unit-test.
 import type { LocatedScanFinding } from '@akasecurity/plugin-sdk';
+import { truncateTarget } from '@akasecurity/plugin-sdk';
 import type {
   LlmCallAttributes,
   LlmCallInput,
@@ -22,18 +23,9 @@ import { RESPONSE_TEXT_MAX_BYTES } from '@akasecurity/schema';
 
 import type { WebSourceTool } from './protocol.ts';
 
-// The longest (masked) tool target we store — a search query or a connector
-// argument can be long, and the point is "which call", not the whole body.
-// Applied AFTER masking (see toToolCallInputs) so a truncated redaction marker
-// leaks nothing, whereas truncating the RAW target first could split a secret
-// across the cap and leak its unmasked prefix.
-const MAX_TARGET_LEN = 500;
-const truncateTarget = (s: string): string =>
-  s.length > MAX_TARGET_LEN ? `${s.slice(0, MAX_TARGET_LEN)}…` : s;
-
 // What a target may cost to SCAN. `WebToolCall.target` carries no `.max()` and
 // the wire frame is the only other bound, so without this the mask-then-cap
-// order above — correct as far as it goes — is charged against an unbounded
+// order `truncateTarget` relies on — correct as far as it goes — is charged against an unbounded
 // string: shieldPointers, scan and redact all walk the whole raw value. One
 // host process serves every tab in sequence, so a single exchange carrying a
 // multi-megabyte target stalls every other tab's capture, exchange and ping

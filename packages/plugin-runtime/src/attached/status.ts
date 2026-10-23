@@ -1344,8 +1344,10 @@ function postureLines(dataDir: string, nowMs: number): string[] {
 
 /**
  * How often a hook has fallen open on this machine, if ever: thrown out of its
- * main(), or let part of a response through unscanned because the scan
- * deadline or the response size bound cut it short. "failed open" is the right
+ * main(), or let part of what it was scanning through unscanned — a response
+ * the scan deadline or the response size bound cut short, or, on a host with no
+ * channel to refuse it, a prompt or response whose bounded scan of a large
+ * field did not finish or could not run. "failed open" is the right
  * word for both — each is content the host received with no verdict on it —
  * so the line does not split them, and the tally does not record which it was.
  *

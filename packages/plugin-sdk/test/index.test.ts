@@ -247,6 +247,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'tokenizeText',
   'tokenizeValue',
   'toolCallScopeKey',
+  'truncateTarget',
   'uniqueRuleIds',
   'webCaptureReport',
   'withLayer',

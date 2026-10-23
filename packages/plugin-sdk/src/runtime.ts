@@ -225,6 +225,9 @@ export interface PluginRuntimeOptions {
   dataDir?: string | undefined;
   scanIsolation?: IsolatedScanOptions | undefined;
   largeInput?: LargeInputScanOptions | undefined;
+  // Rule ids whose findings resolve to at least `block` for this runtime, whatever
+  // the policy says. A finding the user excepted still resolves to `allow`.
+  blockRules?: ReadonlySet<string> | undefined;
 }
 
 // The remaining time a bounded scan may spend, or undefined for no caller limit.
@@ -295,6 +298,7 @@ export function createPluginRuntime(
   let redactFallback = settings.redactFallback;
   const dataDir = opts?.dataDir;
   const largeInput = opts?.largeInput;
+  const blockRules = opts?.blockRules;
   let rules: Rule[] = [];
   // Whether each rule's match is code or a value, over the effective ruleset —
   // rebuilt only when that ruleset is.
@@ -484,6 +488,7 @@ export function createPluginRuntime(
     // it in the hook instead is what left an escalated deny recorded as
     // 'redact'; a downgrade recorded that way would be worse still, claiming a
     // masking that never happened while the raw value went through.
+    if (blockRules?.has(finding.ruleId)) return 'block';
     return resolveEnforcedAction(resolveAction(finding.ruleId, finding.category), {
       policyMode,
       redactFallback,

@@ -167,6 +167,39 @@ describe('protected paths in a PreToolUse call', () => {
     expect(await recordedActions()).toEqual(['warn']);
   });
 
+  describe('in a Remote Control session', () => {
+    beforeEach(() => {
+      vi.stubEnv('CLAUDE_CODE_BRIDGE_SESSION_ID', 'session_remote_probe');
+    });
+
+    it('blocks under a warn policy, says why, and records the block', async () => {
+      configure('warn', { protectedPaths: ['~/Documents'] });
+      const out = await run('Read', protectedRead());
+      expect(decisionOf(out)).toBe('deny');
+      expect(JSON.stringify(out)).toContain('Remote Control');
+      expect(JSON.stringify(out)).toContain('aka exception approve');
+      expectNoEchoOf(JSON.stringify(out), LEAF);
+      expect(await recordedActions()).toEqual(['block']);
+    });
+
+    it('blocks under a monitor policy', async () => {
+      configure('monitor', { protectedPaths: ['~/Documents'] });
+      expect(decisionOf(await run('Bash', { command: `cat ~/Documents/${LEAF}` }))).toBe('deny');
+    });
+
+    it('leaves a call outside the list alone', async () => {
+      configure('warn', { protectedPaths: ['~/Documents'] });
+      expect(await run('Read', { file_path: join(proj, 'a.txt') })).toEqual([]);
+    });
+
+    it('treats an empty variable as a local session', async () => {
+      vi.stubEnv('CLAUDE_CODE_BRIDGE_SESSION_ID', '');
+      configure('warn', { protectedPaths: ['~/Documents'] });
+      expect(decisionOf(await run('Read', protectedRead()))).toBeUndefined();
+      expect(await recordedActions()).toEqual(['warn']);
+    });
+  });
+
   it('applies to Grep, Glob and Bash as it does to Read', async () => {
     configure('block', { protectedPaths: ['~/Documents'] });
     expect(decisionOf(await run('Grep', { pattern: 'x', path: docs }))).toBe('deny');

@@ -52,6 +52,11 @@ import {
   scannableInputFields,
 } from './pre-tool-use-fields.ts';
 import { PROTECTED_PATH_TOOLS, protectedPathFields } from './protected-path-fields.ts';
+import {
+  isRemoteControlSession,
+  PROTECTED_PATH_RULE_ID,
+  REMOTE_PROTECTED_PATH_NOTE,
+} from './remote-session.ts';
 import type { HookOutput } from './shared.ts';
 import { baseMetadata, captureScopeKey, getString } from './shared.ts';
 import { captureStamped } from './stamped-capture.ts';
@@ -285,9 +290,13 @@ export async function runPreToolUse(
   // finish (see large-input.ts). The mod's helper is a process of its own and
   // takes the same bound on its own clock; a helper the mod's timeout ends first
   // answers nothing, and the call then reaches the command hook and this bound.
+  // In a Remote Control session a protected-path match is blocked whatever the
+  // pack's policy says; a local session keeps the policy's own action.
+  const remote = isRemoteControlSession();
   const runtime = createPluginRuntime(gateway, config.settings, {
     dataDir: config.dataDir,
     largeInput: largeInputBound(HOOK_SCAN_DEADLINE_MS),
+    blockRules: remote ? new Set([PROTECTED_PATH_RULE_ID]) : undefined,
   });
 
   const kind = inputEventKind(toolName);
@@ -397,6 +406,7 @@ export async function runPreToolUse(
           return tokenized;
         }
       : undefined,
+    remote ? new Map([[PROTECTED_PATH_RULE_ID, REMOTE_PROTECTED_PATH_NOTE]]) : undefined,
   );
   if (options.mode === 'hook' && sessionId !== undefined) {
     for (const { text, result } of scanned) {

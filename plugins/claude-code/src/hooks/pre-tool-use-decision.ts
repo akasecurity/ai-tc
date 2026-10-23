@@ -84,6 +84,7 @@ export async function decidePreToolUse(
   toolInput: Record<string, unknown>,
   scanned: readonly ScannedField[],
   tokenizeField?: FieldTokenizer,
+  ruleNotes?: ReadonlyMap<string, string>,
 ): Promise<PreToolUseDecision | null> {
   // Rules grouped by the *field's* worst action — every rule flagged in a
   // blocked/redacted/warned field, not necessarily the single rule that drove
@@ -225,11 +226,17 @@ export async function decidePreToolUse(
             subject: `${toolName} call`,
             ruleIds: [...blockedRules].join(', '),
             blockedRef: blockedReferences[0],
-            note: escalated
-              ? EXECUTABLE_REDACT_NOTE
-              : escalatedUnredactable
-                ? UNREDACTABLE_NOTE
-                : undefined,
+            note:
+              [
+                escalated
+                  ? EXECUTABLE_REDACT_NOTE
+                  : escalatedUnredactable
+                    ? UNREDACTABLE_NOTE
+                    : undefined,
+                ...[...blockedRules].map((id) => ruleNotes?.get(id)),
+              ]
+                .filter((n) => n !== undefined)
+                .join(' ') || undefined,
           }),
         },
       },

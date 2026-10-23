@@ -21,7 +21,7 @@ import { relativeTime } from '../lib/relativeTime.ts';
 import { SearchField } from '../shared/SearchField.tsx';
 import { CredentialStatusBadge } from './CredentialStatusBadge.tsx';
 import { credentialLabel, credentialName } from './name.ts';
-import { CREDENTIAL_STATUS } from './status.ts';
+import { CREDENTIAL_STATUS, credentialStatusLabel } from './status.ts';
 import type { CredentialListItem, CredentialStatusCounts } from './types.ts';
 
 export interface CredentialsListViewProps {

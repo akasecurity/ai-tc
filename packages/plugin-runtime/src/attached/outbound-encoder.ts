@@ -89,6 +89,12 @@ export interface OutboundEncoder {
    * capture must be held rather than sent.
    */
   encodeEvent(event: IngestEvent, identity?: CaptureIdentity): Promise<IngestEvent | undefined>;
+  /**
+   * `content` with every secret span the same rules find replaced by
+   * {@link FAIL_CLOSED_MARKER}, with no token and no sighting. Undefined when
+   * the scan cannot finish.
+   */
+  redactContent(content: string): Promise<string | undefined>;
   /** Releases the scan worker, if one was started. */
   close(): Promise<void>;
 }
@@ -262,6 +268,18 @@ export function createOutboundEncoder(deps: OutboundEncoderDeps): OutboundEncode
 
   return {
     encodeContent,
+    async redactContent(content) {
+      const spans = await findSpans(content);
+      if (spans === undefined) return undefined;
+      let out = '';
+      let at = 0;
+      for (const span of [...spans].sort((a, b) => a.start - b.start)) {
+        if (span.start < at) continue;
+        out += content.slice(at, span.start) + FAIL_CLOSED_MARKER;
+        at = span.end;
+      }
+      return out + content.slice(at);
+    },
     async close() {
       try {
         await scanner?.close();

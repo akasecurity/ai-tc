@@ -101,7 +101,16 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      # One retry: the action verifies the pnpm download against the registry and
+      # failed once with ERR_PNPM_ENGINE_IDENTITY_UNVERIFIABLE on a network blip.
+      - id: pnpm-setup
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        continue-on-error: true
+        with:
+          version: 10.30.1
+      - name: Retry pnpm setup
+        if: steps.pnpm-setup.outcome == 'failure'
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.30.1
 
@@ -299,7 +308,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      # One retry: the action verifies the pnpm download against the registry and
+      # failed once with ERR_PNPM_ENGINE_IDENTITY_UNVERIFIABLE on a network blip.
+      - id: pnpm-setup
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        continue-on-error: true
+        with:
+          version: 10.30.1
+      - name: Retry pnpm setup
+        if: steps.pnpm-setup.outcome == 'failure'
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.30.1
 
@@ -359,7 +377,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      # One retry: the action verifies the pnpm download against the registry and
+      # failed once with ERR_PNPM_ENGINE_IDENTITY_UNVERIFIABLE on a network blip.
+      - id: pnpm-setup
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        continue-on-error: true
+        with:
+          version: 10.30.1
+      - name: Retry pnpm setup
+        if: steps.pnpm-setup.outcome == 'failure'
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.30.1
 
@@ -451,7 +478,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      # One retry: the action verifies the pnpm download against the registry and
+      # failed once with ERR_PNPM_ENGINE_IDENTITY_UNVERIFIABLE on a network blip.
+      - id: pnpm-setup
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        continue-on-error: true
+        with:
+          version: 10.30.1
+      - name: Retry pnpm setup
+        if: steps.pnpm-setup.outcome == 'failure'
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.30.1
 
@@ -732,7 +768,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      # One retry: the action verifies the pnpm download against the registry and
+      # failed once with ERR_PNPM_ENGINE_IDENTITY_UNVERIFIABLE on a network blip.
+      - id: pnpm-setup
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        continue-on-error: true
+        with:
+          version: 10.30.1
+      - name: Retry pnpm setup
+        if: steps.pnpm-setup.outcome == 'failure'
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.30.1
 
@@ -1189,7 +1234,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      # One retry: the action verifies the pnpm download against the registry and
+      # failed once with ERR_PNPM_ENGINE_IDENTITY_UNVERIFIABLE on a network blip.
+      - id: pnpm-setup
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        continue-on-error: true
+        with:
+          version: 10.30.1
+      - name: Retry pnpm setup
+        if: steps.pnpm-setup.outcome == 'failure'
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.30.1
 
@@ -1223,7 +1277,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      # One retry: the action verifies the pnpm download against the registry and
+      # failed once with ERR_PNPM_ENGINE_IDENTITY_UNVERIFIABLE on a network blip.
+      - id: pnpm-setup
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        continue-on-error: true
+        with:
+          version: 10.30.1
+      - name: Retry pnpm setup
+        if: steps.pnpm-setup.outcome == 'failure'
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.30.1
 

@@ -14,7 +14,8 @@
  * event:   the token argv carried.
  * stdin:   CLI    { sessionId, timestamp, cwd, prompt, transformedPrompt? }
  *          VSCode { hook_event_name, session_id, cwd, prompt }
- * output, CLI:     undefined, always — every notice goes to stderr
+ * output, CLI:     undefined, always — every notice is a progress line
+ *                  (see `progressLine` in ./shared.ts), with a stderr copy
  * output, VS Code: { systemMessage } → a note, or undefined
  *
  * **THIS HOOK BLOCKS NOTHING AND REWRITES NOTHING, on either host**, and the
@@ -53,7 +54,14 @@ import { detectDialect, readSessionId } from './dialect.ts';
 import type { HookEvent } from './event-name.ts';
 import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
 import type { HookHandler } from './shared.ts';
-import { baseMetadata, captureScopeKey, countFailOpen, parseJson, writeNotice } from './shared.ts';
+import {
+  baseMetadata,
+  captureScopeKey,
+  countFailOpen,
+  noticeWriter,
+  parseJson,
+  writeNotice,
+} from './shared.ts';
 import {
   claimStoreUnavailableWarning,
   openGatewayOrNull,
@@ -109,19 +117,20 @@ export const runUserPromptSubmit: HookHandler = async (event, stdin, options = {
   const sessionId = readSessionId(dialect, input);
   const config = loadConfig(options.akaHome);
   // A symlinked store path redirects the corpus without failing anything; say
-  // so once per session on stderr, so this hook's stdout contract is untouched.
-  warnIfStoreRedirected(config, sessionId);
+  // so once per session, on stderr and, on the CLI, as a progress line, which
+  // the host strips before reading this hook's output.
+  warnIfStoreRedirected(config, sessionId, noticeWriter(dialect));
 
   const gateway = openGatewayOrNull(config);
   if (gateway === null) {
     // Nothing is being scanned or recorded — say so once per session rather
-    // than looking protected. On the CLI that has to be stderr: `systemMessage`
+    // than looking protected. On the CLI that has to be a progress line: `systemMessage`
     // is not an output field there, so the same object on stdout would be
     // dropped and the user told nothing at all.
     if (claimStoreUnavailableWarning(config.dataDir, sessionId)) {
       const message = storeUnavailableMessage(config.dbPath);
       if (dialect === 'vscode') return { systemMessage: message };
-      writeNotice(message);
+      writeNotice(message, dialect);
     }
     return undefined;
   }
@@ -169,7 +178,7 @@ export const runUserPromptSubmit: HookHandler = async (event, stdin, options = {
   // Set only on a dialect whose stdout has no field to carry it, so this never
   // competes with the payload below for the single JSON object stdout takes.
   if (decision.notice !== undefined) {
-    writeNotice(decision.notice);
+    writeNotice(decision.notice, dialect);
     return undefined;
   }
   if (decision.output !== null) return decision.output;
@@ -183,7 +192,7 @@ export const runUserPromptSubmit: HookHandler = async (event, stdin, options = {
     claimOnboardingNudge(config.dataDir, sessionId)
   ) {
     if (dialect === 'vscode') return { systemMessage: ONBOARDING_NUDGE };
-    writeNotice(ONBOARDING_NUDGE);
+    writeNotice(ONBOARDING_NUDGE, dialect);
   }
   return undefined;
 };

@@ -185,20 +185,25 @@ matches is `release/**/*`. A branch named bare `release` matches neither list an
 all, so release branches are named `release/<something>`. On the push side, the dependency audit,
 CodeQL and the internal-path guard still run post-merge for `main` only.
 
-**Where a stable Claude Code plugin tag goes.** A bare `plugin-claude-v<X.Y.Z>` is cut only after
-its release pull request merges, on the commit that merge put on `main` (the merge commit, or the
-squash or rebase commit when the pull request used one), never on the release branch before the
-merge. The commit a stable version's npm provenance names is then one `main` holds, which is what
-verifying a release against reviewed code needs; a tag cut before a squash or rebase merge would
-name a commit `main` never holds. A pre-release is the exception above: it is cut on its release
-branch. `release-plugin-claude.yml` publishes only on the tag push: its manual dispatch has no
-publish input and is always a dry run, its npm publish sits behind the tag-to-manifest check, and
-its GitHub Packages job waits for that check's job. `release-plugin-claude-gates.test.js` (in
-`packages/eslint-config/test/`) pins those gates, and that the workflow reads no secret but its own
-`GITHUB_TOKEN`. The release job also refuses a stable tag whose commit `main` does not contain,
-before anything publishes; the same suite executes that check against a scratch repository. It is
-an early catch for a mistake, not a control: whoever pushes a tag also chooses what that file says
-at the tagged commit.
+**Where a stable plugin tag goes.** A bare `plugin-<name>-v<X.Y.Z>` (Claude Code, Codex,
+Antigravity or Copilot) is cut only after its release pull request merges, on the commit that
+merge put on `main` (the merge commit, or the squash or rebase commit when the pull request used
+one), never on the release branch before the merge. The commit a stable version's npm provenance
+names is then one `main` holds, which is what verifying a release against reviewed code needs; a
+tag cut before a squash or rebase merge would name a commit `main` never holds. A pre-release is
+the exception above: it is cut on its release branch. Each `release-plugin-*.yml` release job
+refuses a stable version whose commit `main` does not contain, before anything publishes: the
+check comes before the npm publish and the GitHub Release in that job, it runs on every run that
+can publish (the tag push, and in the Codex and Antigravity workflows a dispatch with `publish`
+set, which publishes from whatever branch it started on), and the GitHub Packages job waits for
+that job. `release-plugin-tags-on-main.test.js` (in `packages/eslint-config/test/`) derives the
+workflow set, pins that placement and gating, requires the four checks to be one script, and
+executes each against a scratch repository. `release-plugin-claude.yml` additionally publishes
+only on the tag push: its manual dispatch has no publish input and is always a dry run, its npm
+publish sits behind the tag-to-manifest check, and its GitHub Packages job waits for that check's
+job. `release-plugin-claude-gates.test.js` pins those gates, and that the workflow reads no secret
+but its own `GITHUB_TOKEN`. The on-main check is an early catch for a mistake, not a control:
+whoever pushes a tag also chooses what that file says at the tagged commit.
 
 ### Binary (SEA) channel — `bin-v*`
 

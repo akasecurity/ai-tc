@@ -124,31 +124,6 @@ export function stepNamed(source, name) {
 }
 
 /**
- * The same step, read from the workflow's OWN BYTES, comments and all.
- *
- * Every structural reader here goes through the comment-dropping job reader, and
- * for structure that is what keeps a sentence about a step from being mistaken
- * for the step. A `run:` script is the one place it would be wrong: a `#` line
- * inside a shell block is part of that shell block, so executing a copy with
- * them removed is executing something the repository does not contain.
- *
- * @param {string} source the workflow file's own text
- * @param {string} name the step's `name:` value
- */
-export function rawStepNamed(source, name) {
-  // The control that makes executing an extracted `run:` faithful: this has to
-  // be the file's own text and not a job body another reader has already
-  // stripped, which is what the `jobs:` key at column 0 distinguishes. Handed a
-  // stripped body, every executing case below a caller would run a script this
-  // repository does not contain.
-  expect(
-    /^jobs:[^\S\n]*$/m.test(source),
-    'this reader takes the workflow file, not a job body',
-  ).toBe(true);
-  return stepNamed(source, name);
-}
-
-/**
  * The entries of one block-scalar input of a step, and only those.
  *
  * An entry sitting under a NEIGHBOURING key in the same step is not one of them,

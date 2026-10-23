@@ -300,16 +300,21 @@ describe('the hook-contract bullet for this host in conventions/dependencies.md'
   });
 
   it('describes the answer this package actually implements', () => {
-    // Held to the code rather than to itself: the bullet claims nothing is
-    // written where no verdict was reached, and claims the exit code is the
-    // guarantee. Both are checkable in `shared.ts`.
-    expect(BULLET).toMatch(/nothing on every path that reaches no verdict/u);
+    // Held to the code rather than to itself: the bullet claims no hook output
+    // is written where no verdict was reached, that the only other stdout is a
+    // CLI-dialect progress line, and that the exit code is the guarantee. All
+    // three are checkable in `shared.ts`.
+    expect(BULLET).toMatch(/no hook output on every path that reaches no verdict/u);
     expect(BULLET).toMatch(/no path exits non-zero and\s+none exits 2/iu);
     expect(SOURCE).toContain('process.exit(0)');
     expect(SOURCE).not.toMatch(/process\.exit\(\s*[^0)]/u);
     // The emit is GUARDED rather than unconditional — the difference between
     // writing nothing and writing `{}`, which the host would parse.
-    expect(SOURCE).toMatch(/if \(output !== undefined\) \{/u);
+    expect(SOURCE).toMatch(/if \(output !== undefined\) await emit\(output, progress\);/u);
+    // The progress line is the CLI dialect's alone, as the bullet says.
+    expect(BULLET).toMatch(/written\s+on\s+the\s+CLI\s+dialect\s+only/u);
+    expect(SOURCE.match(/queuedProgress\.push\(/gu)?.length).toBe(2);
+    expect(SOURCE.match(/if \(dialect === 'cli'\) queuedProgress\.push\(/gu)?.length).toBe(2);
   });
 
   it('says the VS Code half is only partly confirmed against a live install', () => {

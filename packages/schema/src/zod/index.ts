@@ -13,6 +13,8 @@ export * from './agent-scope.ts';
 export * from './config-inventory.ts';
 export * from './control-plane.ts';
 export * from './credential-label.ts';
+export * from './credential-rotation.ts';
+export * from './credential-status.ts';
 export * from './detection.ts';
 export * from './detection-build.ts';
 export * from './egress-extraction.ts';

@@ -15,9 +15,10 @@
 // The publish invocations come from the shared release-workflow reader, the
 // same one the dist-tag routing guard uses, so a publish this suite gates is a
 // publish that guard routes. The Claude Code workflow's own suite
-// (`release-plugin-claude-gates.test.js`) additionally pins its job list, its
-// step order and its on-main check; this one holds only the dry-run promise,
-// across every workflow that makes it.
+// (`release-plugin-claude-gates.test.js`) additionally pins its job list and
+// its step order, and `release-plugin-tags-on-main.test.js` every plugin
+// workflow's on-main check; this one holds only the dry-run promise, across
+// every workflow that makes it.
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';

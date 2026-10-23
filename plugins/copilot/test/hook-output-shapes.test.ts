@@ -237,7 +237,7 @@ function cliVerdictField(): string {
   return line.trim();
 }
 
-describe("the hook-contract bullet for this host in conventions/dependencies.md", () => {
+describe('the hook-contract bullet for this host in conventions/dependencies.md', () => {
   const BULLET = copilotBullet();
 
   it('reads a bullet that is really there', () => {

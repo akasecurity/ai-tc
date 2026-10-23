@@ -72,21 +72,27 @@ const SAVE_FAILED = "Couldn't save the label.";
 const REFUSED = "You can't label this credential.";
 const ACTION_FAILED = "Couldn't update this credential.";
 
-/** Runs a host action, tracking whether it is running and whether it last failed. */
+/**
+ * Runs a host action, tracking whether it is running and whether it last
+ * failed. A result that settles after `reset` is ignored, so a closed dialog
+ * reopens without a stale failure.
+ */
 function useHostAction() {
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
+  const generation = useRef(0);
   const run = async (action: () => Promise<void>): Promise<boolean> => {
+    const current = ++generation.current;
     setBusy(true);
     setFailed(false);
     try {
       await action();
-      return true;
+      return generation.current === current;
     } catch {
-      setFailed(true);
+      if (generation.current === current) setFailed(true);
       return false;
     } finally {
-      setBusy(false);
+      if (generation.current === current) setBusy(false);
     }
   };
   return {
@@ -94,6 +100,8 @@ function useHostAction() {
     failed,
     run,
     reset: () => {
+      generation.current++;
+      setBusy(false);
       setFailed(false);
     },
   };
@@ -103,11 +111,14 @@ function DismissDialog({
   open,
   onOpenChange,
   onDismiss,
+  restorable,
   error,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onDismiss: (reason: DismissMethod) => Promise<void>;
+  /** Whether the host offers Restore, which the description then mentions. */
+  restorable: boolean;
   error: string | undefined;
 }) {
   const [reason, setReason] = useState<DismissMethod | null>(null);
@@ -120,14 +131,20 @@ function DismissDialog({
     onOpenChange(next);
   };
   return (
-    <Dialog open={open} onOpenChange={close}>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next && action.busy) return;
+        close(next);
+      }}
+    >
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Dismiss this credential?</DialogTitle>
           <DialogDescription>
             A dismissed credential is left out of the credential list and the inventory count, and
             its open findings in code are dismissed for the same reason. New sightings are still
-            recorded and do not bring it back. You can restore it at any time.
+            recorded and do not bring it back.{restorable && ' You can restore it at any time.'}
           </DialogDescription>
         </DialogHeader>
         <DialogBody>
@@ -202,7 +219,13 @@ function DeleteDialog({
     onOpenChange(next);
   };
   return (
-    <Dialog open={open} onOpenChange={close}>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next && action.busy) return;
+        close(next);
+      }}
+    >
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Delete this credential?</DialogTitle>
@@ -515,6 +538,7 @@ export function CredentialDetailView({
             setDialog(open ? 'dismiss' : null);
           }}
           onDismiss={onDismiss}
+          restorable={onRestore !== undefined}
           error={actionError}
         />
       )}

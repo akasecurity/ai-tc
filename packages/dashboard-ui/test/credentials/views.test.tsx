@@ -11,6 +11,7 @@ import {
   CredentialsListView,
   type CredentialsListViewProps,
 } from '../../src/credentials/CredentialsListView.tsx';
+import { credentialDismissReasonLabel } from '../../src/credentials/dismissal.ts';
 import type { CredentialDetailModel, CredentialListItem } from '../../src/credentials/types.ts';
 import {
   type MountedRoot,
@@ -507,6 +508,15 @@ describe('CredentialsListView dismissed toggle', () => {
     expect(onDismissedChange).toHaveBeenLastCalledWith(false);
   });
 
+  it('shows the toggle without a count when the host gives none', () => {
+    list({ onDismissedChange: vi.fn() });
+    expect(button('Dismissed')?.textContent).toBe('Dismissed');
+  });
+
+  it('names a reason it has no label for by the reason itself, never an empty label', () => {
+    expect(credentialDismissReasonLabel('some-new-reason' as never)).toBe('some-new-reason');
+  });
+
   it('names the reason on a dismissed row', () => {
     list({
       items: [
@@ -660,6 +670,73 @@ describe('CredentialDetailView dismiss, restore and delete', () => {
       await Promise.resolve();
     });
     expect(onDelete).toHaveBeenCalledTimes(1);
+  });
+
+  const escape = () => {
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+  };
+
+  it("keeps the delete dialog open with the host's reason, and Delete live again, when the delete fails", async () => {
+    const onDelete = vi.fn<() => Promise<void>>().mockRejectedValue(new Error('x'));
+    detail(DETAIL, { onDelete, actionError: 'Credential not found' });
+    act(() => {
+      button('Delete')?.click();
+    });
+    await act(async () => {
+      dialogButton('Delete credential')?.click();
+      await Promise.resolve();
+    });
+    expect(onDelete).toHaveBeenCalledTimes(1);
+    expect(dialog()?.querySelector('[role="alert"]')?.textContent).toBe('Credential not found');
+    expect(dialogButton('Delete credential')?.disabled).toBe(false);
+  });
+
+  it('cannot be closed while the host is still deleting, and reopens without a stale failure', async () => {
+    let reject: (err: Error) => void = () => undefined;
+    const onDelete = vi.fn<() => Promise<void>>(
+      () =>
+        new Promise((_resolve, rejectWith) => {
+          reject = rejectWith;
+        }),
+    );
+    detail(DETAIL, { onDelete });
+    act(() => {
+      button('Delete')?.click();
+    });
+    act(() => {
+      dialogButton('Delete credential')?.click();
+    });
+    expect(dialogButton('Cancel')?.disabled).toBe(true);
+    escape();
+    expect(dialog()).not.toBeNull();
+
+    await act(async () => {
+      reject(new Error('x'));
+      await Promise.resolve();
+    });
+    expect(dialog()?.querySelector('[role="alert"]')).not.toBeNull();
+    escape();
+    expect(dialog()).toBeNull();
+    act(() => {
+      button('Delete')?.click();
+    });
+    expect(dialog()?.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it('promises a restore only when the host offers one', () => {
+    detail(DETAIL, { onDismiss: vi.fn() });
+    act(() => {
+      button('Dismiss')?.click();
+    });
+    expect(dialog()?.textContent).not.toContain('restore');
+    escape();
+    detail(DETAIL, { onDismiss: vi.fn(), onRestore: vi.fn() });
+    act(() => {
+      button('Dismiss')?.click();
+    });
+    expect(dialog()?.textContent).toContain('You can restore it at any time.');
   });
 
   it('counts one sighting in the singular', () => {

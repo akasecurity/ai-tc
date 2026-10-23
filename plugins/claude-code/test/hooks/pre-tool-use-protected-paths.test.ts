@@ -16,8 +16,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { runPreToolUse } from '../../src/hooks/pre-tool-use-run.ts';
+import type * as PathFieldsModule from '../../src/hooks/protected-path-fields.ts';
 import type { HookOutput } from '../../src/hooks/shared.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
+
+// Lets one case make the matcher throw; every other case calls straight through.
+const matcherFault = vi.hoisted(() => ({ on: false }));
+vi.mock('../../src/hooks/protected-path-fields.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof PathFieldsModule>();
+  return {
+    ...actual,
+    protectedPathFields: (...args: Parameters<typeof actual.protectedPathFields>) => {
+      if (matcherFault.on) throw new Error('matcher fault');
+      return actual.protectedPathFields(...args);
+    },
+  };
+});
 
 const RULE_ID = 'command-risk/protected-path-access';
 const pack = bundledDetections().find((p) => p.rules.some((r) => r.id === RULE_ID));
@@ -48,6 +62,8 @@ describe('protected paths in a PreToolUse call', () => {
   });
 
   afterEach(() => {
+    matcherFault.on = false;
+    vi.restoreAllMocks();
     vi.unstubAllEnvs();
     removeTree(home);
   });
@@ -193,5 +209,21 @@ describe('protected paths in a PreToolUse call', () => {
     configure('block', { protectedPaths: ['~/Documents'] });
     writeFileSync(join(home, '.aka', 'settings', 'settings.json'), '{ not json');
     expect(await run('Read', protectedRead())).toEqual([]);
+  });
+
+  it('fails open and says so on stderr when the list cannot be evaluated', async () => {
+    configure('block', { protectedPaths: ['~/Documents'] });
+    const stderr: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      stderr.push(String(chunk));
+      return true;
+    });
+    matcherFault.on = true;
+    const out = await run('Read', protectedRead());
+    expect(out).toEqual([]);
+    const notice = stderr.join('');
+    expect(notice).toContain('[aka] protected paths could not be evaluated');
+    expect(notice).toContain('The call proceeds.');
+    expect(JSON.stringify(out)).not.toContain('[aka]');
   });
 });

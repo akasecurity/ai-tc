@@ -1110,6 +1110,9 @@ describe('pre-tool-use [cli] — a notice beside a rewrite', () => {
     const output = read.output as { modifiedArgs?: Record<string, unknown> } | undefined;
     expect(output?.modifiedArgs?.command).toBe('echo hello');
     expect(typeof output?.modifiedArgs?.description).toBe('string');
+    // The stderr copy is kept beside the progress line.
+    expect(run.stderr).toContain('AKA redacted');
+    for (const message of read.progress) expect(run.stderr).toContain(message);
     expectNoEchoOf(run.stdout, FIXTURE.example);
     expectNoEchoOf(run.stderr, FIXTURE.example);
   });

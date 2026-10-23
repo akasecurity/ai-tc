@@ -91,12 +91,13 @@ export function promptPersist(event: PromptEvent): 'always' | 'with-findings' {
  *
  * Same shape and the same reason as `PreToolUseDecision`: the two dialects do
  * not agree that stdout has a message field on this event, so the text comes
- * back as `notice` where it does not and the caller writes it to stderr.
+ * back as `notice` where it does not, and the caller writes it as a progress
+ * line with a stderr copy (see `writeNotice` in ./shared.ts).
  */
 export interface PromptDecision {
   /** The payload for stdout, or null to write nothing. */
   output: HookOutput | null;
-  /** Text for stderr, set only where the dialect's stdout cannot carry it. */
+  /** Notice text, set only where the dialect's payload cannot carry it. */
   notice?: string;
 }
 
@@ -178,7 +179,7 @@ export function promptDecision(
   return onChannel(dialect, message);
 }
 
-/** A message on the channel the dialect has for one: stderr on the CLI, stdout under VS Code. */
+/** A message on the channel the dialect has for one: a progress line on the CLI, the payload under VS Code. */
 function onChannel(dialect: Dialect, message: string): PromptDecision {
   return dialect === 'cli'
     ? { output: null, notice: message }

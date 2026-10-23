@@ -833,16 +833,59 @@ remote is that path keys on it, new events attach to it, and it reads the same
 from every worktree — so hiding it would leave a project being written to that
 no read surface can reach, which is worse than the duplicate it removes.
 
-**The ENROLMENT LIST does not move with the key, and that is the one surface
-where a mismatch is still silent.** `AttachmentScopeEntry.identity` is a plain
-string matched byte for byte (`scopeVerdict` is `keys.has(key)`), nothing
-rewrites a stored entry, and a re-key therefore leaves an entry that is listed
-as enrolled while enrolling nothing. `aka status` names such an entry — an
-identity that is not `enrollableRepoKey`'s own answer is one no checkout here
-stamps — so the state is reported rather than silent, but the entry is NOT
-rewritten and re-enrolment is a human step. Anything that changes the canonical
-form again inherits that, and a sweep over the stored entries is the fix this
-still owes.
+**The ENROLMENT LIST is matched byte for byte, so a re-key has to MOVE it.**
+`AttachmentScopeEntry.identity` is a plain string (`scopeVerdict` is
+`keys.has(key)`), so an entry left under a spelling the canonical form has moved
+away from reads as enrolled and enrolls nothing — with no error anywhere, since
+nothing on either side can tell "not enrolled" from "enrolled under a key no
+checkout stamps". `respellStoredEnrolments` is the sweep that closes it,
+`respellAttachmentScopeEntries` the raw-record edit under it, and
+`respelledRepoKey` the one reading of a near miss that it and `aka enroll`'s
+refusal SHARE — the sweep's whole job is to write what that refusal would have
+named, so two copies of the rule would be free to disagree. Six properties are
+load-bearing:
+
+- **It is IDEMPOTENT by construction, not by a marker.** `respelledRepoKey`
+  answers `undefined` for a key that is already canonical, so a swept record has
+  nothing left to do and the editor hands `raw` itself back. That is why it
+  carries no window of its own, unlike the jobs beside it in the sync child, each
+  of which bounds how stale something is allowed to get.
+- **TWO reads, and the outer one is only a GATE.** `applyOnboarding` writes
+  whatever its updater returns and stamps `onboardedAt` while it is there, so
+  reaching it per pass would rewrite `settings.json` for ever and mark a machine
+  that never onboarded as onboarded. The edit that LANDS is derived again inside
+  the lock, through the updater, because a read-modify-write whose read sits
+  outside the lock is §6's lost update exactly. Getting the gate wrong therefore
+  costs one skipped pass and never an answer.
+- **It takes no endpoint**, unlike its neighbours in `attachment-scope-edit.ts`:
+  those act for a user command aimed at a deployment, while a stale spelling
+  matches nothing whichever deployment the record names. Skipping a record for a
+  deployment the machine has left would only re-key it the day it attached back.
+- **A respelling that collides is FOLDED, never duplicated**, and the entry that
+  was already canonical wins wherever it sits — it carries the label and
+  timestamp set under the spelling that works. A duplicate forwards identically,
+  reads double on `aka status`, and would leave `aka unenroll` removing one copy
+  while the other went on forwarding. A duplicate the record ALREADY held is not
+  the sweep's to remove.
+- **An identity it cannot re-key is LEFT for `aka status` to name.** That is
+  still the reporting surface, and the two now divide cleanly: the sweep fixes
+  what converges, and `staleKeyNote` names what does not — an identity that is
+  not `enrollableRepoKey`'s own answer is one no checkout here stamps. Caching a
+  guess instead would file the enrolment under a second key nothing stamps
+  either. Two shapes reach it: a `repo` identity that respells to nothing
+  enrollable (an owner's page), and one carrying a transport, where prefixing
+  `ssh://` would read a port or an scp path as part of the host.
+- **Everything else in the record is copied as found** — the binding, the
+  work-subscription opt-out, a key a newer build put on the envelope, an
+  `account` entry, an entry whose kind this build does not know, and an entry it
+  cannot read at all. That is `attachment-scope-edit.ts`'s whole convention and
+  the sweep is no exception to it.
+
+What this does NOT do is reach a machine that is not attached: the sweep runs
+from the detached sync child, which only an attached machine spawns. That is the
+right scope — a scope record forwards nothing until there is an attachment — but
+it means the fix arrives with the next session's sync rather than the moment the
+build is installed.
 
 **A near miss is REPORTED rather than silently stored.** `aka enroll` refuses a
 typed key that is not how the repository is really keyed and names the spelling
@@ -927,7 +970,14 @@ Keep these package boundaries intact — a forbidden import across a package wal
                      is not the administrative overlay: it parses `Host`/`HostName`
                      out of ~/.ssh/config so a clone made through an SSH alias keys
                      to the same project as one made over HTTPS — see "A project's
-                     identity is the repository, not the remote string" (§8))
+                     identity is the repository, not the remote string" (§8).
+                     repo-key.ts holds that canonicalization, split out of
+                     egress-wire.ts — which re-exports all of it — because that
+                     module reaches a SQLite repository for the cap helpers, and a
+                     parameter property there is syntax Node's strip-only loader
+                     refuses: any module a raw-Node child or worker loads would
+                     fail AT LOAD the moment it imported a key helper from it.
+                     Nothing under repo-key.ts but schema and ssh-hosts.ts)
 @akasecurity/local-ops     → @akasecurity/schema, @akasecurity/persistence, @akasecurity/detections,
                      @akasecurity/plugin-sdk (repo-identity, project-file walkers, posix
                      path normalization, and the ReDoS gates the dashboard's folder

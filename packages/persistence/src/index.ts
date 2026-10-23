@@ -36,11 +36,13 @@ export {
   WORK_ACCOUNT_LOCK_TIMEOUT_MS,
   writeAttachedIdentity,
 } from './attached-identity.ts';
+export type { RespelledEntry } from './attachment-scope-edit.ts';
 export {
   addAttachmentScopeEntries,
   freshAttachmentScope,
   markCodingAgentEntries,
   removeAttachmentScopeEntries,
+  respellAttachmentScopeEntries,
   turnWorkSubscriptionsOff,
   turnWorkSubscriptionsOn,
   UnreadableAttachmentScopeError,
@@ -103,9 +105,12 @@ export {
   enrollableRepoKey,
   hashProjectKey,
   namesARemoteAddress,
+  respelledRepoKey,
   scopeKeyOfProjectKey,
   toEgressIngestRequest,
 } from './egress-wire.ts';
+export type { EnrolmentRespellOutcome } from './enrolment-respell.ts';
+export { respellStoredEnrolments } from './enrolment-respell.ts';
 export type { ExceptionPolicyProvider, RevealDecision } from './exception-policy.ts';
 export { UserGrantPolicyProvider } from './exception-policy.ts';
 export type { FileLockFailure, FileLockOptions } from './file-lock.ts';

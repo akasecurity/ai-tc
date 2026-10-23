@@ -15,11 +15,17 @@
 // it throws UnreadableAttachmentScopeError, so the caller writes nothing, and
 // unenrolling from it filters its stored entries like any other record's.
 //
-// Pure: no I/O. Run them inside applyOnboarding's updater, which hands over the
-// file the merge is about to land on, so two writers cannot lose each other's
-// edit.
+// Pure, bar one read. Run them inside applyOnboarding's updater, which hands
+// over the file the merge is about to land on, so two writers cannot lose each
+// other's edit. The one read is the sweep's: respellAttachmentScopeEntries asks
+// respelledRepoKey how a repository is keyed now, and an SSH alias is a host
+// only because ~/.ssh/config says so, so the first call on a process reads that
+// file (memoized after, and fail-open on a machine that has none). Nothing
+// writes.
 import type { AttachmentScope, PluginWhoami } from '@akasecurity/schema';
 import { AttachmentScopeEntry, isAttachmentScopeValid } from '@akasecurity/schema';
+
+import { respelledRepoKey } from './repo-key.ts';
 
 /**
  * Thrown by addAttachmentScopeEntries for a scope record that names the
@@ -255,4 +261,95 @@ export function markCodingAgentEntries(
   });
   const marked = [...asked].filter((identity) => hit.has(identity));
   return marked.length === 0 ? { next: raw, marked } : { next: withEntries(raw, entries), marked };
+}
+
+/** One stored entry this sweep moved: the identity as found, and the key it now carries. */
+export interface RespelledEntry {
+  readonly from: string;
+  readonly to: string;
+}
+
+/** Whether a stored entry reads as a repository one, whatever else it carries. */
+function namesRepoEntry(entry: unknown): boolean {
+  return (
+    typeof entry === 'object' && entry !== null && (entry as { kind?: unknown }).kind === 'repo'
+  );
+}
+
+/**
+ * Re-key every stored `repo` entry whose identity is a spelling this build no
+ * longer stamps, editing the raw record.
+ *
+ * A scope key is matched against what a user enrolled BY EXACT STRING
+ * (`scopeVerdict` is `keys.has(key)`), so an entry stored under a spelling the
+ * canonical form has since moved away from — an SSH alias, a capitalised path on
+ * a case-insensitive forge — forwards nothing while still reading as enrolled.
+ * Nothing reports the gap on its own. This is the migration that closes it:
+ * each such identity is rewritten to `respelledRepoKey`'s answer, which is the
+ * spelling `aka enroll` would have named in its refusal, and everything else the
+ * record carries is copied as found — its binding, its work-subscription
+ * opt-out, any key a newer build put on the envelope, and every entry this one
+ * leaves alone.
+ *
+ * IDEMPOTENT, by construction rather than by a marker: `respelledRepoKey`
+ * answers `undefined` for a key that is already canonical, so a second pass over
+ * a swept record finds nothing, `respelled` is empty and `next` is `raw` itself —
+ * which is also how a caller knows to skip a write that would change nothing.
+ *
+ * Only an entry that reads as `kind: 'repo'` with a string identity is
+ * considered. An `account` entry is not a repository key and is left alone; so
+ * is an entry whose kind this build does not know, since what its identity means
+ * there is not this build's to decide; so is a `repo` identity that respells to
+ * nothing enrollable, which is reported on `aka status` instead (`staleKeyNote`)
+ * because no spelling can be worked out for it here.
+ *
+ * A respelling that lands on an identity ALREADY STANDING in the record is
+ * FOLDED rather than written, so the record never holds one key twice: a
+ * duplicate forwards identically, makes `aka status` read double, and would
+ * leave `aka unenroll` removing one copy while the other went on forwarding. An
+ * entry that was already canonical wins, wherever it sits in the list, since it
+ * carries the label and timestamp set under the spelling that works; between two
+ * stale entries converging on one key, the first in stored order wins. A folded
+ * entry is still listed in `respelled`, because the record changed. A duplicate
+ * the record ALREADY held is not this sweep's to remove and is copied as found.
+ *
+ * Takes no endpoint, unlike its neighbours: those act for a user command aimed
+ * at a deployment, while a stale spelling matches nothing whichever deployment
+ * the record names. Skipping a record for a deployment the machine has moved
+ * away from would only re-key it the day the machine attached back. Never
+ * mutates `raw`.
+ */
+export function respellAttachmentScopeEntries(raw: unknown): {
+  next: unknown;
+  respelled: readonly RespelledEntry[];
+} {
+  const entries = storedEntries(raw);
+  // Pass one: the identities that stand as they are. Taken before anything is
+  // rewritten, so an already-canonical entry wins over a stale one converging on
+  // it whichever order the two sit in.
+  const standing = new Set<string>();
+  for (const entry of entries) {
+    const identity = storedIdentity(entry);
+    if (identity === undefined) continue;
+    if (!namesRepoEntry(entry) || respelledRepoKey(identity) === undefined) standing.add(identity);
+  }
+  const minted = new Set<string>();
+  const kept: unknown[] = [];
+  const respelled: RespelledEntry[] = [];
+  for (const entry of entries) {
+    const identity = storedIdentity(entry);
+    const to =
+      identity === undefined || !namesRepoEntry(entry) ? undefined : respelledRepoKey(identity);
+    if (identity === undefined || to === undefined) {
+      kept.push(entry);
+      continue;
+    }
+    respelled.push({ from: identity, to });
+    if (standing.has(to) || minted.has(to)) continue;
+    minted.add(to);
+    kept.push({ ...(entry as Record<string, unknown>), identity: to });
+  }
+  return respelled.length === 0
+    ? { next: raw, respelled }
+    : { next: withEntries(raw, kept), respelled };
 }

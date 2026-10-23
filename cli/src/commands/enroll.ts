@@ -20,6 +20,7 @@ import {
   readEffectiveSettings,
   readManagedSettings,
   removeAttachmentScopeEntries,
+  respelledRepoKey,
   seedEnrolledCapturesOwed,
   settingsDir as settingsDirOf,
   turnWorkSubscriptionsOff,
@@ -1405,14 +1406,11 @@ function identityFromInput(input: string, cwd: string): Identity {
     };
   }
   const shownInput = printableForTerminal(typed, ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH);
-  // `ssh://` for the reason `enrollableRepoKey` gives: a typed key names no
-  // transport, and alias resolution runs for ssh alone.
-  const respelled = typed.includes(':') ? undefined : canonicalRepoUrl(`ssh://${typed}`);
-  if (
-    respelled !== undefined &&
-    respelled !== typed &&
-    enrollableRepoKey(respelled) === respelled
-  ) {
+  // `respelledRepoKey` rather than a reading of its own: the sweep that rewrites
+  // a stored entry under one of these spellings must write exactly what this
+  // refusal names, and two copies of the rule would be free to disagree.
+  const respelled = respelledRepoKey(typed);
+  if (respelled !== undefined) {
     const canonical = printableForTerminal(respelled, ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH);
     return {
       kind: 'refused',

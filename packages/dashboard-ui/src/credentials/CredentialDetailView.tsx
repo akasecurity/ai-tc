@@ -11,7 +11,6 @@ import { PROVIDERS } from '../shared/Provider.tsx';
 import { RefusalReason, refusedControlProps } from '../shared/Refusal.tsx';
 import { CredentialStatusBadge } from './CredentialStatusBadge.tsx';
 import { credentialLabel, credentialName } from './name.ts';
-import { credentialStatus } from './status.ts';
 import type { CredentialDetailModel } from './types.ts';
 
 export interface CredentialDetailViewProps {
@@ -255,7 +254,9 @@ export function CredentialDetailView({
           </h2>
           <div className="text-xs text-text-3">{c.kind}</div>
         </div>
-        <CredentialStatusBadge status={credentialStatus(c)} />
+        {c.statuses.map((s) => (
+          <CredentialStatusBadge key={s} status={s} />
+        ))}
         {onSaveLabel !== undefined && (
           <LabelEditor
             key={c.id}
@@ -268,7 +269,7 @@ export function CredentialDetailView({
         )}
       </div>
 
-      {c.exposedAt !== null && (
+      {c.statuses.includes('exposed') && c.exposedAt !== null && (
         <div className="rounded-lg border border-sev-critical-ink/30 bg-sev-critical-fill p-3">
           <p className="text-xs text-text-2">
             <span className="font-semibold text-sev-critical-ink">Exposed</span> — this value was

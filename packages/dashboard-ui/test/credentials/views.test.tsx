@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { CREDENTIAL_LABEL_MAX_LENGTH } from '@akasecurity/schema';
+import { CREDENTIAL_LABEL_MAX_LENGTH, type CredentialStatus } from '@akasecurity/schema';
 import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -34,7 +34,7 @@ const ITEM: CredentialListItem = {
   endpointCount: 4,
   lastRotated: null,
   lastSeen: '2026-10-21T11:00:00.000Z',
-  exposedAt: null,
+  statuses: ['ok'],
 };
 
 const DETAIL: CredentialDetailModel = {
@@ -43,6 +43,7 @@ const DETAIL: CredentialDetailModel = {
   firstSeen: '2026-10-01T00:00:00.000Z',
   sightingCount: 9,
   reference: null,
+  exposedAt: null,
   projects: ['acme/api', 'acme/web'],
   teams: [
     { name: 'Payments', userCount: 2 },
@@ -109,39 +110,69 @@ describe('CredentialsListView', () => {
     expect(cells).toEqual(['GITHUB_TOKENGitHub token', 'GitHub', '—', '2', '3', '4', '—', 'OK']);
   });
 
-  it('marks an exposed credential Exposed', () => {
-    list({ items: [{ ...ITEM, exposedAt: '2026-10-21T09:00:00.000Z' }] });
+  it('shows each status a credential carries', () => {
+    list({ items: [{ ...ITEM, statuses: ['exposed'] }] });
     const cells = [...mounted.host.querySelectorAll('tbody td')].map((td) => td.textContent.trim());
     expect(cells.at(-1)).toBe('Exposed');
   });
 
-  it('shows no status filter without a callback', () => {
-    list();
-    expect(mounted.host.querySelector('[aria-label="Filter by status"]')).toBeNull();
+  it('shows a status this build does not know as sent, rather than failing the list', () => {
+    list({
+      items: [{ ...ITEM, statuses: ['exposed', 'broadly_shared' as unknown as CredentialStatus] }],
+    });
+    const cells = [...mounted.host.querySelectorAll('tbody td')].map((td) => td.textContent.trim());
+    expect(cells.at(-1)).toBe('Exposedbroadly_shared');
   });
 
-  it('filters by status, marking the one in force', () => {
-    const onStatusChange = vi.fn();
-    list({ status: 'exposed', onStatusChange });
-    const group = mounted.host.querySelector('[aria-label="Filter by status"]');
-    const chips = [...(group?.querySelectorAll('button') ?? [])];
-    expect(chips.map((b) => [b.textContent, b.getAttribute('aria-pressed')])).toEqual([
-      ['All', 'false'],
-      ['Exposed', 'true'],
-      ['OK', 'false'],
+  const chips = () => [
+    ...mounted.host.querySelectorAll<HTMLButtonElement>('[aria-label="Filter by status"] button'),
+  ];
+
+  it('shows no status chips without a callback, and ignores a status passed without them', () => {
+    list({ items: [], total: 0, status: 'exposed' });
+    expect(mounted.host.querySelector('[aria-label="Filter by status"]')).toBeNull();
+    expect(text()).toContain('No credentials have been seen yet');
+  });
+
+  it('counts each chip by its own facet, not by the filtered total, and marks the one that is on', () => {
+    const onStatus = vi.fn();
+    list({
+      items: [{ ...ITEM, statuses: ['exposed'] }],
+      total: 3,
+      status: 'exposed',
+      onStatus,
+      statusCounts: { all: 40, byStatus: { exposed: 3, ok: 37 } },
+    });
+    expect(chips().map((b) => [b.textContent, b.getAttribute('aria-pressed')])).toEqual([
+      ['All40', 'false'],
+      ['Exposed3', 'true'],
+      ['OK37', 'false'],
     ]);
     act(() => {
-      chips[0]?.click();
+      chips()[0]?.click();
     });
-    expect(onStatusChange).toHaveBeenCalledWith(null);
+    expect(onStatus).toHaveBeenLastCalledWith(null);
     act(() => {
-      chips[2]?.click();
+      chips()[2]?.click();
     });
-    expect(onStatusChange).toHaveBeenCalledWith('ok');
+    expect(onStatus).toHaveBeenLastCalledWith('ok');
+  });
+
+  it('shows the chips without counts while none are known, and under an error', () => {
+    list({ onStatus: vi.fn() });
+    expect(chips().map((b) => b.textContent)).toEqual(['All', 'Exposed', 'OK']);
+    list({
+      items: [],
+      total: 0,
+      error: 'You need permission to view detections.',
+      onStatus: vi.fn(),
+      statusCounts: { all: 0, byStatus: { exposed: 0, ok: 0 } },
+    });
+    expect(chips().map((b) => b.textContent)).toEqual(['All', 'Exposed', 'OK']);
   });
 
   it('says when no credential has the status filtered to', () => {
-    list({ items: [], total: 0, status: 'exposed', onStatusChange: vi.fn() });
+    list({ items: [], total: 0, status: 'exposed', onStatus: vi.fn() });
     expect(text()).toContain('No credentials have this status.');
     expect(text()).not.toContain('No credentials have been seen yet');
   });
@@ -510,7 +541,7 @@ describe('CredentialDetailView', () => {
   });
 
   it('says an exposed credential is Exposed and when it was first seen in a live session', () => {
-    detail({ ...DETAIL, exposedAt: '2026-10-21T09:00:00.000Z' });
+    detail({ ...DETAIL, statuses: ['exposed'], exposedAt: '2026-10-21T09:00:00.000Z' });
     // The badge in the header, then one sentence that leads with the word, not a second headline.
     expect(text()).toContain(
       'Exposed — this value was seen in a live LLM session, first 3 hours ago.',

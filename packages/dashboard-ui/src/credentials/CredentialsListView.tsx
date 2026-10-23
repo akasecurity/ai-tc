@@ -1,4 +1,5 @@
 'use client';
+import { CredentialStatus } from '@akasecurity/schema';
 import {
   Button,
   Card,
@@ -20,8 +21,8 @@ import { relativeTime } from '../lib/relativeTime.ts';
 import { SearchField } from '../shared/SearchField.tsx';
 import { CredentialStatusBadge } from './CredentialStatusBadge.tsx';
 import { credentialLabel, credentialName } from './name.ts';
-import { credentialStatus } from './status.ts';
-import type { CredentialListItem, CredentialStatus } from './types.ts';
+import { CREDENTIAL_STATUS } from './status.ts';
+import type { CredentialListItem, CredentialStatusCounts } from './types.ts';
 
 export interface CredentialsListViewProps {
   items: CredentialListItem[];
@@ -39,10 +40,19 @@ export interface CredentialsListViewProps {
    */
   search: string;
   onSearch: (value: string) => void;
-  /** The status the list is filtered to; null lists every credential. A new filter starts again at the first page. */
+  /**
+   * The status chip that is on; null is All. A new chip starts again at the
+   * first page. Pass it with `onStatus`: without chips the reader has no way
+   * back to All, so the view then ignores it.
+   */
   status?: CredentialStatus | null | undefined;
-  /** Omit it and no status filter is shown. */
-  onStatusChange?: ((status: CredentialStatus | null) => void) | undefined;
+  /** Picks a chip; null is All. Omit it and no chips are shown. */
+  onStatus?: ((status: CredentialStatus | null) => void) | undefined;
+  /**
+   * Each chip's own count under the current search, whatever chip is on.
+   * Undefined while the host does not know them; the chips then show no count.
+   */
+  statusCounts?: CredentialStatusCounts | undefined;
   onSelect: (id: string) => void;
   onExport: () => void;
   exporting?: boolean | undefined;
@@ -71,11 +81,6 @@ const COLUMNS = [
   'Status',
 ] as const;
 
-const STATUS_FILTERS: readonly { value: CredentialStatus | null; label: string }[] = [
-  { value: null, label: 'All' },
-  { value: 'exposed', label: 'Exposed' },
-  { value: 'ok', label: 'OK' },
-];
 const NUMERIC = new Set<string>(['Projects', 'Teams', 'Endpoints']);
 
 /** The credential ledger: one row per detected value, newest first. */
@@ -84,8 +89,9 @@ export function CredentialsListView({
   total,
   search,
   onSearch,
-  status = null,
-  onStatusChange,
+  status: statusProp = null,
+  onStatus,
+  statusCounts,
   onSelect,
   onExport,
   exporting = false,
@@ -99,6 +105,7 @@ export function CredentialsListView({
   error,
   renderedAt,
 }: CredentialsListViewProps) {
+  const status = onStatus === undefined ? null : statusProp;
   const refused = error !== undefined;
   const loadingEmpty = isLoading && items.length === 0;
   // An empty page past the first means rows moved under the cursor, not an empty ledger.
@@ -132,22 +139,12 @@ export function CredentialsListView({
         </Button>
       </div>
 
-      {onStatusChange !== undefined && (
-        <div role="group" aria-label="Filter by status" className="flex flex-wrap gap-1.5">
-          {STATUS_FILTERS.map((f) => (
-            <Button
-              key={f.label}
-              variant={status === f.value ? 'solid' : 'outline'}
-              size="sm"
-              aria-pressed={status === f.value}
-              onClick={() => {
-                onStatusChange(f.value);
-              }}
-            >
-              {f.label}
-            </Button>
-          ))}
-        </div>
+      {onStatus !== undefined && (
+        <StatusChips
+          status={status}
+          onStatus={onStatus}
+          counts={refused || isLoading ? undefined : statusCounts}
+        />
       )}
 
       {refused ? (
@@ -223,7 +220,11 @@ export function CredentialsListView({
                     {item.lastRotated === null ? '—' : relativeTime(item.lastRotated, renderedAt)}
                   </TableCell>
                   <TableCell>
-                    <CredentialStatusBadge status={credentialStatus(item)} />
+                    <span className="inline-flex flex-wrap gap-1.5">
+                      {item.statuses.map((s) => (
+                        <CredentialStatusBadge key={s} status={s} />
+                      ))}
+                    </span>
                   </TableCell>
                 </TableRow>
               ))}
@@ -248,5 +249,44 @@ export function CredentialsListView({
         </Pagination>
       )}
     </Card>
+  );
+}
+
+function StatusChips({
+  status,
+  onStatus,
+  counts,
+}: {
+  status: CredentialStatus | null;
+  onStatus: (status: CredentialStatus | null) => void;
+  counts: CredentialStatusCounts | undefined;
+}) {
+  const chips: { key: CredentialStatus | null; label: string; count: number | undefined }[] = [
+    { key: null, label: 'All', count: counts?.all },
+    ...CredentialStatus.options.map((key) => ({
+      key,
+      label: CREDENTIAL_STATUS[key].label,
+      count: counts?.byStatus[key],
+    })),
+  ];
+  return (
+    <div role="group" aria-label="Filter by status" className="flex flex-wrap gap-1.5">
+      {chips.map((chip) => (
+        <Button
+          key={chip.key ?? 'all'}
+          variant={chip.key === status ? 'solid' : 'outline'}
+          size="sm"
+          aria-pressed={chip.key === status}
+          onClick={() => {
+            onStatus(chip.key);
+          }}
+        >
+          {chip.label}
+          {chip.count !== undefined && (
+            <span className="tabular-nums opacity-70">{String(chip.count)}</span>
+          )}
+        </Button>
+      ))}
+    </div>
   );
 }

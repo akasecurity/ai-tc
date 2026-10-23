@@ -1,9 +1,6 @@
 // The shapes the credential views render. A host maps its own credential
 // records onto these; the views never see a value or its fingerprint.
-import type { Severity } from '@akasecurity/schema';
-
-/** `exposed`: the value was seen in a live LLM session. `ok`: no status applies. */
-export type CredentialStatus = 'exposed' | 'ok';
+import type { CredentialStatus, Severity } from '@akasecurity/schema';
 
 export interface CredentialListItem {
   id: string;
@@ -29,11 +26,14 @@ export interface CredentialListItem {
   lastRotated: string | null;
   /** ISO time it was last seen. */
   lastSeen: string;
-  /**
-   * ISO time it was first seen in a live LLM session; null when it never was.
-   * The credential's status follows from it: read it through `credentialStatus`.
-   */
-  exposedAt: string | null;
+  /** The statuses it carries: `ok` alone, or one or more of the others. */
+  statuses: CredentialStatus[];
+}
+
+/** How many credentials each status chip covers under the current search, whatever chip is on. */
+export interface CredentialStatusCounts {
+  all: number;
+  byStatus: Record<CredentialStatus, number>;
 }
 
 export interface CredentialTeamUsage {
@@ -57,6 +57,8 @@ export interface CredentialDetailModel extends CredentialListItem {
   sightingCount: number;
   /** The secrets-manager reference; null marks a credential as detected only. */
   reference: string | null;
+  /** ISO time it was first seen in a live LLM session; null when it never was. */
+  exposedAt: string | null;
   projects: string[];
   teams: CredentialTeamUsage[];
   /** Source tool ids, such as "claude-code"; an id the registry does not know is shown as sent. */

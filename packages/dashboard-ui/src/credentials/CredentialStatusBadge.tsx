@@ -1,14 +1,11 @@
+import type { CredentialStatus } from '@akasecurity/schema';
 import { Badge } from '@akasecurity/ui-kit';
 
-import type { CredentialStatus } from './types.ts';
+import { CREDENTIAL_STATUS } from './status.ts';
 
-const BADGES: Record<CredentialStatus, { label: string; variant: 'critical' | 'success' }> = {
-  exposed: { label: 'Exposed', variant: 'critical' },
-  ok: { label: 'OK', variant: 'success' },
-};
-
-/** A credential's status as a badge. */
+/** A credential status as a badge; a status this build does not know is shown as sent. */
 export function CredentialStatusBadge({ status }: { status: CredentialStatus }) {
-  const { label, variant } = BADGES[status];
+  if (!Object.hasOwn(CREDENTIAL_STATUS, status)) return <Badge variant="outline">{status}</Badge>;
+  const { label, variant } = CREDENTIAL_STATUS[status];
   return <Badge variant={variant}>{label}</Badge>;
 }

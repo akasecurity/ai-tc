@@ -645,7 +645,7 @@ describe('CredentialDetailView dismiss, restore and delete', () => {
     );
   });
 
-  it('confirms a delete with what goes, what stays, and that the value can come back', async () => {
+  it('confirms a delete with what goes, what stays in history, and that the value can come back', async () => {
     const onDelete = vi.fn<() => Promise<void>>().mockResolvedValue();
     detail(DETAIL, { onDelete });
     act(() => {
@@ -653,8 +653,10 @@ describe('CredentialDetailView dismiss, restore and delete', () => {
     });
     const copy = dialog()?.textContent ?? '';
     expect(copy).toContain('Delete this credential?');
-    expect(copy).toContain('its 9 sightings and its links to findings. The findings stay.');
-    expect(copy).toContain('the next time a device sees it, it comes back as a new credential');
+    expect(copy).toContain('its 9 sightings and their links to findings.');
+    expect(copy).toContain('The findings and the activity that carried the value stay in history.');
+    expect(copy).toContain('it is recorded as a new credential');
+    expect(copy).not.toContain('Nothing remembers');
     expect(copy).toContain('dismiss it instead');
     act(() => {
       dialogButton('Cancel')?.click();

@@ -231,10 +231,10 @@ function DeleteDialog({
           <DialogTitle>Delete this credential?</DialogTitle>
           <DialogDescription>
             This removes the credential, its {String(sightingCount)}{' '}
-            {sightingCount === 1 ? 'sighting' : 'sightings'} and its links to findings. The findings
-            stay. Nothing remembers this value: the next time a device sees it, it comes back as a
-            new credential. To stop a value that keeps appearing from being listed, dismiss it
-            instead.
+            {sightingCount === 1 ? 'sighting' : 'sightings'} and their links to findings. The
+            findings and the activity that carried the value stay in history. The next time a device
+            sees the value, it is recorded as a new credential. To stop a value that keeps appearing
+            from being listed, dismiss it instead.
           </DialogDescription>
         </DialogHeader>
         {action.failed && (

@@ -1332,7 +1332,7 @@ describe('every file outside every workspace package is linted by a repo-root pa
 
   it('turbo hashes the conventions doc this suite reads', () => {
     // Same hazard as the extension check above, one file type over. Two describes
-    // in this package parse CLAUDE.md and assert its opt-out tables against the
+    // in this package parse the conventions text and assert its opt-out tables against the
     // tree; none of the input globs reaches a .md, so without an entry of its own
     // the document could be edited — or gutted — with this task's hash untouched,
     // turbo replaying the cached pass and the guards never running on the change.
@@ -1580,7 +1580,7 @@ describe("turbo's own hash moves when a lintable file appears at the repo root",
       // run that cannot see a new file — which is what lets the assertion after
       // it be read as a verdict on the root glob rather than on the method.
       //
-      // Not a CLAUDE.md edit, though that document is an equally decisive input
+      // Not a conventions edit, though that text is an equally decisive input
       // of this task and not of `#build`: two describes in this package parse it,
       // vitest runs test files in parallel, and mutating it mid-run reddens them
       // for a reason nobody could trace back to here. Creating a file nothing
@@ -3034,7 +3034,7 @@ describe('effective per-package config (composition / last-wins)', () => {
   });
 
   // The workspace ban has two halves: the network rules above and
-  // `n/no-process-env`, which CLAUDE.md pins to an exact table of opt-out sites.
+  // `n/no-process-env`, which conventions/process-env-and-network.md pins to an exact table of opt-out sites.
   // Without this, a package could switch the rule off in its own config and add
   // an unreviewed fifth site while every other assertion here stayed green.
   // Asserted as a resolved severity rather than by adding it to KEYS, because

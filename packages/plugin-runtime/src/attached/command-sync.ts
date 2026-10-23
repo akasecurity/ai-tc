@@ -201,7 +201,7 @@ function rootVerdict(
  * What each verb does, keyed on the verb.
  *
  * A `Record<DeviceCommandKind, …>` rather than a bare call on the one thing a
- * command can currently mean, for the reason CLAUDE.md gives for every table
+ * command can currently mean, for the reason conventions/contracts.md gives for every table
  * over a vocabulary: adding a member to `DeviceCommandKind` fails to COMPILE
  * here until somebody decides what it does. Without it, a second verb — which
  * would parse, since that enum is what decides what parses — would silently run

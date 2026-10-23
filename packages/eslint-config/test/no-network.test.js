@@ -1180,7 +1180,7 @@ describe('an odd-named config carrying an undocumented opt-out is audited (throw
 
 // DOCUMENTED_OPT_OUTS is a hand-written MIRROR of §4's table, and the audit
 // above never opens the document: delete the table, the intro sentence and the
-// "adding another site" promise from CLAUDE.md, leave every ESLint config
+// "adding another site" promise from conventions/process-env-and-network.md, leave every ESLint config
 // untouched, and this whole package stays green. The direction that matters most
 // was already closed — a third opt-out cannot land silently, because the
 // contributor has to edit DOCUMENTED_OPT_OUTS to get green — but at the moment

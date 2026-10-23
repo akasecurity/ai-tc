@@ -26,7 +26,7 @@ describe('cn', () => {
   });
 
   it('keeps text-label alongside a tonal ink color', () => {
-    // The `-ink` spelling is the one CLAUDE.md requires for a foreground on a
+    // The `-ink` spelling is the one conventions/frontend.md requires for a foreground on a
     // tonal tint, so it is the pairing that actually ships.
     const merged = cn('text-label', 'text-sev-critical-ink');
 

@@ -410,7 +410,7 @@ describe('the benchmark harness', () => {
   });
 
   it('states a property count that follows from the list rather than from memory', () => {
-    // CLAUDE.md claims a NUMBER of load-bearing properties and names this file as
+    // conventions/testing.md claims a NUMBER of load-bearing properties and names this file as
     // what enforces each. Nothing read that sentence, so the two cases added
     // alongside it took the count from four to six by hand — and a seventh, or a
     // deletion, would leave it stale with every test green. §1 of that document

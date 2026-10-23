@@ -1,15 +1,35 @@
 'use client';
-import { CREDENTIAL_LABEL_MAX_LENGTH, harnessFromTool } from '@akasecurity/schema';
-import { Badge, Button, Card, cn, Input, SeverityBadge } from '@akasecurity/ui-kit';
+import {
+  CREDENTIAL_LABEL_MAX_LENGTH,
+  type DismissMethod,
+  harnessFromTool,
+} from '@akasecurity/schema';
+import {
+  Badge,
+  Button,
+  Card,
+  cn,
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  Input,
+  SeverityBadge,
+} from '@akasecurity/ui-kit';
 import { type ReactNode, useEffect, useId, useRef, useState } from 'react';
 
 import { Ico } from '../inventory/Ico.tsx';
 import type { IconName } from '../inventory/icons.ts';
 import { relativeTime } from '../lib/relativeTime.ts';
+import { ChoiceGroup } from '../shared/ChoiceGroup.tsx';
 import { MetaItem, SectionLabel } from '../shared/DetailFields.tsx';
 import { PROVIDERS } from '../shared/Provider.tsx';
 import { RefusalReason, refusedControlProps } from '../shared/Refusal.tsx';
 import { CredentialStatusBadge } from './CredentialStatusBadge.tsx';
+import { CREDENTIAL_DISMISS_REASONS, credentialDismissReasonLabel } from './dismissal.ts';
 import { credentialLabel, credentialName } from './name.ts';
 import { RotationEditor } from './RotationEditor.tsx';
 import type { CredentialDetailModel, CredentialRotationInput } from './types.ts';
@@ -35,6 +55,20 @@ export interface CredentialDetailViewProps {
   /** The longest label the host accepts; `CREDENTIAL_LABEL_MAX_LENGTH` when omitted. */
   labelMaxLength?: number | undefined;
   /**
+   * Dismisses the credential for a reason. Rejects when the dismissal fails,
+   * which keeps the dialog open. Omit it and no Dismiss control is shown.
+   */
+  onDismiss?: ((reason: DismissMethod) => Promise<void>) | undefined;
+  /** Restores a dismissed credential. Rejects when it fails. Omit it and no Restore control is shown. */
+  onRestore?: (() => Promise<void>) | undefined;
+  /**
+   * Deletes the credential. Rejects when the delete fails, which keeps the
+   * dialog open. Omit it and no Delete control is shown.
+   */
+  onDelete?: (() => Promise<void>) | undefined;
+  /** Why the last dismiss, restore or delete failed. Without it a failure shows a generic message. */
+  actionError?: string | undefined;
+  /**
    * Saves the owner, last rotation and rotation policy together. Rejects when
    * the save fails, which keeps the editor open. Omit it and no edit control is shown.
    */
@@ -50,6 +84,209 @@ const MANAGED =
 
 const SAVE_FAILED = "Couldn't save the label.";
 const REFUSED = "You can't label this credential.";
+const ACTION_FAILED = "Couldn't update this credential.";
+
+/**
+ * Runs a host action, tracking whether it is running and whether it last
+ * failed. A result that settles after `reset` is ignored, so a closed dialog
+ * reopens without a stale failure.
+ */
+function useHostAction() {
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const generation = useRef(0);
+  const run = async (action: () => Promise<void>): Promise<boolean> => {
+    const current = ++generation.current;
+    setBusy(true);
+    setFailed(false);
+    try {
+      await action();
+      return generation.current === current;
+    } catch {
+      if (generation.current === current) setFailed(true);
+      return false;
+    } finally {
+      if (generation.current === current) setBusy(false);
+    }
+  };
+  return {
+    busy,
+    failed,
+    run,
+    reset: () => {
+      generation.current++;
+      setBusy(false);
+      setFailed(false);
+    },
+  };
+}
+
+function DismissDialog({
+  open,
+  onOpenChange,
+  onDismiss,
+  restorable,
+  error,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onDismiss: (reason: DismissMethod) => Promise<void>;
+  /** Whether the host offers Restore, which the description then mentions. */
+  restorable: boolean;
+  error: string | undefined;
+}) {
+  const [reason, setReason] = useState<DismissMethod | null>(null);
+  const action = useHostAction();
+  const close = (next: boolean) => {
+    if (!next) {
+      setReason(null);
+      action.reset();
+    }
+    onOpenChange(next);
+  };
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next && action.busy) return;
+        close(next);
+      }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Dismiss this credential?</DialogTitle>
+          <DialogDescription>
+            A dismissed credential is left out of the credential list and the inventory count, and
+            its open findings in code are dismissed for the same reason. New sightings are still
+            recorded and do not bring it back.{restorable && ' You can restore it at any time.'}
+          </DialogDescription>
+        </DialogHeader>
+        <DialogBody>
+          <div
+            id="credential-dismiss-reason-label"
+            className="mb-1.5 text-label font-semibold uppercase tracking-wider text-text-3"
+          >
+            Reason
+          </div>
+          <ChoiceGroup
+            name="credential-dismiss-reason"
+            labelledBy="credential-dismiss-reason-label"
+            choices={CREDENTIAL_DISMISS_REASONS}
+            value={reason}
+            onChange={setReason}
+            disabled={action.busy}
+          />
+          {action.failed && (
+            <p role="alert" className="mt-3 text-xs text-sev-critical-ink">
+              {error ?? ACTION_FAILED}
+            </p>
+          )}
+        </DialogBody>
+        <DialogFooter>
+          <Button
+            variant="ghost"
+            tone="neutral"
+            size="sm"
+            disabled={action.busy}
+            onClick={() => {
+              close(false);
+            }}
+          >
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            disabled={reason === null || action.busy}
+            onClick={() => {
+              if (reason === null) return;
+              void action
+                .run(() => onDismiss(reason))
+                .then((done) => {
+                  if (done) close(false);
+                });
+            }}
+          >
+            Dismiss credential
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function DeleteDialog({
+  open,
+  onOpenChange,
+  onDelete,
+  sightingCount,
+  error,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onDelete: () => Promise<void>;
+  sightingCount: number;
+  error: string | undefined;
+}) {
+  const action = useHostAction();
+  const close = (next: boolean) => {
+    if (!next) action.reset();
+    onOpenChange(next);
+  };
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next && action.busy) return;
+        close(next);
+      }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Delete this credential?</DialogTitle>
+          <DialogDescription>
+            This removes the credential, its {String(sightingCount)}{' '}
+            {sightingCount === 1 ? 'sighting' : 'sightings'} and their links to findings. The
+            findings and the activity that carried the value stay in history. The next time a device
+            sees the value, it is recorded as a new credential. To stop a value that keeps appearing
+            from being listed, dismiss it instead.
+          </DialogDescription>
+        </DialogHeader>
+        {action.failed && (
+          <DialogBody>
+            <p role="alert" className="text-xs text-sev-critical-ink">
+              {error ?? ACTION_FAILED}
+            </p>
+          </DialogBody>
+        )}
+        <DialogFooter>
+          <Button
+            variant="ghost"
+            tone="neutral"
+            size="sm"
+            disabled={action.busy}
+            onClick={() => {
+              close(false);
+            }}
+          >
+            Cancel
+          </Button>
+          <Button
+            tone="danger"
+            size="sm"
+            disabled={action.busy}
+            onClick={() => {
+              void action.run(onDelete).then((done) => {
+                if (done) close(false);
+              });
+            }}
+          >
+            Delete credential
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 function LabelEditor({
   label,
@@ -242,11 +479,17 @@ export function CredentialDetailView({
   labelError,
   labelMaxLength,
   labelRefusal,
+  onDismiss,
+  onRestore,
+  onDelete,
+  actionError,
   onSaveRotation,
   rotationError,
   rotationRefusal,
 }: CredentialDetailViewProps) {
   const detectedOnly = c.reference === null;
+  const [dialog, setDialog] = useState<'dismiss' | 'delete' | null>(null);
+  const restore = useHostAction();
   return (
     <Card className="flex flex-col gap-6 p-5 shadow-sm">
       <div>
@@ -285,7 +528,87 @@ export function CredentialDetailView({
             maxLength={labelMaxLength ?? CREDENTIAL_LABEL_MAX_LENGTH}
           />
         )}
+        {onDismiss !== undefined && c.dismissal === null && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setDialog('dismiss');
+            }}
+          >
+            Dismiss
+          </Button>
+        )}
+        {onDelete !== undefined && (
+          <Button
+            variant="outline"
+            tone="danger"
+            size="sm"
+            onClick={() => {
+              setDialog('delete');
+            }}
+          >
+            Delete
+          </Button>
+        )}
       </div>
+
+      {onDismiss !== undefined && (
+        <DismissDialog
+          open={dialog === 'dismiss'}
+          onOpenChange={(open) => {
+            setDialog(open ? 'dismiss' : null);
+          }}
+          onDismiss={onDismiss}
+          restorable={onRestore !== undefined}
+          error={actionError}
+        />
+      )}
+      {onDelete !== undefined && (
+        <DeleteDialog
+          open={dialog === 'delete'}
+          onOpenChange={(open) => {
+            setDialog(open ? 'delete' : null);
+          }}
+          onDelete={onDelete}
+          sightingCount={c.sightingCount}
+          error={actionError}
+        />
+      )}
+
+      {c.dismissal !== null && (
+        <div className="rounded-lg border border-border bg-surface-2 p-3">
+          <div className="mb-1 flex flex-wrap items-center gap-2">
+            <Badge variant="outline">Dismissed</Badge>
+            <span className="text-xs font-semibold text-text-2">
+              {credentialDismissReasonLabel(c.dismissal.reason)} ·{' '}
+              {relativeTime(c.dismissal.dismissedAt, renderedAt)}
+            </span>
+            {onRestore !== undefined && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="ml-auto"
+                disabled={restore.busy}
+                onClick={() => {
+                  void restore.run(onRestore);
+                }}
+              >
+                Restore
+              </Button>
+            )}
+          </div>
+          <p className="text-xs text-text-3">
+            It is left out of the credential list and the inventory count. New sightings are still
+            recorded and do not bring it back.
+          </p>
+          {restore.failed && (
+            <p role="alert" className="mt-1 text-xs text-sev-critical-ink">
+              {actionError ?? ACTION_FAILED}
+            </p>
+          )}
+        </div>
+      )}
 
       {c.statuses.includes('exposed') && (
         <div className="rounded-lg border border-sev-critical-ink/30 bg-sev-critical-fill p-3">

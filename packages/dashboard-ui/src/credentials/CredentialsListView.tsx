@@ -20,6 +20,7 @@ import { Ico } from '../inventory/Ico.tsx';
 import { relativeTime } from '../lib/relativeTime.ts';
 import { SearchField } from '../shared/SearchField.tsx';
 import { CredentialStatusBadge } from './CredentialStatusBadge.tsx';
+import { credentialDismissReasonLabel } from './dismissal.ts';
 import { credentialLabel, credentialName } from './name.ts';
 import { CREDENTIAL_STATUS, credentialStatusState } from './status.ts';
 import type { CredentialListItem, CredentialStatusCounts } from './types.ts';
@@ -47,6 +48,15 @@ export interface CredentialsListViewProps {
    */
   search: string;
   onSearch: (value: string) => void;
+  /** Whether the list shows the dismissed credentials instead of the others. */
+  dismissed?: boolean | undefined;
+  /** How many credentials matching the search are dismissed, shown on the Dismissed toggle. */
+  dismissedCount?: number | undefined;
+  /**
+   * Shows or leaves the dismissed credentials. Omit it and no Dismissed toggle
+   * is shown. A change starts again at the first page.
+   */
+  onDismissedChange?: ((dismissed: boolean) => void) | undefined;
   onSelect: (id: string) => void;
   onExport: () => void;
   exporting?: boolean | undefined;
@@ -85,6 +95,9 @@ export function CredentialsListView({
   statusCounts,
   search,
   onSearch,
+  dismissed = false,
+  dismissedCount,
+  onDismissedChange,
   onSelect,
   onExport,
   exporting = false,
@@ -139,6 +152,23 @@ export function CredentialsListView({
           counts={refused || isLoading ? undefined : statusCounts}
         />
       )}
+      {onDismissedChange !== undefined && (
+        <div className="flex flex-wrap gap-1.5">
+          <Button
+            variant={dismissed ? 'solid' : 'outline'}
+            size="sm"
+            aria-pressed={dismissed}
+            onClick={() => {
+              onDismissedChange(!dismissed);
+            }}
+          >
+            Dismissed
+            {dismissedCount !== undefined && (
+              <span className="tabular-nums"> · {String(dismissedCount)}</span>
+            )}
+          </Button>
+        </div>
+      )}
 
       {refused ? (
         <p role="alert" className="py-10 text-center text-sm text-text-3">
@@ -156,9 +186,11 @@ export function CredentialsListView({
             ? 'These rows moved while you were reading. Step back to see the rest.'
             : status !== null
               ? `No credentials are ${credentialStatusState(status)}${search.trim() === '' ? '.' : ' in this search.'}`
-              : search.trim() === ''
-                ? 'No credentials have been seen yet. They appear here once an attached machine shares a sighting.'
-                : 'Nothing matches this search.'}
+              : search.trim() !== ''
+                ? 'Nothing matches this search.'
+                : dismissed
+                  ? 'No credentials are dismissed.'
+                  : 'No credentials have been seen yet. They appear here once an attached machine shares a sighting.'}
         </p>
       ) : (
         <div className="overflow-x-auto">
@@ -195,6 +227,12 @@ export function CredentialsListView({
                       {item.kind}
                       {credentialLabel(item) !== null && item.variableName !== null && (
                         <span className="font-mono"> · {item.variableName}</span>
+                      )}
+                      {item.dismissal !== null && (
+                        <span>
+                          {' '}
+                          · Dismissed: {credentialDismissReasonLabel(item.dismissal.reason)}
+                        </span>
                       )}
                     </div>
                   </TableCell>

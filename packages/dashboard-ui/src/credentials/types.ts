@@ -1,6 +1,13 @@
 // The shapes the credential views render. A host maps its own credential
 // records onto these; the views never see a value or its fingerprint.
-import type { CredentialStatus, Severity } from '@akasecurity/schema';
+import type { CredentialStatus, DismissMethod, Severity } from '@akasecurity/schema';
+
+/** An administrator's dismissal: the reason and when it was made. */
+export interface CredentialDismissal {
+  reason: DismissMethod;
+  /** ISO time it was dismissed. */
+  dismissedAt: string;
+}
 
 export interface CredentialListItem {
   id: string;
@@ -29,6 +36,8 @@ export interface CredentialListItem {
   lastRotated: string | null;
   /** ISO time it was last seen. */
   lastSeen: string;
+  /** Null unless the credential is dismissed. */
+  dismissal: CredentialDismissal | null;
   /** Whole days between rotations; null when no policy is set. */
   rotationPolicyDays: number | null;
   /** What needs attention; empty when nothing does. */

@@ -15,6 +15,7 @@ import {
   CredentialsListView,
   type CredentialsListViewProps,
 } from '../../src/credentials/CredentialsListView.tsx';
+import { credentialDismissReasonLabel } from '../../src/credentials/dismissal.ts';
 import type { CredentialDetailModel, CredentialListItem } from '../../src/credentials/types.ts';
 import {
   type MountedRoot,
@@ -38,6 +39,7 @@ const ITEM: CredentialListItem = {
   endpointCount: 4,
   lastRotated: null,
   lastSeen: '2026-10-21T11:00:00.000Z',
+  dismissal: null,
   rotationPolicyDays: null,
   statuses: [],
 };
@@ -76,6 +78,10 @@ afterEach(() => {
 const text = () => mounted.host.textContent;
 const button = (label: string) =>
   [...mounted.host.querySelectorAll('button')].find((b) => b.textContent.includes(label));
+// Dialogs portal out of the mounted host, into the document body.
+const dialog = () => document.querySelector<HTMLElement>('[role="dialog"]');
+const dialogButton = (label: string) =>
+  [...(dialog()?.querySelectorAll('button') ?? [])].find((b) => b.textContent.includes(label));
 
 function list(overrides: Partial<CredentialsListViewProps> = {}) {
   const props: CredentialsListViewProps = {
@@ -826,5 +832,272 @@ describe('CredentialDetailView', () => {
       expect(field('Owner')).toBeNull();
       expect(document.activeElement).toBe(button('Edit rotation'));
     });
+  });
+});
+
+describe('CredentialsListView dismissed toggle', () => {
+  it('shows no toggle without a handler', () => {
+    list();
+    expect(button('Dismissed')).toBeUndefined();
+  });
+
+  it('toggles the dismissed set, showing its count and whether it is on', () => {
+    const onDismissedChange = vi.fn();
+    list({ onDismissedChange, dismissedCount: 4 });
+    const toggle = button('Dismissed');
+    expect(toggle?.textContent).toBe('Dismissed · 4');
+    expect(toggle?.getAttribute('aria-pressed')).toBe('false');
+    act(() => {
+      toggle?.click();
+    });
+    expect(onDismissedChange).toHaveBeenCalledWith(true);
+
+    list({ onDismissedChange, dismissedCount: 4, dismissed: true });
+    expect(button('Dismissed')?.getAttribute('aria-pressed')).toBe('true');
+    act(() => {
+      button('Dismissed')?.click();
+    });
+    expect(onDismissedChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it('shows the toggle without a count when the host gives none', () => {
+    list({ onDismissedChange: vi.fn() });
+    expect(button('Dismissed')?.textContent).toBe('Dismissed');
+  });
+
+  it('names a reason it has no label for by the reason itself, never an empty label', () => {
+    expect(credentialDismissReasonLabel('some-new-reason' as never)).toBe('some-new-reason');
+  });
+
+  it('names the reason on a dismissed row', () => {
+    list({
+      items: [
+        {
+          ...ITEM,
+          dismissal: { reason: 'false-positive', dismissedAt: '2026-10-20T00:00:00.000Z' },
+        },
+      ],
+      dismissed: true,
+      onDismissedChange: vi.fn(),
+    });
+    expect(mounted.host.querySelector('tbody td')?.textContent).toContain(
+      'Dismissed: Not a credential',
+    );
+  });
+
+  it('says no credential is dismissed rather than none seen', () => {
+    list({ items: [], total: 0, dismissed: true, onDismissedChange: vi.fn() });
+    expect(text()).toContain('No credentials are dismissed.');
+    expect(text()).not.toContain('No credentials have been seen yet');
+  });
+});
+
+describe('CredentialDetailView dismiss, restore and delete', () => {
+  function detail(
+    credential: CredentialDetailModel = DETAIL,
+    actions: Pick<
+      CredentialDetailViewProps,
+      'onDismiss' | 'onRestore' | 'onDelete' | 'actionError'
+    > = {},
+  ) {
+    renderRoot(
+      mounted.root,
+      <CredentialDetailView
+        credential={credential}
+        onBack={vi.fn()}
+        onOpenFinding={vi.fn()}
+        renderedAt={RENDERED_AT}
+        {...actions}
+      />,
+    );
+  }
+
+  const DISMISSED: CredentialDetailModel = {
+    ...DETAIL,
+    dismissal: { reason: 'test-or-example', dismissedAt: '2026-10-21T09:00:00.000Z' },
+  };
+
+  function pick(label: string) {
+    const input = [...(dialog()?.querySelectorAll('label') ?? [])]
+      .find((l) => l.textContent.includes(label))
+      ?.querySelector('input');
+    if (!input) throw new Error(`no reason ${label}`);
+    act(() => {
+      input.click();
+    });
+  }
+
+  it('shows no action without its handler', () => {
+    detail(DISMISSED);
+    expect(button('Dismiss')).toBeUndefined();
+    expect(button('Delete')).toBeUndefined();
+    expect(button('Restore')).toBeUndefined();
+    // The dismissal itself still shows.
+    expect(text()).toContain('Test or example data');
+  });
+
+  it('dismisses for the reason picked, worded for a credential, and closes', async () => {
+    const onDismiss = vi.fn<(reason: string) => Promise<void>>().mockResolvedValue();
+    detail(DETAIL, { onDismiss });
+    act(() => {
+      button('Dismiss')?.click();
+    });
+    expect(dialog()?.textContent).toContain('New sightings are still recorded');
+    for (const label of ['Accepted risk', 'Not a credential', 'Test or example data']) {
+      expect(dialog()?.textContent).toContain(label);
+    }
+    expect(dialogButton('Dismiss credential')?.disabled).toBe(true);
+    pick('Not a credential');
+    await act(async () => {
+      dialogButton('Dismiss credential')?.click();
+      await Promise.resolve();
+    });
+    expect(onDismiss).toHaveBeenCalledWith('false-positive');
+    expect(dialog()).toBeNull();
+  });
+
+  it("keeps the dialog open with the host's reason when the dismissal fails", async () => {
+    const onDismiss = vi.fn<(reason: string) => Promise<void>>().mockRejectedValue(new Error('x'));
+    detail(DETAIL, { onDismiss, actionError: 'You do not have enough permissions.' });
+    act(() => {
+      button('Dismiss')?.click();
+    });
+    pick('Accepted risk');
+    await act(async () => {
+      dialogButton('Dismiss credential')?.click();
+      await Promise.resolve();
+    });
+    expect(dialog()?.querySelector('[role="alert"]')?.textContent).toBe(
+      'You do not have enough permissions.',
+    );
+  });
+
+  it('shows a dismissed credential with its reason and when, and restores it', async () => {
+    const onRestore = vi.fn<() => Promise<void>>().mockResolvedValue();
+    detail(DISMISSED, { onRestore, onDismiss: vi.fn() });
+    expect(text()).toContain('Dismissed');
+    expect(text()).toContain('Test or example data · 3 hours ago');
+    expect(button('Dismiss')).toBeUndefined();
+    await act(async () => {
+      button('Restore')?.click();
+      await Promise.resolve();
+    });
+    expect(onRestore).toHaveBeenCalledTimes(1);
+  });
+
+  it('says a failed restore failed', async () => {
+    const onRestore = vi.fn<() => Promise<void>>().mockRejectedValue(new Error('x'));
+    detail(DISMISSED, { onRestore });
+    await act(async () => {
+      button('Restore')?.click();
+      await Promise.resolve();
+    });
+    expect(mounted.host.querySelector('[role="alert"]')?.textContent).toBe(
+      "Couldn't update this credential.",
+    );
+  });
+
+  it('confirms a delete with what goes, what stays in history, and that the value can come back', async () => {
+    const onDelete = vi.fn<() => Promise<void>>().mockResolvedValue();
+    detail(DETAIL, { onDelete });
+    act(() => {
+      button('Delete')?.click();
+    });
+    const copy = dialog()?.textContent ?? '';
+    expect(copy).toContain('Delete this credential?');
+    expect(copy).toContain('its 9 sightings and their links to findings.');
+    expect(copy).toContain('The findings and the activity that carried the value stay in history.');
+    expect(copy).toContain('it is recorded as a new credential');
+    expect(copy).not.toContain('Nothing remembers');
+    expect(copy).toContain('dismiss it instead');
+    act(() => {
+      dialogButton('Cancel')?.click();
+    });
+    expect(onDelete).not.toHaveBeenCalled();
+    expect(dialog()).toBeNull();
+
+    act(() => {
+      button('Delete')?.click();
+    });
+    await act(async () => {
+      dialogButton('Delete credential')?.click();
+      await Promise.resolve();
+    });
+    expect(onDelete).toHaveBeenCalledTimes(1);
+  });
+
+  const escape = () => {
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+  };
+
+  it("keeps the delete dialog open with the host's reason, and Delete live again, when the delete fails", async () => {
+    const onDelete = vi.fn<() => Promise<void>>().mockRejectedValue(new Error('x'));
+    detail(DETAIL, { onDelete, actionError: 'Credential not found' });
+    act(() => {
+      button('Delete')?.click();
+    });
+    await act(async () => {
+      dialogButton('Delete credential')?.click();
+      await Promise.resolve();
+    });
+    expect(onDelete).toHaveBeenCalledTimes(1);
+    expect(dialog()?.querySelector('[role="alert"]')?.textContent).toBe('Credential not found');
+    expect(dialogButton('Delete credential')?.disabled).toBe(false);
+  });
+
+  it('cannot be closed while the host is still deleting, and reopens without a stale failure', async () => {
+    let reject: (err: Error) => void = () => undefined;
+    const onDelete = vi.fn<() => Promise<void>>(
+      () =>
+        new Promise((_resolve, rejectWith) => {
+          reject = rejectWith;
+        }),
+    );
+    detail(DETAIL, { onDelete });
+    act(() => {
+      button('Delete')?.click();
+    });
+    act(() => {
+      dialogButton('Delete credential')?.click();
+    });
+    expect(dialogButton('Cancel')?.disabled).toBe(true);
+    escape();
+    expect(dialog()).not.toBeNull();
+
+    await act(async () => {
+      reject(new Error('x'));
+      await Promise.resolve();
+    });
+    expect(dialog()?.querySelector('[role="alert"]')).not.toBeNull();
+    escape();
+    expect(dialog()).toBeNull();
+    act(() => {
+      button('Delete')?.click();
+    });
+    expect(dialog()?.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it('promises a restore only when the host offers one', () => {
+    detail(DETAIL, { onDismiss: vi.fn() });
+    act(() => {
+      button('Dismiss')?.click();
+    });
+    expect(dialog()?.textContent).not.toContain('restore');
+    escape();
+    detail(DETAIL, { onDismiss: vi.fn(), onRestore: vi.fn() });
+    act(() => {
+      button('Dismiss')?.click();
+    });
+    expect(dialog()?.textContent).toContain('You can restore it at any time.');
+  });
+
+  it('counts one sighting in the singular', () => {
+    detail({ ...DETAIL, sightingCount: 1 }, { onDelete: vi.fn() });
+    act(() => {
+      button('Delete')?.click();
+    });
+    expect(dialog()?.textContent).toContain('its 1 sighting and');
   });
 });

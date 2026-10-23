@@ -133,7 +133,7 @@ const HOOKS: readonly HookCase[] = [
   },
 ];
 
-// CLAUDE.md §2: `action` is a CaptureResult field that never crosses the wire,
+// conventions/fail-open.md: `action` is a CaptureResult field that never crosses the wire,
 // and none of the shapes this package emits uses that key. This guards against
 // a refactor that starts serializing the internal decision object onto stdout.
 //

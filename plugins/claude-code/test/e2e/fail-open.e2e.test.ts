@@ -172,7 +172,7 @@ const HOOKS: readonly HookCase[] = [
   },
 ];
 
-// CLAUDE.md §2: "no hook ever emits {action:'allow'}, and the internal fallback
+// conventions/fail-open.md: "no hook ever emits {action:'allow'}, and the internal fallback
 // is {action:'log'}" — `action` is a CaptureResult field that never crosses the
 // wire, and none of the shapes in the `HookOutput` union uses that key (which
 // shapes those are is pinned by test/hook-output-shapes.test.ts). This guards

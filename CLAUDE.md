@@ -1135,7 +1135,18 @@ changes. The gaps that exist today:
   **Empty stdout is in none of those lists.** That same reference's `preToolUse` decision
   table reads "Empty output uses default behavior", which hands the call to the host's own
   permission flow — so silence here is §1's fail-open unchanged, and the adapter writes
-  **nothing on every path that reaches no verdict**. It is NOT unmeasured; the earlier
+  **no hook output on every path that reaches no verdict**. The one thing it may still put
+  on stdout there is a **progress line**, `{"type":"progress","message":…}`. The same
+  reference documents these for every command hook as display-only timeline output that the
+  host removes from stdout before it parses what is left, so on their own they leave that
+  output empty. A notice on the CLI dialect goes out as one, ahead of any decision object,
+  with a copy on stderr, because a recorded 1.0.98 `-p` session showed an exit-0 hook's
+  stderr only in the debug log. They are written on the CLI dialect only: VS Code documents
+  no progress line, and there invalid JSON is a non-blocking warning, so an extra line beside
+  a deny or a rewrite could cost the decision. No recording yet shows one rendered. Both
+  readings rest on CLI 1.0.55 or later, the build the reference dates the strip to; an older
+  CLI's handling of a progress line beside a decision is unmeasured, and the setup skill states
+  that floor. That empty output is the no-opinion. It is NOT unmeasured; the earlier
   reading that it might be is retracted, and `plugins/copilot/test/fixtures/cli/README.md`
   records under "Settled by the vendor reference" which questions the docs answer and which a
   recording still owes.
@@ -1858,20 +1869,25 @@ matches is `release/**/*`. A branch named bare `release` matches neither list an
 all, so release branches are named `release/<something>`. On the push side, the dependency audit,
 CodeQL and the internal-path guard still run post-merge for `main` only.
 
-**Where a stable Claude Code plugin tag goes.** A bare `plugin-claude-v<X.Y.Z>` is cut only after
-its release pull request merges, on the commit that merge put on `main` (the merge commit, or the
-squash or rebase commit when the pull request used one), never on the release branch before the
-merge. The commit a stable version's npm provenance names is then one `main` holds, which is what
-verifying a release against reviewed code needs; a tag cut before a squash or rebase merge would
-name a commit `main` never holds. A pre-release is the exception above: it is cut on its release
-branch. `release-plugin-claude.yml` publishes only on the tag push: its manual dispatch has no
-publish input and is always a dry run, its npm publish sits behind the tag-to-manifest check, and
-its GitHub Packages job waits for that check's job. `release-plugin-claude-gates.test.js` (in
-`packages/eslint-config/test/`) pins those gates, and that the workflow reads no secret but its own
-`GITHUB_TOKEN`. The release job also refuses a stable tag whose commit `main` does not contain,
-before anything publishes; the same suite executes that check against a scratch repository. It is
-an early catch for a mistake, not a control: whoever pushes a tag also chooses what that file says
-at the tagged commit.
+**Where a stable plugin tag goes.** A bare `plugin-<name>-v<X.Y.Z>` (Claude Code, Codex,
+Antigravity or Copilot) is cut only after its release pull request merges, on the commit that
+merge put on `main` (the merge commit, or the squash or rebase commit when the pull request used
+one), never on the release branch before the merge. The commit a stable version's npm provenance
+names is then one `main` holds, which is what verifying a release against reviewed code needs; a
+tag cut before a squash or rebase merge would name a commit `main` never holds. A pre-release is
+the exception above: it is cut on its release branch. Each `release-plugin-*.yml` release job
+refuses a stable version whose commit `main` does not contain, before anything publishes: the
+check comes before the npm publish and the GitHub Release in that job, it runs on every run that
+can publish (the tag push, and in the Codex and Antigravity workflows a dispatch with `publish`
+set, which publishes from whatever branch it started on), and the GitHub Packages job waits for
+that job. `release-plugin-tags-on-main.test.js` (in `packages/eslint-config/test/`) derives the
+workflow set, pins that placement and gating, requires the four checks to be one script, and
+executes each against a scratch repository. `release-plugin-claude.yml` additionally publishes
+only on the tag push: its manual dispatch has no publish input and is always a dry run, its npm
+publish sits behind the tag-to-manifest check, and its GitHub Packages job waits for that check's
+job. `release-plugin-claude-gates.test.js` pins those gates, and that the workflow reads no secret
+but its own `GITHUB_TOKEN`. The on-main check is an early catch for a mistake, not a control:
+whoever pushes a tag also chooses what that file says at the tagged commit.
 
 ### Binary (SEA) channel — `bin-v*`
 

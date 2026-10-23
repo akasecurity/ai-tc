@@ -150,8 +150,8 @@ export interface CliPermissionDecisionOutput {
  * fields — `permissionDecision`, `permissionDecisionReason` and `modifiedArgs` —
  * and the string `systemMessage` appears nowhere in it. A message put here would
  * be dropped by the host, so anything this adapter wants to SAY on the CLI goes
- * to stderr instead. See `PreToolUseDecision.notice` in
- * ./pre-tool-use-decision.ts.
+ * out as a progress line instead (see `progressLine`), with a copy on stderr.
+ * See `PreToolUseDecision.notice` in ./pre-tool-use-decision.ts.
  */
 export interface CliModifiedArgsOutput {
   modifiedArgs: Record<string, unknown>;
@@ -188,16 +188,18 @@ export interface VsCodeBlockOutput {
  *
  * NOT the CLI's: `systemMessage` is not among the three output fields that
  * reference documents for `preToolUse`, so the same object there would be a
- * payload the host drops. On the CLI a warn is WRITTEN to stderr instead, and
- * stdout stays empty, which is the no-opinion the header describes.
+ * payload the host drops. On the CLI a warn goes out as a progress line (see
+ * `progressLine`), which the host strips before parsing, so the hook output
+ * stays empty: the no-opinion the header describes. A copy goes to stderr.
  *
- * That stderr was not seen to reach a human on that host. The reference documents
- * stderr surfacing only for a FAILING hook ("logged as a hook failure"), and a
- * recorded Copilot CLI 1.0.98 `-p` session showed an exit-0 hook's stderr in
- * none of the CLI's own output — only in its debug log, as
- * `[rust:hooks] [hook stderr] …` lines with debug logging enabled; an
- * interactive session is unmeasured. So what is stated here is the channel
- * the notice is written to, never that anyone reads it.
+ * Neither is RECORDED reaching a human on that host. The progress line is the
+ * reference's documented timeline channel and has not been observed rendered.
+ * The stderr copy was observed NOT to reach the screen: a recorded Copilot
+ * CLI 1.0.98 `-p` session showed an exit-0 hook's stderr only in its debug
+ * log, as `[rust:hooks] [hook stderr] …` lines with debug logging enabled.
+ *
+ * Under VS Code this field was recorded reaching only the "GitHub Copilot Chat
+ * Hooks" output channel, never the chat.
  * `skills/setup/SKILL.md` carries the same caveat on the user-facing side, and
  * the two must not drift apart.
  */
@@ -220,6 +222,10 @@ export interface SystemMessageOutput {
  * the count word is read out of this sentence, and both are driven against the
  * union in both directions. A seventh variant fails that test until this
  * sentence names it.
+ *
+ * The CLI's progress lines are not among them. `emit` writes them ahead of the
+ * object, and the host removes them before it parses what is left, so they
+ * are never the hook's output (see `CliProgressLine`).
  */
 export type HookOutput =
   | CliPermissionDecisionOutput
@@ -229,16 +235,87 @@ export type HookOutput =
   | VsCodeBlockOutput
   | SystemMessageOutput;
 
+// ─── Progress lines: the CLI's one documented user-visible hook output ──────
+
 /**
- * Write a notice on the channel that is not the decision channel.
+ * A display-only status line for the Copilot CLI timeline.
  *
- * stdout carries at most one JSON object and the host parses it, so a message
- * cannot simply be appended beside a verdict — and on the Copilot CLI stdout has
- * no message FIELD for `preToolUse` at all, so a notice there would reach nobody.
- * stderr has neither constraint, and is already where this package's store
- * warnings and the SDK's rule-quarantine line go.
+ * The hooks reference ("Progress messages", under command hooks) documents
+ * it for EVERY command hook: "Command hooks can emit progress status lines to
+ * the CLI timeline while executing", "Progress messages are display-only and
+ * do not affect hook output or decision logic", and the CLI "scans stdout
+ * line-by-line … Any line that, after trimming, is a single complete JSON
+ * object with `"type": "progress"` is consumed as a progress event and
+ * removed from the hook's output stream". What remains is parsed as the hook
+ * output, so a progress line beside a decision is the documented "intended
+ * pattern", and a progress line ALONE leaves an empty output, which is the
+ * "default behavior" — still no verdict. Shipped in Copilot CLI 1.0.55.
  *
- * `message` is passed WITHOUT a trailing newline and this adds one, which is the
+ * It is NOT a `HookOutput` variant, because the host does not read it as one:
+ * it never reaches the parser that reads the decision.
+ *
+ * CLI dialect only. VS Code's own hooks reference documents no progress line,
+ * and nothing says its harness strips one, so beside a deny or a rewrite there
+ * an extra line could leave stdout unparseable and cost the decision.
+ *
+ * Documented, not yet observed: no recording shows one rendered. See
+ * `test/fixtures/cli/README.md`.
+ */
+export interface CliProgressLine {
+  type: 'progress';
+  message: string;
+}
+
+/**
+ * One progress line, newline-terminated. `JSON.stringify` escapes any newline
+ * inside the message, which matters: the reference recognises a progress
+ * object only when it is valid JSON on a single line, and a multi-line one is
+ * left in the output stream, where it breaks the decision's `JSON.parse`.
+ */
+export function progressLine(message: string): string {
+  const line: CliProgressLine = { type: 'progress', message };
+  return `${JSON.stringify(line)}\n`;
+}
+
+// The notices a CLI-dialect hook body produced, in order, waiting for
+// `runHookFailOpen` to write them ahead of the decision. A queue rather than a
+// direct stdout write so that the one awaited write carries both: a separate
+// unawaited write could be dropped by `process.exit(0)` on a pipe that does
+// not complete synchronously, and a handler driven in-process (as the test
+// suites drive them) must not write to the real stdout at all.
+const queuedProgress: string[] = [];
+
+/**
+ * Take every queued progress message, leaving the queue empty.
+ *
+ * Exported for the in-process handler tests, which read what a handler
+ * queued, and for `runHookFailOpen`, which writes it.
+ */
+export function takeQueuedProgress(): string[] {
+  return queuedProgress.splice(0, queuedProgress.length);
+}
+
+/**
+ * Write a notice where this dialect has somewhere to put it.
+ *
+ * `message` is passed WITHOUT a trailing newline. It always goes to stderr,
+ * and on the CLI dialect it is also queued as a progress line for stdout.
+ *
+ * stderr alone is not enough on the CLI. A recorded Copilot CLI 1.0.98 `-p`
+ * session showed an exit-0 hook's stderr only in the debug log, never in the
+ * CLI's own output. It is kept because it is that log's trace, and because it
+ * is where the SDK's rule-quarantine line already goes.
+ *
+ * Under VS Code a notice that has a payload to ride carries it as
+ * `systemMessage` instead, and its callers return that rather than calling
+ * this. What reaches here on that dialect, or with no dialect, is stderr only.
+ *
+ * The rest of this note is about the stderr write. stdout carries at most one
+ * JSON object and the host parses it, so a message cannot simply be appended
+ * beside a verdict. The progress line is the one exception, because the CLI
+ * strips it before parsing.
+ *
+ * The newline this adds to `message` is the
  * opposite convention from `storeRedirectedMessage`'s direct `write(...)` in
  * ./store-health.ts — that string carries its own. Stated because the two sit in
  * one package: route a self-terminated message through here and it gains a blank
@@ -259,6 +336,7 @@ export type HookOutput =
  */
 export function writeNotice(
   message: string,
+  dialect: Dialect | undefined,
   write: (text: string) => void = (text) => void process.stderr.write(text),
 ): void {
   try {
@@ -268,14 +346,55 @@ export function writeNotice(
     // A hook that died here would exit non-zero, which on the CLI is a DENY:
     // the one outcome worse than losing the notice.
   }
+  // Queued after the stderr write and independently of it, so a stderr that
+  // throws does not cost the one copy the user can see.
+  if (dialect === 'cli') queuedProgress.push(message);
 }
 
-// Hook output protocol: write one JSON object to stdout and exit 0.
+/**
+ * A writer for text that carries its OWN trailing newline, such as
+ * `storeRedirectedMessage`, routed the way `writeNotice` routes a notice:
+ * stderr always, and a progress line on the CLI dialect. The newline is
+ * trimmed from the progress copy, since a progress message is one line's
+ * content rather than a line.
+ *
+ * Never throws, for `writeNotice`'s reason.
+ */
+export function noticeWriter(dialect: Dialect | undefined): (text: string) => void {
+  return (text) => {
+    try {
+      process.stderr.write(text);
+    } catch {
+      // See writeNotice.
+    }
+    if (dialect === 'cli') queuedProgress.push(text.trimEnd());
+  };
+}
+
+// Hook output protocol: write one JSON object to stdout and exit 0, preceded
+// by any progress lines (see `progressLine`), each on its own line.
 //
 // The flush must be awaited: hook entries exit right after main(), and exit
 // does not wait for pending pipe writes — anything past the ~64KB pipe buffer
 // is dropped and the host reads a truncated object as invalid JSON.
-export function emit(output: HookOutput): Promise<void> {
+//
+// The progress lines and the object go out in ONE write, so they cannot be
+// reordered or split by an exit between them.
+export function emit(output: HookOutput, progress: readonly string[] = []): Promise<void> {
+  return writeStdout(`${progress.map(progressLine).join('')}${JSON.stringify(output)}`);
+}
+
+/**
+ * Write progress lines with no decision after them. What remains of stdout
+ * once the host strips them is empty, which the reference reads as "default
+ * behavior": a hook that says this and nothing else has still reached no
+ * verdict.
+ */
+export function emitProgress(progress: readonly string[]): Promise<void> {
+  return writeStdout(progress.map(progressLine).join(''));
+}
+
+function writeStdout(text: string): Promise<void> {
   return new Promise((resolve) => {
     let settled = false;
     const finish = (): void => {
@@ -289,7 +408,7 @@ export function emit(output: HookOutput): Promise<void> {
     // Deliberately never removed: a hook process exits right after, so one
     // leftover no-op listener is free.
     process.stdout.on('error', finish);
-    process.stdout.write(JSON.stringify(output), finish);
+    process.stdout.write(text, finish);
   });
 }
 
@@ -388,12 +507,17 @@ export async function runHookFailOpen(
   // emitting an empty object matters: `{}` is a payload the host parses, and on
   // `preToolUse` the reference merges stdout JSON into a deny on exit 2 — so a
   // placeholder object is never equivalent to silence.
-  if (output !== undefined) {
-    try {
-      await emit(output);
-    } catch {
-      // stdout is gone; exiting 0 is all that is left to try.
-    }
+  //
+  // Progress lines are written on either branch. They are not a payload: the
+  // CLI strips them before it parses the output, so on their own they leave
+  // the no-opinion in place. What was queued when the watchdog fired is
+  // written too; a body still running after that queues nothing that is read.
+  const progress = takeQueuedProgress();
+  try {
+    if (output !== undefined) await emit(output, progress);
+    else if (progress.length > 0) await emitProgress(progress);
+  } catch {
+    // stdout is gone; exiting 0 is all that is left to try.
   }
   if (failed) {
     // Guarded here as well as inside the default: a throw at this point would

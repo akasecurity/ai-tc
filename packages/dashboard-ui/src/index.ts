@@ -242,10 +242,13 @@ export {
   type CredentialsListViewProps,
 } from './credentials/CredentialsListView.tsx';
 export { credentialLabel, credentialName } from './credentials/name.ts';
+export { CREDENTIAL_STATUS } from './credentials/status.ts';
 export type {
   CredentialDetailModel,
   CredentialLinkedFinding,
   CredentialListItem,
+  CredentialRotationInput,
+  CredentialStatusCounts,
   CredentialTeamUsage,
 } from './credentials/types.ts';
 

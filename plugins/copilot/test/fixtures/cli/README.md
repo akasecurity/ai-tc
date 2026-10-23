@@ -197,8 +197,27 @@ what changed is that a recording is no longer what would settle them.
   `preToolUse`."
 - **`systemMessage`.** Not an output field on this event at all: the reference
   documents `permissionDecision`, `permissionDecisionReason` and `modifiedArgs`,
-  and the string `systemMessage` appears nowhere in it. A notice on the CLI
-  therefore goes to stderr.
+  and the string `systemMessage` appears nowhere in it.
+- **Progress lines are the one documented user-facing output.** Under command
+  hooks, the reference's "Progress messages" section says "Command hooks can
+  emit progress status lines to the CLI timeline while executing" by writing
+  `{"type": "progress", "message": "..."}` to stdout, and that they "are
+  display-only and do not affect hook output or decision logic". The CLI "scans
+  stdout line-by-line" and removes any line that is "a single complete JSON
+  object with `"type": "progress"`" before parsing what is left, so a progress
+  line beside a decision is "the intended pattern" and a progress line alone
+  leaves "no output". A progress object spread over several lines is not
+  recognised. The CLI changelog dates this to 1.0.55 ("Hook progress streaming
+  shows real-time status messages from long-running hooks in the timeline").
+  The adapter therefore sends every CLI-dialect notice as a progress line ahead
+  of any decision, with a copy on stderr. Read from the reference in the
+  `github/docs` repository (`content/copilot/reference/hooks-reference.md`) and
+  the `github/copilot-cli` changelog on 2026-10-22. **No recording shows a
+  progress line rendered.**
+- **stderr on exit 0.** The reference's exit-code table says nothing about it.
+  It says stderr "is surfaced to the user" only for exit 2, which on
+  `preToolUse` is a deny, so that route is not available to a notice. The
+  recording below shows stderr from an exit-0 hook reaching only the debug log.
 
 A recording would still be worth having — the reference describes the contract
 and these files describe one build's behaviour, and the two have already
@@ -212,6 +231,12 @@ and none was observed:
 
 - `postToolUse.modifiedResult` replacing what the model sees.
 - `userPromptSubmitted.modifiedPrompt` from a command hook.
+- A progress line being shown, in `-p` mode, in an interactive session or on
+  the cloud coding agent. The adapter sends its notices that way on the
+  strength of the reference alone.
+- How a CLI older than 1.0.55 reads a progress line written beside a decision.
+  If it parses the whole of stdout as one object, the decision is lost. The
+  setup skill states 1.0.55 as the floor for that reason.
 - The seven unrecorded events above.
 
 Anyone re-recording should know that the account used here stopped accepting
@@ -324,6 +349,9 @@ files were re-indented; their content was not.
 
 - Whether the CLI shows a successful hook's stderr in an **interactive**
   session; only `-p` mode was observed.
+- Progress lines. The 0.9.19 build installed here wrote its notices to stderr
+  only; sending them as progress lines came later, and no install of a build
+  that does has been recorded.
 - A `plugin@marketplace` install, the route the deprecation warning points at.
 - Whether `${PLUGIN_ROOT}` expands anywhere other than a hook's `command`.
 - `postToolUse.modifiedResult` and `userPromptSubmitted.modifiedPrompt`, as

@@ -947,7 +947,7 @@ describe('every workspace package ships a network-guarded eslint config', () => 
       'The set of workspace packages changed. If a package was added or renamed, update ' +
         'EXPECTED_WORKSPACE_PACKAGE_NAMES here AND make sure the package ships an ' +
         'eslint.config.mjs extending @akasecurity/eslint-config plus a `lint` script that runs ' +
-        'eslint over its source dirs (see CLAUDE.md "Adding a new workspace package"). If nothing ' +
+        'eslint over its source dirs (see conventions/new-package.md). If nothing ' +
         'was added, the pnpm-workspace.yaml parse has regressed and packages are silently missing ' +
         'from the guard.',
     ).toEqual(expected);
@@ -1010,7 +1010,7 @@ describe('every workspace package ships a network-guarded eslint config', () => 
             '`--ignore-pattern` / `--ignore-path` on that same invocation takes it back out. ' +
             '`eslint src test` can never reach one — a root file has no ' +
             'directory segment — so it is unlinted by construction and a `fetch()` there passes ' +
-            '`pnpm lint` (CLAUDE.md "No network calls"). Add a target that covers it: `*.config.*` ' +
+            '`pnpm lint` (conventions/process-env-and-network.md). Add a target that covers it: `*.config.*` ' +
             "covers the build and tooling config, anything else is named explicitly (see web-ui's " +
             'middleware.ts); and remove any ignore flag that excludes it again — an `--ignore-path` ' +
             'excludes everything, because flat-config eslint rejects the flag and that invocation ' +
@@ -1051,7 +1051,7 @@ describe('every workspace package ships a network-guarded eslint config', () => 
             'DIRECTORY and then takes back out with an `--ignore-pattern` / `--ignore-path` on the ' +
             'same invocation. The directory still reads as covered, so nothing else here reports ' +
             'it — and eslint skips the file, so a fetch() in it passes `pnpm lint` with CI green ' +
-            '(CLAUDE.md "No network calls"). Drop the ignore flag rather than the directory: an ' +
+            '(conventions/process-env-and-network.md). Drop the ignore flag rather than the directory: an ' +
             'ignore that names one file is exactly the shape this bucket exists to catch, and an ' +
             '`--ignore-path` excludes its whole invocation because flat-config eslint rejects the ' +
             `flag outright:\n  ${filesNotWired.join('\n  ')}`
@@ -1246,7 +1246,7 @@ describe('every file outside every workspace package is linted by a repo-root pa
       [...NON_PACKAGE_FILES].sort(),
       'The set of git-tracked lintable files belonging to no workspace package changed. If a file ' +
         'was added, make sure a repo-root lint pass in the root package.json targets it (see ' +
-        'CLAUDE.md "Adding a new workspace package", step 5) and list it in ' +
+        'conventions/new-package.md, step 5) and list it in ' +
         'EXPECTED_NON_PACKAGE_FILES. If nothing was added, the derivation has regressed and files ' +
         'are silently missing from the coverage check below.',
     ).toEqual([...EXPECTED_NON_PACKAGE_FILES].sort());
@@ -1374,8 +1374,8 @@ describe('every file outside every workspace package is linted by a repo-root pa
             'them back out, or the pass that would have covered them is no longer run ' +
             'unconditionally. `turbo run lint` drives per-package scripts with each package as ' +
             'the working directory, and no package script targets a file outside its own tree: ' +
-            'these are unlinted by construction and a `fetch()` in one of them ships (CLAUDE.md ' +
-            '"No network calls"). Add a target to the repo-root lint pass that covers them — a ' +
+            'these are unlinted by construction and a `fetch()` in one of them ships ' +
+            '(conventions/process-env-and-network.md). Add a target to the repo-root lint pass that covers them — a ' +
             'directory covers what is under it, `*.config.*` covers the repo-root build and ' +
             `tooling config, anything else is named explicitly:\n  ${uncovered.join('\n  ')}`
         : undefined,
@@ -1403,7 +1403,7 @@ describe("turbo's own hash moves when a lintable file appears at the repo root",
 
   // Spawned as a Node script rather than through `node_modules/.bin/turbo`: that
   // shim is a `.cmd` on Windows, which libuv's executable search cannot load
-  // without a shell (CLAUDE.md "A command spawned by BARE NAME"). The
+  // without a shell (conventions/bare-command.md). The
   // launcher turbo's own manifest names is plain JS, so `process.execPath` runs
   // it identically on every platform and no argument is ever handed to `cmd.exe`
   // to re-parse.

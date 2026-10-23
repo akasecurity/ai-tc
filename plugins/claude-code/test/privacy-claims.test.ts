@@ -788,7 +788,7 @@ describe.each(JUDGE_READMES)('$name judge payload disclosure', ({ text }) => {
   //
   // Copied per suite rather than shared: these surfaces sit behind different
   // package walls and word the same field differently, the same reason
-  // expectNoEchoOf is copied rather than imported (CLAUDE.md, Testing).
+  // expectNoEchoOf is copied rather than imported (conventions/testing.md).
   const FOOTNOTE_DISCLOSURE: Record<keyof typeof TriageHit.shape, RegExp | null> = {
     // "raw unmasked value" (root README) / "raw (unmasked) value" (plugin README).
     rawMatch: /raw \(?unmasked\)? value/i,

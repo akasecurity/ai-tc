@@ -1098,7 +1098,7 @@ jobs:
   # observed on Windows, because `pnpm lint` ran on ubuntu-latest alone.
   #
   # It is load-bearing because `*.config.*` is the ONLY target that reaches each
-  # package's root config files (CLAUDE.md, "Adding a new workspace package",
+  # package's root config files (conventions/new-package.md,
   # step 5). A pattern resolving to nothing there would take every ban off those
   # files on this platform, while the guard that audits coverage went on
   # reporting them covered — effective-config.test.js MODELS the expansion with

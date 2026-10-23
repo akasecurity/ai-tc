@@ -502,7 +502,7 @@ export class StandaloneDataGateway
     try {
       // newestRecordedBinary() maxes across ALL recorders (plugin + aka-cli), and
       // we compare that directly against THIS session's plugin version. Sound only
-      // because the CLI and plugin ship on one shared version line (CLAUDE.md,
+      // because the CLI and plugin ship on one shared version line (conventions/releasing.md,
       // "normally move together"). If they ever diverge by design — the CLI at
       // 0.0.3 while the plugin line is still 0.0.2-alpha.N — this would fire a
       // spurious nudge (or mask a real one) and must filter by recorder first.

@@ -625,3 +625,45 @@ describe('outbound encoder: the sighting-sharing gate', () => {
     expect(result).toEqual({ content: FAIL_CLOSED_MARKER, sightings: [] });
   });
 });
+
+describe('outbound encoder: redacting', () => {
+  const value = patShaped(71);
+
+  it('replaces each secret with the marker and never with a token, while a key is held', async () => {
+    const key = keyOf(2, 6);
+    const redacted = await rawEncoderWith(key).redactContent(`a ${value} b ${value}`);
+    expect(redacted).toBe(`a ${FAIL_CLOSED_MARKER} b ${FAIL_CLOSED_MARKER}`);
+    expect(redacted).not.toContain(expectedToken(key, value));
+  });
+
+  it('redacts a value only an installed secret rule matches', async () => {
+    const installedValue = ['ACME', 'TOK', '5'.repeat(10)].join('');
+    const installed: Rule = {
+      specVersion: 1,
+      id: 'acme/internal-token',
+      name: 'Internal token',
+      category: 'secret',
+      severity: 'high',
+      matcher: { type: 'regex', pattern: 'ACMETOK[0-9]{10}', flags: 'g' },
+    };
+    const encoder = rawEncoderWith(undefined, { loadRules: () => Promise.resolve([installed]) });
+    try {
+      await expect(encoder.redactContent(`k ${installedValue}`)).resolves.toBe(
+        `k ${FAIL_CLOSED_MARKER}`,
+      );
+    } finally {
+      await encoder.close();
+    }
+  });
+
+  it('returns text with no secret unchanged', async () => {
+    await expect(rawEncoderWith(undefined).redactContent('ls -la src')).resolves.toBe('ls -la src');
+  });
+
+  it('answers undefined when the scan cannot finish', async () => {
+    const encoder = rawEncoderWith(keyOf(1, 3), {
+      createScanner: scannerOf(() => Promise.reject(new Error('scan fault'))),
+    });
+    await expect(encoder.redactContent(`k ${value}`)).resolves.toBeUndefined();
+  });
+});

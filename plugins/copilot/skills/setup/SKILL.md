@@ -116,8 +116,8 @@ the recorded session the chat showed nothing from AKA. On the CLI it sends the
 notice as a hook progress line, which the hooks reference documents as shown in
 the CLI timeline, and writes a copy to stderr. Neither has been seen on screen:
 in a recorded `-p` session the stderr copy appeared only in Copilot's debug log,
-with debug logging enabled (`--log-level debug`), and that session predates the
-progress line. It never pretends it enforced.
+with debug logging enabled (`--log-level debug`), and that session predates AKA's
+use of progress lines. It never pretends it enforced.
 
 The reason is that neither host has a channel for it that has been seen to
 work: the CLI's `modifiedPrompt` and `modifiedResult` are documented and were
@@ -203,6 +203,14 @@ log, which makes a warn hard to tell from `monitor`. Set `redactFallback` to
 `block` if a redact on command text has to be visible: a deny carries its
 reason, and the CLI was recorded printing it.
 
+**This needs Copilot CLI 1.0.55 or later.** The hooks reference dates the
+progress line, and the CLI removing it before reading the decision, to that
+release. AKA can write a progress line beside a decision, such as a rewritten
+description or a deny. How an older CLI reads that has not been measured, and
+if it reads the whole output as one object, it would ignore the decision. The
+call would then go through unmasked or undenied. The builds recorded here are
+1.0.83 and 1.0.98. Check yours with `copilot --version`.
+
 **The cloud coding agent is captured only where the repository asks for it.**
 It reads `.github/hooks/*.json` on the **default branch** and nowhere else, and
 it has no local store of its own.
@@ -228,7 +236,7 @@ everything or only enrolled repositories, and which repositories are enrolled.
 | cli     | preToolUse          | bash.command                      | block   | yes      | A deny on stdout with exit 0 blocks the call; masking command text would change what runs, so a redact policy follows redactFallback instead of rewriting.                                                                                                                                                                                                                                                                                                                                                                                                            |
 | cli     | preToolUse          | bash.description                  | rewrite | yes      | Model-authored prose that rides along with the call, rewritten in place through modifiedArgs. Scanned for secrets and PII only: the command-risk rules judge bash.command, never this prose.                                                                                                                                                                                                                                                                                                                                                                          |
 | cli     | preToolUse          | apply_patch.input                 | rewrite | no       | No payload for this tool was recorded, so the argument name is unverified; a wrong name costs a silent skip rather than a wrong answer.                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| cli     | preToolUse          | warn notice                       | warn    | no       | Sent as a hook progress line, which the hooks reference documents as display-only text in the CLI timeline and strips before reading the decision, so the call still goes to the host permission flow. Never observed on screen; the stderr copy reached only the debug log in a recorded 1.0.98 -p session. Every other notice on every CLI event takes the same route.                                                                                                                                                                                              |
+| cli     | preToolUse          | warn notice                       | warn    | no       | Sent as a hook progress line, which the hooks reference documents as display-only text in the CLI timeline and strips before reading the decision, so the call still goes to the host permission flow. Never observed on screen; the stderr copy reached only the debug log in a recorded 1.0.98 -p session. Every other AKA hook notice on every CLI event takes the same route; the degraded-scan line from the SDK is the exception and still goes to stderr only.                                                                                                 |
 | cli     | sessionStart        | session                           | none    | yes      | Opens the session root every later capture hangs off, and records the host, harness and project inventory. It decides nothing and emits nothing — there is no verdict to reach on a session start.                                                                                                                                                                                                                                                                                                                                                                    |
 | cli     | userPromptSubmitted | prompt                            | none    | yes      | Captured and scanned; nothing can be stopped or rewritten. modifiedPrompt is documented and was not observed from a command hook, so a block or redact policy is recorded and the prompt is sent unchanged.                                                                                                                                                                                                                                                                                                                                                           |
 | cli     | postToolUse         | toolResult                        | none    | yes      | Captured and scanned; nothing can be withheld. The tool has already run, and modifiedResult is documented but was not observed replacing what the model sees, so a finding is recorded and the output reaches the model unchanged.                                                                                                                                                                                                                                                                                                                                    |

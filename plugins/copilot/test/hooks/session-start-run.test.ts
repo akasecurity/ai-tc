@@ -25,6 +25,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
 import { runSessionStart } from '../../src/hooks/session-start-run.ts';
+import { progressLine, takeQueuedProgress } from '../../src/hooks/shared.ts';
+import { readCliStdout } from '../helpers/cli-stdout.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(HERE, '..', 'fixtures');
@@ -163,15 +165,18 @@ describe('runSessionStart', () => {
   );
 });
 
-// The session start's notices have no other channel on this host: no message
-// field on either dialect, and stdout is read only as a decision. So they go to
-// stderr, and each one is driven here from the state that produces it.
-describe('runSessionStart notices on stderr', () => {
+// The session start's notices have no message field on either dialect, and
+// stdout is read only as a decision. So each goes to stderr, and on the CLI
+// dialect it is also queued as a progress line, which the host strips before
+// reading the output. Each one is driven here from the state that produces it,
+// and the CLI cases read both copies.
+describe('runSessionStart notices', () => {
   let stderr: string[];
   let restoreGateway: (() => void) | undefined;
 
   beforeEach(() => {
     stderr = [];
+    takeQueuedProgress();
     vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
       stderr.push(String(chunk));
       return true;
@@ -189,6 +194,17 @@ describe('runSessionStart notices on stderr', () => {
     return runSessionStart('sessionStart', JSON.stringify(input), { akaHome, homeDir: home });
   }
 
+  /**
+   * What the CLI host would show for the queued notices: the stdout
+   * `runHookFailOpen` writes for a hook that returned no output, read the way
+   * the reference says the host reads it. Its output must stay empty.
+   */
+  function shownOnCli(): string[] {
+    const read = readCliStdout(takeQueuedProgress().map(progressLine).join(''));
+    expect(read.output).toBeUndefined();
+    return read.progress;
+  }
+
   function seedWarnEraStore(): void {
     const settingsDir = join(akaHome, 'settings');
     mkdirSync(settingsDir, { recursive: true });
@@ -204,6 +220,7 @@ describe('runSessionStart notices on stderr', () => {
   it('writes nothing on a fresh standalone home', async () => {
     expect(await start('s-fresh')).toBeUndefined();
     expect(stderr.join('')).toBe('');
+    expect(takeQueuedProgress()).toEqual([]);
     // The control: the session root landed, so the silence is a decision.
     expect(rows("SELECT id FROM audit_events WHERE event_type = 'session'")).toHaveLength(1);
   });
@@ -214,11 +231,15 @@ describe('runSessionStart notices on stderr', () => {
     const first = stderr.join('');
     expect(first).toContain('the global "warn only" handling was retired');
     expect(first.endsWith('\n')).toBe(true);
+    const shown = shownOnCli();
+    expect(shown).toHaveLength(1);
+    expect(shown[0]).toContain('the global "warn only" handling was retired');
 
     stderr = [];
     await start('s-warn-2');
     // Nothing left to cap, so the second session says nothing about it.
     expect(stderr.join('')).not.toContain('warn only');
+    expect(takeQueuedProgress().join('')).not.toContain('warn only');
   });
 
   it('writes the forwarding line on a machine whose gateway forwards', async () => {
@@ -230,5 +251,21 @@ describe('runSessionStart notices on stderr', () => {
     });
     expect(await start('s-attached')).toBeUndefined();
     expect(stderr.join('')).toBe('AKA: forwarding everything to Acme (machine-wide)\n');
+    expect(shownOnCli()).toEqual(['AKA: forwarding everything to Acme (machine-wide)']);
+  });
+
+  it('queues no progress line for the same notice under VS Code', async () => {
+    // The control on the dialect split: VS Code documents no progress line,
+    // so the notice reaches stderr only there.
+    restoreGateway = setDefaultGatewayFactory((cfg, meta) => {
+      const gateway = standaloneGatewayFactory(cfg, meta);
+      return Object.assign(gateway, {
+        forwardingScope: () => ({ deploymentName: 'Acme', mode: 'machine' as const }),
+      });
+    });
+    const input = { ...fixture('vscode-provisional', 'SessionStart.json'), cwd };
+    await runSessionStart('SessionStart', JSON.stringify(input), { akaHome, homeDir: home });
+    expect(stderr.join('')).toBe('AKA: forwarding everything to Acme (machine-wide)\n');
+    expect(takeQueuedProgress()).toEqual([]);
   });
 });

@@ -1099,6 +1099,11 @@ describe('pre-tool-use [cli] — a notice beside a rewrite', () => {
       return runHook('preToolUse', home, JSON.stringify(payload));
     }, 'aka-copilot-redact-description-cli-');
     expect(run.status, run.stderr).toBe(0);
+    // The whole stdout is NOT one JSON document: the rewrite reaches the host
+    // only because the CLI strips the progress line first, which the
+    // reference dates to 1.0.55. This is the support floor the setup skill
+    // states, pinned so a change that relies on it less, or more, is seen.
+    expect(() => JSON.parse(run.stdout) as unknown).toThrow();
     const read = readCliStdout(run.stdout);
     expect(read.progress.join('\n')).toContain('AKA redacted');
     expect(read.progress.join('\n')).toContain(RULE_ID);

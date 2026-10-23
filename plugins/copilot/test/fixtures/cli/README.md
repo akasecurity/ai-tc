@@ -234,6 +234,9 @@ and none was observed:
 - A progress line being shown, in `-p` mode, in an interactive session or on
   the cloud coding agent. The adapter sends its notices that way on the
   strength of the reference alone.
+- How a CLI older than 1.0.55 reads a progress line written beside a decision.
+  If it parses the whole of stdout as one object, the decision is lost. The
+  setup skill states 1.0.55 as the floor for that reason.
 - The seven unrecorded events above.
 
 Anyone re-recording should know that the account used here stopped accepting

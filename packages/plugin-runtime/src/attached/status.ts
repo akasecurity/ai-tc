@@ -798,10 +798,10 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
  *
  * `endpoint` is the deployment the machine is attached to now.
  *
- * NOT pure any more: `staleKeyNote` reaches `enrollableRepoKey`, which reads
- * `~/.ssh/config` once per process to resolve a `Host` alias. That read is
- * memoized and fail-open, and it is what lets this name an entry no checkout
- * stamps — which is the whole point of the note.
+ * PURE: `staleKeyNote` reaches `enrollableRepoKey`, which is string reduction
+ * and reads nothing. It must stay that way — the identity reduction is on a
+ * path the dashboard's build compiles, and a file read reached from it breaks
+ * the Windows binary build (see Architecture principles §8).
  */
 export function attachmentScopeLines(raw: unknown, endpoint: string): string[] {
   return [...scopeStateLines(raw, endpoint), NOT_LIMITED_LINE];
@@ -880,8 +880,14 @@ function scopeStateLines(raw: unknown, endpoint: string): string[] {
  * entry stored under a spelling the canonical rules no longer produce enrols
  * nothing — while still being listed as an enrolment. That is the silent shape
  * Architecture principles §8 exists to end, and it is reachable: a key stored
- * before the alias and path-case rules landed can read as enrolled for ever
- * while that repository forwards none of its activity.
+ * before the path-case rule landed can read as enrolled for ever while that
+ * repository forwards none of its activity.
+ *
+ * This REPORTS what `respellStoredEnrolments` cannot repair, and the two divide
+ * cleanly: the sweep re-keys every spelling that converges, and what is left is
+ * a spelling no rule can work out an answer for — an owner's page, or an
+ * identity carrying a transport. Those get this note and the one command that
+ * fixes them.
  *
  * `enrollableRepoKey` answers what the current rules accept, so an identity
  * that is not its own answer is one no checkout produces. An ACCOUNT key is not

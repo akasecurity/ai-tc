@@ -79,7 +79,8 @@ jobs:
       # On the canonical repo a missing/rotated-away dispatch token must fail the
       # run, not silently skip it — otherwise a rules tag looks released while
       # nothing was published. Forks still no-op above.
-      - name: Warn if the publish dispatch is not configured
+      - name: Fail if the publish dispatch is not configured
         if: (github.event_name == 'push' || inputs.publish) && github.repository == 'akasecurity/ai-tc' && env.RULES_PUBLISH_TOKEN == ''
         run: |
-          echo "::warning::rules release requested but the RULES_PUBLISH_TOKEN secret is not configured — nothing was published; an admin must set it (and the RULES_PUBLISHER_REPO variable) and re-run this job"
+          echo "::error::rules release requested but the RULES_PUBLISH_TOKEN secret is not configured — nothing was published"
+          exit 1

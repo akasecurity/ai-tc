@@ -510,13 +510,14 @@ jobs:
       # the binaries are released and immutable, the tap still serves the
       # previous formula, and a silent skip means nobody learns until someone
       # notices `brew install` is stale.
-      - name: Warn if the Homebrew release app is not configured
+      - name: Fail if the Homebrew release app is not configured
         if: github.repository == 'akasecurity/ai-tc' && env.RELEASE_APP_CONFIGURED != 'true'
         env:
           TARGET_REPO: akasecurity/homebrew-tap
           TARGET_PATH: Formula/aka.rb
         run: |
-          echo "::warning::the binaries were released but the release app is not configured (the AKA_RELEASE_APP_CLIENT_ID variable and the AKA_RELEASE_APP_PRIVATE_KEY secret) — ${TARGET_REPO} still serves the previous ${TARGET_PATH}. An admin must set both, then re-run this job."
+          echo "::error::the binaries were released but the release app is not configured (the AKA_RELEASE_APP_CLIENT_ID variable and the AKA_RELEASE_APP_PRIVATE_KEY secret) — ${TARGET_REPO} still serves the previous ${TARGET_PATH}. Configure the app, then re-run this job."
+          exit 1
 
       - name: Report an unconfigured Homebrew release app
         if: github.repository != 'akasecurity/ai-tc' && env.RELEASE_APP_CONFIGURED != 'true'
@@ -635,13 +636,14 @@ jobs:
           name: package-manifests
           path: manifests
 
-      - name: Warn if the Scoop release app is not configured
+      - name: Fail if the Scoop release app is not configured
         if: github.repository == 'akasecurity/ai-tc' && env.RELEASE_APP_CONFIGURED != 'true'
         env:
           TARGET_REPO: akasecurity/scoop-bucket
           TARGET_PATH: bucket/aka.json
         run: |
-          echo "::warning::the binaries were released but the release app is not configured (the AKA_RELEASE_APP_CLIENT_ID variable and the AKA_RELEASE_APP_PRIVATE_KEY secret) — ${TARGET_REPO} still serves the previous ${TARGET_PATH}. An admin must set both, then re-run this job."
+          echo "::error::the binaries were released but the release app is not configured (the AKA_RELEASE_APP_CLIENT_ID variable and the AKA_RELEASE_APP_PRIVATE_KEY secret) — ${TARGET_REPO} still serves the previous ${TARGET_PATH}. Configure the app, then re-run this job."
+          exit 1
 
       - name: Report an unconfigured Scoop release app
         if: github.repository != 'akasecurity/ai-tc' && env.RELEASE_APP_CONFIGURED != 'true'

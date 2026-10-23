@@ -59,14 +59,6 @@ const SUBJECTS = [
     binding: 'noManagedSettingsGuard',
     installs: String.raw`UNSAFE_TEST_ONLY_setManagedSettingsPaths\(\s*\[\s*\]\s*\)`,
   },
-  {
-    what: 'no-ssh-aliases',
-    rel: 'test/setup/no-ssh-aliases.ts',
-    seam: 'UNSAFE_TEST_ONLY_setSshHostAliases',
-    module: 'ssh-hosts.ts',
-    binding: 'noSshAliasesGuard',
-    installs: String.raw`UNSAFE_TEST_ONLY_setSshHostAliases\(\s*new Map\(\s*\)\s*\)`,
-  },
 ];
 
 /**

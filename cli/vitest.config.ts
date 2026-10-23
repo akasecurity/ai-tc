@@ -19,12 +19,6 @@ const noManagedSettingsGuard = fileURLToPath(
   new URL('../test/setup/no-managed-settings.ts', import.meta.url),
 );
 
-// `~/.ssh/config` is read to resolve a Host alias to the host it names, and is
-// likewise outside any temp home — so without this a project id and a scope key
-// depend on whose laptop the suite ran on.
-const noSshAliasesGuard = fileURLToPath(
-  new URL('../test/setup/no-ssh-aliases.ts', import.meta.url),
-);
 // And with Claude Code's config pointed at an empty directory: `aka status`
 // reads the login file under the real home unless a case names another, so
 // without this a status block depends on whose laptop ran the suite.
@@ -52,7 +46,6 @@ export default defineConfig({
     setupFiles: [
       noNetworkGuard,
       noManagedSettingsGuard,
-      noSshAliasesGuard,
       noHostClaudeConfigGuard,
       noHostCodexConfigGuard,
       noWasmCodeGc,

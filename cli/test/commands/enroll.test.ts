@@ -41,7 +41,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Reached by relative path: the seam is deliberately not re-exported from the
 // package barrel, the same way the managed-settings pin is not.
-import { UNSAFE_TEST_ONLY_setSshHostAliases } from '../../../packages/persistence/src/ssh-hosts.ts';
 import { writeCodexAuth } from '../../../packages/plugin-sdk/test/helpers/fake-jwt.ts';
 import {
   fixtureEmail,
@@ -941,54 +940,6 @@ describe('aka enroll --repo', () => {
     expect(io.errors()).toContain('does not name a repository that can be enrolled');
     expect(io.errors()).not.toContain('its key is');
     expect(storedScope()).toEqual(fresh());
-  });
-
-  // An SSH `Host` alias is resolved to the host it names, so every clone of one
-  // repository keys the same way (see Architecture principles §8). The reason
-  // that matters HERE is that enrolment is matched by exact string: a key no
-  // checkout on this machine can produce enrols nothing and reports nothing —
-  // the repository reads as covered while that developer forwards none of their
-  // activity. These two shapes are exactly that near miss, and the existing
-  // re-spelling refusal is what turns each of them into a visible correction.
-  describe('a key whose host this machine resolves elsewhere', () => {
-    afterEach(() => {
-      UNSAFE_TEST_ONLY_setSshHostAliases(new Map());
-    });
-
-    it('refuses an alias spelling and names the key checkouts really produce', async () => {
-      UNSAFE_TEST_ONLY_setSshHostAliases(new Map([['github-personal', 'github.com']]));
-      attach({ scope: fresh() });
-      const io = recorder();
-      expect(await runEnroll(['--repo', 'github-personal/acme/payments-api'], deps(io))).toBe(1);
-      expect(io.errors()).toContain('is not how that repository is keyed');
-      expect(io.errors()).toContain(`its key is ${WORK_REPO}`);
-      expect(storedScope()).toEqual(fresh());
-    });
-
-    // The other half, and it lands the OPPOSITE way on purpose. A `Host` block
-    // on a real forge name redirects the transport, not the repository (it is
-    // how GitHub documents working around a blocked port 22), so the forge name
-    // stays the key and the obvious spelling is the right one. Enrolling it
-    // must therefore succeed, not be "corrected" to an endpoint no other
-    // machine shares.
-    it('accepts the forge key even where a block rewrites that host', async () => {
-      UNSAFE_TEST_ONLY_setSshHostAliases(new Map([['github.com', 'ssh.github.com']]));
-      attach({ scope: fresh() });
-      const io = recorder();
-      expect(await runEnroll(['--repo', WORK_REPO], deps(io))).toBe(0);
-      expect(identities()).toEqual([WORK_REPO]);
-    });
-
-    // The control: with no alias in force the same key enrols cleanly, so the
-    // two refusals above are the alias doing it and not the command refusing
-    // every typed key.
-    it('enrols the same key when no alias is in force', async () => {
-      attach({ scope: fresh() });
-      const io = recorder();
-      expect(await runEnroll(['--repo', WORK_REPO], deps(io))).toBe(0);
-      const scope = storedScope() as { entries?: { identity: string }[] } | undefined;
-      expect(scope?.entries?.map((entry) => entry.identity)).toContain(WORK_REPO);
-    });
   });
 
   // A repository kept at the top of its host cannot be enrolled by naming its

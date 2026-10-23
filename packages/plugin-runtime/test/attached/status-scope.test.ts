@@ -27,7 +27,6 @@ import {
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { UNSAFE_TEST_ONLY_setManagedSettingsPaths } from '../../../persistence/src/managed-settings.ts';
-import { UNSAFE_TEST_ONLY_setSshHostAliases } from '../../../persistence/src/ssh-hosts.ts';
 import { renderAttachedStatus } from '../../src/attached/status.ts';
 import {
   attachmentScopeLines,
@@ -1025,21 +1024,9 @@ describe('an enrolled key no checkout now stamps', () => {
     expect(lines.join('\n')).toContain('aka enroll');
   });
 
-  it('is named for an alias spelling, while that alias is in force', () => {
-    // The note is a statement about THIS machine: with the alias defined, no
-    // checkout stamps the alias spelling any more.
-    UNSAFE_TEST_ONLY_setSshHostAliases(new Map([['gh-personal', 'github.com']]));
-    try {
-      const scope = { endpoint: ENDPOINT, entries: [entry('gh-personal/acme/payments-api')] };
-      expect(attachmentScopeLines(scope, ENDPOINT).join('\n')).toContain(STALE_NOTE);
-    } finally {
-      UNSAFE_TEST_ONLY_setSshHostAliases(new Map());
-    }
-  });
-
-  it('is NOT named for that alias spelling where no such alias is defined', () => {
-    // ...and with no alias, a checkout really does stamp it. The note must not
-    // fire on a spelling that is merely unusual.
+  it('is NOT named for a host that merely looks like an alias', () => {
+    // No alias map is consulted anywhere, so a checkout really does stamp this
+    // spelling. The note must not fire on a host that is merely unusual.
     const scope = { endpoint: ENDPOINT, entries: [entry('gh-personal/acme/payments-api')] };
     expect(attachmentScopeLines(scope, ENDPOINT).join('\n')).not.toContain(STALE_NOTE);
   });

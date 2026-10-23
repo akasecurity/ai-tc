@@ -7,13 +7,19 @@
 // in that repository is syntax Node's strip-only TypeScript loader refuses. Any
 // module reached by a raw-Node child or worker that needs to canonicalize a key
 // would therefore fail at LOAD, the moment it imported one. Keeping the string
-// work here, with nothing below `@akasecurity/schema` and the SSH alias map
-// under it, is what makes the canonicalization reachable from those paths.
+// work here, with nothing under it but `@akasecurity/schema`, is what makes the
+// canonicalization reachable from those paths.
+//
+// PURE for a second reason, and it is a constraint rather than a preference:
+// the web dashboard compiles `@akasecurity/persistence` as its own source
+// (Next's `transpilePackages`), so a module reached from here that reads a
+// home-rooted path goes into that build. One that did broke the Windows binary
+// build outright — listing the user profile hits the legacy `Application Data`
+// junction and raises EPERM — on every run, while lint, typecheck and every
+// test suite stayed green. Nothing here may read a file.
 import { createHash } from 'node:crypto';
 
 import { ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH, printable } from '@akasecurity/schema';
-
-import { resolveSshHost } from './ssh-hosts.ts';
 
 /**
  * The shape of the string that is digested, stamped into the digest itself.
@@ -27,10 +33,10 @@ import { resolveSshHost } from './ssh-hosts.ts';
  * Bumping it re-buckets every project on the receiving side, so it moves only
  * when the canonical form itself does.
  *
- * v2 → v3: the canonical form changed twice. A path is now folded on a host in
- * `CASE_INSENSITIVE_FORGES`, and an SSH `Host` alias resolves to the host it
- * names. Repositories touched by either digest differently than they did, which
- * is exactly the case the paragraph above refuses to leave unversioned.
+ * v2 → v3: a path is now folded on a host in `CASE_INSENSITIVE_FORGES`, so a
+ * repository cloned as `acme/App` and as `acme/app` digests to one value where
+ * it used to digest to two. That is exactly the case the paragraph above
+ * refuses to leave unversioned.
  */
 export const PROJECT_KEY_DIGEST_VERSION = 'v3';
 
@@ -119,50 +125,11 @@ export function parseGitRemote(
   if (DOS_DRIVE.test(trimmed) || FILE_URL.test(trimmed)) return undefined;
   const scheme = SCHEME_FORM.exec(trimmed);
   const scp = scheme === null ? SCP_FORM.exec(trimmed) : null;
-  const written = (scheme?.[1] ?? scp?.[1])?.toLowerCase();
-  if (written === undefined) return undefined;
-  // The host an SSH `Host` alias NAMES, not the alias. `github-personal` is
-  // `github.com` only because a line in the user's ~/.ssh/config says so, and
-  // that file is the only place on earth the mapping exists — the control plane
-  // receives the remote as written (`inventoryForWire`) and could never derive
-  // it. So an alias has to be resolved HERE or nowhere: every clone of one
-  // repository must reduce to one host, or the identity, the scope key and the
-  // wire digest below each split per spelling. See `resolveSshHost` for how
-  // narrow that resolution is (literal aliases only, memoized, fail-open).
-  //
-  // TWO GUARDS, and each closes a way the resolution would otherwise move a
-  // host it has no business moving:
-  //
-  //   - ONLY AN SSH REMOTE. git consults ~/.ssh/config for ssh transports
-  //     alone, so an `https://`, `http://` or `git://` remote must be read as
-  //     written. Resolving those re-keyed clones ssh never touches.
-  //   - NEVER A HOST THAT IS ITSELF A FORGE. A `Host` block on a real forge
-  //     name redirects the TRANSPORT, not the repository: GitHub documents
-  //     `Host github.com` / `Hostname ssh.github.com` for networks that block
-  //     port 22, and the repositories reached through it are github.com's.
-  //     Honouring it would key every repository on that machine under an
-  //     endpoint no other machine shares.
-  //
-  // Together they make the port-443 config a no-op for identity on both
-  // transports, which is what `main` did before aliases were resolved at all.
-  const host =
-    isSshTransport(trimmed, scheme !== null) && !CASE_INSENSITIVE_FORGES.has(written)
-      ? resolveSshHost(written)
-      : written;
+  const host = (scheme?.[1] ?? scp?.[1])?.toLowerCase();
+  if (host === undefined) return undefined;
   const bare = trimSlashes((scheme === null ? scp?.[2] : scheme[2]) ?? '');
   const path = bare.endsWith(GIT_SUFFIX) ? bare.slice(0, -GIT_SUFFIX.length) : bare;
   return { host, path: CASE_INSENSITIVE_FORGES.has(host) ? path.toLowerCase() : path };
-}
-
-/**
- * Whether `remote` is carried over SSH, which is the only transport git reads
- * `~/.ssh/config` for. An scp-style remote (no scheme) always is; a scheme-form
- * one is only where the scheme names ssh.
- */
-function isSshTransport(remote: string, hasScheme: boolean): boolean {
-  if (!hasScheme) return true;
-  const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(remote)?.[1]?.toLowerCase() ?? '';
-  return scheme === 'ssh' || scheme === 'git+ssh' || scheme === 'ssh+git';
 }
 
 /**

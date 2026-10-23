@@ -18,7 +18,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { respellStoredEnrolments } from '../src/enrolment-respell.ts';
 import { enrollableRepoKey } from '../src/repo-key.ts';
 import { readUserSettings } from '../src/settings.ts';
-import { UNSAFE_TEST_ONLY_setSshHostAliases } from '../src/ssh-hosts.ts';
 
 const ENDPOINT = 'https://plane.example.test';
 const ISO = '2026-10-07T09:00:00.000Z';
@@ -32,7 +31,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  UNSAFE_TEST_ONLY_setSshHostAliases(new Map());
   rmSync(base, { recursive: true, force: true });
 });
 
@@ -89,21 +87,6 @@ describe('respellStoredEnrolments', () => {
 
     expect(forwards(STAMPED)).toBe(true);
     expect(storedIdentities()).toStrictEqual([STAMPED]);
-  });
-
-  it('makes an entry stored under an SSH alias forward again', () => {
-    // `gh-personal` is a host only because ~/.ssh/config says so. The machine
-    // is the only place that mapping exists, which is why the rewrite happens
-    // here and not on the deployment.
-    UNSAFE_TEST_ONLY_setSshHostAliases(new Map([['gh-personal', 'github.com']]));
-    writeSettings(
-      attachedWith([{ kind: 'repo', identity: 'gh-personal/acme/app', enrolledAt: ISO }]),
-    );
-    expect(forwards(STAMPED)).toBe(false);
-
-    expect(respellStoredEnrolments(base)).toBe('rewritten');
-
-    expect(forwards(STAMPED)).toBe(true);
   });
 
   it('is a NO-OP on a record whose keys are already canonical', () => {

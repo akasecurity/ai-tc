@@ -23,12 +23,6 @@ const noManagedSettingsGuard = fileURLToPath(
 // on that line freeing code after a termination can abort the test process.
 // See the setup file; no-wasm-code-gc-guard.test.js derives which packages owe it.
 const noWasmCodeGc = fileURLToPath(new URL('../../test/setup/no-wasm-code-gc.ts', import.meta.url));
-// `~/.ssh/config` is read to resolve a Host alias to the host it names, and is
-// likewise outside any temp home — so without this a project id and a scope key
-// depend on whose laptop the suite ran on.
-const noSshAliasesGuard = fileURLToPath(
-  new URL('../../test/setup/no-ssh-aliases.ts', import.meta.url),
-);
 
 // One suite exercises real node:sqlite file I/O, which runs slowly on the Windows
 // CI runner under parallel load, so raise the per-test AND per-hook timeouts above
@@ -36,7 +30,7 @@ const noSshAliasesGuard = fileURLToPath(
 export default defineConfig({
   plugins: [unfinishedModulesReporter()],
   test: {
-    setupFiles: [noNetworkGuard, noManagedSettingsGuard, noSshAliasesGuard, noWasmCodeGc],
+    setupFiles: [noNetworkGuard, noManagedSettingsGuard, noWasmCodeGc],
     coverage: coverageOptions(import.meta.url),
     environment: 'node',
     testTimeout: 20000,

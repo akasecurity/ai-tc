@@ -744,20 +744,19 @@ takes `platform` and a resolution seam the way `judgeEnv`/`writeCommandShim` tak
 it**: the project id (`sourceProjectId`), the scope key (`canonicalRepoUrl`) and
 the wire digest (`hashProjectKey`). One repository is cloned in spellings that
 share no bytes — scp-style and HTTPS, with and without `.git`, any case of the
-host, and through an SSH `Host` alias — so a reduction applied to one of those
-and not the others gives one repository several identities, differently on each
-surface.
+host — so a reduction applied to one of those and not the others gives one
+repository several identities, differently on each surface.
 
 Keeping them unified is not tidiness. A scope key is matched against what a user
 enrolled by EXACT STRING (`resolved.keys.has(key)`), so a key that splits per
 spelling is a security-control failure, not a display bug: an organization
-enrols `github.com/acme/app`, every developer who cloned through an alias keys
-as `alias/acme/app`, matches nothing, forwards nothing — and the repository
-still reads as enrolled. Nothing reports the gap. The same split makes every
+enrols `github.com/acme/app`, a developer whose clone keys any other way
+matches nothing, forwards nothing — and the repository still reads as enrolled.
+Nothing reports the gap. The same split makes every
 org-wide count a fraction of the truth, leaves policy bound to one spelling, and
 lets `syncLaneRetentionOf` expire bodies it should have held.
 
-Three rules hold it together:
+Two rules hold it together, and one deliberate NON-rule:
 
 - **Transport is not identity.** `canonicalGitUrl` drops the scheme, any
   userinfo and any port, lowercases the host and strips a trailing `.git` and
@@ -769,32 +768,31 @@ Three rules hold it together:
   their egress invisibly. An unrecognised host — a GitHub Enterprise instance
   included, since no hostname says what answers it — keeps its case and misses
   the convergence, which is the visible failure rather than the silent one.
-- **An SSH alias is resolved through `~/.ssh/config`, inside `parseGitRemote`.**
-  `github-personal` is `github.com` only because a line in that file says so.
-  That mapping exists on the machine and NOWHERE ELSE — the control plane
-  receives the remote as written (`inventoryForWire` sends `project.url` through
-  `remoteWithoutCredentials`), so it could never derive it. Resolving it here or
-  not at all is the whole choice, which is why it is done here. Only a LITERAL
-  alias is stored: lookup is an exact map hit, so a pattern entry would sit
-  under the key `*` and answer only a host spelled `*`; a `Match` line ends the
-  block before it, since its condition is evaluated per connection and this
-  parser interprets none. Memoized once per process — so the staleness window is
-  the CALLER's lifetime, one event for a hook and one restart for the dashboard
-  (stated at the memo). Fail-open, and a machine with no config is unaffected in
-  every respect.
+- **The reduction is PURE, and an SSH `Host` alias is therefore NOT resolved.**
+  `github-personal` is `github.com` only because a line in `~/.ssh/config` says
+  so, and that mapping exists on the machine and nowhere else — the control
+  plane receives the remote as written (`inventoryForWire` sends `project.url`
+  through `remoteWithoutCredentials`), so it could never derive it. Resolving it
+  on the machine or not at all is the whole choice, and for now it is not done:
+  a clone made through an alias keys to the alias and shows up as its own
+  project. That is convergence MISSED, which is the direction this section
+  prefers to fail in — two entries a human can reconcile rather than two
+  repositories merged into one.
 
-  **TWO GUARDS BOUND IT, and both exist because a `HostName` can redirect a
-  TRANSPORT rather than name a repository.** It runs for SSH remotes only, since
-  git consults that file for no other transport — resolving an `https://` remote
-  re-keys a clone ssh never touches. And it never resolves a host that is itself
-  a forge: GitHub documents `Host github.com` / `Hostname ssh.github.com` for
-  networks blocking port 22, and the repositories behind it are still
-  github.com's. Without both, that one ordinary config re-keyed every repository
-  on the machine — HTTPS clones included — to an endpoint no other machine
-  shares, and every org enrolment of `github.com/…` silently stopped matching.
-  A TYPED key names no transport, so `enrollableRepoKey` judges it as `ssh://`:
-  it has to be read under the rule a checkout's key is built with, or an alias
-  spelling would be accepted and enrol nothing.
+  **It is a BUILD constraint, not an oversight, and it is why nothing here may
+  read a file.** The web dashboard compiles `@akasecurity/persistence` as its
+  own source (Next's `transpilePackages`), so a module reached from the
+  reduction that reads a home-rooted path goes into that build. One that did
+  broke the `win32-x64` binary build on every run — listing the Windows user
+  profile hits the legacy `Application Data` junction and raises EPERM during
+  `next build` — while `pnpm lint`, `pnpm typecheck` and every vitest suite
+  stayed green, so nothing but that one CI job noticed. Proven by experiment:
+  removing the single import edge and nothing else took all four platforms
+  green, and MOVING the import rather than removing it did not help. Resolving
+  aliases therefore needs the map handed in by callers that are not in the
+  dashboard's graph — `resolveRepoIdentity` reaches local-ops and scanner, both
+  of which the dashboard imports, so it is a change across three packages'
+  public APIs. Tracked separately. Do not re-add a file read here to get it.
 
 - **The remote picked is an ADDRESS where one exists.** git does not guarantee
   `origin` names a forge: a submodule checked out inside a linked worktree gets
@@ -889,22 +887,22 @@ build is installed.
 
 **A near miss is REPORTED rather than silently stored.** `aka enroll` refuses a
 typed key that is not how the repository is really keyed and names the spelling
-that is — and because the host now resolves, that refusal covers both alias
-shapes: an alias typed by hand (`github-personal/acme/app` → "its key is
-`github.com/acme/app`"), and the obvious key on a machine whose config rewrites a
-REAL host (`Host github.com` → a proxy), where `github.com/acme/app` is the
-wrong answer and the refusal says so. That matters because the failure it
-prevents is invisible: an enrolment nothing produces reports no error, forwards
-nothing and still lists the repository as covered.
+that is — a capitalised path on a folding forge (`github.com/Acme/App` → "its
+key is `github.com/acme/app`"), a trailing slash, a `.git` suffix. That matters
+because the failure it prevents is invisible: an enrolment nothing produces
+reports no error, forwards nothing and still lists the repository as covered.
+`respelledRepoKey` is the one reading of such a near miss, SHARED with the
+stored-enrolment sweep below, whose whole job is to write what this refusal
+would have named.
 
-**What this still does not reach.** A path whose case differs on a host NOT in
-the forge list — a self-hosted GitHub Enterprise most obviously — keys as two.
-A host rewritten on SOME machines and not others splits those machines' keys,
-and nothing client-side or server-side can see that, since the config is local
-to each. A repository RENAMED on the forge keys as two, because the key is a
-path rather than the forge's immutable id, which no hook can ask for without a
-network call. All three are convergence that is MISSED, which shows up as two
-entries a human can reconcile, rather than two repositories merged into one —
+**What this still does not reach.** A clone made through an SSH `Host` alias
+keys to the alias, for the build reason given above. A path whose case differs
+on a host NOT in the forge list — a self-hosted GitHub Enterprise most
+obviously — keys as two. A repository RENAMED on the forge keys as two, because
+the key is a path rather than the forge's immutable id, which no hook can ask
+for without a network call. All three are convergence that is MISSED, which
+shows up as two entries a human can reconcile, rather than two repositories
+merged into one —
 the direction this whole section prefers to fail in.
 
 ## Dependency advisories
@@ -966,18 +964,17 @@ Keep these package boundaries intact — a forbidden import across a package wal
                      projection — toEgressIngestRequest / hashProjectKey, the one
                      place an EgressIngestRequest is built, pure and beside the cap
                      helpers it applies — NO fetch client, NO Drizzle.
-                     ssh-hosts.ts is the ONE reader of a file outside ~/.aka that
-                     is not the administrative overlay: it parses `Host`/`HostName`
-                     out of ~/.ssh/config so a clone made through an SSH alias keys
-                     to the same project as one made over HTTPS — see "A project's
-                     identity is the repository, not the remote string" (§8).
-                     repo-key.ts holds that canonicalization, split out of
-                     egress-wire.ts — which re-exports all of it — because that
-                     module reaches a SQLite repository for the cap helpers, and a
-                     parameter property there is syntax Node's strip-only loader
-                     refuses: any module a raw-Node child or worker loads would
-                     fail AT LOAD the moment it imported a key helper from it.
-                     Nothing under repo-key.ts but schema and ssh-hosts.ts)
+                     repo-key.ts holds the repository-identity canonicalization,
+                     split out of egress-wire.ts — which re-exports all of it —
+                     because that module reaches a SQLite repository for the cap
+                     helpers, and a parameter property there is syntax Node's
+                     strip-only loader refuses: any module a raw-Node child or
+                     worker loads would fail AT LOAD the moment it imported a key
+                     helper from it. It is also PURE and must stay so: web-ui
+                     compiles this package as its own source, so a file read
+                     reached from the reduction breaks the Windows binary build —
+                     see "A project's identity is the repository, not the remote
+                     string" (§8). Nothing under repo-key.ts but schema)
 @akasecurity/local-ops     → @akasecurity/schema, @akasecurity/persistence, @akasecurity/detections,
                      @akasecurity/plugin-sdk (repo-identity, project-file walkers, posix
                      path normalization, and the ReDoS gates the dashboard's folder

@@ -1,147 +1,34 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { canonicalGitUrl, canonicalRepoUrl } from '../src/egress-wire.ts';
 import { sourceProjectId } from '../src/ids.ts';
-import {
-  resolveSshHost,
-  UNSAFE_TEST_ONLY_setSshConfigPath,
-  UNSAFE_TEST_ONLY_setSshHostAliases,
-} from '../src/ssh-hosts.ts';
 
-// This suite is ABOUT the parser, so it drops the process-wide empty-alias pin
-// (test/setup/no-ssh-aliases.ts) and points the reader at a temp config.
-//
-// It does NOT mock `node:os` to move `homedir`, and that is the whole reason
-// the path seam exists: the setup file imports ssh-hosts.ts before any test
-// file runs, so the module's `homedir` binding is the real one long before a
-// `vi.mock` could replace it. Mocking it here silently read the DEVELOPER'S own
-// ~/.ssh/config — which is why an earlier version of this file passed the one
-// case whose alias happened to exist on the author's laptop and failed the rest.
-
-let dir: string;
-
-beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'aka-sshcfg-'));
-  UNSAFE_TEST_ONLY_setSshHostAliases(null);
-  UNSAFE_TEST_ONLY_setSshConfigPath(join(dir, 'config'));
-});
-
-afterEach(() => {
-  rmSync(dir, { recursive: true, force: true });
-  UNSAFE_TEST_ONLY_setSshConfigPath(null);
-  UNSAFE_TEST_ONLY_setSshHostAliases(new Map());
-});
-
-// Write `body` as the ssh config this suite reads (or a sibling beside it, for
-// the Include cases). Re-points the reader, which also drops the parse cache.
-function sshConfig(body: string, name = 'config'): void {
-  writeFileSync(join(dir, name), body);
-  UNSAFE_TEST_ONLY_setSshConfigPath(join(dir, 'config'));
-}
-
-describe('resolveSshHost', () => {
-  it('resolves a literal alias to the HostName it names', () => {
-    sshConfig('Host github-personal\n  HostName github.com\n  IdentityFile ~/.ssh/id_x\n');
-    expect(resolveSshHost('github-personal')).toBe('github.com');
-  });
-
-  it('answers the host as written when there is no config at all', () => {
-    expect(resolveSshHost('github.com')).toBe('github.com');
-  });
-
-  it('maps every alias of a block that names several', () => {
-    sshConfig('Host gh-work gh-personal\n  HostName github.com\n');
-    expect(resolveSshHost('gh-work')).toBe('github.com');
-    expect(resolveSshHost('gh-personal')).toBe('github.com');
-  });
-
-  it('never STORES a pattern alias, so a host spelled like one is not rewritten', () => {
-    // The sharp edge of the pattern filter. An ordinary host is already safe
-    // from a `Host *` block because lookup is an exact map hit, so asserting on
-    // one proves nothing about the filter — a host that IS the pattern is the
-    // only reading that separates the two.
-    sshConfig('Host *\n  HostName example.com\n');
-    expect(resolveSshHost('*')).toBe('*');
-  });
-
-  it('leaves an ordinary host alone under a wildcard block', () => {
-    // Holds because lookup is exact, not because of the filter above. Kept as
-    // the statement of the overall behaviour a reader cares about.
-    sshConfig('Host *\n  HostName example.com\n');
-    expect(resolveSshHost('github.com')).toBe('github.com');
-    expect(resolveSshHost('gitlab.com')).toBe('gitlab.com');
-  });
-
-  it('ignores a HostName carrying a token, which ssh expands per connection', () => {
-    sshConfig('Host gh\n  HostName %h.example.com\n');
-    expect(resolveSshHost('gh')).toBe('gh');
-  });
-
-  it('keeps the FIRST HostName for an alias, as ssh does', () => {
-    sshConfig('Host gh\n  HostName github.com\nHost gh\n  HostName gitlab.com\n');
-    expect(resolveSshHost('gh')).toBe('github.com');
-  });
-
-  it('ignores a commented-out mapping', () => {
-    sshConfig('Host gh\n#  HostName github.com\n');
-    expect(resolveSshHost('gh')).toBe('gh');
-  });
-
-  it('accepts the `Keyword = value` spelling', () => {
-    sshConfig('Host = gh\n  HostName = github.com\n');
-    expect(resolveSshHost('gh')).toBe('github.com');
-  });
-
-  it('follows an Include, including a single-directory glob', () => {
-    mkdirSync(join(dir, 'config.d'), { recursive: true });
-    writeFileSync(join(dir, 'config.d', 'work'), 'Host gh\n  HostName github.com\n');
-    sshConfig('Include config.d/*\nHost other\n  HostName other.example\n');
-    expect(resolveSshHost('gh')).toBe('github.com');
-    expect(resolveSshHost('other')).toBe('other.example');
-  });
-
-  it('terminates on an Include cycle', () => {
-    sshConfig('Include config\nHost gh\n  HostName github.com\n');
-    expect(resolveSshHost('gh')).toBe('github.com');
-  });
-
-  // N3. ssh_config evaluates a `Match` condition per connection; this parser
-  // interprets none of them, so a conditional HostName must not be applied.
-  it('ends a Host block at a Match line', () => {
-    sshConfig(
-      'Host work\n  User git\nMatch exec "test -f ~/.vpn"\n  HostName github.example.internal\n',
-    );
-    expect(resolveSshHost('work')).toBe('work');
-  });
-
-  it('still reads a Host block that FOLLOWS a Match block', () => {
-    sshConfig('Match exec "true"\n  HostName ignored.example\nHost gh\n  HostName github.com\n');
-    expect(resolveSshHost('gh')).toBe('github.com');
-  });
-
-  it('matches an alias case-insensitively, as ssh does', () => {
-    sshConfig('Host GitHub-Personal\n  HostName GitHub.com\n');
-    expect(resolveSshHost('github-personal')).toBe('github.com');
-  });
-});
+// The one reduction every identity on this machine goes through. PURE: it reads
+// no file and consults no machine state, which is what lets the web dashboard
+// compile this package as its own source. An SSH `Host` alias is therefore not
+// resolved here, and a clone made through one keys to the alias — tracked
+// separately, because resolving it means reading ~/.ssh/config and that cannot
+// live on a path the dashboard's build compiles.
 
 describe('canonicalGitUrl — the one reduction every surface shares', () => {
+  // Every spelling of one repository that this reduction converges WITHOUT an
+  // alias map: scp and scheme form, with and without `.git`, any case of host
+  // or path, a userinfo, a port, a trailing slash. An SSH `Host` alias is NOT
+  // among them — resolving one means reading ~/.ssh/config, which this package
+  // deliberately does not do (see the module header), so a clone made through
+  // an alias still keys to the alias and is tracked separately.
   const SPELLINGS = [
-    'git@github-personal:acme/app',
-    'git@github-personal:acme/app.git',
     'git@github.com:acme/app.git',
+    'git@github.com:Acme/App',
     'https://github.com/acme/app.git',
-    'https://github.com/acme/app',
+    'https://github.com/acme/app/',
     'ssh://git@GitHub.com:22/acme/app.git',
   ];
 
   it('gives one key to every spelling of one repository', () => {
-    sshConfig('Host github-personal\n  HostName github.com\n');
-    expect([...new Set(SPELLINGS.map(canonicalGitUrl))]).toEqual(['github.com/acme/app']);
+    expect([...new Set(SPELLINGS.map((url) => canonicalGitUrl(url)))]).toEqual([
+      'github.com/acme/app',
+    ]);
   });
 
   // The unification. The project id, the SCOPE KEY and the wire digest all
@@ -151,13 +38,13 @@ describe('canonicalGitUrl — the one reduction every surface shares', () => {
   // clone keyed differently would forward nothing while the repository read as
   // enrolled — a coverage gap nothing reports.
   it('gives one SCOPE KEY to every spelling, so enrolment covers them all', () => {
-    sshConfig('Host github-personal\n  HostName github.com\n');
-    expect([...new Set(SPELLINGS.map(canonicalRepoUrl))]).toEqual(['github.com/acme/app']);
+    expect([...new Set(SPELLINGS.map((url) => canonicalRepoUrl(url)))]).toEqual([
+      'github.com/acme/app',
+    ]);
   });
 
   it('gives one project id to every spelling', () => {
-    sshConfig('Host github-personal\n  HostName github.com\n');
-    expect(new Set(SPELLINGS.map(sourceProjectId)).size).toBe(1);
+    expect(new Set(SPELLINGS.map((url) => sourceProjectId(url))).size).toBe(1);
   });
 
   it('folds the path case on a forge that ignores it', () => {
@@ -171,36 +58,20 @@ describe('canonicalGitUrl — the one reduction every surface shares', () => {
     }
   });
 
-  // P3. ssh_config governs SSH alone, and a block on a real forge name
-  // redirects the transport rather than naming another repository.
-  describe('an alias is resolved only where ssh would read it', () => {
-    beforeEach(() => {
-      // GitHub's documented workaround for networks that block port 22.
-      sshConfig('Host github.com\n  Hostname ssh.github.com\n  Port 443\n');
-    });
-
-    it('leaves every transport of a forge host on that host', () => {
-      for (const remote of [
-        'https://github.com/Acme/App.git',
-        'http://github.com/Acme/App.git',
-        'git://github.com/Acme/App.git',
-        'git@github.com:Acme/App.git',
-        'ssh://git@github.com/Acme/App.git',
-      ]) {
-        expect(canonicalGitUrl(remote)).toBe('github.com/acme/app');
-      }
-      // And the scope key with it, so an org enrolment of github.com still
-      // covers this machine — the silent no-forward this guards against.
-      expect(canonicalRepoUrl('https://github.com/acme/app')).toBe('github.com/acme/app');
-    });
-
-    it('still resolves an alias that is NOT a forge name, over ssh only', () => {
-      sshConfig('Host gh-personal\n  HostName github.com\n');
-      expect(canonicalGitUrl('git@gh-personal:Acme/App.git')).toBe('github.com/acme/app');
-      // ...and not over https, where ssh_config has no say. The host stands as
-      // written, so the path case is not folded either.
-      expect(canonicalGitUrl('https://gh-personal/Acme/App.git')).toBe('gh-personal/Acme/App');
-    });
+  it('reduces every transport of one forge host to one key', () => {
+    for (const remote of [
+      'https://github.com/Acme/App.git',
+      'http://github.com/Acme/App.git',
+      'git://github.com/Acme/App.git',
+      'git@github.com:Acme/App.git',
+      'ssh://git@github.com/Acme/App.git',
+    ]) {
+      expect(canonicalGitUrl(remote)).toBe('github.com/acme/app');
+    }
+    // And the scope key with it, so an org enrolment of github.com covers this
+    // machine whichever transport it cloned over — the silent no-forward this
+    // guards against.
+    expect(canonicalRepoUrl('https://github.com/acme/app')).toBe('github.com/acme/app');
   });
 
   it('KEEPS the path case on a host not known to ignore it', () => {

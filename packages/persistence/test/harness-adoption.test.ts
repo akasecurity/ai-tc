@@ -183,8 +183,8 @@ const OWN_TEMP_TREE: Readonly<Record<string, string>> = {
     'drives the settings child-process writers over a plain home — no store',
   'test/internal/snapshot.test.ts':
     'builds bare DatabaseSync files to snapshot, with no ~/.aka layout around them',
-  'test/canonical-git-url.test.ts':
-    'a bare directory holding an ssh config for the alias parser to read, pointed at by the path seam — the subject is that parse and no store is opened',
+  'test/enrolment-respell.test.ts':
+    'a bare home holding a settings.json for the enrolment sweep to re-key — the subject is that file edit and no store is opened',
   'test/paths-link-fallback.test.ts':
     'the subject is the symlink fallback in the path helpers themselves — no store',
   'test/managed-settings.test.ts':

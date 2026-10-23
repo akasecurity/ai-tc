@@ -16,7 +16,6 @@ import {
   turnWorkSubscriptionsOn,
   UnreadableAttachmentScopeError,
 } from '../src/attachment-scope-edit.ts';
-import { UNSAFE_TEST_ONLY_setSshHostAliases } from '../src/ssh-hosts.ts';
 
 // The enrolled scope is edited RAW. A record on disk may carry what this build
 // cannot read — an entry a newer build wrote, a key a newer build put on the
@@ -564,16 +563,6 @@ describe('respellAttachmentScopeEntries', () => {
         { kind: 'repo', identity: FOLDED, label: `label for ${STALE_CASE}`, enrolledAt: ISO },
       ]),
     );
-  });
-
-  it('re-keys an SSH alias spelling, which only ~/.ssh/config makes a host', () => {
-    UNSAFE_TEST_ONLY_setSshHostAliases(new Map([['gh-personal', 'github.com']]));
-    try {
-      const result = respellAttachmentScopeEntries(record([repo('gh-personal/acme/app')]));
-      expect(result.respelled).toStrictEqual([{ from: 'gh-personal/acme/app', to: FOLDED }]);
-    } finally {
-      UNSAFE_TEST_ONLY_setSshHostAliases(new Map());
-    }
   });
 
   it('leaves a record whose keys are already canonical untouched, by reference', () => {

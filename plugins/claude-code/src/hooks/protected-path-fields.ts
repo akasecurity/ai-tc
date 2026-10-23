@@ -33,7 +33,8 @@ export const PROTECTED_PATH_TEXT_PREFIX = 'protected-path-access:';
 const PROTECTED_PATH_SEGMENT = '<protected-path>';
 
 // One capture per field, so a command naming a hundred files costs a bounded
-// number of them. The rest are reported once the first few are.
+// number of them. This bounds how many matching paths one call reports; any
+// match already yields a finding, so the decision does not depend on the rest.
 const MAX_FIELDS = 16;
 
 /** The tools whose input is checked against the protected-path list. */

@@ -78,6 +78,7 @@ folders and files off-limits, add them to `protectedPaths` in `~/.aka/settings/s
 - Matching ignores case, treats `\` and `/` alike, resolves `.` and `..`, places a relative path
   against the session's directory, and follows symlinks.
 
+Unless the `command-risk` pack's policy blocks, a protected path warns rather than stops the call.
 A Read, Grep, Glob or Bash call that names a protected path becomes a finding of
 `command-risk/protected-path-access`, handled by the `command-risk` pack's policy like any other
 finding (warn on a first install; block under a block policy; a redact follows the redact
@@ -86,7 +87,7 @@ path-like words (`cat`, `cp`, `scp`, `tar`, `curl -T` and `--data @file`, redire
 commands inside `$(…)` and `sh -c`). It cannot see a path built from a variable other than `$HOME`
 or by a subshell, a glob the shell expands, a directory entered with `cd`, or anything a script
 computes at run time, and a Grep or Glob over a parent of a protected file is not expanded. It is
-a screen over what a call says, not a sandbox. While the list is non-empty every Read and Grep
+a screen over what a call says, not a sandbox. While the list is non-empty every Read, Grep and Glob
 starts the hook, which costs about a tenth of a second per call.
 
 It also adds slash commands for reports and setup (`/aka:health`, `/aka:findings`, `/aka:dashboard`, and more).

@@ -1509,7 +1509,7 @@ describe('protectedPaths', () => {
     expect(WorkspaceSettings.parse(JSON.parse(JSON.stringify(parsed)))).toEqual(parsed);
   });
 
-  it('keeps a list at the bounds and reads one past them as no list', () => {
+  it('keeps a list at the bounds and cuts or drops what is past them', () => {
     const atLimit = Array.from({ length: MAX_PROTECTED_PATH_ENTRIES }, (_, i) => `/p/${String(i)}`);
     expect(protectedPathsOf(WorkspaceSettings.parse({ protectedPaths: atLimit }))).toHaveLength(
       MAX_PROTECTED_PATH_ENTRIES,
@@ -1520,13 +1520,22 @@ describe('protectedPaths', () => {
     ]);
     expect(
       protectedPathsOf(WorkspaceSettings.parse({ protectedPaths: [...atLimit, '/one/more'] })),
-    ).toEqual([]);
+    ).toEqual(atLimit);
     expect(protectedPathsOf(WorkspaceSettings.parse({ protectedPaths: [`${longest}x`] }))).toEqual(
       [],
     );
   });
 
-  it('reads a malformed list as none without losing the rest of the file', () => {
+  it('drops a bad entry on its own and keeps the rest of the list', () => {
+    const parsed = WorkspaceSettings.parse({
+      policy: 'warn',
+      protectedPaths: ['~/Documents', '', '   ', 1, null, 'x'.repeat(5000), ' /secrets '],
+    });
+    expect(parsed.policy).toBe('warn');
+    expect(protectedPathsOf(parsed)).toEqual(['~/Documents', '/secrets']);
+  });
+
+  it('reads a value that is not a list as none without losing the rest of the file', () => {
     for (const bad of [[''], ['   '], [1], 'not-a-list', { a: 1 }, null]) {
       const parsed = WorkspaceSettings.parse({ policy: 'warn', protectedPaths: bad });
       expect(parsed.policy, JSON.stringify(bad)).toBe('warn');

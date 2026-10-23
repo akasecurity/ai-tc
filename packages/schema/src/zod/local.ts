@@ -778,7 +778,17 @@ export const MAX_PROTECTED_PATH_ENTRY_CHARS = 1024;
 export const ProtectedPathEntry = z.string().trim().min(1).max(MAX_PROTECTED_PATH_ENTRY_CHARS);
 export type ProtectedPathEntry = z.infer<typeof ProtectedPathEntry>;
 
-export const ProtectedPaths = z.array(ProtectedPathEntry).max(MAX_PROTECTED_PATH_ENTRIES);
+// Each entry is judged on its own: one that is not a string, is blank, or is over
+// the length bound is dropped, and the list is cut at the entry cap, so one bad
+// entry never costs the others their protection.
+export const ProtectedPaths = z.array(z.unknown()).transform((entries) =>
+  entries
+    .flatMap((entry) => {
+      const parsed = ProtectedPathEntry.safeParse(entry);
+      return parsed.success ? [parsed.data] : [];
+    })
+    .slice(0, MAX_PROTECTED_PATH_ENTRIES),
+);
 export type ProtectedPaths = z.infer<typeof ProtectedPaths>;
 
 export const WorkspaceSettings = z.object({
@@ -877,10 +887,10 @@ export const WorkspaceSettings = z.object({
   // the command-risk pack's policy. Absent means none are protected, and
   // protectedPathsOf is the one reader.
   //
-  // `.catch(undefined)` reads a list this schema cannot parse (an over-long
-  // list, an entry that is not a string) as no list. A settings.json that
+  // A bad entry is dropped on its own (see ProtectedPaths); `.catch(undefined)`
+  // reads a value that is not a list at all as no list. A settings.json that
   // fails this schema reads as the unonboarded defaults, and the next save
-  // writes those back over it, so one bad entry must not cost every other
+  // writes those back over it, so a malformed value must not cost every other
   // setting. Not a ManagedSettingKey.
   protectedPaths: ProtectedPaths.optional().catch(undefined),
 });

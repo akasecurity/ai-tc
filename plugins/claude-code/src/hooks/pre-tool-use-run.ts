@@ -471,7 +471,11 @@ function protectedFieldsOf(
       cwd,
       realpath: realpathBestEffort,
     });
-  } catch {
+  } catch (error) {
+    process.stderr.write(
+      `[aka] protected paths could not be evaluated for this call: ${error instanceof Error ? error.message : String(error)}. ` +
+        'The call proceeds.\n',
+    );
     return [];
   }
 }

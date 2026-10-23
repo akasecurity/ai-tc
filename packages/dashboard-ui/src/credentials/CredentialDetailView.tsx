@@ -11,7 +11,7 @@ import { PROVIDERS } from '../shared/Provider.tsx';
 import { RefusalReason, refusedControlProps } from '../shared/Refusal.tsx';
 import { credentialLabel, credentialName } from './name.ts';
 import { RotationEditor } from './RotationEditor.tsx';
-import { CREDENTIAL_STATUS } from './status.ts';
+import { credentialStatusLabel } from './status.ts';
 import type { CredentialDetailModel, CredentialRotationInput } from './types.ts';
 
 export interface CredentialDetailViewProps {
@@ -272,7 +272,7 @@ export function CredentialDetailView({
             {c.kind}
             {c.statuses.map((s) => (
               <Badge key={s} variant="medium">
-                {CREDENTIAL_STATUS[s].label}
+                {credentialStatusLabel(s)}
               </Badge>
             ))}
           </div>

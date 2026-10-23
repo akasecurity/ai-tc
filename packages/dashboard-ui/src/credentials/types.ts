@@ -22,7 +22,10 @@ export interface CredentialListItem {
   projectCount: number;
   teamCount: number;
   endpointCount: number;
-  /** ISO date or time it was last rotated; null when nobody has said. */
+  /**
+   * ISO date or time it was last rotated; null when nobody has said. The
+   * rotation editor saves it as a date, so a time it carries is dropped on save.
+   */
   lastRotated: string | null;
   /** ISO time it was last seen. */
   lastSeen: string;

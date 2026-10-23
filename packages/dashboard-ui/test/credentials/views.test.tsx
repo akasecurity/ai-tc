@@ -1,5 +1,9 @@
 // @vitest-environment jsdom
-import { CREDENTIAL_LABEL_MAX_LENGTH } from '@akasecurity/schema';
+import {
+  CREDENTIAL_LABEL_MAX_LENGTH,
+  CREDENTIAL_OWNER_MAX_LENGTH,
+  type CredentialStatus,
+} from '@akasecurity/schema';
 import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -163,6 +167,17 @@ describe('CredentialsListView', () => {
     list({ onStatus: vi.fn() });
     expect(chip('All')?.textContent).toBe('All');
     expect(chip('Rotation overdue')?.textContent).toBe('Rotation overdue');
+  });
+
+  it('shows a status this build does not know as sent, rather than failing the list', () => {
+    list({ items: [{ ...ITEM, statuses: ['broadly_shared' as unknown as CredentialStatus] }] });
+    expect(mounted.host.querySelectorAll('tbody td')[7]?.textContent).toBe('broadly_shared');
+  });
+
+  it('ignores a status filter passed without chips, which would strand the reader', () => {
+    list({ items: [], total: 0, status: 'rotation_overdue' });
+    expect(text()).toContain('No credentials have been seen yet');
+    expect(text()).not.toContain('rotation overdue');
   });
 
   it('says no credential carries the status when the chip matches nothing', () => {
@@ -651,17 +666,75 @@ describe('CredentialDetailView', () => {
       expect(alert()).toBe(message);
     });
 
-    it('refuses a last rotation in the future, and accepts today', () => {
+    // RENDERED_AT is 12:00 UTC on 2026-10-21, so one day ahead reaches 12:00 on the 22nd.
+    it.each([
+      ['today', '2026-10-21'],
+      ['the next day, which is within a day of the render', '2026-10-22'],
+    ])('accepts a last rotation on %s', (_name, value) => {
       detail(DETAIL, { onSaveRotation: vi.fn<Save>() });
       act(() => {
         button('Edit rotation')?.click();
       });
-      fill('Last rotated', '2026-10-25');
-      expect(button('Save')?.disabled).toBe(true);
-      expect(alert()).toBe('The last rotation cannot be in the future.');
-      fill('Last rotated', '2026-10-21');
+      fill('Last rotated', value);
       expect(button('Save')?.disabled).toBe(false);
       expect(alert()).toBeUndefined();
+    });
+
+    it('refuses a last rotation two days ahead', () => {
+      detail(DETAIL, { onSaveRotation: vi.fn<Save>() });
+      act(() => {
+        button('Edit rotation')?.click();
+      });
+      fill('Last rotated', '2026-10-23');
+      expect(button('Save')?.disabled).toBe(true);
+      expect(alert()).toBe('The last rotation cannot be more than a day ahead.');
+    });
+
+    // A date input clears a value it cannot parse, so these reach the editor from the host.
+    it.each([
+      ['not a date', 'not-a-date'],
+      ['an impossible day', '2026-02-30'],
+      ['a month past December', '2026-13-01'],
+    ])('refuses a last rotation the host hands in that is %s', (_name, value) => {
+      detail({ ...DETAIL, lastRotated: value }, { onSaveRotation: vi.fn<Save>() });
+      act(() => {
+        button('Edit rotation')?.click();
+      });
+      expect(button('Save')?.disabled).toBe(true);
+      expect(alert()).toBe('Enter the last rotation as a date.');
+    });
+
+    it.each([['1'], ['3650']])('accepts a policy of %s days, at the bound', async (value) => {
+      const onSaveRotation = vi.fn<Save>().mockResolvedValue();
+      detail(DETAIL, { onSaveRotation });
+      act(() => {
+        button('Edit rotation')?.click();
+      });
+      fill('Rotation policy in days', value);
+      expect(alert()).toBeUndefined();
+      await submit();
+      expect(onSaveRotation).toHaveBeenLastCalledWith(
+        expect.objectContaining({ rotationPolicyDays: Number(value) }),
+      );
+    });
+
+    it('refuses an owner the host hands in over the bound, measured after trimming', () => {
+      const long = 'x'.repeat(CREDENTIAL_OWNER_MAX_LENGTH + 1);
+      detail({ ...DETAIL, owner: long }, { onSaveRotation: vi.fn<Save>() });
+      act(() => {
+        button('Edit rotation')?.click();
+      });
+      expect(button('Save')?.disabled).toBe(true);
+      expect(alert()).toBe(
+        `Owners are limited to ${String(CREDENTIAL_OWNER_MAX_LENGTH)} characters.`,
+      );
+      fill('Owner', `  ${'x'.repeat(CREDENTIAL_OWNER_MAX_LENGTH)}  `);
+      expect(button('Save')?.disabled).toBe(false);
+    });
+
+    it('shows a status this build does not know as sent', () => {
+      detail({ ...DETAIL, statuses: ['broadly_shared' as unknown as CredentialStatus] });
+      expect(text()).toContain('broadly_shared');
     });
 
     it('shows the control locked with the reason when the reader may not edit it', () => {

@@ -50,11 +50,15 @@ function parseDraft(
   const date = draft.lastRotated;
   if (date !== '') {
     const at = Date.parse(`${date}T00:00:00.000Z`);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(at)) {
+    // Date.parse rolls an impossible day such as 02-30 into the next month, so the
+    // date must survive a round trip to be a real calendar day.
+    if (Number.isNaN(at) || new Date(at).toISOString().slice(0, 10) !== date) {
       return { problem: 'Enter the last rotation as a date.' };
     }
     // One day of slack for a reader ahead of UTC.
-    if (at > renderedAt + DAY_MS) return { problem: 'The last rotation cannot be in the future.' };
+    if (at > renderedAt + DAY_MS) {
+      return { problem: 'The last rotation cannot be more than a day ahead.' };
+    }
   }
   return {
     input: {

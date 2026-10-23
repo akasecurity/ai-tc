@@ -9,7 +9,8 @@ import * as z from 'zod';
 export const CredentialStatus = z.enum(['rotation_overdue']).meta({ id: 'CredentialStatus' });
 export type CredentialStatus = z.infer<typeof CredentialStatus>;
 
-// The longest owner a credential may carry, measured after trimming.
+// The longest owner a credential may carry, measured after trimming. An input
+// capped at this length caps the untrimmed text, which is the stricter of the two.
 export const CREDENTIAL_OWNER_MAX_LENGTH = 120;
 
 // A rotation policy is a whole number of days in this range.

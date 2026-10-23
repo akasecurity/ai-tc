@@ -21,14 +21,17 @@ import { Ico } from '../inventory/Ico.tsx';
 import { relativeTime } from '../lib/relativeTime.ts';
 import { SearchField } from '../shared/SearchField.tsx';
 import { credentialLabel, credentialName } from './name.ts';
-import { CREDENTIAL_STATUS } from './status.ts';
+import { CREDENTIAL_STATUS, credentialStatusLabel } from './status.ts';
 import type { CredentialListItem, CredentialStatusCounts } from './types.ts';
 
 export interface CredentialsListViewProps {
   items: CredentialListItem[];
   /** Credentials matching the search and the status chip across every page. */
   total: number;
-  /** The status chip that is on; null is All. */
+  /**
+   * The status chip that is on; null is All. Pass it with `onStatus`: without
+   * chips the reader has no way back to All, so the view then ignores it.
+   */
   status?: CredentialStatus | null | undefined;
   /** Picks a chip; null is All. Omit it and no chips are shown. */
   onStatus?: ((status: CredentialStatus | null) => void) | undefined;
@@ -77,7 +80,7 @@ const NUMERIC = new Set<string>(['Projects', 'Teams', 'Endpoints']);
 export function CredentialsListView({
   items,
   total,
-  status = null,
+  status: statusProp = null,
   onStatus,
   statusCounts,
   search,
@@ -95,6 +98,7 @@ export function CredentialsListView({
   error,
   renderedAt,
 }: CredentialsListViewProps) {
+  const status = onStatus === undefined ? null : statusProp;
   const refused = error !== undefined;
   const loadingEmpty = isLoading && items.length === 0;
   // An empty page past the first means rows moved under the cursor, not an empty ledger.
@@ -212,7 +216,7 @@ export function CredentialsListView({
                     <span className="inline-flex flex-wrap gap-1.5">
                       {item.statuses.map((s) => (
                         <Badge key={s} variant="medium">
-                          {CREDENTIAL_STATUS[s].label}
+                          {credentialStatusLabel(s)}
                         </Badge>
                       ))}
                     </span>

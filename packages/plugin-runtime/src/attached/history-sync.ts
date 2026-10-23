@@ -37,6 +37,7 @@ import type { HistorySyncOutcome } from './history-state.ts';
 import type { CaptureIdentity, OutboundEncoder } from './outbound-encoder.ts';
 import { createStoreOutboundEncoder, storeEffectiveRules } from './outbound-encoder.ts';
 import { withScopedRepo } from './scoped-repo.ts';
+import { withRedactedTarget } from './wire-target.ts';
 
 /**
  * Longer than the transport's own 10s default, and longer than any hook budget.
@@ -568,6 +569,7 @@ export async function runHistorySync(
         backlogBefore,
         liveScope,
         encodeCapture: (event, identity) => encoder.encodeEvent(event, identity),
+        redactTarget: (text) => encoder.redactContent(text),
       };
       if (!granted) {
         const owedLive = await drainOwedLive({ ...drainDeps, liveOwedSince: attachedAtMs });
@@ -645,6 +647,11 @@ interface DrainDeps {
     event: IngestEvent,
     identity: CaptureIdentity,
   ) => Promise<IngestEvent | undefined>;
+  /**
+   * The redaction every structural row's tool-call target passes through before
+   * it is sent. Undefined leaves the target off the request.
+   */
+  redactTarget: (text: string) => Promise<string | undefined>;
   /**
    * Set for a pass without the history grant: the capture lane then reads only
    * what the live path marked owed at or after this instant.
@@ -778,7 +785,7 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
             skipped += 1;
             continue;
           }
-          ready.push({ id: row.id, event });
+          ready.push({ id: row.id, event: await withRedactedTarget(event, d.redactTarget) });
         }
 
         // BATCHED WITHIN ONE SESSION, never across two. The rows arrive root

@@ -95,7 +95,7 @@ deadline. Each sits inside whatever would otherwise answer for that path first:
   event has a prompt-stop or result-withhold channel this package has confirmed, so a field
   that comes back `scanIncomplete` is reported on the notice channel as too large to scan
   (`unscannedTooLargeMessage` in `plugins/copilot/src/exception-guidance.ts`) — never
-  refused, and never treated as clean.
+  refused, never treated as clean, and counted in the hook fail-open tally.
 - **The browser extension's native host** (`captureLargeInput` in
   `plugins/browser-extension/src/native-host/host.ts`): 2 s from when it receives a prompt
   capture, with a 500 ms worker start budget drawn from it, because `background.ts`

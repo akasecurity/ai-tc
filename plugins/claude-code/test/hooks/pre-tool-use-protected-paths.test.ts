@@ -211,6 +211,18 @@ describe('protected paths in a PreToolUse call', () => {
     expect(await run('Read', protectedRead())).toEqual([]);
   });
 
+  it('writes no evaluation notice when the list is evaluated normally', async () => {
+    configure('block', { protectedPaths: ['~/Documents'] });
+    const stderr: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      stderr.push(String(chunk));
+      return true;
+    });
+    expect(decisionOf(await run('Read', protectedRead()))).toBe('deny');
+    expect(await run('Read', { file_path: join(proj, 'a.txt') })).toEqual([]);
+    expect(stderr.join('')).not.toContain('[aka] protected paths');
+  });
+
   it('fails open and says so on stderr when the list cannot be evaluated', async () => {
     configure('block', { protectedPaths: ['~/Documents'] });
     const stderr: string[] = [];

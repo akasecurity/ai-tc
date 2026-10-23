@@ -458,6 +458,28 @@ export interface HookHandlerOptions {
    * racing a slow scan.
    */
   scanWorkerUrl?: URL | undefined;
+  /**
+   * Counts one partial scan in the hook fail-open tally. Defaults to
+   * {@link spawnFailOpenCount}, the detached child a fail-open exit is counted
+   * through, so the count never holds the hook up.
+   */
+  countFailOpen?: (() => void) | undefined;
+}
+
+/**
+ * Count content the host received with part of it unscanned, in the same
+ * tally a fail-open exit is counted in.
+ *
+ * Called on the SUCCESS path, by a hook that goes on to emit what it decided
+ * about the part it did scan — so it never throws, since a throw here would
+ * cost the hook that answer. Stdout and the exit code are untouched.
+ */
+export function countFailOpen(count: () => void = spawnFailOpenCount): void {
+  try {
+    count();
+  } catch {
+    // A partial scan that cannot be counted is still a partial scan.
+  }
 }
 
 /**

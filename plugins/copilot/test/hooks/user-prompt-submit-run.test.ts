@@ -325,6 +325,47 @@ describe.each(DIALECTS)('runUserPromptSubmit on the $kind dialect', (d) => {
   );
 });
 
+// A prompt whose scan did not finish was sent with no verdict on it, since
+// neither host can stop a prompt, so it is counted in the hook fail-open tally
+// `aka status` renders; a prompt scanned in full is not.
+describe.each(DIALECTS)(
+  'runUserPromptSubmit counts an unscanned prompt on the $kind dialect',
+  (d) => {
+    async function count(prompt: string, options: { scanWorkerUrl?: URL } = {}): Promise<number> {
+      let calls = 0;
+      await runUserPromptSubmit(d.event, JSON.stringify(d.payload(prompt, cwd)), {
+        akaHome,
+        ...options,
+        countFailOpen: () => {
+          calls += 1;
+        },
+      });
+      return calls;
+    }
+
+    it('counts nothing for a prompt scanned in full, finding or not', async () => {
+      seedPolicy('warn');
+      expect(await count(`deploy ${FIXTURE.example}`)).toBe(0);
+      expect(await count('nothing to see here')).toBe(0);
+      // Positive control: both prompts really were scanned and recorded.
+      expect(promptRows()).toHaveLength(2);
+      expect(findingRows().map((r) => r.rule_id)).toEqual([RULE_ID]);
+    });
+
+    it('counts one when the prompt is too large to scan in time', async () => {
+      seedPolicy('warn');
+      const filler = 'lorem ipsum dolor sit amet '.repeat(
+        Math.ceil(LARGE_INPUT_THRESHOLD_CHARS / 27),
+      );
+      const absent = pathToFileURL(join(root, 'no-worker-here', 'scan-worker.js'));
+      expect(await count(filler, { scanWorkerUrl: absent })).toBe(1);
+      // Positive control: the prompt really was refused rather than scanned.
+      const attrs = JSON.parse(String(promptRows()[0]?.attributes)) as Record<string, unknown>;
+      expect(['unavailable', 'timeout']).toContain(attrs.scan_incomplete);
+    });
+  },
+);
+
 describe('runUserPromptSubmit declines without opening the store', () => {
   const cli = (prompt: string): string =>
     JSON.stringify({ ...fixture('cli', 'userPromptSubmitted.json'), prompt, cwd });

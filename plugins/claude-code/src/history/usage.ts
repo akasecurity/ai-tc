@@ -30,6 +30,7 @@ import {
   scopeKeyMemo,
   sessionRootScopeKey,
   toolCallScopeKey,
+  truncateTarget,
 } from '@akasecurity/plugin-sdk';
 import type { AttributionResult } from '@akasecurity/plugin-sdk/account';
 import {
@@ -78,15 +79,6 @@ import {
 // climbing into the reconciler's own git root). The filesystem root has no `.git`,
 // so the git-root walk from here terminates at `/` with no match.
 const NO_PROJECT_CWD = '/nonexistent/aka-reconciler/no-project';
-
-// The longest (masked) tool target we store — a Bash heredoc or an MCP payload can be
-// huge, and the point is "which call", not the whole body. Applied AFTER masking (see
-// `reconcileSessionToolCalls`) so a truncated redaction marker leaks nothing, whereas
-// truncating the RAW target first could split a secret across the cap and leak its
-// unmasked prefix.
-const MAX_TARGET_LEN = 500;
-const truncateTarget = (s: string): string =>
-  s.length > MAX_TARGET_LEN ? `${s.slice(0, MAX_TARGET_LEN)}…` : s;
 
 // The reconciler's `ensureInventory` can win the hourly posture throttle just
 // as SessionStart's can, so its gateway resolution carries the same build

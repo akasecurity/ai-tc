@@ -980,6 +980,15 @@ it is read; its content is scanned afterwards like any tool output. `Glob`,
 checked before they run. A redact on a path follows the redact fallback above,
 because a masked path reads a different file.
 
+**A user-chosen list of protected paths extends that check to any file.** Folders and file
+name globs in `protectedPaths` in `~/.aka/settings/settings.json` (none by default) are checked
+before a `Read`, `Grep`, `Glob` or `Bash` call runs: a path they cover, spelled in the call or
+found among the words of a shell command, matches `command-risk/protected-path-access`, which
+follows the `command-risk` pack's policy and the redact fallback like the credential rule above.
+A shell command is screened as text, so a path built from a variable other than `$HOME`, from a
+subshell or from a glob the shell expands is not seen, and a `Grep` or `Glob` over a parent
+directory is not expanded. The plugin's README documents the entry syntax.
+
 **Tool OUTPUT is scanned for `Bash`, `Read`, `WebFetch`, `Grep` and every
 `mcp__*` tool, and for no other tool.** `Glob`'s file list, for example, reaches
 the model unscanned. On `Grep` the matching lines (and the per-file counts of

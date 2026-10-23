@@ -139,6 +139,13 @@ export type { PostureChange } from './posture.ts';
 export { applyCategoryPosture, detectPostureChanges, severityFloorPosture } from './posture.ts';
 export type { ProjectWalkBounds } from './project-files.ts';
 export { PROJECT_WALK_BOUNDS, resolveProjectFiles } from './project-files.ts';
+export type { CompiledProtectedPaths, ProtectedPathEnv } from './protected-paths.ts';
+export {
+  bashPathCandidates,
+  compileProtectedPaths,
+  protectedPathMatches,
+  realpathBestEffort,
+} from './protected-paths.ts';
 export type { Provider, ProviderOrUnknown, ResolvedProvider } from './provider.ts';
 export { providerFromModelId, resolveProvider } from './provider.ts';
 export type {

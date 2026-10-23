@@ -56,7 +56,11 @@ export type SightingShareMode = 'standalone' | AttachmentMode;
  *   not-opted-in      the user has not granted the consent
  */
 export type SightingShareReason =
-  'standalone' | 'managed-required' | 'managed-denied' | 'opted-in' | 'not-opted-in';
+  | 'standalone'
+  | 'managed-required'
+  | 'managed-denied'
+  | 'opted-in'
+  | 'not-opted-in';
 
 export interface SightingSharing {
   mode: SightingShareMode;

@@ -182,7 +182,9 @@ export function toBlockedDetectionDescriptor(row: BlockedDetection): BlockedDete
  * about a key that did not change.
  */
 export type FingerprintKeyState =
-  { status: 'present'; version: number } | { status: 'absent' } | { status: 'unreadable' };
+  | { status: 'present'; version: number }
+  | { status: 'absent' }
+  | { status: 'unreadable' };
 
 /**
  * Whether a stored fingerprint — an exception grant, or a blocked-ledger row —

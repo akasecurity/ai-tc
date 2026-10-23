@@ -228,6 +228,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'resolveRepoAttribution',
   'resolveRepoIdentity',
   'resolveRepoNwo',
+  'resolveSupersededProjectUrls',
   'resolveWorktreeRoot',
   'rotateFingerprintKey',
   'ruleProbeKey',

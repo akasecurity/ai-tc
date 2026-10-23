@@ -334,7 +334,7 @@ describe('the SQLITE_FULL fail-open branch', () => {
 
 describe('running out of room mid-migration', () => {
   // The MIGRATION is this describe's subject, which is the exclusion
-  // CLAUDE.md names outright: a pre-migrated store has nothing left to
+  // conventions/testing.md names outright: a pre-migrated store has nothing left to
   // migrate, so every assertion here would hold vacuously.
   const store = useTempStore('aka-fault-diskfull-migrate-');
 

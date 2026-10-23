@@ -35,9 +35,9 @@ const ACCEPTED: [string, string, string][] = [
   ],
   ['a typed canonical key', KEY, KEY],
   [
-    'a typed key whose path keeps its case',
-    'github.com/Acme/Payments-API',
-    'github.com/Acme/Payments-API',
+    'a typed key whose path keeps its case on a host that folds none',
+    'git.example.com/Acme/Payments-API',
+    'git.example.com/Acme/Payments-API',
   ],
   ['a typed key in surrounding whitespace', `  ${KEY}  `, KEY],
   [

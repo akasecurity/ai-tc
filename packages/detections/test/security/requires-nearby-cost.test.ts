@@ -7,7 +7,7 @@ import { scan } from '../../src/index.ts';
 import { SOFT_HYPHEN, ZWSP } from '../helpers/format-chars.ts';
 import { loadRule, RULES_DIR } from '../helpers/rules.ts';
 
-// COUNTED, not timed (see the CLAUDE.md note on fixed wall-clock ceilings): the
+// COUNTED, not timed (see the conventions/testing.md note on fixed wall-clock ceilings): the
 // proximity gate must map a candidate into normalized coordinates once per
 // candidate, never once per pair of candidates. The count is taken by wrapping
 // the one function that does the mapping, with the real implementation still

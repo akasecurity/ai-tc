@@ -913,8 +913,8 @@ function closeServer(server) {
   });
 }
 
-// CLAUDE.md enumerates the outcomes this block pins, and prose is guarded by
-// nothing on its own. That file makes the point against itself in §1 — the
+// conventions/process-env-and-network.md enumerates the outcomes this block pins, and prose is guarded by
+// nothing on its own. CLAUDE.md makes the point against itself in §1 — the
 // `emit()` sentence "claimed four shapes while six were reaching stdout", and
 // the fix it names is `hook-output-shapes.test.ts`, which reads the prose and
 // drives it against the thing it describes. This is that, for this sentence.
@@ -972,7 +972,7 @@ function pinnedCaseTitles() {
   return [...block.matchAll(/\n {2}it(?:\.for\([^)]*\))?\(\s*'([^']+)'/g)].map((m) => m[1]);
 }
 
-describe("CLAUDE.md's enumeration of what this suite pins", () => {
+describe("the conventions' enumeration of what this suite pins", () => {
   // Whitespace-normalised, because the doc is prose wrapped at a column and a
   // phrase spans the wrap wherever it happens to fall. Matching the raw text
   // makes this guard fail on a REFLOW — which it did, on the first run, for the

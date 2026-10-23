@@ -13,6 +13,7 @@ import { describe, expect, it } from 'vitest';
 import {
   canonicalRepoUrl,
   hashProjectKey,
+  PROJECT_KEY_DIGEST_VERSION,
   scopeKeyOfProjectKey,
   toEgressIngestRequest,
 } from '../src/egress-wire.ts';
@@ -20,6 +21,21 @@ import { resolvedHit as hit } from './helpers/egress-hits.ts';
 import { expectNoEchoOf } from './helpers/no-echo.ts';
 
 const HEX_64 = /^[0-9a-f]{64}$/;
+
+// The version is DERIVED above rather than spelled into each expectation, so a
+// bump is one edit — but then nothing would notice a bump nobody meant. This is
+// that pin, and it is the whole point of the constant: moving it re-buckets
+// every project on the receiving side, so it moves only when the canonical form
+// does, and only as a deliberate act.
+//
+// v2 → v3 when a path began folding on a case-insensitive forge. A change to
+// the canonical form without a bump here is the silent re-bucketing the
+// constant exists to prevent.
+describe('PROJECT_KEY_DIGEST_VERSION', () => {
+  it('is the version this build stamps into every project digest', () => {
+    expect(PROJECT_KEY_DIGEST_VERSION).toBe('v3');
+  });
+});
 
 const input = (over: Partial<RecordProjectEgressInput> = {}): RecordProjectEgressInput => ({
   projectKey: 'git:github.com/acme/widgets',
@@ -73,7 +89,9 @@ const BACKSLASH = String.fromCharCode(92);
 // The digest of a canonical string, from the documented construction rather
 // than through hashProjectKey, so a case can state what the digest was handed.
 const digestOver = (canonical: string): string =>
-  createHash('sha256').update(`v2:git:${canonical}`, 'utf8').digest('hex');
+  createHash('sha256')
+    .update(`${PROJECT_KEY_DIGEST_VERSION}:git:${canonical}`, 'utf8')
+    .digest('hex');
 
 // The four spellings one repository really produces, depending only on how it
 // was cloned. Two engineers on the same repo land in the same project only if
@@ -224,7 +242,7 @@ describe('hashProjectKey — cross-device convergence', () => {
     // independently of `hashProjectKey`, so "returned untouched" is stated as a
     // construction rather than inferred from two calls agreeing.
     const untouched = (key: string): string =>
-      createHash('sha256').update(`v2:${key}`, 'utf8').digest('hex');
+      createHash('sha256').update(`${PROJECT_KEY_DIGEST_VERSION}:${key}`, 'utf8').digest('hex');
     // The empty-authority form, built the way the platform spells it: a drive
     // lands after the third slash on Windows, and the URL is still `file://`.
     const LOCAL = pathToFileURL('/srv/repos/demo').href;
@@ -279,13 +297,15 @@ describe('hashProjectKey — cross-device convergence', () => {
     // an independent computation of the documented input rather than a copied
     // literal, so it states the construction rather than freezing an output.
     const expected = createHash('sha256')
-      .update('v2:git:github.com/acme/widgets', 'utf8')
+      .update(`${PROJECT_KEY_DIGEST_VERSION}:git:github.com/acme/widgets`, 'utf8')
       .digest('hex');
     expect(hashProjectKey(`git:${gitUser}github.com:acme/widgets.git`)).toBe(expected);
   });
 
   it.each(DIGESTED_AS)('digests %s over exactly its canonical string', (_label, url, canonical) => {
-    const expected = createHash('sha256').update(`v2:git:${canonical}`, 'utf8').digest('hex');
+    const expected = createHash('sha256')
+      .update(`${PROJECT_KEY_DIGEST_VERSION}:git:${canonical}`, 'utf8')
+      .digest('hex');
     expect(hashProjectKey(`git:${url}`)).toBe(expected);
   });
 });
@@ -327,12 +347,19 @@ describe('canonicalRepoUrl', () => {
     expect(canonicalRepoUrl(url)).toBe('github.com/org/repo');
   });
 
-  it('keeps path case, so a differently-cased path is a different key', () => {
+  it('keeps path case on a host not known to fold it', () => {
     // The opposite of the host rule, for the reason canonicalGitUrl gives: a
     // forge on a case-sensitive filesystem can host both, and merging them would
     // forward one repository because the other was enrolled.
-    expect(canonicalRepoUrl('https://github.com/Org/Repo')).toBe('github.com/Org/Repo');
-    expect(canonicalRepoUrl('https://github.com/Org/Repo')).not.toBe(
+    expect(canonicalRepoUrl('https://git.example.com/Org/Repo')).toBe('git.example.com/Org/Repo');
+    expect(canonicalRepoUrl('https://git.example.com/Org/Repo')).not.toBe(
+      canonicalRepoUrl('https://git.example.com/org/repo'),
+    );
+  });
+
+  it('folds path case on a forge that ignores it, so one repository has one key', () => {
+    expect(canonicalRepoUrl('https://github.com/Org/Repo')).toBe('github.com/org/repo');
+    expect(canonicalRepoUrl('https://github.com/Org/Repo')).toBe(
       canonicalRepoUrl('https://github.com/org/repo'),
     );
   });

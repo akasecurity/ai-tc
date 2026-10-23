@@ -64,6 +64,14 @@ export default [
     },
   },
   {
+    // The PreToolUse hook asks whether the host is serving a Remote Control
+    // session; the host marks that only in its own subprocess environment.
+    files: ['src/hooks/remote-session.ts'],
+    rules: {
+      'n/no-process-env': 'off',
+    },
+  },
+  {
     files: ['src/hooks/**/*.ts', 'src/mod/**/*.ts'],
     ignores: ['src/hooks/stamped-capture.ts'],
     rules: {

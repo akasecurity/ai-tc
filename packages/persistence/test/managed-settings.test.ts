@@ -79,7 +79,7 @@ describe('managedSettingsPaths — where an administrator puts the file', () => 
   it('gives each platform its own conventional administrative root', () => {
     // The FULL list per platform, not just the first entry. macOS has two, and
     // asserting only index 0 left the second location documented nowhere and
-    // pinned by nothing — which is how it went missing from CLAUDE.md.
+    // pinned by nothing — which is how it went missing from conventions/settings-lock.md.
     expect(managedSettingsPaths('darwin')).toEqual([
       '/Library/Application Support/AKASecurity/managed-settings.json',
       '/Library/Managed Preferences/managed-settings.json',

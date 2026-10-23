@@ -11,6 +11,7 @@ import {
   freshAttachmentScope,
   markCodingAgentEntries,
   removeAttachmentScopeEntries,
+  respellAttachmentScopeEntries,
   turnWorkSubscriptionsOff,
   turnWorkSubscriptionsOn,
   UnreadableAttachmentScopeError,
@@ -523,5 +524,194 @@ describe('the opt-out and the coding-agents marker through every edit', () => {
     expect(
       markCodingAgentEntries({ ...unmarked, workSubscriptions: 'off' }, ENDPOINT, [ACCOUNT]).next,
     ).toStrictEqual({ ...stored(), workSubscriptions: 'off', entries: [MARKED] });
+  });
+});
+
+// The sweep that re-keys a stored enrolment whose spelling this build no longer
+// stamps. Every case reads the WHOLE record back, like the editors above, and
+// several assert `next` is `raw` ITSELF — that reference identity is what a
+// caller skips its write on, so it is part of the contract rather than an
+// implementation detail.
+describe('respellAttachmentScopeEntries', () => {
+  const STALE_CASE = 'github.com/Acme/App';
+  const FOLDED = 'github.com/acme/app';
+  const CANONICAL = 'github.com/acme/payments-api';
+
+  const repo = (identity: string, rest: Record<string, unknown> = {}): Record<string, unknown> => ({
+    kind: 'repo',
+    identity,
+    label: `label for ${identity}`,
+    enrolledAt: ISO,
+    ...rest,
+  });
+  const record = (entries: readonly unknown[]): Record<string, unknown> => ({
+    endpoint: ENDPOINT,
+    tenantName: WHO.tenantName,
+    userEmail: WHO.userEmail,
+    entries,
+  });
+
+  it('re-keys a path-case spelling a case-insensitive forge no longer stamps', () => {
+    const raw = record([repo(STALE_CASE)]);
+    const result = respellAttachmentScopeEntries(raw);
+
+    expect(result.respelled).toStrictEqual([{ from: STALE_CASE, to: FOLDED }]);
+    // The label and the enrolment time ride along: the user enrolled this
+    // repository, and only the key they are filed under was wrong.
+    expect(result.next).toStrictEqual(
+      record([
+        { kind: 'repo', identity: FOLDED, label: `label for ${STALE_CASE}`, enrolledAt: ISO },
+      ]),
+    );
+  });
+
+  it('leaves a record whose keys are already canonical untouched, by reference', () => {
+    const raw = record([repo(CANONICAL)]);
+    const result = respellAttachmentScopeEntries(raw);
+
+    expect(result.respelled).toStrictEqual([]);
+    expect(result.next).toBe(raw);
+  });
+
+  it('is idempotent: a second pass over its own output finds nothing to do', () => {
+    const first = respellAttachmentScopeEntries(record([repo(STALE_CASE)]));
+    expect(first.respelled).toHaveLength(1);
+
+    const second = respellAttachmentScopeEntries(first.next);
+    expect(second.respelled).toStrictEqual([]);
+    expect(second.next).toBe(first.next);
+  });
+
+  it('leaves an account entry alone, however its identity would respell', () => {
+    const raw = record([{ kind: 'account', identity: STALE_CASE, enrolledAt: ISO }]);
+    const result = respellAttachmentScopeEntries(raw);
+
+    expect(result.respelled).toStrictEqual([]);
+    expect(result.next).toBe(raw);
+  });
+
+  it('leaves an entry whose kind this build does not know alone', () => {
+    // What its identity means there is not this build's to decide, and the
+    // build that wrote it reads and forwards it.
+    const raw = record([{ kind: 'workspace', identity: STALE_CASE, enrolledAt: ISO }]);
+    const result = respellAttachmentScopeEntries(raw);
+
+    expect(result.respelled).toStrictEqual([]);
+    expect(result.next).toBe(raw);
+  });
+
+  it('copies an entry it cannot read as found, beside one it re-keys', () => {
+    const unreadable = [7, null, { kind: 'repo' }, { kind: 'repo', identity: 42 }];
+    const result = respellAttachmentScopeEntries(record([...unreadable, repo(STALE_CASE)]));
+
+    expect(result.respelled).toStrictEqual([{ from: STALE_CASE, to: FOLDED }]);
+    expect(result.next).toStrictEqual(
+      record([
+        ...unreadable,
+        { kind: 'repo', identity: FOLDED, label: `label for ${STALE_CASE}`, enrolledAt: ISO },
+      ]),
+    );
+  });
+
+  it('folds a stale entry into the canonical one already standing, stale first', () => {
+    const result = respellAttachmentScopeEntries(record([repo(STALE_CASE), repo(FOLDED)]));
+
+    // Listed as respelled, because the record changed — but written once, and
+    // as the entry that was already right: that one carries the label and the
+    // timestamp set under the spelling that works.
+    expect(result.respelled).toStrictEqual([{ from: STALE_CASE, to: FOLDED }]);
+    expect(result.next).toStrictEqual(record([repo(FOLDED)]));
+  });
+
+  it('folds it the same way when the canonical entry sits first', () => {
+    const result = respellAttachmentScopeEntries(record([repo(FOLDED), repo(STALE_CASE)]));
+
+    expect(result.respelled).toStrictEqual([{ from: STALE_CASE, to: FOLDED }]);
+    expect(result.next).toStrictEqual(record([repo(FOLDED)]));
+  });
+
+  it('keeps the first of two stale entries converging on one key', () => {
+    const second = 'github.com/ACME/APP';
+    const result = respellAttachmentScopeEntries(record([repo(STALE_CASE), repo(second)]));
+
+    expect(result.respelled).toStrictEqual([
+      { from: STALE_CASE, to: FOLDED },
+      { from: second, to: FOLDED },
+    ]);
+    expect(result.next).toStrictEqual(
+      record([
+        { kind: 'repo', identity: FOLDED, label: `label for ${STALE_CASE}`, enrolledAt: ISO },
+      ]),
+    );
+  });
+
+  it('leaves a duplicate the record already held, which is not its to remove', () => {
+    const raw = record([repo(FOLDED), repo(FOLDED)]);
+    const result = respellAttachmentScopeEntries(raw);
+
+    expect(result.respelled).toStrictEqual([]);
+    expect(result.next).toBe(raw);
+  });
+
+  it('copies the envelope as found, unknown keys and the opt-out included', () => {
+    const result = respellAttachmentScopeEntries({
+      endpoint: ENDPOINT,
+      tenantName: WHO.tenantName,
+      userEmail: WHO.userEmail,
+      workSubscriptions: 'off',
+      somethingNewerBuildsWrite: { nested: true },
+      entries: [repo(STALE_CASE)],
+    });
+
+    expect(result.next).toStrictEqual({
+      endpoint: ENDPOINT,
+      tenantName: WHO.tenantName,
+      userEmail: WHO.userEmail,
+      workSubscriptions: 'off',
+      somethingNewerBuildsWrite: { nested: true },
+      entries: [
+        { kind: 'repo', identity: FOLDED, label: `label for ${STALE_CASE}`, enrolledAt: ISO },
+      ],
+    });
+  });
+
+  it('never mutates the record it was given', () => {
+    const raw = record([repo(STALE_CASE)]);
+    const before = structuredClone(raw);
+    respellAttachmentScopeEntries(raw);
+
+    expect(raw).toStrictEqual(before);
+  });
+
+  it('has nothing to do for a value that is not a record, or holds no entries', () => {
+    for (const raw of [undefined, null, 7, 'scope', [], { endpoint: ENDPOINT }]) {
+      const result = respellAttachmentScopeEntries(raw);
+      expect(result.respelled).toStrictEqual([]);
+      expect(result.next).toBe(raw);
+    }
+  });
+
+  it('leaves an identity carrying a transport alone rather than reading past it', () => {
+    // An identity is a key, and a key names no transport. Prefixing `ssh://`
+    // onto text that already carries one reads its port or its scp path as part
+    // of the host: `github.com:443/Acme/App` would re-key to
+    // `github.com/acme/app`, filing the enrolment under a key derived from
+    // something that was never a key. These are left for `aka status` to name.
+    const raw = record([repo('github.com:443/Acme/App'), repo('git@github.com:Acme/App.git')]);
+    const result = respellAttachmentScopeEntries(raw);
+
+    expect(result.respelled).toStrictEqual([]);
+    expect(result.next).toBe(raw);
+  });
+
+  it('leaves a repo entry no spelling can be worked out for, for status to name', () => {
+    // An owner's page, not a repository: one path segment, so nothing enrollable
+    // comes back. Caching a guess here would file the enrolment under a key no
+    // checkout stamps either.
+    const raw = record([repo('github.com/acme'), repo('../relative/path')]);
+    const result = respellAttachmentScopeEntries(raw);
+
+    expect(result.respelled).toStrictEqual([]);
+    expect(result.next).toBe(raw);
   });
 });

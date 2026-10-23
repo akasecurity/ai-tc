@@ -101,7 +101,6 @@ describe("the key's last segment is resolveRepo's slug on the keyed checkout", (
     `https://user${AT}github.com:443/org/repo/`,
     `ssh://${gitUser}github.com/org/repo.git`,
     'https://github.com/org/repo',
-    'https://github.com/Org/Repo',
     'https://gitlab.com/group/sub/project.git',
   ])('%s', (url) => {
     const key = canonicalRepoUrl(url);
@@ -116,9 +115,31 @@ describe("the key's last segment is resolveRepo's slug on the keyed checkout", (
   it.each([
     ['a trailing slash after .git', 'repo', 'repo.git', 'https://github.com/org/repo.git/'],
     ['a colon in the last path segment', 're:po', 'po', 'https://example.test/org/re:po'],
+    // A case-insensitive forge folds the key's path, so the segment is
+    // lowercase where the checkout's slug keeps the owner's spelling.
+    ['a capitalised path on a forge that folds it', 'repo', 'Repo', 'https://github.com/Org/Repo'],
   ])('%s: the key gives %s where resolveRepo gives %s', (_label, fromKey, fromSlug, url) => {
     expect(resolveRepo(checkoutWithRemote(url))).toBe(fromSlug);
     expect(withScopedRepo(EVENT, canonicalRepoUrl(url) ?? '').metadata?.repo).toBe(fromKey);
+  });
+
+  // ...but a real capture CARRIES the producer's slug, and that is the shape
+  // that reaches the wire. Two names equal but for case are the same
+  // repository, so the owner's spelling is kept rather than the folded key's —
+  // without this a repository called `MyApp` is reported as `myapp`.
+  it("keeps the producer's spelling where it differs from the key only by case", () => {
+    const event = { ...EVENT, metadata: { repo: 'Repo' } };
+    const key = canonicalRepoUrl('https://github.com/Org/Repo') ?? '';
+    expect(key).toBe('github.com/org/repo');
+    expect(withScopedRepo(event, key).metadata?.repo).toBe('Repo');
+  });
+
+  // The control: a slug naming ANOTHER repository is still replaced, which is
+  // the whole reason this function reads the key rather than the event.
+  it('still replaces a slug that names a different repository', () => {
+    const event = { ...EVENT, metadata: { repo: 'personal-notes' } };
+    const key = canonicalRepoUrl('https://github.com/Org/Repo') ?? '';
+    expect(withScopedRepo(event, key).metadata?.repo).toBe('repo');
   });
 });
 

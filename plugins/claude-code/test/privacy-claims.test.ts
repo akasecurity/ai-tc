@@ -788,7 +788,7 @@ describe.each(JUDGE_READMES)('$name judge payload disclosure', ({ text }) => {
   //
   // Copied per suite rather than shared: these surfaces sit behind different
   // package walls and word the same field differently, the same reason
-  // expectNoEchoOf is copied rather than imported (CLAUDE.md, Testing).
+  // expectNoEchoOf is copied rather than imported (conventions/testing.md).
   const FOOTNOTE_DISCLOSURE: Record<keyof typeof TriageHit.shape, RegExp | null> = {
     // "raw unmasked value" (root README) / "raw (unmasked) value" (plugin README).
     rawMatch: /raw \(?unmasked\)? value/i,
@@ -817,7 +817,7 @@ describe.each(JUDGE_READMES)('$name judge payload disclosure', ({ text }) => {
   );
 });
 
-// CLAUDE.md §4 lists the `aka <name>` dispatch among its child-process paths,
+// conventions/process-env-and-network.md lists the `aka <name>` dispatch among its child-process paths,
 // and it is one — but it is not a path AKA takes. The CLI execs a program the
 // user installed and named, so folding it into the footnote's count would imply
 // ai-tc sends something it does not, while omitting it entirely leaves that

@@ -1,7 +1,6 @@
 'use client';
 import { CredentialStatus } from '@akasecurity/schema';
 import {
-  Badge,
   Button,
   Card,
   cn,
@@ -20,9 +19,10 @@ import {
 import { Ico } from '../inventory/Ico.tsx';
 import { relativeTime } from '../lib/relativeTime.ts';
 import { SearchField } from '../shared/SearchField.tsx';
+import { CredentialStatusBadge } from './CredentialStatusBadge.tsx';
 import { credentialDismissReasonLabel } from './dismissal.ts';
 import { credentialLabel, credentialName } from './name.ts';
-import { CREDENTIAL_STATUS, credentialStatusLabel } from './status.ts';
+import { CREDENTIAL_STATUS, credentialStatusState } from './status.ts';
 import type { CredentialListItem, CredentialStatusCounts } from './types.ts';
 
 export interface CredentialsListViewProps {
@@ -185,7 +185,7 @@ export function CredentialsListView({
           {!emptyLedger
             ? 'These rows moved while you were reading. Step back to see the rest.'
             : status !== null
-              ? `No credentials are ${credentialStatusLabel(status).toLowerCase()}${search.trim() === '' ? '.' : ' in this search.'}`
+              ? `No credentials are ${credentialStatusState(status)}${search.trim() === '' ? '.' : ' in this search.'}`
               : search.trim() !== ''
                 ? 'Nothing matches this search.'
                 : dismissed
@@ -253,9 +253,7 @@ export function CredentialsListView({
                   <TableCell>
                     <span className="inline-flex flex-wrap gap-1.5">
                       {item.statuses.map((s) => (
-                        <Badge key={s} variant="medium">
-                          {credentialStatusLabel(s)}
-                        </Badge>
+                        <CredentialStatusBadge key={s} status={s} />
                       ))}
                     </span>
                   </TableCell>

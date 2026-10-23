@@ -336,11 +336,19 @@ export interface LocalStoreMaintenance {
   capWarnEraEnforcement(policyMode: SimpleDetectionPolicy): { capped: number };
   /** Commit one project-file scan into the local file tree. */
   recordProjectFiles(projectId: string, scan: ProjectFilesScan): Promise<void>;
-  /** Fold checkout-path project rows into the repo's canonical row. */
+  /**
+   * Fold checkout-path project rows into the repo's canonical row.
+   *
+   * `supersededUrls` are identities a PREVIOUS resolver minted for this exact
+   * checkout (see `resolveSupersededProjectUrls`); they are folded alongside
+   * the checkout-path rows the two roots describe. Optional, so a caller that
+   * has none passes none.
+   */
   reconcileWorktreeProjects(
     canonicalId: string,
     headRoot: string,
     worktreeRoot: string,
+    supersededUrls?: readonly string[],
   ): Promise<void>;
   /** The stale-session notice, or null when this session is current. */
   staleBinaryNotice(currentVersion: string): string | null;

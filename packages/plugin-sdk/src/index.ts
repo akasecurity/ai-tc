@@ -182,6 +182,7 @@ export {
   resolveRepoAttribution,
   resolveRepoIdentity,
   resolveRepoNwo,
+  resolveSupersededProjectUrls,
   resolveWorktreeRoot,
 } from './repo.ts';
 export {

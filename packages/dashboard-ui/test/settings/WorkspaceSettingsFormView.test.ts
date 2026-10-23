@@ -359,7 +359,7 @@ describe('WorkspaceSettingsFormView model-judge consent control', () => {
   //
   // Copied here rather than shared with the plugin's suites: this is a separate
   // package and words the same fields differently, the same reason expectNoEchoOf
-  // is copied rather than imported (CLAUDE.md, Testing).
+  // is copied rather than imported (conventions/testing.md).
   const BLURB_DISCLOSURE: Record<keyof typeof TriageHit.shape, RegExp | null> = {
     rawMatch: /raw, unmasked value/i,
     context: /transcript text on either side/i,

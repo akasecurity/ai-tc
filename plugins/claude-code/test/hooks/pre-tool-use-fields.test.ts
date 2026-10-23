@@ -169,7 +169,7 @@ describe('scannableInputFields — NotebookEdit and Task', () => {
 
 // A neutral, distinctive marker rather than a credential-shaped literal: most
 // of these tests exercise field COLLECTION, not detection, so nothing here
-// needs to match a rule. See CLAUDE.md's Testing section.
+// needs to match a rule. See conventions/testing.md.
 const MARKER = 'key_marker_7f3a';
 
 // A field synthetic per isSyntheticField (see pre-tool-use-fields.ts) is one
@@ -540,7 +540,7 @@ describe('scannableInputFields — MCP key separator defeats real bundled-rule f
     // change: a genuine secret-shaped key, alone, still fires. Taken from a
     // bundled rule's own `examples` — the same source fail-open.e2e.test.ts
     // draws its fixture from — rather than a hand-written literal, per
-    // CLAUDE.md's Testing section.
+    // conventions/testing.md.
     let found: { ruleId: string; example: string } | undefined;
     for (const rule of bundledDetections().flatMap((p) => p.rules)) {
       const example = rule.examples?.find((e) => !e.includes(' '));

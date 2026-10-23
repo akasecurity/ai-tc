@@ -481,7 +481,7 @@ describe('noDrizzleImports merge', () => {
 // The documented opt-out allowlist
 // ---------------------------------------------------------------------------
 
-// CLAUDE.md §4 lists the files allowed to import a network module, and tells the
+// conventions/process-env-and-network.md lists the files allowed to import a network module, and tells the
 // next author "adding a third site means updating this table". Nothing enforced
 // that: the table is prose, the opt-outs are `allow:` options in eslint configs,
 // and the two could drift apart silently — the same containment problem the
@@ -806,7 +806,7 @@ async function configsInPlay({ rootScripts: scripts, packages }, repoRoot = REPO
   return { inPlay: inPlay.sort(), missing: missing.sort() };
 }
 
-describe('documented no-network opt-outs (CLAUDE.md §4)', () => {
+describe('documented no-network opt-outs (conventions/process-env-and-network.md)', () => {
   /** The configs a green `pnpm lint` runs — the set this suite audits. */
   let configs = [];
   /** Configs a lint invocation names that are not on disk. */
@@ -911,7 +911,7 @@ describe('documented no-network opt-outs (CLAUDE.md §4)', () => {
     ).toEqual([]);
   });
 
-  it('has exactly the opt-out sites CLAUDE.md §4 documents, each file-scoped', () => {
+  it('has exactly the opt-out sites conventions/process-env-and-network.md documents, each file-scoped', () => {
     /** @type {Record<string, string[]>} */
     const found = {};
     for (const [file, mod] of configModules) {
@@ -1180,7 +1180,7 @@ describe('an odd-named config carrying an undocumented opt-out is audited (throw
 
 // DOCUMENTED_OPT_OUTS is a hand-written MIRROR of §4's table, and the audit
 // above never opens the document: delete the table, the intro sentence and the
-// "adding another site" promise from CLAUDE.md, leave every ESLint config
+// "adding another site" promise from conventions/process-env-and-network.md, leave every ESLint config
 // untouched, and this whole package stays green. The direction that matters most
 // was already closed — a third opt-out cannot land silently, because the
 // contributor has to edit DOCUMENTED_OPT_OUTS to get green — but at the moment

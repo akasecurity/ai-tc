@@ -28,10 +28,10 @@ import { ChoiceGroup } from '../shared/ChoiceGroup.tsx';
 import { MetaItem, SectionLabel } from '../shared/DetailFields.tsx';
 import { PROVIDERS } from '../shared/Provider.tsx';
 import { RefusalReason, refusedControlProps } from '../shared/Refusal.tsx';
+import { CredentialStatusBadge } from './CredentialStatusBadge.tsx';
 import { CREDENTIAL_DISMISS_REASONS, credentialDismissReasonLabel } from './dismissal.ts';
 import { credentialLabel, credentialName } from './name.ts';
 import { RotationEditor } from './RotationEditor.tsx';
-import { credentialStatusLabel } from './status.ts';
 import type { CredentialDetailModel, CredentialRotationInput } from './types.ts';
 
 export interface CredentialDetailViewProps {
@@ -514,9 +514,7 @@ export function CredentialDetailView({
           <div className="flex flex-wrap items-center gap-2 text-xs text-text-3">
             {c.kind}
             {c.statuses.map((s) => (
-              <Badge key={s} variant="medium">
-                {credentialStatusLabel(s)}
-              </Badge>
+              <CredentialStatusBadge key={s} status={s} />
             ))}
           </div>
         </div>
@@ -609,6 +607,16 @@ export function CredentialDetailView({
               {actionError ?? ACTION_FAILED}
             </p>
           )}
+        </div>
+      )}
+
+      {c.statuses.includes('exposed') && (
+        <div className="rounded-lg border border-sev-critical-ink/30 bg-sev-critical-fill p-3">
+          <p className="text-xs text-text-2">
+            <span className="font-semibold text-sev-critical-ink">Exposed</span> — this value was
+            seen in a live LLM session. Its linked finding below follows the most recent session
+            that carried it.
+          </p>
         </div>
       )}
 
@@ -724,8 +732,8 @@ export function CredentialDetailView({
         <SectionLabel>Linked findings</SectionLabel>
         {c.findings.length === 0 ? (
           <p className="text-xs text-text-3">
-            No findings. A finding links here when a capture that carried this value raised one
-            under its rule.
+            No findings. A finding links here when a live LLM session carries this value, or when a
+            capture that carried it raised one under its rule.
           </p>
         ) : (
           <ul className="flex flex-col gap-1.5">

@@ -1392,7 +1392,7 @@ describe('runQuery — against a seeded standalone gateway', () => {
     // virus scanner reading each new file), which is the leading HYPOTHESIS for
     // why this test hit the 20s ceiling there. It is not established: no
     // Windows figure was taken, 140ms to 20s needs a ~140x factor against the
-    // ~30x CLAUDE.md records for this work, and ci.yml already notes that this
+    // ~30x conventions/testing.md records for this work, and ci.yml already notes that this
     // leg times out on a different file each run under a starved runner. The
     // change stands on removing real load from a shared leg either way.
     //

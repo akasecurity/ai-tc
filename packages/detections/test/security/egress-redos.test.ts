@@ -34,7 +34,7 @@ import { extractManifestSdks } from '../../src/egress/manifests.ts';
 // V8's background GC and compiler threads included, which charges this pass
 // with work it did not do and errs toward eating the budget's margin. Measured
 // on the same calls, process-CPU reads ~2.3x thread-CPU here. It is the clock
-// CLAUDE.md prescribes for the runtime work clock, for this reason.
+// conventions/scan-isolation.md prescribes for the runtime work clock, for this reason.
 const cpuMs = (): number => {
   const { user, system } = process.threadCpuUsage();
   return (user + system) / 1000;

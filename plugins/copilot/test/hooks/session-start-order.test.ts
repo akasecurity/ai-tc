@@ -13,8 +13,8 @@
  * which is why this file drives the fixtures' own timestamps and asserts the
  * ordering it observes rather than restating it.
  *
- * A real `node:sqlite` store in a real temp dir, per CLAUDE.md's Testing
- * section: nothing here is mocked, because what is being checked is SQLite's
+ * A real `node:sqlite` store in a real temp dir, per conventions/testing.md:
+ * nothing here is mocked, because what is being checked is SQLite's
  * own semantics around a content-addressed root written after its children.
  * Both captures go through the hooks' own handlers (`runUserPromptSubmit`,
  * then `runSessionStart`), each fed its recorded payload, so what is ordered is

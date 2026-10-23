@@ -62,7 +62,7 @@ const MIN_REASON_CHARS = 20;
  * Source with comments removed, so a mention in prose is never read as a call.
  *
  * A peer copy of `packages/eslint-config/test/effective-config.test.js`'s
- * stripper — a package wall blocks the import, and CLAUDE.md's rule for that is
+ * stripper — a package wall blocks the import, and conventions/testing.md's rule for that is
  * to copy it rather than reinvent it, which means copying the form that gets the
  * hard case right. The `[^:]` is that case: a bare `\/\/.*$` truncates at the
  * `//` in `'https://…'` and takes the rest of the LINE with it, so a real
@@ -183,6 +183,8 @@ const OWN_TEMP_TREE: Readonly<Record<string, string>> = {
     'drives the settings child-process writers over a plain home — no store',
   'test/internal/snapshot.test.ts':
     'builds bare DatabaseSync files to snapshot, with no ~/.aka layout around them',
+  'test/enrolment-respell.test.ts':
+    'a bare home holding a settings.json for the enrolment sweep to re-key — the subject is that file edit and no store is opened',
   'test/paths-link-fallback.test.ts':
     'the subject is the symlink fallback in the path helpers themselves — no store',
   'test/managed-settings.test.ts':

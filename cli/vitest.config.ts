@@ -18,6 +18,7 @@ const noNetworkGuard = fileURLToPath(new URL('../test/setup/no-network.ts', impo
 const noManagedSettingsGuard = fileURLToPath(
   new URL('../test/setup/no-managed-settings.ts', import.meta.url),
 );
+
 // And with Claude Code's config pointed at an empty directory: `aka status`
 // reads the login file under the real home unless a case names another, so
 // without this a status block depends on whose laptop ran the suite.

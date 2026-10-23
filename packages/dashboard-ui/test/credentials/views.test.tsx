@@ -151,11 +151,12 @@ describe('CredentialsListView', () => {
       total: 3,
       status: 'rotation_overdue',
       onStatus,
-      statusCounts: { all: 40, byStatus: { rotation_overdue: 3 } },
+      statusCounts: { all: 40, byStatus: { rotation_overdue: 3, exposed: 5 } },
     });
     expect(chip('All')?.textContent).toBe('All40');
     expect(chip('Rotation overdue')?.textContent).toBe('Rotation overdue3');
     expect(chip('All')?.getAttribute('aria-pressed')).toBe('false');
+    expect(chip('Exposed')?.textContent).toBe('Exposed5');
     expect(chip('Rotation overdue')?.getAttribute('aria-pressed')).toBe('true');
     act(() => {
       chip('All')?.click();
@@ -171,8 +172,17 @@ describe('CredentialsListView', () => {
     list();
     expect(mounted.host.querySelector('[aria-label="Filter by status"]')).toBeNull();
     list({ onStatus: vi.fn() });
-    expect(chip('All')?.textContent).toBe('All');
-    expect(chip('Rotation overdue')?.textContent).toBe('Rotation overdue');
+    const chips = [...mounted.host.querySelectorAll('[aria-label="Filter by status"] button')].map(
+      (b) => b.textContent,
+    );
+    expect(chips).toEqual(['All', 'Rotation overdue', 'Exposed']);
+  });
+
+  it('shows every status a credential carries, Exposed among them', () => {
+    list({ items: [{ ...ITEM, statuses: ['rotation_overdue', 'exposed'] }] });
+    expect(mounted.host.querySelectorAll('tbody td')[7]?.textContent).toBe(
+      'Rotation overdueExposed',
+    );
   });
 
   it('shows a status this build does not know as sent, rather than failing the list', () => {
@@ -183,7 +193,7 @@ describe('CredentialsListView', () => {
   it('ignores a status filter passed without chips, which would strand the reader', () => {
     list({ items: [], total: 0, status: 'rotation_overdue' });
     expect(text()).toContain('No credentials have been seen yet');
-    expect(text()).not.toContain('rotation overdue');
+    expect(text()).not.toContain('overdue for rotation');
   });
 
   it('names a filter status this build does not know as sent, rather than failing the list', () => {
@@ -198,10 +208,12 @@ describe('CredentialsListView', () => {
 
   it('says no credential carries the status when the chip matches nothing', () => {
     list({ items: [], total: 0, status: 'rotation_overdue', onStatus: vi.fn() });
-    expect(text()).toContain('No credentials are rotation overdue.');
+    expect(text()).toContain('No credentials are overdue for rotation.');
     expect(text()).not.toContain('No credentials have been seen yet');
     list({ items: [], total: 0, status: 'rotation_overdue', onStatus: vi.fn(), search: 'stripe' });
-    expect(text()).toContain('No credentials are rotation overdue in this search.');
+    expect(text()).toContain('No credentials are overdue for rotation in this search.');
+    list({ items: [], total: 0, status: 'exposed', onStatus: vi.fn() });
+    expect(text()).toContain('No credentials are exposed.');
   });
 
   it('shows the display name, with the variable beside the kind once a label names it', () => {
@@ -290,7 +302,7 @@ describe('CredentialsListView', () => {
       total: 0,
       error: 'You need permission to view detections.',
       onStatus: vi.fn(),
-      statusCounts: { all: 0, byStatus: { rotation_overdue: 0 } },
+      statusCounts: { all: 0, byStatus: { rotation_overdue: 0, exposed: 0 } },
     });
     expect(chip('All')?.textContent).toBe('All');
     expect(chip('Rotation overdue')?.textContent).toBe('Rotation overdue');
@@ -583,6 +595,21 @@ describe('CredentialDetailView', () => {
       button('All credentials')?.click();
     });
     expect(onBack).toHaveBeenCalledTimes(1);
+  });
+
+  it('says an exposed credential is Exposed in one sentence beside its badge', () => {
+    detail({ ...DETAIL, statuses: ['exposed'] });
+    expect(text()).toContain(
+      'Exposed — this value was seen in a live LLM session. Its linked finding below follows the most recent session that carried it.',
+    );
+    // The badge in the header, then the note's lead word, not a second headline.
+    expect(text().split('Exposed')).toHaveLength(3);
+  });
+
+  it('says nothing of exposure for a credential whose statuses do not carry it', () => {
+    detail({ ...DETAIL, statuses: ['rotation_overdue'] });
+    expect(text()).not.toContain('Exposed');
+    expect(text()).not.toContain('live LLM session');
   });
 
   it('says why a credential has no linked findings', () => {

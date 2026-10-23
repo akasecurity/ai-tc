@@ -3,8 +3,8 @@
  *
  * Its three siblings each read a documented host env var; this one reads none,
  * because Copilot publishes none. So the cases here are the constant answer,
- * the shape it slots into, and — the one that keeps CLAUDE.md §3's opt-out
- * table honest — that the module source contains no `process.env` read at all.
+ * the shape it slots into, and — the one that keeps the opt-out table in
+ * conventions/process-env-and-network.md honest — that the module source contains no `process.env` read at all.
  * That absence is what makes this file need no `n/no-process-env` opt-out and
  * no row in that table, and it is asserted rather than remembered.
  */

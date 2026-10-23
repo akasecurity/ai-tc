@@ -52,7 +52,7 @@ written as ordinary tests with generous upper bounds, and those do run in `pnpm 
 - **Formatting** via Prettier and **lint** via ESLint (`pnpm lint`, `pnpm format:check`).
   Everything is `error`, nothing `warn`.
 - **Package boundaries** — no forbidden imports across package walls (see the
-  dependency rules in `CLAUDE.md`).
+  dependency rules in [`conventions/dependencies.md`](conventions/dependencies.md)).
 
 ### Comment style
 
@@ -203,7 +203,7 @@ example, while `aka scan .` skips them.
 A plugin's `test/` tree is covered too, **except its `fixtures/`**. Those hold recordings of
 real sessions, and raw browser captures are recorded there, so they stay scanned on purpose.
 Test values come from a rule's own `examples` rather than being written by hand (see
-"Testing" in [`CLAUDE.md`](CLAUDE.md)), so a value that looks real in a fixture is a
+"Testing" in [`conventions/testing.md`](conventions/testing.md)), so a value that looks real in a fixture is a
 finding worth reading.
 
 **What this does not catch.** A real credential committed into an ignored test file is not
@@ -377,7 +377,7 @@ gh api graphql -f query='{repository(owner:"akasecurity",name:"ai-tc"){mergeQueu
 ## Releasing
 
 Releases are cut by whoever holds the release-manager role, from a tag. Contributors never
-bump a version in a feature PR — see "Releasing" in [CLAUDE.md](CLAUDE.md) for which
+bump a version in a feature PR — see [conventions/releasing.md](conventions/releasing.md) for which
 artifacts a change moves.
 
 ### What a tag publishes

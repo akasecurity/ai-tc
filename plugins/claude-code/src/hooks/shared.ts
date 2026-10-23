@@ -67,7 +67,7 @@ export function getString(record: Record<string, unknown>, key: string): string 
 
 // Every JSON object a hook may write to stdout, as one union. `emit` takes this
 // rather than `unknown`, so a new output shape cannot reach the wire without
-// being added here first — which is what makes the enumeration in CLAUDE.md §1
+// being added here first — which is what makes the enumeration in conventions/fail-open.md
 // checkable instead of remembered. Two shapes sit at the top level; the rest are
 // one `hookSpecificOutput` per hook, discriminated by `hookEventName`.
 export type HookOutput =

@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -788,7 +788,19 @@ describe('readPnpmConfigSources (real files)', () => {
 // why it went false unnoticed. This drives the claim against the real function.
 describe('the mute claim in CLAUDE.md and CONTRIBUTING.md', () => {
   const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
-  const read = (name: string): string => readFileSync(join(REPO_ROOT, name), 'utf8');
+  // CLAUDE.md reads as the core file plus the long-form files it links to.
+  const read = (name: string): string => {
+    const text = readFileSync(join(REPO_ROOT, name), 'utf8');
+    if (name !== 'CLAUDE.md') return text;
+    const dir = join(REPO_ROOT, 'conventions');
+    return [
+      text,
+      ...readdirSync(dir)
+        .filter((file) => file.endsWith('.md'))
+        .sort()
+        .map((file) => readFileSync(join(dir, file), 'utf8')),
+    ].join('\n');
+  };
 
   // Both docs must name BOTH channels. A claim naming only `pnpm.auditConfig`
   // sends a reader to check one file and call the tree clean.

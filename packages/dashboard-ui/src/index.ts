@@ -248,6 +248,7 @@ export type {
   CredentialDetailModel,
   CredentialLinkedFinding,
   CredentialListItem,
+  CredentialRotationInput,
   CredentialStatusCounts,
   CredentialTeamUsage,
 } from './credentials/types.ts';

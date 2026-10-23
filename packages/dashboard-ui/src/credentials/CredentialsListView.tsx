@@ -26,24 +26,11 @@ import type { CredentialListItem, CredentialStatusCounts } from './types.ts';
 
 export interface CredentialsListViewProps {
   items: CredentialListItem[];
-  /**
-   * Credentials matching the search and the status filter across every page:
-   * the count behind the rows shown, which the header and the pager both
-   * render. A total without the status filter applied pages over the wrong
-   * count.
-   */
+  /** Credentials matching the search and the status chip across every page. */
   total: number;
   /**
-   * The current query. A new query must start again at the first page: the view
-   * reads an empty page with a cursor either side as rows that moved, not as a
-   * search that matched nothing.
-   */
-  search: string;
-  onSearch: (value: string) => void;
-  /**
-   * The status chip that is on; null is All. A new chip starts again at the
-   * first page. Pass it with `onStatus`: without chips the reader has no way
-   * back to All, so the view then ignores it.
+   * The status chip that is on; null is All. Pass it with `onStatus`: without
+   * chips the reader has no way back to All, so the view then ignores it.
    */
   status?: CredentialStatus | null | undefined;
   /** Picks a chip; null is All. Omit it and no chips are shown. */
@@ -53,6 +40,13 @@ export interface CredentialsListViewProps {
    * Undefined while the host does not know them; the chips then show no count.
    */
   statusCounts?: CredentialStatusCounts | undefined;
+  /**
+   * The current query. A new query must start again at the first page: the view
+   * reads an empty page with a cursor either side as rows that moved, not as a
+   * search that matched nothing.
+   */
+  search: string;
+  onSearch: (value: string) => void;
   onSelect: (id: string) => void;
   onExport: () => void;
   exporting?: boolean | undefined;
@@ -80,18 +74,17 @@ const COLUMNS = [
   'Last rotated',
   'Status',
 ] as const;
-
 const NUMERIC = new Set<string>(['Projects', 'Teams', 'Endpoints']);
 
 /** The credential ledger: one row per detected value, newest first. */
 export function CredentialsListView({
   items,
   total,
-  search,
-  onSearch,
   status: statusProp = null,
   onStatus,
   statusCounts,
+  search,
+  onSearch,
   onSelect,
   onExport,
   exporting = false,
@@ -161,11 +154,11 @@ export function CredentialsListView({
         <p className="py-10 text-center text-sm text-text-3">
           {!emptyLedger
             ? 'These rows moved while you were reading. Step back to see the rest.'
-            : search.trim() !== ''
-              ? 'Nothing matches this search.'
-              : status !== null
-                ? 'No credentials have this status.'
-                : 'No credentials have been seen yet. They appear here once an attached machine shares a sighting.'}
+            : status !== null
+              ? `No credentials are ${CREDENTIAL_STATUS[status].label.toLowerCase()}${search.trim() === '' ? '.' : ' in this search.'}`
+              : search.trim() === ''
+                ? 'No credentials have been seen yet. They appear here once an attached machine shares a sighting.'
+                : 'Nothing matches this search.'}
         </p>
       ) : (
         <div className="overflow-x-auto">
@@ -270,23 +263,31 @@ function StatusChips({
     })),
   ];
   return (
-    <div role="group" aria-label="Filter by status" className="flex flex-wrap gap-1.5">
-      {chips.map((chip) => (
-        <Button
-          key={chip.key ?? 'all'}
-          variant={chip.key === status ? 'solid' : 'outline'}
-          size="sm"
-          aria-pressed={chip.key === status}
-          onClick={() => {
-            onStatus(chip.key);
-          }}
-        >
-          {chip.label}
-          {chip.count !== undefined && (
-            <span className="tabular-nums opacity-70">{String(chip.count)}</span>
-          )}
-        </Button>
-      ))}
+    <div role="group" aria-label="Filter by status" className="flex flex-wrap gap-2">
+      {chips.map((chip) => {
+        const on = chip.key === status;
+        return (
+          <button
+            key={chip.key ?? 'all'}
+            type="button"
+            aria-pressed={on}
+            onClick={() => {
+              onStatus(chip.key);
+            }}
+            className={cn(
+              'inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-full border px-2.5 text-xs font-semibold',
+              on
+                ? 'border-primary bg-primary-tint text-primary'
+                : 'border-border bg-surface text-text-2',
+            )}
+          >
+            {chip.label}
+            {chip.count !== undefined && (
+              <span className="text-label font-bold opacity-70">{String(chip.count)}</span>
+            )}
+          </button>
+        );
+      })}
     </div>
   );
 }

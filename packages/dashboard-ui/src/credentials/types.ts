@@ -17,16 +17,21 @@ export interface CredentialListItem {
   /** The detecting rule's short label, such as "GitHub token". */
   kind: string;
   provider: string | null;
-  /** Null until a secrets manager supplies one. */
+  /** Who answers for it; null when nobody has said. */
   owner: string | null;
   projectCount: number;
   teamCount: number;
   endpointCount: number;
-  /** ISO time; null until a secrets manager supplies one. */
+  /**
+   * ISO date or time it was last rotated; null when nobody has said. The
+   * rotation editor saves it as a date, so a time it carries is dropped on save.
+   */
   lastRotated: string | null;
   /** ISO time it was last seen. */
   lastSeen: string;
-  /** The statuses it carries: `ok` alone, or one or more of the others. */
+  /** Whole days between rotations; null when no policy is set. */
+  rotationPolicyDays: number | null;
+  /** What needs attention; empty when nothing does. */
   statuses: CredentialStatus[];
 }
 
@@ -34,6 +39,14 @@ export interface CredentialListItem {
 export interface CredentialStatusCounts {
   all: number;
   byStatus: Record<CredentialStatus, number>;
+}
+
+/** What an administrator enters about a credential. Null clears a field. */
+export interface CredentialRotationInput {
+  owner: string | null;
+  /** ISO date, `YYYY-MM-DD`. */
+  lastRotated: string | null;
+  rotationPolicyDays: number | null;
 }
 
 export interface CredentialTeamUsage {
@@ -57,6 +70,8 @@ export interface CredentialDetailModel extends CredentialListItem {
   sightingCount: number;
   /** The secrets-manager reference; null marks a credential as detected only. */
   reference: string | null;
+  /** ISO time the policy next falls due; null when no policy is set. */
+  rotationDueAt: string | null;
   /** ISO time it was first seen in a live LLM session; null when it never was. */
   exposedAt: string | null;
   projects: string[];

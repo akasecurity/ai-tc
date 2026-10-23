@@ -36,7 +36,10 @@ jobs:
   # when it did not succeed the matrix is skipped (grey, not red), and the cause
   # is reported once, by ci.yml. No check that branch protection requires lives in
   # this workflow, and the matrix job keeps its name. workflow_dispatch has no
-  # ci.yml run to wait for, so the gate is skipped and the build runs.
+  # ci.yml run to wait for, so the gate is skipped and the build runs. This
+  # workflow has no `push` trigger (nothing builds binaries on a merge to main;
+  # the release workflow cuts them from the tag), so the cascade this gate stops
+  # exists only on a pull request and there is no ungated push path to cover.
   wait-for-ci:
     name: Wait for CI
     if: github.event_name == 'pull_request'

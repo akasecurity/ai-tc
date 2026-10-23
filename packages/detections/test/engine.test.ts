@@ -483,21 +483,29 @@ describe('bundled-rule regex performance (adversarial inputs)', () => {
   // Regression guard for patterns that used to backtrack quadratically and
   // stall the synchronous hook path on large pastes. Budgets are far above
   // the expected linear-time cost (<50ms) but far below the old quadratic
-  // cost (>1400ms at 40KB).
+  // cost (>1400ms at 40KB). The estimator is the fastest of three scans: noise
+  // on a loaded runner only ever adds time, and a quadratic pattern is slow on
+  // every scan, so the minimum keeps the guard and drops the stalls.
+  const fastestScanMs = (text: string, rule: ReturnType<typeof loadRule>): number => {
+    let best = Number.POSITIVE_INFINITY;
+    for (let round = 0; round < 3; round++) {
+      const start = performance.now();
+      expect(scan(text, [rule])).toHaveLength(0);
+      best = Math.min(best, performance.now() - start);
+    }
+    return best;
+  };
+
   it('email rule scans repeated near-miss tokens in linear time', () => {
     const rule = loadRule(resolve(RULES_DIR, 'core-pii'), 'email');
     const text = 'abc-'.repeat(10_000);
-    const start = performance.now();
-    expect(scan(text, [rule])).toHaveLength(0);
-    expect(performance.now() - start).toBeLessThan(500);
+    expect(fastestScanMs(text, rule)).toBeLessThan(500);
   });
 
   it('internal-domain rule scans long dotted runs in linear time', () => {
     const rule = loadRule(resolve(RULES_DIR, 'core-code-context'), 'internal-domain');
     const text = 'a.'.repeat(20_000);
-    const start = performance.now();
-    expect(scan(text, [rule])).toHaveLength(0);
-    expect(performance.now() - start).toBeLessThan(500);
+    expect(fastestScanMs(text, rule)).toBeLessThan(500);
   });
 });
 

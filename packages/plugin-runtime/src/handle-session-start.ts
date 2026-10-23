@@ -13,6 +13,7 @@ import {
   resolveInventoryContext,
   resolveProjectFiles,
   resolveRepoNwo,
+  resolveSupersededProjectUrls,
   resolveWorktreeRoot,
   sessionRootScopeKey,
 } from '@akasecurity/plugin-sdk';
@@ -308,6 +309,7 @@ export async function handleSessionStart(
               resolved.sourceProjectId,
               headRoot,
               worktreeRoot,
+              resolveSupersededProjectUrls(input.cwd),
             );
           }
         } catch {

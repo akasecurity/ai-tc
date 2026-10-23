@@ -348,11 +348,25 @@ describe('resolveRepoAttribution', () => {
     expect(keys).toEqual(['github.com/org/repo', 'github.com/org/repo', 'github.com/org/repo']);
   });
 
-  it('keeps the path case: Org/Repo is a different key from org/repo', () => {
-    // Forges differ on whether path case matters, and merging two real
-    // repositories is the worse error, so the key keeps the path as written.
+  // Path case is decided by the HOST, and the two directions are asserted
+  // together because either one alone passes under a rule that always folds or
+  // a rule that never does.
+  it('folds the path case on a forge known to ignore it', () => {
+    // On GitHub `Org/Repo` and `org/repo` are one repository, so keeping the
+    // case gives it two keys — and a scope key is matched byte for byte, so the
+    // developer who cloned it the other way forwards nothing.
     const dir = repoAt('cased', ORIGIN('https://github.com/Org/Repo.git'));
-    expect(resolveRepoAttribution(dir).scopeKey).toBe('github.com/Org/Repo');
+    expect(resolveRepoAttribution(dir).scopeKey).toBe('github.com/org/repo');
+  });
+
+  it('KEEPS the path case on a host not known to ignore it', () => {
+    // The asymmetry the forge allowlist exists for: a self-hosted git over a
+    // case-sensitive filesystem really does distinguish these, and folding
+    // there would blend two repositories' egress with nothing to notice it.
+    // Merging is the worse error, so an unrecognised host keeps its case and
+    // merely misses the convergence.
+    const dir = repoAt('selfhosted', ORIGIN('https://git.example.test/Org/Repo.git'));
+    expect(resolveRepoAttribution(dir).scopeKey).toBe('git.example.test/Org/Repo');
   });
 
   it('keys a linked worktree exactly like its main checkout', () => {

@@ -2,6 +2,7 @@ import {
   bindingHashOf,
   codingScopeExtras,
   credentialDigestOf,
+  enrollableRepoKey,
   managedScopedRefusal,
   readAttachedIdentity,
   readBoundAttachedIdentity,
@@ -795,7 +796,12 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
  * goes through endpointForTerminal, which also keeps userinfo, a query or a
  * fragment off the screen.
  *
- * `endpoint` is the deployment the machine is attached to now. Pure; no I/O.
+ * `endpoint` is the deployment the machine is attached to now.
+ *
+ * PURE: `staleKeyNote` reaches `enrollableRepoKey`, which is string reduction
+ * and reads nothing. It must stay that way — the identity reduction is on a
+ * path the dashboard's build compiles, and a file read reached from it breaks
+ * the Windows binary build (see Architecture principles §8).
  */
 export function attachmentScopeLines(raw: unknown, endpoint: string): string[] {
   return [...scopeStateLines(raw, endpoint), NOT_LIMITED_LINE];
@@ -844,7 +850,7 @@ function scopeStateLines(raw: unknown, endpoint: string): string[] {
     // the stored record only, not the coding-agent keys (see the note above).
     if (!forwarded.has(entry.identity) || listed.has(entry.identity)) continue;
     listed.add(entry.identity);
-    rows.push(`             ${entryLine(entry)}`);
+    rows.push(`             ${entryLine(entry)}${staleKeyNote(entry)}`);
   }
   const lines =
     rows.length === 0
@@ -864,6 +870,39 @@ function scopeStateLines(raw: unknown, endpoint: string): string[] {
     lines.push('             not tied to an account — the next `aka attach` starts it empty');
   }
   return lines;
+}
+
+/**
+ * The note an enrolled REPOSITORY key carries when it is not a key any checkout
+ * on this machine now stamps.
+ *
+ * Enrolment is matched byte for byte (`scopeVerdict` is a set lookup), so an
+ * entry stored under a spelling the canonical rules no longer produce enrols
+ * nothing — while still being listed as an enrolment. That is the silent shape
+ * Architecture principles §8 exists to end, and it is reachable: a key stored
+ * before the path-case rule landed can read as enrolled for ever while that
+ * repository forwards none of its activity.
+ *
+ * This REPORTS what `respellStoredEnrolments` cannot repair, and the two divide
+ * cleanly: the sweep re-keys every spelling that converges, and what is left is
+ * a spelling no rule can work out an answer for — an owner's page, or an
+ * identity carrying a transport. Those get this note and the one command that
+ * fixes them.
+ *
+ * `enrollableRepoKey` answers what the current rules accept, so an identity
+ * that is not its own answer is one no checkout produces. An ACCOUNT key is not
+ * a repository key and is left alone. Fail-open: a throw says nothing rather
+ * than marking a healthy entry.
+ */
+function staleKeyNote(entry: AttachmentScopeEntry): string {
+  try {
+    if (entry.kind !== 'repo') return '';
+    return enrollableRepoKey(entry.identity) === entry.identity
+      ? ''
+      : ' — NOT a key this machine now stamps; re-run `aka enroll` in its checkout';
+  } catch {
+    return '';
+  }
 }
 
 /** One enrolled identity: its key, its label when it has one, the day it was enrolled, and what an account covers. */

@@ -37,12 +37,25 @@ import { isRepoShapedScopeKey } from '@akasecurity/schema';
  * it, so taking it as the slug would send the account's id under another name.
  */
 export function withScopedRepo(event: IngestEvent, scopeKey: string): IngestEvent {
-  const repo = isRepoShapedScopeKey(scopeKey)
+  const segment = isRepoShapedScopeKey(scopeKey)
     ? scopeKey
         .split('/')
-        .filter((segment) => segment !== '')
+        .filter((part) => part !== '')
         .pop()
     : undefined;
+  // The producer's own spelling wins when it differs from the key's segment
+  // only by CASE. A key on a case-insensitive forge is folded to lowercase
+  // (`CASE_INSENSITIVE_FORGES`), so taking the segment verbatim would send
+  // `myapp` for a repository its owner calls `MyApp` — a cosmetic loss with no
+  // safety behind it. The guard this function exists for is a slug naming
+  // ANOTHER repository, and two names equal but for case are not that: they are
+  // the same repository, where the producer has the better spelling.
+  const repo =
+    segment !== undefined &&
+    typeof event.metadata?.repo === 'string' &&
+    event.metadata.repo.toLowerCase() === segment.toLowerCase()
+      ? event.metadata.repo
+      : segment;
   if (repo !== undefined) return { ...event, metadata: { ...event.metadata, repo } };
   if (event.metadata?.repo === undefined) return event;
   const metadata = { ...event.metadata };

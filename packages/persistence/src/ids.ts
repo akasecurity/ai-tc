@@ -2,7 +2,14 @@ import { createHash, createHmac } from 'node:crypto';
 
 import { canonicalIdentity } from '@akasecurity/schema';
 
-import { canonicalGitUrl } from './egress-wire.ts';
+// `./repo-key.ts`, NOT `./egress-wire.ts`, which re-exports the same function.
+// That module also builds the wire payload, so it imports a SQLite repository
+// for the cap helpers — and importing the reduction through it drags
+// `node:sqlite` and the whole store graph into every module that needs an id.
+// This file is reached from the package barrel, so that is most of them: doing
+// it hung `plugin-sdk`'s suite at module load (no test ran, nothing timed out)
+// and with it the four CI legs that run the workspace.
+import { canonicalGitUrl } from './repo-key.ts';
 
 // Content-addressed ids for the [Meta] Data Model dimensions. Lives here (not in
 // `@akasecurity/schema`) because the spine must stay free of Node-API deps — `@akasecurity/schema`
@@ -30,8 +37,8 @@ export function inventoryId(objectType: string, identityKey: string): string {
 // same repo collapse, and so do two clones of it on ONE machine that spell the
 // remote differently. The key — not the raw url — is what is hashed, because the
 // raw string is not an identity: scp-style and HTTPS, with and without `.git`,
-// and a clone made through an SSH `Host` alias are five spellings of one
-// repository. `canonicalGitUrl` documents the reduction, and is the SAME
+// any case of the host, and a path case a folding forge ignores are all
+// spellings of one repository. `canonicalGitUrl` documents the reduction, and is the SAME
 // function the scope key and the wire digest reduce through, so "which
 // repository is this" has one answer on every surface; a non-remote url (a
 // filesystem path) passes through it and keys on itself.

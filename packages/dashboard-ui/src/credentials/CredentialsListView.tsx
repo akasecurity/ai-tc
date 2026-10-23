@@ -155,7 +155,7 @@ export function CredentialsListView({
           {!emptyLedger
             ? 'These rows moved while you were reading. Step back to see the rest.'
             : status !== null
-              ? `No credentials are ${CREDENTIAL_STATUS[status].label.toLowerCase()}${search.trim() === '' ? '.' : ' in this search.'}`
+              ? `No credentials are ${credentialStatusLabel(status).toLowerCase()}${search.trim() === '' ? '.' : ' in this search.'}`
               : search.trim() === ''
                 ? 'No credentials have been seen yet. They appear here once an attached machine shares a sighting.'
                 : 'Nothing matches this search.'}

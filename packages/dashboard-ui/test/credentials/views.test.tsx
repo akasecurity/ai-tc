@@ -191,6 +191,16 @@ describe('CredentialsListView', () => {
     expect(text()).not.toContain('rotation overdue');
   });
 
+  it('names a filter status this build does not know as sent, rather than failing the list', () => {
+    list({
+      items: [],
+      total: 0,
+      status: 'broadly_shared' as unknown as CredentialStatus,
+      onStatus: vi.fn(),
+    });
+    expect(text()).toContain('No credentials are broadly_shared.');
+  });
+
   it('says no credential carries the status when the chip matches nothing', () => {
     list({ items: [], total: 0, status: 'rotation_overdue', onStatus: vi.fn() });
     expect(text()).toContain('No credentials are rotation overdue.');

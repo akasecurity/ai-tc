@@ -323,7 +323,7 @@ describe.each(DIALECTS)('pre-tool-use enforcement [$event]', (d) => {
     // would have raised — strictly worse than not running at all.
     const run = enforce('redact', COMMAND);
     // Per dialect, because `not.toContain` against an empty string asserts
-    // NOTHING — the vacuity CLAUDE.md §1 names. On the CLI the claim is that
+    // NOTHING — the vacuity conventions/fail-open.md names. On the CLI the claim is that
     // stdout is exactly empty; only on VS Code, where a payload really is
     // written, does forbidding the three keys inside it mean anything.
     if (d.event === 'preToolUse') {

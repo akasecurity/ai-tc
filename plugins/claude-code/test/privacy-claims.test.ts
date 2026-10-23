@@ -817,7 +817,7 @@ describe.each(JUDGE_READMES)('$name judge payload disclosure', ({ text }) => {
   );
 });
 
-// CLAUDE.md §4 lists the `aka <name>` dispatch among its child-process paths,
+// conventions/process-env-and-network.md lists the `aka <name>` dispatch among its child-process paths,
 // and it is one — but it is not a path AKA takes. The CLI execs a program the
 // user installed and named, so folding it into the footnote's count would imply
 // ai-tc sends something it does not, while omitting it entirely leaves that

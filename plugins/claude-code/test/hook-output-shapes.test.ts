@@ -1,5 +1,5 @@
 /**
- * CLAUDE.md §1 enumerates the shapes `emit()` may write to stdout. That
+ * conventions/fail-open.md enumerates the shapes `emit()` may write to stdout. That
  * enumeration drifted once already — it said four while six were reaching the
  * wire, and the two it omitted (`MessageDisplay`, `SessionStart`) were the two
  * hooks the section never names, so nothing about the sentence looked wrong.

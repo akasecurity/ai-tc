@@ -20,7 +20,7 @@ import { lintableTrackedFiles, REPO_ROOT } from './helpers/lint-invocations.js';
 //
 // no-network.test.js and effective-config.test.js both audit CONFIGS: they
 // resolve every tracked eslint config, diff its opt-outs against the tables
-// CLAUDE.md §3 and §4 carry, and fail on a row that describes no exception or an
+// conventions/process-env-and-network.md carries, and fail on a row that describes no exception or an
 // exception no row describes. An inline `eslint-disable` is not a config, so it
 // reaches neither. Nothing else looked, and `linterOptions.noInlineConfig` is
 // unset — so there was no secondary signal either. It stays unset, because the
@@ -81,7 +81,7 @@ const GUARDED_RULES = [...NETWORK_RULES, ENV_RULE].sort();
  * are not listed.
  */
 const EXPECTED_INLINE_DISABLES = {
-  // CLAUDE.md §3's three inline rows. The other three sites in that table
+  // The three inline rows of the process.env table in conventions/process-env-and-network.md. The other three sites in that table
   // (packages/plugin-sdk/src/provider.ts, packages/plugin-sdk/src/provider-codex.ts
   // and plugins/codex/src/triage/judge.ts) are file-scoped CONFIG opt-outs, so they
   // carry no directive and correctly do not appear here — effective-config
@@ -157,7 +157,7 @@ const EXPECTED_INLINE_DISABLES = {
   // curl, tar and shasum at all.
   'tools/installer/test/helpers/run-installer.ts': [ENV_RULE],
 
-  // CLAUDE.md §4's one global opt-out, tabled there as `fetch` (inline): the
+  // The one global opt-out in the no-network table of conventions/process-env-and-network.md, tabled there as `fetch` (inline): the
   // runtime suite's deliberate fetch(), which the guard must refuse for that
   // suite to prove anything. It is an inline disable rather than a config `allow`
   // because noNetworkGlobals() takes no `allow` option. This is the ONLY inline

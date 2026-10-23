@@ -817,7 +817,7 @@ const importOf = (specifier) => `import probe from ${JSON.stringify(specifier)};
  *
  * The NAME stays synthetic because a real path can resolve a file-scoped
  * OVERRIDE rather than the directory's general rules — `plugin-sdk/src`'s first
- * tracked file is one of CLAUDE.md §3's documented `n/no-process-env` opt-out
+ * tracked file is one of the `n/no-process-env` opt-out
  * sites, so probing it would report the package as failing a ban it holds
  * everywhere the exception does not reach. The probes want the block a new file
  * would land in, which is exactly what a name nothing overrides resolves.

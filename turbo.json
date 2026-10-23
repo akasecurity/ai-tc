@@ -283,7 +283,7 @@
         "$TURBO_ROOT$/tsconfig.root.json",
         "$TURBO_ROOT$/eslint.root*.config.mjs",
         "$TURBO_ROOT$/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}",
-        // CLAUDE.md is READ by this suite: §3's process.env table and §4's
+        // CLAUDE.md and conventions/*.md are READ by this suite: the process.env table and the
         // no-network opt-out table are each parsed and asserted against the tree
         // they describe. Every other entry here is source; this one is prose,
         // which is exactly why it is easy to leave out — and leaving it out is

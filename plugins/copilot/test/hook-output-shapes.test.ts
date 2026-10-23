@@ -210,7 +210,7 @@ function copilotBullet(): string {
   const at = CONVENTIONS.indexOf(lead);
   if (at === -1 || CONVENTIONS.slice(at + 1).includes(lead)) {
     throw new Error(
-      'CLAUDE.md: expected exactly one GitHub Copilot hook-contract bullet. It was reworded, ' +
+      'conventions/dependencies.md: expected exactly one GitHub Copilot hook-contract bullet. It was reworded, ' +
         'removed or duplicated, and this guard cannot read what it is meant to be asserting.',
     );
   }
@@ -237,7 +237,7 @@ function cliVerdictField(): string {
   return line.trim();
 }
 
-describe("CLAUDE.md's hook-contract bullet for this host", () => {
+describe("the hook-contract bullet for this host in conventions/dependencies.md", () => {
   const BULLET = copilotBullet();
 
   it('reads a bullet that is really there', () => {

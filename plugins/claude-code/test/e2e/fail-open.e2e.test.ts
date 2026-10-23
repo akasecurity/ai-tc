@@ -172,7 +172,7 @@ const HOOKS: readonly HookCase[] = [
   },
 ];
 
-// CLAUDE.md §1: "no hook ever emits {action:'allow'}, and the internal fallback
+// CLAUDE.md §2: "no hook ever emits {action:'allow'}, and the internal fallback
 // is {action:'log'}" — `action` is a CaptureResult field that never crosses the
 // wire, and none of the shapes in the `HookOutput` union uses that key (which
 // shapes those are is pinned by test/hook-output-shapes.test.ts). This guards
@@ -548,7 +548,7 @@ interface EnforcingHook {
   /**
    * The key the emitted JSON must carry per policy, or null where the hook
    * emits nothing at all. `monitor` is null for the two tool hooks because log
-   * IS silence — CLAUDE.md §1's "allow is the absence of output", reached
+   * IS silence — conventions/fail-open.md's "allow is the absence of output", reached
    * through a finding rather than through a fault.
    */
   readonly emits: Readonly<Record<BuiltinPolicyId, string | null>>;

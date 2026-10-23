@@ -15,7 +15,15 @@ name: CI retry
 # Safety: `workflow_run` executes in the base repository's context with a write
 # token, so this workflow checks out nothing and runs no code from the pull
 # request. It reads the id of the finished run and asks GitHub to re-run it.
-# `actions: write` is the one permission that call needs.
+# `actions: write` is the one permission that call needs. The job-level
+# `permissions:` block REPLACES the top-level `contents: read` rather than adding
+# to it, so the job holds `actions: write` alone: anyone adding a `checkout` or a
+# `gh run view` here must add the scope it needs, not assume `contents: read`.
+#
+# Observability: a retried run's conclusion is attempt 2's, so a pass after a
+# retry looks like a first-try pass in the UI. The job therefore writes one
+# `::notice::` and a step-summary line naming the run it retried; search the
+# "CI retry" runs for it to count flakes.
 #
 # `cancelled` is not retried: a run superseded by a newer push is cancelled on
 # purpose. `merge_group` runs are not retried either: a failed queue entry is
@@ -37,6 +45,7 @@ jobs:
       && github.event.workflow_run.run_attempt == 1
       && github.event.workflow_run.event != 'merge_group' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       actions: write
     steps:
@@ -45,4 +54,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           RUN_ID: ${{ github.event.workflow_run.id }}
-        run: gh run rerun "$RUN_ID" --failed
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          echo "::notice::re-running the failed jobs of ${RUN_URL} (attempt 1 failed)"
+          echo "Retried CI run ${RUN_URL} (attempt 1 failed)" >> "$GITHUB_STEP_SUMMARY"
+          gh run rerun "$RUN_ID" --failed

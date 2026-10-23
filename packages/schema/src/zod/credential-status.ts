@@ -7,6 +7,9 @@ import * as z from 'zod';
  * - `rotation_overdue`: a rotation policy is set and its interval has passed
  *   since the credential was last rotated, or since it was first seen when no
  *   rotation date is known.
+ * - `exposed`: the value was seen in a live LLM session.
  */
-export const CredentialStatus = z.enum(['rotation_overdue']).meta({ id: 'CredentialStatus' });
+export const CredentialStatus = z
+  .enum(['rotation_overdue', 'exposed'])
+  .meta({ id: 'CredentialStatus' });
 export type CredentialStatus = z.infer<typeof CredentialStatus>;

@@ -41,6 +41,9 @@ export const EXECUTABLE_REDACT_NOTE =
 // Woven into the deny message when a redact decision carried no redacted text
 // to put in place, so the block explains why the policy's redact could not be
 // applied rather than the call going out unmasked.
+export const REMOTE_PROTECTED_PATH_NOTE =
+  'This session is connected through Remote Control, where a protected path is always blocked. Use the path from a local session, remove it from protectedPaths in ~/.aka/settings/settings.json, or grant an exception below.';
+
 export const UNREDACTABLE_NOTE =
   'The redacted form of this input was unavailable, so the call is blocked rather than sent unmasked.';
 
@@ -84,6 +87,7 @@ export async function decidePreToolUse(
   toolInput: Record<string, unknown>,
   scanned: readonly ScannedField[],
   tokenizeField?: FieldTokenizer,
+  ruleNotes?: ReadonlyMap<string, string>,
 ): Promise<PreToolUseDecision | null> {
   // Rules grouped by the *field's* worst action — every rule flagged in a
   // blocked/redacted/warned field, not necessarily the single rule that drove
@@ -225,11 +229,17 @@ export async function decidePreToolUse(
             subject: `${toolName} call`,
             ruleIds: [...blockedRules].join(', '),
             blockedRef: blockedReferences[0],
-            note: escalated
-              ? EXECUTABLE_REDACT_NOTE
-              : escalatedUnredactable
-                ? UNREDACTABLE_NOTE
-                : undefined,
+            note:
+              [
+                escalated
+                  ? EXECUTABLE_REDACT_NOTE
+                  : escalatedUnredactable
+                    ? UNREDACTABLE_NOTE
+                    : undefined,
+                ...[...blockedRules].map((id) => ruleNotes?.get(id)),
+              ]
+                .filter((n) => n !== undefined)
+                .join(' ') || undefined,
           }),
         },
       },

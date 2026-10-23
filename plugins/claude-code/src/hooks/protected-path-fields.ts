@@ -28,6 +28,9 @@ import type { ScannableField } from './pre-tool-use-fields.ts';
 /** What the rule's pattern is anchored on; the path follows it. */
 export const PROTECTED_PATH_TEXT_PREFIX = 'protected-path-access:';
 
+/** The built-in rule that matches those fields. */
+export const PROTECTED_PATH_RULE_ID = 'command-risk/protected-path-access';
+
 // The path segment every protected-path field is addressed under. Never
 // dereferenced (see ScannableField.text).
 const PROTECTED_PATH_SEGMENT = '<protected-path>';

@@ -300,6 +300,78 @@ describe.each(DIALECTS)('runPostToolUse on the $kind dialect', (d) => {
   });
 });
 
+// A result any part of which reached the model unscanned is counted in the
+// hook fail-open tally `aka status` renders; one scanned in full is not. The
+// counter is injected, so what is observed is the handler's decision rather
+// than a detached child's write (the built hook's e2e covers that half).
+describe.each(DIALECTS)('runPostToolUse counts a partial scan on the $kind dialect', (d) => {
+  function nested(): unknown {
+    let deep: unknown = `TWILIO=${FIXTURE.example}`;
+    for (let i = 0; i < 10; i += 1) deep = { k: deep };
+    return { shallow: 'nothing here', deep };
+  }
+
+  // The walk bounds are exercised through each dialect's structured result: a
+  // CLI result without `textResultForLlm`, a VS Code object response.
+  function truncatedPayload(): Record<string, unknown> {
+    return d.kind === 'cli'
+      ? { ...fixture('cli', 'postToolUse.json'), cwd, toolResult: nested() }
+      : { ...fixture('vscode-provisional', 'PostToolUse.json'), cwd, tool_response: nested() };
+  }
+
+  async function count(
+    payload: Record<string, unknown>,
+    options: { scanWorkerUrl?: URL } = {},
+  ): Promise<number> {
+    let calls = 0;
+    await runPostToolUse(d.event, JSON.stringify(payload), {
+      akaHome,
+      ...options,
+      countFailOpen: () => {
+        calls += 1;
+      },
+    });
+    return calls;
+  }
+
+  it('counts nothing for a result scanned in full, finding or not', async () => {
+    seedPolicy('warn');
+    expect(await count(d.payload(`TWILIO=${FIXTURE.example}`, cwd))).toBe(0);
+    expect(await count(d.payload('nothing sensitive here', cwd))).toBe(0);
+    // Positive control: both results really were scanned and recorded.
+    expect(findingRows().map((r) => r.rule_id)).toEqual([RULE_ID]);
+  });
+
+  it('counts one when the walk bounds cut text out of the result', async () => {
+    seedPolicy('warn');
+    expect(await count(truncatedPayload())).toBe(1);
+  });
+
+  it('counts one when a field is too large to scan in time', async () => {
+    seedPolicy('warn');
+    const filler = 'lorem ipsum dolor sit amet '.repeat(
+      Math.ceil(LARGE_INPUT_THRESHOLD_CHARS / 27),
+    );
+    const absent = pathToFileURL(join(root, 'no-worker-here', 'scan-worker.js'));
+    expect(await count(d.payload(filler, cwd), { scanWorkerUrl: absent })).toBe(1);
+    // Positive control: the field really was refused rather than scanned.
+    const attrs = JSON.parse(String(responseRows()[0]?.attributes)) as Record<string, unknown>;
+    expect(['unavailable', 'timeout']).toContain(attrs.scan_incomplete);
+  });
+
+  it('never fails the hook when the count itself throws', async () => {
+    seedPolicy('warn');
+    await expect(
+      runPostToolUse(d.event, JSON.stringify(truncatedPayload()), {
+        akaHome,
+        countFailOpen: () => {
+          throw new Error('count failed');
+        },
+      }),
+    ).resolves.not.toThrow();
+  });
+});
+
 describe('runPostToolUse scope key matches the call', () => {
   // A VS Code single-file write is keyed by its target, so its RESULT carries
   // that key too — not the payload cwd's — exactly as preToolUse keyed the call.

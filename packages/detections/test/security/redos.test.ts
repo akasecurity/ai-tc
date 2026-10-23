@@ -812,13 +812,20 @@ describe('the probe battery itself', () => {
     // one judged. A genuinely blind tier misses on every attempt and still
     // fails; the linear controls and the bundled-rule gate are not retried, so
     // a pattern is never cleared by a lucky measurement.
+    //
+    // This changes what the control proves: from "the tier sees this pattern
+    // every time" to "the tier sees it at least once in CATCH_ATTEMPTS". The
+    // retry is a statement about a noisy machine, not about the tier; a tier
+    // that needs all the attempts is a weaker gate than it looks, so watch how
+    // often the later attempts are the ones that breach.
     const CATCH_ATTEMPTS = 3;
     const firstBreach = (measure: (rule: Rule) => GrowthBreach | undefined, rule: Rule) => {
-      for (let attempt = 1; attempt < CATCH_ATTEMPTS; attempt++) {
-        const breach = measure(rule);
-        if (breach) return breach;
+      let last: GrowthBreach | undefined;
+      for (let attempt = 0; attempt < CATCH_ATTEMPTS; attempt++) {
+        last = measure(rule);
+        if (last) return last;
       }
-      return measure(rule);
+      return last;
     };
 
     it.each(superlinear)('catches %s', (_label, rule) => {

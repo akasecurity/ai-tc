@@ -152,9 +152,24 @@ describe('nearby words', () => {
       }
       return best;
     };
-    const small = cost(1_000);
-    const large = cost(4_000);
-    expect(large / Math.max(small, 5), `${String(small)}ms → ${String(large)}ms`).toBeLessThan(8);
+    // The smaller reading is the divisor, so it has to be large enough to
+    // measure: on a fast runner 1,000 copies can cost under a timer tick, and
+    // a floor on the divisor would widen the bound there. Double the size until
+    // the smaller reading clears MEASURABLE_MS (capped so a regression still
+    // ends), and assert that it did rather than clamp it.
+    const MEASURABLE_MS = 5;
+    let copies = 1_000;
+    let small = cost(copies);
+    while (small < MEASURABLE_MS && copies < 16_000) {
+      copies *= 2;
+      small = cost(copies);
+    }
+    const large = cost(copies * 4);
+    expect(
+      small,
+      `smaller reading at ${String(copies)} copies is too small to measure`,
+    ).toBeGreaterThanOrEqual(MEASURABLE_MS);
+    expect(large / small, `${String(small)}ms → ${String(large)}ms`).toBeLessThan(8);
   });
 
   it('is empty without the scanned text', () => {

@@ -12,7 +12,15 @@ import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 
 import { REPO_ROOT } from './helpers/lint-invocations.js';
-import { jobOf, needsOf, parseWorkflow, scriptOf, stepsOf } from './helpers/workflow-yaml.js';
+import {
+  envOf,
+  ifOf,
+  jobOf,
+  needsOf,
+  parseWorkflow,
+  scriptOf,
+  stepsOf,
+} from './helpers/workflow-yaml.js';
 
 const BASH = '/bin/bash';
 const HEAD_SHA = '0123456789abcdef0123456789abcdef01234567';
@@ -107,8 +115,18 @@ describe('build-binaries wait-for-ci gate', () => {
     const wf = workflow();
     const build = jobOf(wf, 'build');
     expect(needsOf(build)).toEqual(['wait-for-ci']);
-    expect(String(build.if)).toContain("needs.wait-for-ci.outputs.ci_ok == 'true'");
-    expect(String(build.if)).toContain("needs.wait-for-ci.result == 'skipped'");
+    // The whole condition, not fragments of it: dropping `always()` keeps both
+    // fragments in the text while a skipped need starts skipping the build.
+    expect(ifOf(build, 'the build job')).toBe(
+      "${{ always() && (needs.wait-for-ci.result == 'skipped' || needs.wait-for-ci.outputs.ci_ok == 'true') }}",
+    );
+  });
+
+  it('runs the wait on pull requests only, against the PR head sha', () => {
+    const wait = jobOf(workflow(), 'wait-for-ci');
+    expect(ifOf(wait, 'wait-for-ci')).toBe("github.event_name == 'pull_request'");
+    const step = stepsOf(wait).find((s) => s.id === 'wait');
+    expect(envOf(step, 'the wait step').HEAD_SHA).toBe('${{ github.event.pull_request.head.sha }}');
   });
 
   it('has no push trigger, so there is no ungated push path', () => {

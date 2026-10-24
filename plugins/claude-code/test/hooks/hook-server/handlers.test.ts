@@ -269,7 +269,7 @@ describe('a held gateway', () => {
     expect(second === first).toBe(false);
   });
 
-  // Windows refuses to delete a database file that is still open.
+  // Windows refuses to delete a database file that is still open, so this state cannot occur there.
   it.skipIf(process.platform === 'win32')(
     'is replaced when the file is removed and recreated underneath it',
     async () => {

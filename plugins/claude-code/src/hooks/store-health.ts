@@ -11,7 +11,7 @@
 // Pure logic + a tiny fs marker only — no main() side effect, so tests can
 // import it (hook ENTRY files run main() on import and must never be imported
 // by tests).
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import type { SymlinkedStorePath } from '@akasecurity/persistence';
@@ -54,9 +54,109 @@ export type GatewayOpen =
  */
 export function openGateway(config: PluginConfig): GatewayOpen {
   try {
-    return { gateway: resolveDataGateway(config) };
+    if (reuseGateway) return { gateway: heldGatewayFor(config) };
+    const gateway = resolveDataGateway(config);
+    openedGateways?.push(gateway);
+    return { gateway };
   } catch (error) {
     return { gateway: null, error };
+  }
+}
+
+// The gateways opened since `closingGateways` began, while it runs. A hook
+// process leaves them to its exit; a process that runs several hooks closes
+// each one's when that hook is done.
+let openedGateways: DataGateway[] | null = null;
+
+/**
+ * Runs `work`, then closes every gateway `openGateway` opened during it. For a
+ * caller that outlives one hook; it must run one `work` at a time. A gateway
+ * held for reuse (see `reuseGateways`) is not closed here.
+ */
+export async function closingGateways<T>(work: () => Promise<T>): Promise<T> {
+  const mine: DataGateway[] = [];
+  openedGateways = mine;
+  try {
+    return await work();
+  } finally {
+    openedGateways = null;
+    for (const gateway of mine) {
+      try {
+        await gateway.close();
+      } catch {
+        // A close that fails leaves nothing the next request depends on.
+      }
+    }
+  }
+}
+
+// A process that runs many hooks keeps ONE gateway instead of opening the store
+// for each: an open applies the schema checks, which write, and on a large
+// store that dwarfs the hook's own work. The gateway is checked against the
+// store file on every use and replaced when the file is not the one it opened
+// (removed and recreated, or moved), and dropped when a hook fails.
+interface HeldGateway {
+  readonly gateway: DataGateway;
+  readonly lent: DataGateway;
+  readonly dbPath: string;
+  readonly identity: string;
+}
+let reuseGateway = false;
+let heldGateway: HeldGateway | null = null;
+
+function fileIdentity(path: string): string {
+  try {
+    const info = statSync(path);
+    return `${String(info.dev)}:${String(info.ino)}`;
+  } catch {
+    return 'absent';
+  }
+}
+
+function heldGatewayFor(config: PluginConfig): DataGateway {
+  const identity = fileIdentity(config.dbPath);
+  if (heldGateway !== null) {
+    if (heldGateway.dbPath === config.dbPath && heldGateway.identity === identity) {
+      return heldGateway.lent;
+    }
+    void dropHeldGateway();
+  }
+  const real = resolveDataGateway(config);
+  // The runtime a hook creates closes the gateway it is given when the hook is
+  // done. What is handed out ignores that close, and the held one is closed by
+  // `dropHeldGateway`.
+  const lent = new Proxy(real, {
+    get(target, property) {
+      if (property === 'close') return () => Promise.resolve();
+      const value: unknown = Reflect.get(target, property, target);
+      return typeof value === 'function' ? (value as () => unknown).bind(target) : value;
+    },
+  });
+  // Read after the open, which creates the file when there was none.
+  heldGateway = {
+    gateway: real,
+    lent,
+    dbPath: config.dbPath,
+    identity: fileIdentity(config.dbPath),
+  };
+  return lent;
+}
+
+/** Turns gateway reuse on or off for this process; off closes the held gateway. */
+export function reuseGateways(on: boolean): Promise<void> {
+  reuseGateway = on;
+  return on ? Promise.resolve() : dropHeldGateway();
+}
+
+/** Closes the held gateway, if any; the next open makes a new one. */
+export async function dropHeldGateway(): Promise<void> {
+  const held = heldGateway;
+  heldGateway = null;
+  if (held === null) return;
+  try {
+    await held.gateway.close();
+  } catch {
+    // Already closed, or never usable.
   }
 }
 

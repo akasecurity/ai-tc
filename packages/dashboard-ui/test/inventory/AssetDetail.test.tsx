@@ -14,6 +14,7 @@ import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AssetDetail } from '../../src/inventory/AssetDetail.tsx';
+import { TrustChoice } from '../../src/inventory/chips.tsx';
 import {
   type MountedRoot,
   mountRoot,
@@ -280,5 +281,67 @@ describe('AssetDetail endpoints', () => {
     );
     expect(mounted.host.textContent).toContain('Seen on 4 endpoints');
     expect(mounted.host.textContent).not.toContain('Versions reported');
+  });
+});
+
+describe('AssetDetail host actions', () => {
+  it('draws no trust picker without onTrust', () => {
+    mount(<AssetDetail {...PAGE} asset={mcpAsset()} />);
+    expect(mounted.host.textContent).not.toContain('Trust classification');
+    expect([...mounted.host.querySelectorAll('button')].map((b) => b.textContent)).not.toContain(
+      'Known good',
+    );
+  });
+
+  it("draws the host's actions in place of the per-type buttons", () => {
+    mount(
+      <AssetDetail
+        {...PAGE}
+        asset={mcpAsset()}
+        actions={<div data-testid="host-actions">Host actions</div>}
+      />,
+    );
+    expect(mounted.host.querySelector('[data-testid="host-actions"]')).not.toBeNull();
+    expect(mounted.host.textContent).not.toContain('Re-verify');
+  });
+
+  it('keeps the per-type buttons when the host passes no actions', () => {
+    mount(<AssetDetail {...PAGE} asset={mcpAsset()} onTrust={vi.fn()} />);
+    expect(mounted.host.textContent).toContain('Re-verify');
+  });
+});
+
+describe('TrustChoice', () => {
+  it('reaches onChange with the level clicked', () => {
+    const onChange = vi.fn();
+    mount(<TrustChoice value="risky" onChange={onChange} />);
+    act(() => {
+      optionButton(mounted.host, 'Known good').click();
+    });
+    expect(onChange).toHaveBeenCalledWith('known-good');
+  });
+
+  it('marks every option aria-disabled and never calls onChange while locked', () => {
+    const onChange = vi.fn();
+    mount(<TrustChoice value="risky" onChange={onChange} locked />);
+    const option = optionButton(mounted.host, 'Known good');
+    expect(option.getAttribute('aria-disabled')).toBe('true');
+    expect(option.disabled).toBe(false);
+    act(() => {
+      option.click();
+    });
+    expect(onChange).not.toHaveBeenCalled();
+    expect(describedReason(option)).toBeNull();
+  });
+
+  it('shows one linked reason when refused', () => {
+    const onChange = vi.fn();
+    mount(<TrustChoice value="risky" onChange={onChange} refusal={{ id: 'r', reason: REASON }} />);
+    const option = optionButton(mounted.host, 'Known good');
+    expect(describedReason(option)).toBe(REASON);
+    act(() => {
+      option.click();
+    });
+    expect(onChange).not.toHaveBeenCalled();
   });
 });

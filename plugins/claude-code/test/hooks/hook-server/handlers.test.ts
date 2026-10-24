@@ -269,16 +269,20 @@ describe('a held gateway', () => {
     expect(second === first).toBe(false);
   });
 
-  it('is replaced when the file is removed and recreated underneath it', async () => {
-    await reuseGateways(true);
-    const config = loadConfig();
-    const first = openGateway(config).gateway;
-    rmSync(config.dbPath, { force: true });
-    writeFileSync(config.dbPath, '');
-    const second = openGateway(config).gateway;
-    // Compared by identity, not with toBe: a failed toBe prints the closed gateway.
-    expect(second === first).toBe(false);
-  });
+  // Windows refuses to delete a database file that is still open.
+  it.skipIf(process.platform === 'win32')(
+    'is replaced when the file is removed and recreated underneath it',
+    async () => {
+      await reuseGateways(true);
+      const config = loadConfig();
+      const first = openGateway(config).gateway;
+      rmSync(config.dbPath, { force: true });
+      writeFileSync(config.dbPath, '');
+      const second = openGateway(config).gateway;
+      // Compared by identity, not with toBe: a failed toBe prints the closed gateway.
+      expect(second === first).toBe(false);
+    },
+  );
 
   it('is closed when reuse is turned off, and opens are tracked again', async () => {
     await reuseGateways(true);

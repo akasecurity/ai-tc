@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/pre-tool-use.js\"",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/hook-client.sh\" pre-tool-use",
             "timeout": 10
           }
         ]
@@ -51,7 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/post-tool-use.js\"",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/hook-client.sh\" post-tool-use",
             "timeout": 10
           }
         ]

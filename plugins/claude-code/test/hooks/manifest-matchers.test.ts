@@ -97,10 +97,10 @@ describe('the PreToolUse matcher selects every tool the hook can act on', () => 
     // is the most frequent tool call there is. A Read matched by the node entry
     // would pay that on every call (or, matched by both, run the check twice).
     const gate = entryMatcher(preToolUseEntryRunning('path-gate.sh'), 'PreToolUse');
-    const node = entryMatcher(preToolUseEntryRunning('pre-tool-use.js'), 'PreToolUse');
+    const node = entryMatcher(preToolUseEntryRunning('hook-client.sh'), 'PreToolUse');
     for (const tool of ['Read', 'Grep', 'Glob']) {
       expect(gate.test(tool), `${tool} reaches the gate`).toBe(true);
-      expect(node.test(tool), `${tool} skips the direct node entry`).toBe(false);
+      expect(node.test(tool), `${tool} skips the hook client`).toBe(false);
     }
     // And the gate takes nothing else: every other tool's check lives in node.
     expect(gate.test('Bash')).toBe(false);

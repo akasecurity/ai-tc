@@ -197,8 +197,8 @@ describe('the PostToolUse matcher selects every tool whose output the hook scans
  */
 function alternatives(event: string): { names: string[]; patterns: string[] } {
   // An event may carry SEVERAL entries, each with its own hook command: on
-  // PreToolUse the scanning hook rides the anchored alternation and the
-  // credential-path gate rides a bare `Read|Grep|Glob`. The tools the event reaches
+  // PreToolUse the scanning hook and the credential-path gate each ride an
+  // anchored alternation. The tools the event reaches
   // are therefore the union over every entry, and reading only the first one
   // reports the gate's tools as missing.
   const names = new Set<string>();
@@ -206,7 +206,8 @@ function alternatives(event: string): { names: string[]; patterns: string[] } {
   for (const entry of manifest.hooks[event] ?? []) {
     const source = entry.matcher ?? '';
     expect(source, `${event} has a matcher on every entry`).not.toBe('');
-    // Either the anchored alternation the scanning hook uses, or a bare list.
+    // Every entry currently spells the anchored alternation; a bare list is
+    // tolerated here only so a manifest that adds one is read, not endorsed.
     const body = /^\^\(\?:(.*)\)\$$/.exec(source)?.[1] ?? source;
     for (const part of body.split('|')) {
       if (/^\w+$/.test(part)) names.add(part);

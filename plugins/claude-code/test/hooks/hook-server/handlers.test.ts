@@ -145,6 +145,24 @@ describe('the pre-tool-use hook server handler', () => {
     expect(await run('AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE')).toContain('secrets/aws-access-key');
   });
 
+  it('reads the response from tool_output when tool_response holds nothing scannable', async () => {
+    const out = await postToolUseHandler(() => undefined)({
+      hook: 'post-tool-use',
+      cwd: proj,
+      env: {},
+      payload: JSON.stringify({
+        tool_name: 'Bash',
+        tool_input: { command: 'env' },
+        tool_response: {},
+        tool_output: { stdout: 'AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE', stderr: '' },
+        session_id: 'hs-test',
+        cwd: proj,
+        hook_event_name: 'PostToolUse',
+      }),
+    });
+    expect(out).toContain('secrets/aws-access-key');
+  });
+
   it('declines when the vault is turned on, so the node hook runs it', async () => {
     applyOnboarding(
       {

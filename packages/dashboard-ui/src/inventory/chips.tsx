@@ -84,7 +84,8 @@ export function RadioCardList<T extends string, M extends RadioCardMeta>({
    * per-option one.
    */
   refusal?: { id: string; reason: string } | undefined;
-  /** Every option is `aria-disabled` and `onChange` is not called, with no reason shown. */
+  /** Every option is `aria-disabled` and `aria-busy` and `onChange` is not called, with no
+   * reason shown. */
   locked?: boolean | undefined;
 }) {
   const refused = refusal ? refusedControlProps(refusal.id, refusal.reason, '') : null;
@@ -105,7 +106,7 @@ export function RadioCardList<T extends string, M extends RadioCardMeta>({
                     onChange(k);
                   }
             }
-            {...(locked && !refused ? { 'aria-disabled': true } : {})}
+            {...(locked && !refused ? { 'aria-disabled': true, 'aria-busy': true } : {})}
             {...refused}
             className={cn(
               'flex items-center gap-3 rounded-lg border px-3 py-2.5 text-left cursor-pointer',

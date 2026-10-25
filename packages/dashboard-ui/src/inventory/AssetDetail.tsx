@@ -143,6 +143,8 @@ export function AssetDetail({
   const trustReasonId = useId();
   const command = asset.type === 'hook' ? metaText(asset.meta, 'command') : null;
   const fields = detailFields(asset, locale);
+  // null, false and undefined all mean nothing to draw, so the per-type buttons stay.
+  const hostActions = actions ?? false;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -213,7 +215,7 @@ export function AssetDetail({
           </Section>
         )}
 
-        {actions}
+        {hostActions}
 
         {asset.finding && (
           <Section label="Related finding">
@@ -233,7 +235,7 @@ export function AssetDetail({
           <ToolsSection tools={asset.tools} blocked={trust === 'unapproved'} />
         )}
 
-        {actions === undefined && (
+        {hostActions === false && (
           <div className="flex flex-wrap gap-2">{actionsFor(asset, trust)}</div>
         )}
       </div>

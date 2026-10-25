@@ -305,6 +305,11 @@ describe('AssetDetail host actions', () => {
     expect(mounted.host.textContent).not.toContain('Re-verify');
   });
 
+  it.each([null, false])('keeps the per-type buttons when the host passes %s', (actions) => {
+    mount(<AssetDetail {...PAGE} asset={mcpAsset()} actions={actions} />);
+    expect(mounted.host.textContent).toContain('Re-verify');
+  });
+
   it('keeps the per-type buttons when the host passes no actions', () => {
     mount(<AssetDetail {...PAGE} asset={mcpAsset()} onTrust={vi.fn()} />);
     expect(mounted.host.textContent).toContain('Re-verify');
@@ -326,6 +331,7 @@ describe('TrustChoice', () => {
     mount(<TrustChoice value="risky" onChange={onChange} locked />);
     const option = optionButton(mounted.host, 'Known good');
     expect(option.getAttribute('aria-disabled')).toBe('true');
+    expect(option.getAttribute('aria-busy')).toBe('true');
     expect(option.disabled).toBe(false);
     act(() => {
       option.click();
@@ -339,6 +345,7 @@ describe('TrustChoice', () => {
     mount(<TrustChoice value="risky" onChange={onChange} refusal={{ id: 'r', reason: REASON }} />);
     const option = optionButton(mounted.host, 'Known good');
     expect(describedReason(option)).toBe(REASON);
+    expect(option.getAttribute('aria-busy')).toBeNull();
     act(() => {
       option.click();
     });

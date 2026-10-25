@@ -244,6 +244,7 @@ describeServer.each(SHELLS)('the hook client under %s with a server', (shell) =>
       dirMode: 0o700,
       onExit: () => undefined,
       log: () => undefined,
+      onFailOpen: () => undefined,
     });
     stops.push(() => running.stop('test'));
     return home;

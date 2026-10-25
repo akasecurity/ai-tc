@@ -14,17 +14,22 @@
 // Opt out with AKA_HOOK_SERVER=0 in the environment the host runs hooks in.
 import { PRESENCE_ONLY_ENV, VALUE_ENV } from './forwarded-env.ts';
 
+/** How long the shell client waits for an answer before it runs the node hook itself. */
+export const CLIENT_GIVE_UP_MS = 9000;
+
 // Connects to the unix socket named by the first argument, sends its standard
 // input, closes its sending side, and prints what comes back. Gives up after 9
-// seconds, inside the host's 10-second hook budget. No output means no answer.
+// seconds, inside the host's 10-second hook budget. A complete answer ends with
+// a \x01 byte that no JSON payload contains; without it the answer was cut off.
 const PERL_CLIENT = [
   'use Socket;binmode STDIN;binmode STDOUT;local $/;my $q=<STDIN>;',
-  '$SIG{ALRM}=sub{exit 1};alarm 9;',
+  `$SIG{ALRM}=sub{exit 1};alarm ${String(CLIENT_GIVE_UP_MS / 1000)};`,
   'socket(S,PF_UNIX,SOCK_STREAM,0)or exit 1;',
   'connect(S,sockaddr_un($ARGV[0]))or exit 1;',
   'for(my $o=0;$o<length $q;){my $n=syswrite(S,$q,length($q)-$o,$o);defined $n or exit 1;$o+=$n}',
   'shutdown(S,1);',
   'while(sysread(S,my $b,65536)){print $b}',
+  'print "\\x01";',
 ].join('');
 
 /** `NAME` words for a shell `for` list; every name is a fixed upper-case identifier. */
@@ -77,9 +82,9 @@ export function hookClientScript(pluginVersion: string): string {
     '  done',
     '  request="${request}P ${#input}$nl"',
     `  reply=$(printf '%s%s' "$request" "$input" | perl -e '${PERL_CLIENT}' "$sock" 2>/dev/null)`,
+    "  end=$(printf '\\001')",
     '  case $reply in',
-    '    OK) exit 0 ;;',
-    '    "OK$nl"*) printf \'%s\' "${reply#OK"$nl"}"; exit 0 ;;',
+    '    "OK$nl"*"$end") reply=${reply%"$end"}; printf \'%s\' "${reply#OK"$nl"}"; exit 0 ;;',
     // The server is there and declined this one (too large, queue full).
     '    FALLBACK*) fallback ;;',
     '  esac',

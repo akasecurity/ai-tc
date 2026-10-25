@@ -29,13 +29,20 @@ describeUnix('the hook server', () => {
   async function start(
     handlers: Record<string, HookHandler>,
     over: Partial<HookServerOptions> = {},
-  ): Promise<{ socketPath: string; exits: string[]; logs: string[]; dir: string }> {
+  ): Promise<{
+    socketPath: string;
+    exits: string[];
+    logs: string[];
+    failOpens: number[];
+    dir: string;
+  }> {
     const root = mkdtempSync(join(tmpdir(), 'aka-hs-'));
     roots.push(root);
     const dir = join(root, 'run');
     const socketPath = join(dir, 's.sock');
     const exits: string[] = [];
     const logs: string[] = [];
+    const failOpens: number[] = [];
     const running = await startHookServer({
       socketPath,
       handlers: new Map(Object.entries(handlers)),
@@ -52,10 +59,13 @@ describeUnix('the hook server', () => {
       log: (line) => {
         logs.push(line);
       },
+      onFailOpen: () => {
+        failOpens.push(1);
+      },
       ...over,
     });
     stops.push(() => running.stop('test'));
-    return { socketPath, exits, logs, dir };
+    return { socketPath, exits, logs, failOpens, dir };
   }
 
   it('answers a request with the handler output behind an OK line', async () => {
@@ -148,6 +158,32 @@ describeUnix('the hook server', () => {
     expect(overlapped).toBe(false);
   });
 
+  it('does not run a queued request that waited past the client give-up time', async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    const { socketPath } = await start(
+      {
+        'pre-tool-use': async () => {
+          calls += 1;
+          await gate;
+          return 'done';
+        },
+      },
+      { clientGiveUpMs: 100 },
+    );
+    const first = sendFrame(socketPath, request('pre-tool-use', '{}'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const second = sendFrame(socketPath, request('pre-tool-use', '{}'));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    release();
+    expect(await first).toBe('OK\ndone');
+    expect(await second).toBe('FALLBACK\n');
+    expect(calls).toBe(1);
+  });
+
   it('answers FALLBACK when the queue is full', async () => {
     let release: () => void = () => undefined;
     const gate = new Promise<void>((resolve) => {
@@ -184,13 +220,14 @@ describeUnix('the hook server', () => {
   });
 
   it('answers empty and exits when a handler outlives its deadline', async () => {
-    const { socketPath, exits } = await start(
+    const { socketPath, exits, failOpens } = await start(
       { 'pre-tool-use': () => new Promise<string>(() => undefined) },
       { handlerTimeoutMs: 50 },
     );
     expect(await sendFrame(socketPath, request('pre-tool-use', '{}'))).toBe('OK\n');
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(exits).toEqual(['handler-timeout']);
+    expect(failOpens).toHaveLength(1);
     expect(existsSync(socketPath)).toBe(false);
   });
 
@@ -232,6 +269,7 @@ describeUnix('the hook server', () => {
         dirMode: 0o700,
         onExit: () => undefined,
         log: () => undefined,
+        onFailOpen: () => undefined,
       }),
     ).rejects.toThrow('already running');
   });
@@ -255,6 +293,7 @@ describeUnix('the hook server', () => {
       dirMode: 0o700,
       onExit: () => undefined,
       log: () => undefined,
+      onFailOpen: () => undefined,
     });
     stops.push(() => running.stop('test'));
     expect(await sendFrame(socketPath, request('pre-tool-use', '{}'))).toBe('OK\nup');
@@ -279,6 +318,7 @@ describeUnix('the hook server', () => {
         dirMode: 0o700,
         onExit: () => undefined,
         log: () => undefined,
+        onFailOpen: () => undefined,
       }),
     ).rejects.toThrow('accessible to other users');
   });

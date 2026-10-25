@@ -24,8 +24,10 @@ import {
   socketPath,
   startLockPath,
 } from './hooks/hook-server/paths.ts';
+import { scrubPresenceOnlyEnv } from './hooks/hook-server/request-env.ts';
 import type { HookHandler } from './hooks/hook-server/server.ts';
 import { startHookServer } from './hooks/hook-server/server.ts';
+import { countFailOpen } from './hooks/shared.ts';
 import { dropHeldGateway, reuseGateways } from './hooks/store-health.ts';
 
 const IDLE_MS = 10 * 60_000;
@@ -92,6 +94,8 @@ process.on('uncaughtException', (error) => {
 
 try {
   mkdirSync(runDir(home), { recursive: true, mode: RUN_DIR_MODE });
+  // The server starts from a hook's shell; keep that call's credential values out of its environment.
+  scrubPresenceOnlyEnv();
   await reuseGateways(true);
   await reuseScanners(true);
   const handlers = new Map<string, HookHandler>([
@@ -105,6 +109,7 @@ try {
     maxAgeMs: MAX_AGE_MS,
     handlerTimeoutMs: HANDLER_TIMEOUT_MS,
     maxQueued: MAX_QUEUED,
+    onFailOpen: countFailOpen,
     readTimeoutMs: READ_TIMEOUT_MS,
     isStale,
     dirMode: RUN_DIR_MODE,

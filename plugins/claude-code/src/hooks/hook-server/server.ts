@@ -16,6 +16,7 @@ import { chmodSync, existsSync, mkdirSync, statSync, unlinkSync } from 'node:fs'
 import { createConnection, createServer, type Server, type Socket } from 'node:net';
 import { dirname } from 'node:path';
 
+import { CLIENT_GIVE_UP_MS } from './client-script.ts';
 import type { HookRequest } from './wire.ts';
 import { FALLBACK_RESPONSE, MAX_REQUEST_BYTES, okResponse, parseRequest } from './wire.ts';
 
@@ -36,6 +37,8 @@ export interface HookServerOptions {
   readonly handlerTimeoutMs: number;
   /** Requests waiting beyond the one running; the next gets FALLBACK. */
   readonly maxQueued: number;
+  /** How long a request may wait before its client is taken to have given up. */
+  readonly clientGiveUpMs?: number;
   /** A client that sends nothing for this long is dropped. */
   readonly readTimeoutMs: number;
   /** True once the code this server runs has been replaced on disk. */
@@ -44,6 +47,8 @@ export interface HookServerOptions {
   readonly dirMode: number;
   readonly onExit: (reason: string) => void;
   readonly log: (line: string) => void;
+  /** Called when a hook gave no answer because it overran its deadline. */
+  readonly onFailOpen: () => void;
 }
 
 export interface RunningHookServer {
@@ -197,14 +202,21 @@ export async function startHookServer(options: HookServerOptions): Promise<Runni
         return;
       }
       queued += 1;
+      const receivedAt = Date.now();
       chain = chain.then(async () => {
         try {
+          // A client that has waited this long has run the hook itself.
+          if (Date.now() - receivedAt > (options.clientGiveUpMs ?? CLIENT_GIVE_UP_MS)) {
+            answer(socket, FALLBACK_RESPONSE);
+            return;
+          }
           const stdout = await run(handler, parsed.request);
           if (stdout === TIMED_OUT) {
             // The handler is still running and cannot be interrupted: answer
             // as a hook that gave no opinion, and start over.
             answer(socket, okResponse(''));
             options.log(`hook ${parsed.request.hook} timed out; restarting`);
+            options.onFailOpen();
             void stop('handler-timeout');
           } else if (stdout === null) {
             answer(socket, FALLBACK_RESPONSE);

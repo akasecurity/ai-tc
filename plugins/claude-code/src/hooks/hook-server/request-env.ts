@@ -9,7 +9,7 @@
 //
 // A credential variable is read for presence only, so the client sends a marker
 // for those rather than the value, and the value never crosses.
-import { FORWARDED_ENV } from './forwarded-env.ts';
+import { FORWARDED_ENV, PRESENCE_ONLY_ENV } from './forwarded-env.ts';
 
 function setVariable(name: string, value: string | undefined): void {
   if (value === undefined) Reflect.deleteProperty(process.env, name);
@@ -31,4 +31,9 @@ export function applyRequestEnv(forwarded: Readonly<Record<string, string>>): ()
 /** The current value of a variable; what a suite reads to see the request's state come and go. */
 export function currentValue(name: string): string | undefined {
   return process.env[name];
+}
+
+/** Drops the credential variables the server inherited from the hook that started it. */
+export function scrubPresenceOnlyEnv(): void {
+  for (const name of PRESENCE_ONLY_ENV) Reflect.deleteProperty(process.env, name);
 }

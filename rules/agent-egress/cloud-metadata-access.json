@@ -6,12 +6,12 @@
   "severity": "critical",
   "matcher": {
     "type": "regex",
-    "pattern": "(?<![\\w.:-])(?:(?:169\\.254\\.169\\.254|100\\.100\\.100\\.200|metadata\\.google\\.internal)(?![\\w-]|\\.\\w)|fd00:ec2::254(?![\\w:]))",
+    "pattern": "^[ \\t]*['\"]?https?://(?:[^\\s/@]{1,100}@)?\\[?(?:(?:169\\.254\\.169\\.254|100\\.100\\.100\\.200|metadata\\.google\\.internal)(?![\\w-]|\\.\\w)|\\[?fd00:ec2::254\\]?(?![\\w:]))|\\b(?=(?:curl|wget|ncat|nc|socat|telnet|http|https|xh|aria2c|iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\\b)(?<=(?:^|[;&|({\\x60'\"]|\\$\\()[ \\t]*(?:(?:sudo|doas|command|exec|nohup|time)[ \\t]+(?:-[A-Za-z]{1,8}[ \\t]+){0,3})?(?:[\\w.~-]*/){0,8})(?:curl|wget|ncat|nc|socat|telnet|http|https|xh|aria2c|iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\\b(?:[^\\n;|&\\\\]|\\\\[\\s\\S]|&(?!&)){0,400}?(?<![\\w.:-])\\[?(?:(?:169\\.254\\.169\\.254|100\\.100\\.100\\.200|metadata\\.google\\.internal)(?![\\w-]|\\.\\w)|\\[?fd00:ec2::254\\]?(?![\\w:]))|\\b(?=(?:python[0-9.]{0,4}|node|deno|bun|ruby|perl|php|pwsh|powershell)\\b)(?<=(?:^|[;&|({\\x60'\"]|\\$\\()[ \\t]*(?:(?:sudo|doas|command|exec|nohup|time)[ \\t]+(?:-[A-Za-z]{1,8}[ \\t]+){0,3})?(?:[\\w.~-]*/){0,8})(?:python[0-9.]{0,4}|node|deno|bun|ruby|perl|php|pwsh|powershell)\\b[^\\n]{0,400}?https?://\\[?(?:(?:169\\.254\\.169\\.254|100\\.100\\.100\\.200|metadata\\.google\\.internal)(?![\\w-]|\\.\\w)|\\[?fd00:ec2::254\\]?(?![\\w:]))",
     "flags": "gi"
   },
   "examples": [
     "curl -s http://169.254.169.254/latest/meta-data/iam/security-credentials/",
-    "curl -H \"Metadata-Flavor: Google\" http://metadata.google.internal/computeMetadata/v1/"
+    "http://metadata.google.internal/computeMetadata/v1/"
   ],
   "appliesTo": {
     "eventKinds": ["tool_use"]

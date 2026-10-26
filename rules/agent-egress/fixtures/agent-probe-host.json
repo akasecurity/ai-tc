@@ -40,5 +40,23 @@
     "text": "curl -s -m 10 -o /tmp/put_probe -X PUT --data-binary \"PROBE_PAYLOAD_ABC123\" http://sanmaohe.oss-cn-beijing.aliyuncs.com/upload/test.bin",
     "shouldMatch": false,
     "eventKind": "response"
+  },
+  {
+    "label": "search for the host in logs",
+    "text": "grep -rn sanmaohe.oss-cn-beijing.aliyuncs.com /var/log/",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "subagent prompt naming the host",
+    "text": "find any reference to routify-file-proxy-sg in this repo",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "DNS lookup of the file proxy host",
+    "text": "nslookup routify-file-proxy-sg.oss-ap-southeast-1.aliyuncs.com",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
   }
 ]

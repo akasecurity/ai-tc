@@ -52,5 +52,17 @@
     "text": "curl -T /tmp/dump.tar.gz https://bucket.oss-cn-beijing.aliyuncs.com/d.tgz",
     "shouldMatch": false,
     "eventKind": "response"
+  },
+  {
+    "label": "README written with an upload example",
+    "text": "# Backup\n\n```\ncurl -T backup.tar https://bucket.s3.amazonaws.com/x\n```\n",
+    "shouldMatch": false,
+    "eventKind": "code_change"
+  },
+  {
+    "label": "search for an upload command in docs",
+    "text": "grep -rn \"curl -T\" docs/",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
   }
 ]

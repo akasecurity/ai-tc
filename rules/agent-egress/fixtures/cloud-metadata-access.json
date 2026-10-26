@@ -64,5 +64,47 @@
     "text": "curl -s http://169.254.169.254/latest/meta-data/iam/security-credentials/",
     "shouldMatch": false,
     "eventKind": "response"
+  },
+  {
+    "label": "interpreter one-liner fetching the metadata URL",
+    "text": "python3 -c \"import requests; print(requests.get('http://169.254.169.254/latest/meta-data/').text)\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "search for the address in source",
+    "text": "grep -rn 169.254.169.254 src/",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "search for the GCP metadata host",
+    "text": "rg metadata.google.internal",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "subagent prompt naming the address",
+    "text": "check whether this code calls 169.254.169.254",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "address after the client in a later command",
+    "text": "curl -s https://api.example.dev/x; grep 169.254.169.254 app.log",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "source file written with the metadata URL",
+    "text": "import requests\n\ndef role():\n    return requests.get(\"http://169.254.169.254/latest/meta-data/\").text\n",
+    "shouldMatch": false,
+    "eventKind": "code_change"
+  },
+  {
+    "label": "documentation line naming the address",
+    "text": "IMDS lives at 169.254.169.254",
+    "shouldMatch": false,
+    "eventKind": "code_change"
   }
 ]

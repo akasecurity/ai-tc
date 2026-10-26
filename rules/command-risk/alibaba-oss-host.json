@@ -1,0 +1,19 @@
+{
+  "specVersion": 1,
+  "id": "command-risk/alibaba-oss-host",
+  "name": "Alibaba Cloud OSS host",
+  "category": "custom",
+  "severity": "medium",
+  "matcher": {
+    "type": "regex",
+    "pattern": "(?<![\\w.-])(?!sanmaohe\\.)(?:[\\w-]{1,63}\\.)?oss-[\\w-]{1,40}\\.aliyuncs\\.com(?![\\w-]|\\.[\\w-])",
+    "flags": "gi"
+  },
+  "examples": [
+    "curl -s https://some-bucket.oss-cn-hangzhou.aliyuncs.com/a.txt",
+    "wget https://oss-ap-southeast-1.aliyuncs.com/b/c"
+  ],
+  "appliesTo": {
+    "eventKinds": ["tool_use"]
+  }
+}

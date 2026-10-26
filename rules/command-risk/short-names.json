@@ -6,5 +6,13 @@
   "command-risk/curl-pipe-shell": "Curl piped to shell",
   "command-risk/credential-file-read": "Credential file read",
   "command-risk/credential-file-access": "Credential file read",
-  "command-risk/protected-path-access": "Protected path access"
+  "command-risk/protected-path-access": "Protected path access",
+  "command-risk/cloud-metadata-access": "Cloud metadata access",
+  "command-risk/object-storage-upload": "Object storage upload",
+  "command-risk/object-storage-file-upload": "Object storage file upload",
+  "command-risk/agent-probe-host": "Agent probe host",
+  "command-risk/alibaba-oss-host": "Alibaba OSS host",
+  "command-risk/download-then-execute": "Download then execute",
+  "command-risk/unshare-user-namespace": "User namespace unshare",
+  "command-risk/recon-then-egress": "Recon with egress"
 }

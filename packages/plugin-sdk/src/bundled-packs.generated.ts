@@ -10,7 +10,7 @@
 // Regenerate after adding/removing a rule or pack under rules/:
 //   pnpm --filter @akasecurity/plugin-sdk gen:bundled-packs
 //
-// 8 packs / 111 rules.
+// 8 packs / 120 rules.
 /* eslint-disable simple-import-sort/imports */
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import codeFlawsAuthJwtNoVerify from '../../../rules/code-flaws/auth-jwt-no-verify.json';
@@ -42,14 +42,22 @@ import codeFlawsSsrfUserUrl from '../../../rules/code-flaws/ssrf-user-url.json';
 import codeFlawsXssDangerouslySet from '../../../rules/code-flaws/xss-dangerously-set.json';
 import codeFlawsXssInnerHtml from '../../../rules/code-flaws/xss-inner-html.json';
 import codeFlawsXssUnescapedRender from '../../../rules/code-flaws/xss-unescaped-render.json';
+import commandRiskAgentProbeHost from '../../../rules/command-risk/agent-probe-host.json';
+import commandRiskAlibabaOssHost from '../../../rules/command-risk/alibaba-oss-host.json';
+import commandRiskCloudMetadataAccess from '../../../rules/command-risk/cloud-metadata-access.json';
 import commandRiskCredentialFileAccess from '../../../rules/command-risk/credential-file-access.json';
 import commandRiskCredentialFileRead from '../../../rules/command-risk/credential-file-read.json';
 import commandRiskCurlPipeShell from '../../../rules/command-risk/curl-pipe-shell.json';
+import commandRiskDownloadThenExecute from '../../../rules/command-risk/download-then-execute.json';
 import commandRiskGitForcePush from '../../../rules/command-risk/git-force-push.json';
 import commandRiskGitResetHard from '../../../rules/command-risk/git-reset-hard.json';
+import commandRiskObjectStorageFileUpload from '../../../rules/command-risk/object-storage-file-upload.json';
+import commandRiskObjectStorageUpload from '../../../rules/command-risk/object-storage-upload.json';
 import commandRiskPkillBroad from '../../../rules/command-risk/pkill-broad.json';
 import commandRiskProtectedPathAccess from '../../../rules/command-risk/protected-path-access.json';
+import commandRiskReconThenEgress from '../../../rules/command-risk/recon-then-egress.json';
 import commandRiskRmRfHomeOrShared from '../../../rules/command-risk/rm-rf-home-or-shared.json';
+import commandRiskUnshareUserNamespace from '../../../rules/command-risk/unshare-user-namespace.json';
 import coreCodeContextDbTableName from '../../../rules/core-code-context/db-table-name.json';
 import coreCodeContextFeatureFlag from '../../../rules/core-code-context/feature-flag.json';
 import coreCodeContextFilePath from '../../../rules/core-code-context/file-path.json';
@@ -208,7 +216,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'command-risk',
     name: 'Risky agent commands',
-    version: '0.2.0',
+    version: '0.3.0',
     defaultPolicy: 'warn',
     rawRules: [
       commandRiskPkillBroad,
@@ -219,6 +227,14 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       commandRiskCredentialFileRead,
       commandRiskCredentialFileAccess,
       commandRiskProtectedPathAccess,
+      commandRiskCloudMetadataAccess,
+      commandRiskObjectStorageUpload,
+      commandRiskObjectStorageFileUpload,
+      commandRiskAgentProbeHost,
+      commandRiskAlibabaOssHost,
+      commandRiskDownloadThenExecute,
+      commandRiskUnshareUserNamespace,
+      commandRiskReconThenEgress,
     ],
     shortNames: {
       'command-risk/pkill-broad': 'Broad pkill',
@@ -229,6 +245,14 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       'command-risk/credential-file-read': 'Credential file read',
       'command-risk/credential-file-access': 'Credential file read',
       'command-risk/protected-path-access': 'Protected path access',
+      'command-risk/cloud-metadata-access': 'Cloud metadata access',
+      'command-risk/object-storage-upload': 'Object storage upload',
+      'command-risk/object-storage-file-upload': 'Object storage file upload',
+      'command-risk/agent-probe-host': 'Agent probe host',
+      'command-risk/alibaba-oss-host': 'Alibaba OSS host',
+      'command-risk/download-then-execute': 'Download then execute',
+      'command-risk/unshare-user-namespace': 'User namespace unshare',
+      'command-risk/recon-then-egress': 'Recon with egress',
     },
   },
   {

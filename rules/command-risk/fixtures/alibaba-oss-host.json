@@ -1,0 +1,44 @@
+[
+  {
+    "label": "bucket host",
+    "text": "curl -s https://some-bucket.oss-cn-hangzhou.aliyuncs.com/a.txt",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "regional endpoint without a bucket",
+    "text": "wget https://oss-ap-southeast-1.aliyuncs.com/b/c",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "accelerated endpoint as a fetched URL",
+    "text": "https://assets.oss-accelerate.aliyuncs.com/x",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "known probe host, reported by its own rule",
+    "text": "curl -s -m 10 -o /tmp/put_probe -X PUT --data-binary \"PROBE_PAYLOAD_ABC123\" http://sanmaohe.oss-cn-beijing.aliyuncs.com/upload/test.bin",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "non-OSS Alibaba Cloud API",
+    "text": "curl https://ecs.aliyuncs.com/?Action=DescribeInstances",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "lookalike host",
+    "text": "curl https://oss-cn-hangzhou.aliyuncs.com.example.net/x",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "bucket host quoted in a tool response",
+    "text": "curl -s https://some-bucket.oss-cn-hangzhou.aliyuncs.com/a.txt",
+    "shouldMatch": false,
+    "eventKind": "response"
+  }
+]

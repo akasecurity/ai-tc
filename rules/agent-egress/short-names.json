@@ -1,0 +1,5 @@
+{
+  "agent-egress/cloud-metadata-access": "Cloud metadata access",
+  "agent-egress/object-storage-file-upload": "Object storage file upload",
+  "agent-egress/agent-probe-host": "Agent probe host"
+}

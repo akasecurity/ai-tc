@@ -1,6 +1,6 @@
 {
   "specVersion": 1,
-  "id": "command-risk/cloud-metadata-access",
+  "id": "agent-egress/cloud-metadata-access",
   "name": "Cloud instance metadata endpoint",
   "category": "custom",
   "severity": "critical",

@@ -10,9 +10,12 @@
 // Regenerate after adding/removing a rule or pack under rules/:
 //   pnpm --filter @akasecurity/plugin-sdk gen:bundled-packs
 //
-// 8 packs / 120 rules.
+// 9 packs / 120 rules.
 /* eslint-disable simple-import-sort/imports */
 import type { BuiltinPolicyId } from '@akasecurity/schema';
+import agentEgressAgentProbeHost from '../../../rules/agent-egress/agent-probe-host.json';
+import agentEgressCloudMetadataAccess from '../../../rules/agent-egress/cloud-metadata-access.json';
+import agentEgressObjectStorageFileUpload from '../../../rules/agent-egress/object-storage-file-upload.json';
 import codeFlawsAuthJwtNoVerify from '../../../rules/code-flaws/auth-jwt-no-verify.json';
 import codeFlawsAuthSslVerifyFalse from '../../../rules/code-flaws/auth-ssl-verify-false.json';
 import codeFlawsCmdInjectExec from '../../../rules/code-flaws/cmd-inject-exec.json';
@@ -42,16 +45,13 @@ import codeFlawsSsrfUserUrl from '../../../rules/code-flaws/ssrf-user-url.json';
 import codeFlawsXssDangerouslySet from '../../../rules/code-flaws/xss-dangerously-set.json';
 import codeFlawsXssInnerHtml from '../../../rules/code-flaws/xss-inner-html.json';
 import codeFlawsXssUnescapedRender from '../../../rules/code-flaws/xss-unescaped-render.json';
-import commandRiskAgentProbeHost from '../../../rules/command-risk/agent-probe-host.json';
 import commandRiskAlibabaOssHost from '../../../rules/command-risk/alibaba-oss-host.json';
-import commandRiskCloudMetadataAccess from '../../../rules/command-risk/cloud-metadata-access.json';
 import commandRiskCredentialFileAccess from '../../../rules/command-risk/credential-file-access.json';
 import commandRiskCredentialFileRead from '../../../rules/command-risk/credential-file-read.json';
 import commandRiskCurlPipeShell from '../../../rules/command-risk/curl-pipe-shell.json';
 import commandRiskDownloadThenExecute from '../../../rules/command-risk/download-then-execute.json';
 import commandRiskGitForcePush from '../../../rules/command-risk/git-force-push.json';
 import commandRiskGitResetHard from '../../../rules/command-risk/git-reset-hard.json';
-import commandRiskObjectStorageFileUpload from '../../../rules/command-risk/object-storage-file-upload.json';
 import commandRiskObjectStorageUpload from '../../../rules/command-risk/object-storage-upload.json';
 import commandRiskPkillBroad from '../../../rules/command-risk/pkill-broad.json';
 import commandRiskProtectedPathAccess from '../../../rules/command-risk/protected-path-access.json';
@@ -147,6 +147,22 @@ export interface BundledPack {
 
 export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
+    packId: 'agent-egress',
+    name: 'Agent egress and credential reach',
+    version: '0.1.0',
+    defaultPolicy: 'block',
+    rawRules: [
+      agentEgressCloudMetadataAccess,
+      agentEgressObjectStorageFileUpload,
+      agentEgressAgentProbeHost,
+    ],
+    shortNames: {
+      'agent-egress/cloud-metadata-access': 'Cloud metadata access',
+      'agent-egress/object-storage-file-upload': 'Object storage file upload',
+      'agent-egress/agent-probe-host': 'Agent probe host',
+    },
+  },
+  {
     packId: 'code-flaws',
     name: 'Code Security Flaws',
     version: '0.1.3',
@@ -227,10 +243,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       commandRiskCredentialFileRead,
       commandRiskCredentialFileAccess,
       commandRiskProtectedPathAccess,
-      commandRiskCloudMetadataAccess,
       commandRiskObjectStorageUpload,
-      commandRiskObjectStorageFileUpload,
-      commandRiskAgentProbeHost,
       commandRiskAlibabaOssHost,
       commandRiskDownloadThenExecute,
       commandRiskUnshareUserNamespace,
@@ -245,10 +258,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       'command-risk/credential-file-read': 'Credential file read',
       'command-risk/credential-file-access': 'Credential file read',
       'command-risk/protected-path-access': 'Protected path access',
-      'command-risk/cloud-metadata-access': 'Cloud metadata access',
       'command-risk/object-storage-upload': 'Object storage upload',
-      'command-risk/object-storage-file-upload': 'Object storage file upload',
-      'command-risk/agent-probe-host': 'Agent probe host',
       'command-risk/alibaba-oss-host': 'Alibaba OSS host',
       'command-risk/download-then-execute': 'Download then execute',
       'command-risk/unshare-user-namespace': 'User namespace unshare',

@@ -1,6 +1,6 @@
 {
   "specVersion": 1,
-  "id": "command-risk/object-storage-file-upload",
+  "id": "agent-egress/object-storage-file-upload",
   "name": "File or environment upload to a cloud object storage host",
   "category": "custom",
   "severity": "critical",

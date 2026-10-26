@@ -1,6 +1,6 @@
 {
   "specVersion": 1,
-  "id": "command-risk/agent-probe-host",
+  "id": "agent-egress/agent-probe-host",
   "name": "Host used in observed agent upload probes",
   "category": "custom",
   "severity": "critical",

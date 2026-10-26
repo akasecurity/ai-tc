@@ -47,7 +47,10 @@ export interface InventoryNavProps {
   type: AssetType;
   onSelectHarness: (id: HarnessSummary['id']) => void;
   onSelectType: (type: AssetType) => void;
-  /** True while the lists are still loading with nothing cached. */
+  /**
+   * True while at least one of the lists has not landed yet. A list the host
+   * already holds counts as landed; each view waits on its own list.
+   */
   isLoading?: boolean | undefined;
   /**
    * Why a list is unavailable, per list — a permission refusal, or a read that

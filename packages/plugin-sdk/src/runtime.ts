@@ -1,13 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { MatchResult, ScanContext } from '@akasecurity/detections';
-import {
-  getLoadedRules,
-  isFabricatedCredential,
-  maskMatch,
-  redact,
-  withVariableNames,
-} from '@akasecurity/detections';
+import { getLoadedRules, maskMatch, redact, withVariableNames } from '@akasecurity/detections';
 import type {
   ActionTaken,
   DetectedFindingWithKey,
@@ -39,7 +33,7 @@ import { createIsolatedScanner } from './isolated-scan.ts';
 import { bundledMaskingRules } from './mask.ts';
 import { dropShieldedFindings, shieldPointers } from './pointer-shield.ts';
 import type { PolicyResolver } from './policy-resolver.ts';
-import { createPolicyResolver } from './policy-resolver.ts';
+import { createPolicyResolver, lowerFabricatedBlock } from './policy-resolver.ts';
 import { registerBundledPacks } from './rule-packs.ts';
 import { filterUnsafeRules, ruleProbeKey } from './rule-quarantine.ts';
 import type { BlockedDetectionRef, CaptureInput, CaptureResult } from './types.ts';
@@ -474,7 +468,7 @@ export function createPluginRuntime(
   // lowered, and a rule in `blockRules` is not routed through here.
   function policyActionFor(finding: MatchResult): ActionTaken {
     const action = resolveAction(finding.ruleId, finding.category);
-    return action === 'block' && isFabricatedCredential(finding) ? 'warn' : action;
+    return lowerFabricatedBlock(action, finding);
   }
 
   // The action that applies to ONE finding: an excepted finding's action is

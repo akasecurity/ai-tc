@@ -3,7 +3,7 @@ import type { AssetGroup, HarnessSummary, ProjectSummary } from '@akasecurity/sc
 import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { InventoryNav } from '../../src/inventory/InventoryNav.tsx';
+import { InventoryNav, type InventoryNavUnavailable } from '../../src/inventory/InventoryNav.tsx';
 import {
   type MountedRoot,
   mountRoot,
@@ -83,6 +83,10 @@ afterEach(() => {
 const entries = (): string[] =>
   [...mounted.host.querySelectorAll('nav li button')].map((b) => b.textContent);
 
+/** A refusal reaches both of the lists one `endpoints: view` gate covers. */
+const refused = (reason?: string) =>
+  reason === undefined ? undefined : { harnesses: reason, assets: reason };
+
 function mount(
   view: 'harness' | 'type',
   handlers: { onSelectHarness?: () => void } = {},
@@ -100,7 +104,7 @@ function mount(
       type="project"
       onSelectHarness={handlers.onSelectHarness ?? vi.fn()}
       onSelectType={vi.fn()}
-      assetsRefusal={assetsRefusal}
+      unavailable={refused(assetsRefusal)}
     />,
   );
 }
@@ -148,7 +152,7 @@ describe('InventoryNav', () => {
         type="project"
         onSelectHarness={vi.fn()}
         onSelectType={vi.fn()}
-        assetsRefusal={assetsRefusal}
+        unavailable={refused(assetsRefusal)}
         links={[
           {
             key: 'credentials',
@@ -222,6 +226,150 @@ describe('InventoryNav', () => {
     expect(onSelectHarness).toHaveBeenCalledWith('cursor');
   });
 
+  describe('while one list has landed and another has not', () => {
+    function mountPartial(
+      view: 'harness' | 'type',
+      landed: {
+        harnesses?: HarnessSummary[];
+        projects?: ProjectSummary[];
+        assetGroups?: AssetGroup[];
+        unavailable?: InventoryNavUnavailable;
+      },
+      isLoading = true,
+    ): void {
+      renderRoot(
+        mounted.root,
+        <InventoryNav
+          harnesses={landed.harnesses ?? []}
+          projects={landed.projects ?? []}
+          assetGroups={landed.assetGroups ?? []}
+          unavailable={landed.unavailable}
+          isLoading={isLoading}
+          view={view}
+          onView={vi.fn()}
+          harness="claudecode"
+          type="project"
+          onSelectHarness={vi.fn()}
+          onSelectType={vi.fn()}
+        />,
+      );
+    }
+
+    it('says it is loading, not that no harness was detected, while the harness read is still out', () => {
+      mountPartial('harness', { projects: [PROJECT], assetGroups: GROUPS });
+      expect(mounted.host.textContent).toContain('Loading inventory');
+      expect(mounted.host.textContent).not.toContain('No harnesses detected');
+    });
+
+    it('claims no attention total, since the lists it would add up are incomplete', () => {
+      mountPartial('harness', { projects: [PROJECT], assetGroups: GROUPS });
+      expect(mounted.host.textContent).not.toContain('to review');
+      expect(mounted.host.textContent).not.toContain('All clear');
+    });
+
+    it('leaves a type count unknown rather than zero until that type\u2019s list lands', () => {
+      mountPartial('type', { harnesses: HARNESSES, projects: [PROJECT] });
+      expect(entries()).toEqual([
+        'Projects1',
+        'Skills\u2014',
+        'MCP servers\u2014',
+        'Hooks\u2014',
+        'Configuration\u2014',
+      ]);
+    });
+
+    it('lists the harnesses as soon as they land, with the other reads still out', () => {
+      mountPartial('harness', { harnesses: HARNESSES });
+      expect(entries()).toEqual(['CCClaude Code2', 'CuCursor0']);
+      expect(mounted.host.textContent).not.toContain('Loading inventory');
+    });
+
+    it('says no harness was detected once the read is in and found none', () => {
+      mountPartial('harness', { projects: [PROJECT], assetGroups: GROUPS }, false);
+      expect(mounted.host.textContent).toContain('No harnesses detected');
+      expect(mounted.host.textContent).not.toContain('Loading inventory');
+    });
+  });
+
+  describe('when a read fails', () => {
+    const FAILED = "Couldn't load the harnesses. Please try again.";
+
+    function mountFailed(
+      view: 'harness' | 'type',
+      unavailable: InventoryNavUnavailable,
+      isLoading = false,
+    ): void {
+      renderRoot(
+        mounted.root,
+        <InventoryNav
+          harnesses={[]}
+          projects={[PROJECT]}
+          assetGroups={[]}
+          unavailable={unavailable}
+          isLoading={isLoading}
+          view={view}
+          onView={vi.fn()}
+          harness="claudecode"
+          type="project"
+          onSelectHarness={vi.fn()}
+          onSelectType={vi.fn()}
+        />,
+      );
+    }
+
+    it('shows why the harness list is missing instead of saying none was detected', () => {
+      mountFailed('harness', { harnesses: FAILED });
+      expect(mounted.host.textContent).toContain(FAILED);
+      expect(mounted.host.textContent).not.toContain('No harnesses detected');
+    });
+
+    it('keeps saying why while a sibling read is still out', () => {
+      mountFailed('harness', { harnesses: FAILED }, true);
+      expect(mounted.host.textContent).toContain(FAILED);
+      expect(mounted.host.textContent).not.toContain('No harnesses detected');
+      expect(mounted.host.textContent).not.toContain('Loading inventory');
+    });
+
+    it('leaves the asset counts unknown and the total a lower bound', () => {
+      mountFailed('type', { assets: FAILED });
+      expect(entries()).toEqual([
+        'Projects1',
+        'Skills\u2014',
+        'MCP servers\u2014',
+        'Hooks\u2014',
+        'Configuration\u2014',
+      ]);
+      expect(mounted.host.textContent).toContain('At least 1 to review');
+      expect(mounted.host.textContent).not.toContain('All clear');
+    });
+
+    it('counts the lists that are in, so one failed read does not hide the others', () => {
+      renderRoot(
+        mounted.root,
+        <InventoryNav
+          harnesses={HARNESSES}
+          projects={[]}
+          assetGroups={GROUPS}
+          unavailable={{ projects: FAILED }}
+          view="type"
+          onView={vi.fn()}
+          harness="claudecode"
+          type="project"
+          onSelectHarness={vi.fn()}
+          onSelectType={vi.fn()}
+        />,
+      );
+      expect(entries()).toEqual([
+        'Projects\u2014',
+        'Skills0',
+        'MCP servers1',
+        'Hooks0',
+        'Configuration0',
+      ]);
+      expect(mounted.host.textContent).toContain('At least 1 to review');
+    });
+  });
+
   describe('when the host cannot read the asset lists', () => {
     const REASON = 'You do not have enough permissions.';
 
@@ -245,7 +393,7 @@ describe('InventoryNav', () => {
           type="project"
           onSelectHarness={vi.fn()}
           onSelectType={vi.fn()}
-          assetsRefusal={REASON}
+          unavailable={refused(REASON)}
         />,
       );
       expect(mounted.host.textContent).toContain('Not available');

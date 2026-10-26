@@ -86,11 +86,17 @@ const HOSTILE_FILES = 3;
 // A real compiled-in rule and text it matches, taken from the packs rather than
 // restated here. This is the control for "the rules that never needed a bound
 // keep detecting", so it has to be one the guard really treats as CI-verified.
+// A file scan carries no event kind, so a rule scoped to event kinds cannot serve.
 function bundledControl(): { rule: Rule; text: string } {
   for (const pack of bundledDetections()) {
     for (const rule of pack.rules) {
       const example = rule.examples?.[0];
-      if (rule.matcher.type === 'regex' && example !== undefined && example.length > 0) {
+      if (
+        rule.matcher.type === 'regex' &&
+        rule.appliesTo?.eventKinds === undefined &&
+        example !== undefined &&
+        example.length > 0
+      ) {
         return { rule, text: example };
       }
     }

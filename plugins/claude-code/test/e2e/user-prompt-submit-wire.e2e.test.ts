@@ -34,6 +34,7 @@ import { bundledDetections } from '@akasecurity/plugin-sdk';
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { ISSUED_TWILIO_SID } from '../../../../test/helpers/issued-secret.ts';
 import { ONBOARDING_NUDGE } from '../../src/hooks/onboarding-nudge.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { runHook, tempHomeEnv, withTempHome } from '../helpers/run-hook.ts';
@@ -62,7 +63,8 @@ function secretExample(): { pack: ReturnType<typeof bundledDetections>[number]; 
   return { pack, example };
 }
 
-const { pack: SECRET_PACK, example: SECRET } = secretExample();
+const { pack: SECRET_PACK } = secretExample();
+const SECRET = ISSUED_TWILIO_SID;
 
 function projectDir(home: string): string {
   const dir = join(home, 'project');

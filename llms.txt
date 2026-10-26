@@ -61,7 +61,7 @@ A local SQLite store at `~/.aka/data/aka.db`, settings beside it under `~/.aka/s
 - `plugins/claude-code/`, `plugins/codex/`, `plugins/antigravity/`, `plugins/copilot/` — the harness plugins, one per host, published as `@akasecurity/ai-tc-claude-code`, `@akasecurity/ai-tc-codex`, `@akasecurity/ai-tc-antigravity` and `@akasecurity/ai-tc-copilot`.
 - `plugins/browser-extension/` — the Chrome extension for ChatGPT and Claude.ai web chat (MV3 content scripts + a native-messaging host).
 - `cli/` — the standalone CLI published as `@akasecurity/cli`, binary `aka`.
-- `rules/` — the eight built-in rule packs and their fixtures.
+- `rules/` — the nine built-in rule packs and their fixtures.
 - `skills/write-detection-rule/` — the authoring skill for new detection rules.
 - `web-ui/` — the local dashboard.
 

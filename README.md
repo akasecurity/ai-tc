@@ -1,6 +1,6 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/cover-dark.svg">
-  <img src="assets/cover-light.svg" alt="AI Traffic Control (ai-tc) by AKA Security. Illustration: a traffic-control plaza seen from above. Prompts, tool calls, responses and file reads arrive as vehicles, pass under the ai-tc policy engine gate, and leave in five lanes: monitor, warn, redact, block (barrier down, lane closed) and exception (set apart)." width="100%">
+  <img src="assets/cover-light.svg" alt="AI Traffic Control (ai-tc) by AKA Security. Illustration, shown on a demo session: a traffic-control plaza seen from above. Prompts, tool calls, responses and file reads arrive as vehicles, pass under the ai-tc policy engine gate, and leave in five lanes: monitor, warn, redact, block (barrier down, lane closed) and exception (set apart)." width="100%">
 </picture>
 
 <p align="center">

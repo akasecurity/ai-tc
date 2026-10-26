@@ -16,6 +16,7 @@ import type { BuiltinPolicyId } from '@akasecurity/schema';
 import agentEgressAgentProbeHost from '../../../rules/agent-egress/agent-probe-host.json';
 import agentEgressCloudMetadataAccess from '../../../rules/agent-egress/cloud-metadata-access.json';
 import agentEgressObjectStorageFileUpload from '../../../rules/agent-egress/object-storage-file-upload.json';
+import agentEgressUnshareUserNamespace from '../../../rules/agent-egress/unshare-user-namespace.json';
 import codeFlawsAuthJwtNoVerify from '../../../rules/code-flaws/auth-jwt-no-verify.json';
 import codeFlawsAuthSslVerifyFalse from '../../../rules/code-flaws/auth-ssl-verify-false.json';
 import codeFlawsCmdInjectExec from '../../../rules/code-flaws/cmd-inject-exec.json';
@@ -57,7 +58,6 @@ import commandRiskPkillBroad from '../../../rules/command-risk/pkill-broad.json'
 import commandRiskProtectedPathAccess from '../../../rules/command-risk/protected-path-access.json';
 import commandRiskReconThenEgress from '../../../rules/command-risk/recon-then-egress.json';
 import commandRiskRmRfHomeOrShared from '../../../rules/command-risk/rm-rf-home-or-shared.json';
-import commandRiskUnshareUserNamespace from '../../../rules/command-risk/unshare-user-namespace.json';
 import coreCodeContextDbTableName from '../../../rules/core-code-context/db-table-name.json';
 import coreCodeContextFeatureFlag from '../../../rules/core-code-context/feature-flag.json';
 import coreCodeContextFilePath from '../../../rules/core-code-context/file-path.json';
@@ -155,11 +155,13 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       agentEgressCloudMetadataAccess,
       agentEgressObjectStorageFileUpload,
       agentEgressAgentProbeHost,
+      agentEgressUnshareUserNamespace,
     ],
     shortNames: {
       'agent-egress/cloud-metadata-access': 'Cloud metadata access',
       'agent-egress/object-storage-file-upload': 'Object storage file upload',
       'agent-egress/agent-probe-host': 'Agent probe host',
+      'agent-egress/unshare-user-namespace': 'User namespace unshare',
     },
   },
   {
@@ -246,7 +248,6 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       commandRiskObjectStorageUpload,
       commandRiskAlibabaOssHost,
       commandRiskDownloadThenExecute,
-      commandRiskUnshareUserNamespace,
       commandRiskReconThenEgress,
     ],
     shortNames: {
@@ -261,7 +262,6 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       'command-risk/object-storage-upload': 'Object storage upload',
       'command-risk/alibaba-oss-host': 'Alibaba OSS host',
       'command-risk/download-then-execute': 'Download then execute',
-      'command-risk/unshare-user-namespace': 'User namespace unshare',
       'command-risk/recon-then-egress': 'Recon with egress',
     },
   },

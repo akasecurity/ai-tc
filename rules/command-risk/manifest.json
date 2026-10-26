@@ -16,7 +16,6 @@
     "object-storage-upload",
     "alibaba-oss-host",
     "download-then-execute",
-    "unshare-user-namespace",
     "recon-then-egress"
   ]
 }

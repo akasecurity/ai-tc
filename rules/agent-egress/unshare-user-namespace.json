@@ -1,6 +1,6 @@
 {
   "specVersion": 1,
-  "id": "command-risk/unshare-user-namespace",
+  "id": "agent-egress/unshare-user-namespace",
   "name": "unshare into a new user namespace",
   "category": "custom",
   "severity": "high",

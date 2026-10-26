@@ -10,6 +10,5 @@
   "command-risk/object-storage-upload": "Object storage upload",
   "command-risk/alibaba-oss-host": "Alibaba OSS host",
   "command-risk/download-then-execute": "Download then execute",
-  "command-risk/unshare-user-namespace": "User namespace unshare",
   "command-risk/recon-then-egress": "Recon with egress"
 }

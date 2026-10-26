@@ -25,15 +25,15 @@
   },
   "devDependencies": {
     "@akasecurity/eslint-config": "workspace:*",
-    "@commitlint/cli": "^21.2.3",
-    "@commitlint/config-conventional": "^21.2.3",
+    "@commitlint/cli": "^21.2.4",
+    "@commitlint/config-conventional": "^21.2.4",
     "@types/node": "^25.9.9",
     "eslint": "^9.39.5",
     "lefthook": "^2.2.2",
     "prettier": "^3.9.10",
-    "turbo": "^2.11.8",
+    "turbo": "^2.11.10",
     "typescript": "^5.8.0",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12"
   },
   "pnpm": {
     "overrides": {
@@ -47,7 +47,8 @@
       "postcss": "^8.5.18",
       "sharp": "^0.35.0",
       "source-map-js@<1.2.2": "^1.2.2",
-      "vite@8": "^8.3.3"
+      "vite@8": "^8.3.3",
+      "zod@<4.6.6": "^4.6.7"
     }
   }
 }

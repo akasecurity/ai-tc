@@ -1,7 +1,13 @@
 import { randomUUID } from 'node:crypto';
 
 import type { MatchResult, ScanContext } from '@akasecurity/detections';
-import { getLoadedRules, maskMatch, redact, withVariableNames } from '@akasecurity/detections';
+import {
+  getLoadedRules,
+  isFabricatedCredential,
+  maskMatch,
+  redact,
+  withVariableNames,
+} from '@akasecurity/detections';
 import type {
   ActionTaken,
   DetectedFindingWithKey,
@@ -462,6 +468,15 @@ export function createPluginRuntime(
     return resolver.actionFor(ruleId, category);
   }
 
+  // The policy's action for one finding, where a block on a fabricated provider
+  // token (a hand-typed value such as a run of consecutive characters) is
+  // lowered to a warn. The finding is still recorded; an issued token is never
+  // lowered, and a rule in `blockRules` is not routed through here.
+  function policyActionFor(finding: MatchResult): ActionTaken {
+    const action = resolveAction(finding.ruleId, finding.category);
+    return action === 'block' && isFabricatedCredential(finding) ? 'warn' : action;
+  }
+
   // The action that applies to ONE finding: an excepted finding's action is
   // 'allow' — its grant was already consumed — and every other finding resolves
   // through its own rule/category policy. This is per-finding, unlike `decide`'s
@@ -490,7 +505,7 @@ export function createPluginRuntime(
     // 'redact'; a downgrade recorded that way would be worse still, claiming a
     // masking that never happened while the raw value went through.
     return resolveEnforcedAction(
-      blockRules?.has(finding.ruleId) ? 'block' : resolveAction(finding.ruleId, finding.category),
+      blockRules?.has(finding.ruleId) ? 'block' : policyActionFor(finding),
       {
         policyMode,
         redactFallback,
@@ -615,7 +630,7 @@ export function createPluginRuntime(
       if (ENFORCEMENT_CEILING_ENABLED && policyMode === 'warn') return { excepted, exceptionIds };
       const enforced = findings.filter((f) => {
         if (blockRules?.has(f.ruleId)) return true;
-        const action = resolveAction(f.ruleId, f.category);
+        const action = policyActionFor(f);
         return action === 'block' || action === 'redact';
       });
       // Short-circuits, in order: nothing enforced, then no grants at all —
@@ -1102,7 +1117,7 @@ export function createPluginRuntime(
       const shielded = shieldPointers(text);
       const matched = await scanner.scan(shielded.text, context);
       return dropShieldedFindings(matched, shielded.spans).filter((finding) => {
-        const action = resolveAction(finding.ruleId, finding.category);
+        const action = policyActionFor(finding);
         return action === 'block' || action === 'redact';
       });
     } catch {

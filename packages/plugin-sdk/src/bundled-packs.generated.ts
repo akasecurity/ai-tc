@@ -10,9 +10,14 @@
 // Regenerate after adding/removing a rule or pack under rules/:
 //   pnpm --filter @akasecurity/plugin-sdk gen:bundled-packs
 //
-// 8 packs / 111 rules.
+// 9 packs / 117 rules.
 /* eslint-disable simple-import-sort/imports */
 import type { BuiltinPolicyId } from '@akasecurity/schema';
+import agentHarnessTamperAgentApprovalBypass from '../../../rules/agent-harness-tamper/agent-approval-bypass.json';
+import agentHarnessTamperAgentEndpointRedirect from '../../../rules/agent-harness-tamper/agent-endpoint-redirect.json';
+import agentHarnessTamperKnownMaliciousNpmPackage from '../../../rules/agent-harness-tamper/known-malicious-npm-package.json';
+import agentHarnessTamperLaunchctlSubmit from '../../../rules/agent-harness-tamper/launchctl-submit.json';
+import agentHarnessTamperMcpServerLauncher from '../../../rules/agent-harness-tamper/mcp-server-launcher.json';
 import codeFlawsAuthJwtNoVerify from '../../../rules/code-flaws/auth-jwt-no-verify.json';
 import codeFlawsAuthSslVerifyFalse from '../../../rules/code-flaws/auth-ssl-verify-false.json';
 import codeFlawsCmdInjectExec from '../../../rules/code-flaws/cmd-inject-exec.json';
@@ -138,6 +143,26 @@ export interface BundledPack {
 }
 
 export const BUNDLED_PACKS: readonly BundledPack[] = [
+  {
+    packId: 'agent-harness-tamper',
+    name: 'Agent harness tampering',
+    version: '0.1.0',
+    defaultPolicy: 'block',
+    rawRules: [
+      agentHarnessTamperMcpServerLauncher,
+      agentHarnessTamperAgentEndpointRedirect,
+      agentHarnessTamperAgentApprovalBypass,
+      agentHarnessTamperLaunchctlSubmit,
+      agentHarnessTamperKnownMaliciousNpmPackage,
+    ],
+    shortNames: {
+      'agent-harness-tamper/mcp-server-launcher': 'MCP server launcher',
+      'agent-harness-tamper/agent-endpoint-redirect': 'Agent endpoint redirect',
+      'agent-harness-tamper/agent-approval-bypass': 'Agent approval bypass',
+      'agent-harness-tamper/launchctl-submit': 'launchctl submit',
+      'agent-harness-tamper/known-malicious-npm-package': 'Malicious npm package',
+    },
+  },
   {
     packId: 'code-flaws',
     name: 'Code Security Flaws',

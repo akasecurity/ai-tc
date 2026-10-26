@@ -1,0 +1,16 @@
+{
+  "specVersion": 1,
+  "id": "agent-harness-tamper/known-malicious-npm-package",
+  "name": "Install of a known malicious npm package",
+  "category": "custom",
+  "severity": "critical",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\b(?=(?:npm|pnpm|yarn|bun|npx|bunx)\\b)(?<=(?:^|[;&|({\\x60'\"]|\\$\\()[ \\t]*(?:(?:sudo|doas|command|exec|nohup|time)[ \\t]+(?:-[A-Za-z]{1,8}[ \\t]+){0,3})?(?:[\\w.~-]*/){0,8})(?:npm|pnpm|yarn|bun|npx|bunx)\\b(?:[^\\n;|&\\\\]|\\\\[\\s\\S]|&(?!&)){0,300}?(?<=[\\s'\"])(?:function-color)(?:@[\\w.^~<>=*-]{1,40})?(?=[\\s'\";|&)]|$)|\"(?:function-color)\"[ \\t]*:[ \\t]*\"",
+    "flags": "gm"
+  },
+  "examples": ["npm install function-color", "pnpm add function-color@1.0.3"],
+  "appliesTo": {
+    "eventKinds": ["tool_use", "code_change"]
+  }
+}

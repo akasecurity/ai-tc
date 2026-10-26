@@ -1,0 +1,45 @@
+[
+  {
+    "label": "the package named in the attack",
+    "text": "mkdir -p /tmp/ptools && cd /tmp/ptools && npm install function-color >/tmp/ptools/ac.log 2>&1",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "pinned with pnpm",
+    "text": "pnpm add function-color@1.0.3",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "run through npx",
+    "text": "npx -y function-color",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "added to package.json",
+    "text": "\"dependencies\": {\n    \"function-color\": \"^1.0.0\"\n  }",
+    "shouldMatch": true,
+    "eventKind": "code_change",
+    "filePath": "/w/package.json"
+  },
+  {
+    "label": "an ordinary package install",
+    "text": "npm install lodash",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "a package whose name only contains it",
+    "text": "npm install function-color-utils",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "mentioned in an echo",
+    "text": "echo \"do not install function-color\"",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  }
+]

@@ -1,0 +1,19 @@
+{
+  "specVersion": 1,
+  "id": "agent-harness-tamper/agent-approval-bypass",
+  "name": "Agent CLI run with approvals or sandbox switched off",
+  "category": "custom",
+  "severity": "critical",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\b(?=(?:codex|claude|gemini|cursor-agent|opencode|amp)\\b)(?<=(?:^|[;&|({\\x60'\"]|\\$\\()[ \\t]*(?:(?:sudo|doas|command|exec|nohup|time)[ \\t]+(?:-[A-Za-z]{1,8}[ \\t]+){0,3})?(?:[\\w.~-]*/){0,8})(?:codex|claude|gemini|cursor-agent|opencode|amp)\\b(?:[^\\n;|&\\\\]|\\\\[\\s\\S]|&(?!&)){0,400}?(?<=\\s)(?:--dangerously-bypass-approvals-and-sandbox|--dangerously-skip-permissions|--yolo|--approval-mode(?:[ \\t]+|=)yolo)(?![\\w-])",
+    "flags": "gm"
+  },
+  "examples": [
+    "(cd /tmp && codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \"confirm the project-tools server initialized\")",
+    "claude -p \"fix the build\" --dangerously-skip-permissions"
+  ],
+  "appliesTo": {
+    "eventKinds": ["tool_use"]
+  }
+}

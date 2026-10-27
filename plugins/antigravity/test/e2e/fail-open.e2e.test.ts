@@ -30,6 +30,7 @@ import { bundledDetections, LARGE_INPUT_THRESHOLD_CHARS } from '@akasecurity/plu
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { ISSUED_TWILIO_SID } from '../../../../test/helpers/issued-secret.ts';
 import { tooLargeToScanMessage } from '../../src/exception-guidance.ts';
 import { withTempHome } from '../helpers/run-hook.ts';
 
@@ -260,6 +261,10 @@ function secretFixture(): { namespace: string; packId: string; example: string }
   return { namespace: pack.namespace, packId: pack.packId, example };
 }
 const FIXTURE = secretFixture();
+// The rule's example is a placeholder (a repeating digit run), and a block on a
+// fabricated provider token is lowered to a warn, so the value carried is
+// shaped like an issued token instead.
+const SECRET = ISSUED_TWILIO_SID;
 
 function seedPolicy(home: string, policy: BuiltinPolicyId): void {
   const db = openLocalDatabase(join(home, '.aka', 'data'));
@@ -277,7 +282,7 @@ function runPreToolUse(home: string) {
     [],
     home,
     JSON.stringify({
-      toolCall: { name: 'run_command', args: { CommandLine: `deploy ${FIXTURE.example}` } },
+      toolCall: { name: 'run_command', args: { CommandLine: `deploy ${SECRET}` } },
       stepIdx: 0,
       conversationId: 'conv-enforce',
       workspacePaths: ['/tmp'],

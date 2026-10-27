@@ -6,7 +6,10 @@ import { describe, expect, it } from 'vitest';
 import { scan } from '../src/engine.ts';
 import {
   classifyPath,
+  FABRICATED_RUN,
+  isFabricatedCredential,
   KNOWN_PREFIXES,
+  looksFabricated,
   matchFeatures,
   nameBucket,
   NEARBY_WINDOW,
@@ -325,5 +328,60 @@ describe('matchFeatures over every bundled rule', () => {
       }
     }
     expect(checked).toBeGreaterThan(100);
+  });
+});
+
+describe('looksFabricated', () => {
+  const ascending = ['ghp_', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghij'].join('');
+  const descending = ['AKIA', 'ZYXWVUTS', 'Q7K2M9P4'].join('');
+  const digits = ['sk-proj-', 'Q7vLm2', '12345678', 'Xk9Pz4'].join('');
+  const repeated = ['ghp_', 'ab'.repeat(18)].join('');
+  const issued = ['ghp_', 'Q7vLm2Xk9Pz4Rt8Wn1Jc5Hd3Fb6Gy0Ts2Ue8'].join('');
+
+  it.each([
+    ['an ascending run across the whole body', ascending],
+    ['a descending run', descending],
+    ['a run of digits inside random text', digits],
+    ['two characters repeated', repeated],
+  ])('flags %s', (_label, value) => {
+    expect(looksFabricated(value)).toBe(true);
+  });
+
+  it('leaves a random issued-looking value alone', () => {
+    expect(looksFabricated(issued)).toBe(false);
+  });
+
+  it('needs a run of FABRICATED_RUN, not one shorter', () => {
+    expect(FABRICATED_RUN).toBe(8);
+    const short = ['ghp_', 'Q7v', 'abcdefg', 'Lm2Xk9Pz4Rt8Wn1Jc5Hd3Fb6Gy0'].join('');
+    const long = ['ghp_', 'Q7v', 'abcdefgh', 'Lm2Xk9Pz4Rt8Wn1Jc5Hd3Fb6Gy'].join('');
+    expect(looksFabricated(short)).toBe(false);
+    expect(looksFabricated(long)).toBe(true);
+  });
+
+  it('does not count a run that changes character class', () => {
+    // '9' then 'A' crosses from digits to letters, so two runs of 7 do not join into one.
+    expect(looksFabricated(['tok_', 'Q7v', '3456789', 'ABCDEFG', 'Lm2Xk9'].join(''))).toBe(false);
+  });
+
+  it('is false for a value that is only its known prefix', () => {
+    expect(looksFabricated('ghp_')).toBe(false);
+  });
+});
+
+describe('isFabricatedCredential', () => {
+  const fabricated = ['ghp_', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghij'].join('');
+
+  it('is true for a provider-token rule on a fabricated value', () => {
+    expect(isFabricatedCredential({ ruleId: 'secrets/github-pat', rawMatch: fabricated })).toBe(
+      true,
+    );
+  });
+
+  it('is false outside the provider-token pack, where a person chose the value', () => {
+    const password = ['password=', 'Winter', '12345678'].join('');
+    expect(
+      isFabricatedCredential({ ruleId: 'secrets-infra/password-field', rawMatch: password }),
+    ).toBe(false);
   });
 });

@@ -1812,3 +1812,75 @@ describe('createPluginRuntime — secretsIn', () => {
     await rt.close();
   });
 });
+
+// A provider-token rule (the `secrets/` pack prefix) and a non-provider rule
+// with the same matcher, so the scope of the lowering is visible. Values are
+// assembled at runtime so no literal in this file looks like a credential.
+registerRulePack('fabricated-test-pack', [
+  {
+    specVersion: 1,
+    id: 'secrets/fabricated-test-token',
+    name: 'Fabricated test token',
+    category: 'secret',
+    severity: 'critical',
+    matcher: { type: 'regex', pattern: '\\bfbt_[A-Za-z0-9]{16}\\b', flags: 'g' },
+    examples: ['fbt_Q7vLm2Xk9Pz4Rt8W'],
+  },
+]);
+const FABRICATED_TOKEN = ['fbt_', 'abcdefgh', 'ijklmnop'].join('');
+const ISSUED_LIKE_TOKEN = ['fbt_', 'Q7vLm2Xk', '9Pz4Rt8W'].join('');
+
+describe('createPluginRuntime — a block on a fabricated provider token', () => {
+  const blockSecrets = (): PolicyBundle => ({
+    ...bundle(),
+    policies: [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { category: 'secret' },
+        action: 'block',
+        enabled: true,
+      },
+    ],
+  });
+
+  it('warns instead of blocking when the value is a run of consecutive characters', async () => {
+    const rt = createPluginRuntime(fakeGateway(blockSecrets()), settings());
+    const result = await rt.processText(`token ${FABRICATED_TOKEN} here`);
+    expect(result.action).toBe('warn');
+    expect(result.findings.map((f) => f.ruleId)).toContain('secrets/fabricated-test-token');
+    expect(await rt.enforcedIn(`token ${FABRICATED_TOKEN} here`)).toEqual([]);
+    await rt.close();
+  });
+
+  it('still blocks an issued-looking value under the same rule', async () => {
+    const rt = createPluginRuntime(fakeGateway(blockSecrets()), settings());
+    const result = await rt.processText(`token ${ISSUED_LIKE_TOKEN} here`);
+    expect(result.action).toBe('block');
+    expect(result.text).toBeNull();
+    await rt.close();
+  });
+
+  it('still blocks a fabricated value next to an issued one', async () => {
+    const rt = createPluginRuntime(fakeGateway(blockSecrets()), settings());
+    const result = await rt.processText(`${FABRICATED_TOKEN} and ${ISSUED_LIKE_TOKEN}`);
+    expect(result.action).toBe('block');
+    await rt.close();
+  });
+
+  it('keeps a rule the runtime was told to block at block', async () => {
+    const rt = createPluginRuntime(fakeGateway(bundle()), settings(), {
+      blockRules: new Set(['secrets/fabricated-test-token']),
+    });
+    const result = await rt.processText(`token ${FABRICATED_TOKEN} here`);
+    expect(result.action).toBe('block');
+    await rt.close();
+  });
+
+  it('does not lower a block outside the provider-token pack', async () => {
+    const rt = createPluginRuntime(fakeGateway(blockSecrets()), settings());
+    const result = await rt.processText('deploy with SECRET_MARKER now');
+    expect(result.action).toBe('block');
+    await rt.close();
+  });
+});

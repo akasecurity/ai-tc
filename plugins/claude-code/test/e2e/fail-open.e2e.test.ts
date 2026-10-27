@@ -31,6 +31,7 @@ import {
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { ISSUED_TWILIO_SID } from '../../../../test/helpers/issued-secret.ts';
 import { tooLargeToolText, tooLargeToScanMessage } from '../../src/exception-guidance.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { runHook, tempHomeEnv, withTempHome } from '../helpers/run-hook.ts';
@@ -523,7 +524,8 @@ function secretFixture(): { pack: ReturnType<typeof bundledDetections>[number]; 
   return { pack, example };
 }
 
-const { pack: ENFORCED_PACK, example: SECRET } = secretFixture();
+const { pack: ENFORCED_PACK } = secretFixture();
+const SECRET = ISSUED_TWILIO_SID;
 
 // Install the bundled packs the way the gateway does on open, then give the
 // pack the policy under test — a per-pack policy is what the runtime's action

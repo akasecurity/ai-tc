@@ -100,6 +100,61 @@ function knownPrefixOf(value: string): (typeof KNOWN_PREFIXES)[number] | null {
   return KNOWN_PREFIXES.find((p) => value.startsWith(p)) ?? null;
 }
 
+/**
+ * The shortest run of consecutive characters (`abcdefgh`, `87654321`, each step
+ * one code point within one of digits, lower case or upper case) that marks a
+ * value as typed by hand. A random base62 value starts a run this long at a given
+ * position about once in 10^12, so a run of it is not chance.
+ */
+export const FABRICATED_RUN = 8;
+
+function charClassOf(ch: string): number {
+  if (ch >= '0' && ch <= '9') return 0;
+  if (ch >= 'a' && ch <= 'z') return 1;
+  if (ch >= 'A' && ch <= 'Z') return 2;
+  return 3;
+}
+
+function longestSequentialRun(value: string): number {
+  let best = value.length === 0 ? 0 : 1;
+  let up = 1;
+  let down = 1;
+  for (let i = 1; i < value.length; i += 1) {
+    const cls = charClassOf(value[i] ?? '');
+    const sameClass = cls !== 3 && cls === charClassOf(value[i - 1] ?? '');
+    const step = value.charCodeAt(i) - value.charCodeAt(i - 1);
+    up = sameClass && step === 1 ? up + 1 : 1;
+    down = sameClass && step === -1 ? down + 1 : 1;
+    best = Math.max(best, up, down);
+  }
+  return best;
+}
+
+/**
+ * True when a matched value is a made-up credential rather than an issued one:
+ * after its published prefix it is one or two characters repeated, or it holds a
+ * run of {@link FABRICATED_RUN} consecutive characters. Narrower than the
+ * `placeholder` feature on purpose: no sample words, since a random value can
+ * contain `xxx` by chance, and nothing an issued credential produces at a
+ * meaningful rate.
+ */
+export function looksFabricated(fullValue: string): boolean {
+  const prefix = knownPrefixOf(fullValue) ?? undefined;
+  const value = prefix === undefined ? fullValue : fullValue.slice(prefix.length);
+  if (value.length === 0) return false;
+  if (new Set(value).size <= 2) return true;
+  return longestSequentialRun(value) >= FABRICATED_RUN;
+}
+
+/**
+ * True when a finding is a provider-token rule's match on a fabricated value.
+ * Scoped to the `secrets` pack, whose rules match issued tokens: a password or
+ * a generic secret is chosen by a person and can hold `12345678` while live.
+ */
+export function isFabricatedCredential(match: Pick<MatchResult, 'ruleId' | 'rawMatch'>): boolean {
+  return match.ruleId.startsWith('secrets/') && looksFabricated(match.rawMatch);
+}
+
 function looksLikePlaceholder(fullValue: string): boolean {
   const prefix = knownPrefixOf(fullValue) ?? undefined;
   const value = prefix === undefined ? fullValue : fullValue.slice(prefix.length);

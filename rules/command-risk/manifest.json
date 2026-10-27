@@ -2,7 +2,7 @@
   "specVersion": 1,
   "id": "command-risk",
   "name": "Risky agent commands",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "defaultPolicy": "warn",
   "rules": [
     "pkill-broad",
@@ -11,6 +11,7 @@
     "git-reset-hard",
     "curl-pipe-shell",
     "credential-file-read",
+    "credential-file-grep",
     "credential-file-access",
     "protected-path-access"
   ]

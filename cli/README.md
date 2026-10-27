@@ -95,7 +95,7 @@ Run `aka --help` for the full command list.
 
 ### External subcommands
 
-Any other command dispatches, git-style, to an executable named `aka-<command>` on your PATH (POSIX only; built-ins always win). For example, with [aka-claude-tools](https://github.com/akasecurity/claude-tools) installed, `aka claude` launches the hardened Claude Code profile via its `aka-claude` launcher.
+Any other command dispatches, git-style, to an executable named `aka-<command>` on your PATH (POSIX only; built-ins always win). For example, with [aka-claude-tools](https://github.com/akasecurity/aka-claude-tools) installed, `aka claude` launches the hardened Claude Code profile via its `aka-claude` launcher.
 
 ## The Claude Code plugin
 

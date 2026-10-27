@@ -231,6 +231,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'resolveRepoNwo',
   'resolveSupersededProjectUrls',
   'resolveWorktreeRoot',
+  'reuseScanners',
   'rotateFingerprintKey',
   'ruleProbeKey',
   'safeMaskedMatch',

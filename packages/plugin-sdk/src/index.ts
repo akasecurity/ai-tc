@@ -211,6 +211,7 @@ export {
   LARGE_INPUT_SCAN_BUDGET_MS,
   LARGE_INPUT_START_BUDGET_MS,
   LARGE_INPUT_THRESHOLD_CHARS,
+  reuseScanners,
 } from './runtime.ts';
 export type { ScanFileKind } from './scan-files.ts';
 export {

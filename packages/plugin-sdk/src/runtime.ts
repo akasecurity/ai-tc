@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import type { MatchResult, ScanContext } from '@akasecurity/detections';
 import { getLoadedRules, maskMatch, redact, withVariableNames } from '@akasecurity/detections';
@@ -246,6 +246,32 @@ function readRemainingMs(largeInput: LargeInputScanOptions): number | undefined 
   }
 }
 
+// A process that runs many hooks can keep ONE scanner across the runtimes it
+// creates, so a ruleset with a worker behind it starts that worker once rather
+// than for every hook. Off by default: a hook process exits with its runtime.
+let keepScanners = false;
+let keptScanner: {
+  readonly key: string;
+  readonly gateway: DataGateway;
+  readonly scanner: GuardedScanner;
+} | null = null;
+
+async function releaseKeptScanner(): Promise<void> {
+  const kept = keptScanner;
+  keptScanner = null;
+  try {
+    await kept?.scanner.close();
+  } catch {
+    // A worker that will not shut down cleanly is gone with the process.
+  }
+}
+
+/** Keeps (or stops keeping) one scanner across runtimes; turning it off closes the kept one. */
+export async function reuseScanners(on: boolean): Promise<void> {
+  keepScanners = on;
+  if (!on) await releaseKeptScanner();
+}
+
 // registerBundledPacks() parses + validates every bundled rule JSON. A hook runs
 // in its own process, so it would happen once there regardless — but tests build
 // many runtimes in one process. Gate it on a module flag so the parse cost is
@@ -324,6 +350,31 @@ export function createPluginRuntime(
     fetchedAt: '',
   });
 
+  // The scanner for this ruleset: new, or the kept one when this process keeps
+  // scanners and the ruleset, the gateway and the scanner's health are all as
+  // they were. Only a ruleset with a pulled or custom-pack regex rule has a
+  // worker behind its scanner, which is what makes keeping one worthwhile.
+  async function scannerFor(verified: Rule[], unverified: Rule[]): Promise<GuardedScanner> {
+    if (!keepScanners) {
+      return createGuardedScanner({ verified, unverified }, gateway, opts?.scanIsolation);
+    }
+    const key = createHash('sha256')
+      .update(JSON.stringify([verified, unverified]))
+      .digest('hex');
+    if (
+      keptScanner !== null &&
+      keptScanner.key === key &&
+      keptScanner.gateway === gateway &&
+      !keptScanner.scanner.degraded()
+    ) {
+      return keptScanner.scanner;
+    }
+    await releaseKeptScanner();
+    const created = createGuardedScanner({ verified, unverified }, gateway, opts?.scanIsolation);
+    keptScanner = { key, gateway, scanner: created };
+    return created;
+  }
+
   // Pull the policy bundle once per runtime: cache its policies for action
   // resolution and compose the effective ruleset. When the bundle marks its
   // rules COMPLETE (the user's installed snapshot — enabled packs only), they
@@ -390,7 +441,7 @@ export function createPluginRuntime(
     rules = [...verified, ...unverified];
     evidenceOf = evidenceLookup(rules);
     nameOf = new Map(rules.map((rule) => [rule.id, rule.name]));
-    scanner = createGuardedScanner({ verified, unverified }, gateway, opts?.scanIsolation);
+    scanner = await scannerFor(verified, unverified);
     bundleExceptions = bundle.exceptions ?? [];
     // Raise-only, over the one enforcement ladder: an organization can tighten
     // what happens where masking is impossible and can never loosen it. Absent
@@ -1183,8 +1234,10 @@ export function createPluginRuntime(
   async function close(): Promise<void> {
     try {
       // The worker thread must not outlive the runtime that started it — a
-      // stray thread would hold the process open past the hook's own exit.
-      await scanner?.close();
+      // stray thread would hold the process open past the hook's own exit. A
+      // scanner kept for reuse is the exception: it outlives this runtime on
+      // purpose, and `reuseScanners(false)` is what closes it.
+      if (scanner !== undefined && keptScanner?.scanner !== scanner) await scanner.close();
     } catch {
       // A thread that will not shut down cleanly must not cost the caller its
       // store handle, which is the close that actually matters.

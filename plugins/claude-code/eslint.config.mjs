@@ -72,11 +72,34 @@ export default [
     },
   },
   {
+    // The hook server forwards the variables the account and session checks read
+    // into the process for the length of one request.
+    files: ['src/hooks/hook-server/request-env.ts'],
+    rules: {
+      'n/no-process-env': 'off',
+    },
+  },
+  {
     files: ['src/hooks/**/*.ts', 'src/mod/**/*.ts'],
     ignores: ['src/hooks/stamped-capture.ts'],
     rules: {
       'no-restricted-syntax': ['error', ...wallSelectors, ...stampedOnlySelectors],
     },
+  },
+  {
+    // THE HOOK SERVER'S SOCKET. A unix-domain socket in a directory only the
+    // owner can enter: the server a hook client talks to on the same machine.
+    // It listens on no port and speaks to nothing off the machine. File-scoped
+    // to the one module that creates the server and the probe connection.
+    files: ['src/hooks/hook-server/server.ts'],
+    rules: drizzleWallRules({ allow: ['node:net'] }),
+  },
+  {
+    // The suites' client for that socket: what they test is the framing and the
+    // server's behaviour over a real connection, which a stubbed transport
+    // would leave unproven.
+    files: ['test/helpers/unix-socket.ts'],
+    rules: drizzleWallRules({ allow: ['node:net'] }),
   },
   ...rootConfigFiles,
   // Tracked source outside the tsconfig: the mod (its `claude-code` types are

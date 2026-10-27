@@ -28,6 +28,13 @@ export interface InventoryNavLink {
   onSelect: () => void;
 }
 
+/** A reason per list, set only for a list the host could not read. */
+export interface InventoryNavUnavailable {
+  harnesses?: string | undefined;
+  assets?: string | undefined;
+  projects?: string | undefined;
+}
+
 export interface InventoryNavProps {
   harnesses: HarnessSummary[];
   projects: ProjectSummary[];
@@ -40,15 +47,18 @@ export interface InventoryNavProps {
   type: AssetType;
   onSelectHarness: (id: HarnessSummary['id']) => void;
   onSelectType: (type: AssetType) => void;
-  /** True while the lists are still loading with nothing cached. */
+  /**
+   * True while at least one of the lists has not landed yet. A list the host
+   * already holds counts as landed; each view waits on its own list.
+   */
   isLoading?: boolean | undefined;
   /**
-   * Set when the host cannot read the harness and asset lists. The reason is shown
-   * in their place, and nothing is counted from the lists it lacks: the summary is
-   * a lower bound over what is still readable (the projects and the host links),
-   * or "Not available" when none of that needs review.
+   * Why a list is unavailable, per list — a permission refusal, or a read that
+   * failed. The reason is shown in place of that list, nothing is counted from
+   * it, and the summary falls back to a lower bound over the lists that are in
+   * ("At least N to review"), or "Not available" when none of those needs review.
    */
-  assetsRefusal?: string | undefined;
+  unavailable?: InventoryNavUnavailable | undefined;
   /** Entries the host adds after the list, in either view; each counts toward the attention summary. */
   links?: readonly InventoryNavLink[] | undefined;
 }
@@ -64,20 +74,35 @@ export function InventoryNav({
   onSelectHarness,
   onSelectType,
   isLoading,
-  assetsRefusal,
+  unavailable,
   links = [],
 }: InventoryNavProps) {
-  const empty = harnesses.length === 0 && projects.length === 0 && assetGroups.length === 0;
+  const loading = isLoading === true;
+  // One state per list: a list still out reads as loading, an unavailable one
+  // reads as its reason, and only a list that is in produces a count, a total
+  // or an empty state.
+  const {
+    harnesses: harnessesReason,
+    assets: assetsReason,
+    projects: projectsReason,
+  } = unavailable ?? {};
+  /** The list a type's rows come from, when that list is unavailable. */
+  const typeReason = (t: AssetType) => (t === 'project' ? projectsReason : assetsReason);
   // Every project and asset once, counted the way the tables count them.
   const linkAttention = links.reduce((n, link) => n + link.attention, 0);
   const groupAttention = GROUPS.map((g) => ({
     type: g.type,
     count: typeRows(g.type, projects, assetGroups).filter(needsAttention).length,
+    unavailable: typeReason(g.type) !== undefined,
   }));
-  const attention = groupAttention.reduce((n, g) => n + g.count, 0) + linkAttention;
-  // Under a refusal, what is still counted: the projects and the host links.
+  const totalIsPartial = groupAttention.some((g) => g.unavailable);
+  // What needs review across the lists that are in — the whole total when none
+  // is unavailable, a lower bound when one is.
   const knownAttention =
-    (groupAttention.find((g) => g.type === 'project')?.count ?? 0) + linkAttention;
+    groupAttention.reduce((n, g) => n + (g.unavailable ? 0 : g.count), 0) + linkAttention;
+  const totalReason = [
+    ...new Set([projectsReason, assetsReason].filter((r) => r !== undefined)),
+  ].join('\n');
   const linkRows = links.map((link) => (
     <NavRow
       key={link.key}
@@ -100,19 +125,19 @@ export function InventoryNav({
       <div className="border-b border-border px-4 pb-3.5 pt-4">
         <div className="mb-3 flex items-center gap-2">
           <span className="font-display text-sm font-semibold">All assets</span>
-          {isLoading && empty ? (
+          {loading ? (
             <span className="ml-auto text-xs text-text-3">…</span>
-          ) : assetsRefusal !== undefined ? (
+          ) : totalIsPartial ? (
             knownAttention > 0 ? (
               <span
                 className="ml-auto inline-flex items-center gap-1.5 text-xs font-semibold text-sev-high-ink"
-                title={assetsRefusal}
+                title={totalReason}
               >
                 <Ico name="flag" className="size-3.5" />
                 {`At least ${String(knownAttention)} to review`}
               </span>
             ) : (
-              <span className="ml-auto text-xs text-text-3" title={assetsRefusal}>
+              <span className="ml-auto text-xs text-text-3" title={totalReason}>
                 Not available
               </span>
             )
@@ -120,11 +145,11 @@ export function InventoryNav({
             <span
               className={cn(
                 'ml-auto inline-flex items-center gap-1.5 text-xs font-semibold',
-                attention ? 'text-sev-high-ink' : 'text-ok-ink',
+                knownAttention ? 'text-sev-high-ink' : 'text-ok-ink',
               )}
             >
-              <Ico name={attention ? 'flag' : 'check-circle'} className="size-3.5" />
-              {attention ? `${String(attention)} to review` : 'All clear'}
+              <Ico name={knownAttention ? 'flag' : 'check-circle'} className="size-3.5" />
+              {knownAttention ? `${String(knownAttention)} to review` : 'All clear'}
             </span>
           )}
         </div>
@@ -145,11 +170,11 @@ export function InventoryNav({
       </div>
 
       <nav aria-label="Inventory" className="p-2">
-        {isLoading && empty ? (
-          <div className="px-3 py-6 text-center text-xs text-text-3">Loading inventory…</div>
-        ) : view === 'harness' ? (
-          assetsRefusal !== undefined ? (
-            <EmptyState message={assetsRefusal} />
+        {view === 'harness' ? (
+          harnessesReason !== undefined ? (
+            <EmptyState message={harnessesReason} />
+          ) : loading && harnesses.length === 0 ? (
+            <Loading />
           ) : harnesses.length === 0 ? (
             <EmptyState message="No harnesses detected" />
           ) : (
@@ -172,18 +197,20 @@ export function InventoryNav({
               })}
             </ul>
           )
+        ) : loading && projects.length === 0 && assetGroups.length === 0 ? (
+          <Loading />
         ) : (
           <ul aria-label="Asset types" className="flex flex-col gap-0.5">
             {GROUPS.map((g) => {
               const rows = typeRows(g.type, projects, assetGroups);
-              const unreadable = assetsRefusal !== undefined && g.type !== 'project';
+              const unknown = typeReason(g.type) !== undefined || (loading && rows.length === 0);
               return (
                 <NavRow
                   key={g.type}
                   icon={<TileIcon icon={g.icon} fg={g.fg} bg={g.bg} />}
                   label={g.label}
-                  count={unreadable ? null : rows.length}
-                  attention={unreadable ? 0 : rows.filter(needsAttention).length}
+                  count={unknown ? null : rows.length}
+                  attention={unknown ? 0 : rows.filter(needsAttention).length}
                   selected={g.type === type}
                   onSelect={() => {
                     onSelectType(g.type);
@@ -196,6 +223,14 @@ export function InventoryNav({
         {linkList}
       </nav>
     </Card>
+  );
+}
+
+function Loading() {
+  return (
+    <div role="status" className="px-3 py-6 text-center text-xs text-text-3">
+      Loading inventory…
+    </div>
   );
 }
 

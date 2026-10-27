@@ -546,6 +546,10 @@ const DOCUMENTED_OPT_OUTS = {
   // module in this workspace that sends anything, and `test/helpers/loopback.ts`
   // is what proves it. See CLAUDE.md §4.
   'packages/remote/eslint.config.mjs': ['node:http', 'node:https'],
+  // The Claude Code hook server listens on a unix-domain socket under ~/.aka/run
+  // (one module), and its suites connect to it (one helper). Both file-scoped;
+  // see conventions/process-env-and-network.md.
+  'plugins/claude-code/eslint.config.mjs': ['node:net'],
   // The installer suite stands a loopback HTTP server so the shipped
   // install.sh / install.ps1 can be driven against a local base. File-scoped
   // to the one helper that binds it; see CLAUDE.md §4.

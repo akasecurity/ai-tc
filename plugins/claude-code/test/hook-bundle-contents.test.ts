@@ -31,14 +31,20 @@ const manifest = JSON.parse(
  * carries the hook's code.
  */
 const hookScripts = [
-  ...new Set(
-    Object.values(manifest.hooks)
+  ...new Set([
+    // The hook server runs the bundles of the hooks it serves in one process.
+    'hook-server.js',
+    ...Object.values(manifest.hooks)
       .flat()
       .flatMap((entry) => entry.hooks)
-      .flatMap(({ command }) =>
-        [...command.matchAll(/scripts\/([\w-]+)\.js/g)].map((m) => `${String(m[1])}.body.js`),
-      ),
-  ),
+      .flatMap(({ command }) => [
+        ...[...command.matchAll(/scripts\/([\w-]+)\.js/g)].map((m) => `${String(m[1])}.body.js`),
+        // A hook the shell client runs is named after the client, not by its script.
+        ...[...command.matchAll(/hook-client\.sh" ([\w-]+)/g)].map(
+          (m) => `${String(m[1])}.body.js`,
+        ),
+      ]),
+  ]),
 ];
 
 // The bundler marks where each bundled module starts with a path comment; the

@@ -81,7 +81,11 @@ const manifestScripts = [
     )
       .flat()
       .flatMap((entry) => entry.hooks)
-      .flatMap(({ command }) => [...command.matchAll(/scripts\/([\w-]+)\.js/g)].map((m) => m[1])),
+      .flatMap(({ command }) => [
+        ...[...command.matchAll(/scripts\/([\w-]+)\.js/g)].map((m) => m[1]),
+        // A hook run through the shell client is named after the client.
+        ...[...command.matchAll(/hook-client\.sh" ([\w-]+)/g)].map((m) => m[1]),
+      ]),
   ),
 ].filter((name): name is string => name !== undefined);
 

@@ -6,7 +6,7 @@
   "severity": "critical",
   "matcher": {
     "type": "regex",
-    "pattern": "\\[mcp_servers\\.[^\\]\\n]{1,100}\\][^\\[]{0,800}?\\bcommand[ \\t]*=[ \\t]*[\"'](?:[^\"'\\n]{0,200}/)?(?:(?:launchctl|systemd-run|nohup|setsid|osascript|crontab)[\"']|(?:ba|z|da|k|fi)?sh[\"'][ \\t]*\\r?\\n[ \\t]*args[ \\t]*=[ \\t]*\\[[ \\t]*[\"']-[a-z]{0,3}c[\"'])|\"mcpServers\"[ \\t]*:[ \\t]*\\{[^]{0,2000}?\"command\"[ \\t]*:[ \\t]*\"(?:[^\"\\n]{0,200}/)?(?:(?:launchctl|systemd-run|nohup|setsid|osascript|crontab)\"|(?:ba|z|da|k|fi)?sh\"[ \\t]*,[ \\t\\r\\n]*\"args\"[ \\t]*:[ \\t]*\\[[ \\t\\r\\n]*\"-[a-z]{0,3}c\")",
+    "pattern": "\\[mcp_servers\\.[^\\]\\n]{1,100}\\][^\\[]{0,800}?\\bcommand[ \\t]*=[ \\t]*[\"'](?:[^\"'\\n]{0,200}/)?(?:(?:launchctl|systemd-run|nohup|setsid|osascript|crontab)[\"']|(?:ba|z|da|k|fi)?sh[\"'][ \\t]*\\r?\\n[ \\t]*args[ \\t]*=[ \\t]*\\[[ \\t]*[\"']-[a-z]{0,3}c[\"'])|\"mcpServers\"[ \\t\\r\\n]*:[ \\t\\r\\n]*\\{[ \\t\\r\\n]*(?:\"[^\"\\n]{1,100}\"[ \\t\\r\\n]*:[ \\t\\r\\n]*\\{(?:[^{}]|\\{[^{}]{0,400}\\}){0,800}\\}[ \\t\\r\\n]*,[ \\t\\r\\n]*){0,20}\"[^\"\\n]{1,100}\"[ \\t\\r\\n]*:[ \\t\\r\\n]*\\{(?:[^{}]|\\{[^{}]{0,400}\\}){0,800}?\"command\"[ \\t]*:[ \\t]*\"(?:[^\"\\n]{0,200}/)?(?:(?:launchctl|systemd-run|nohup|setsid|osascript|crontab)\"|(?:ba|z|da|k|fi)?sh\"[ \\t]*,[ \\t\\r\\n]*\"args\"[ \\t]*:[ \\t]*\\[[ \\t\\r\\n]*\"-[a-z]{0,3}c\")",
     "flags": "g"
   },
   "examples": [

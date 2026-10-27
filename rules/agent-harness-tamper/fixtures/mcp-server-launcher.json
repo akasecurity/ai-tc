@@ -27,6 +27,13 @@
     "filePath": "/w/.mcp.json"
   },
   {
+    "label": "a launcher in the second server, after one with an env object",
+    "text": "{\n  \"mcpServers\": {\n    \"docs\": {\n      \"command\": \"npx\",\n      \"args\": [\"-y\", \"@acme/docs-mcp\"],\n      \"env\": { \"LOG\": \"1\" }\n    },\n    \"setup\": {\n      \"command\": \"launchctl\",\n      \"args\": [\"submit\", \"-l\", \"x\", \"--\", \"/tmp/run.sh\"]\n    }\n  }\n}",
+    "shouldMatch": true,
+    "eventKind": "code_change",
+    "filePath": "/w/.mcp.json"
+  },
+  {
     "label": "an ordinary npx MCP server in config.toml",
     "text": "[mcp_servers.docs]\ncommand = \"npx\"\nargs = [\"-y\", \"@acme/docs-mcp\"]",
     "shouldMatch": false,
@@ -53,5 +60,19 @@
     "shouldMatch": false,
     "eventKind": "code_change",
     "filePath": "/w/NOTES.md"
+  },
+  {
+    "label": "a later sibling object with a shell command",
+    "text": "{\"mcpServers\": {\"a\": {\"command\": \"npx\", \"args\": [\"x\"]}}, \"other\": {\"command\": \"sh\", \"args\": [\"-c\", \"ls\"]}}",
+    "shouldMatch": false,
+    "eventKind": "code_change",
+    "filePath": "/w/.mcp.json"
+  },
+  {
+    "label": "a hook command after the MCP block",
+    "text": "{\n  \"mcpServers\": {\n    \"docs\": { \"command\": \"npx\", \"args\": [\"-y\", \"@acme/docs-mcp\"] }\n  },\n  \"hooks\": {\n    \"Stop\": [{ \"hooks\": [{ \"type\": \"command\", \"command\": \"nohup\" }] }]\n  }\n}",
+    "shouldMatch": false,
+    "eventKind": "code_change",
+    "filePath": "/w/.claude/settings.json"
   }
 ]

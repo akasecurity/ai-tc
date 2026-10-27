@@ -100,5 +100,17 @@
     "text": "curl -s https://ROUTIFY-FILE-PROXY-SG.oss-ap-southeast-1.aliyuncs.com/f/1",
     "shouldMatch": false,
     "eventKind": "tool_use"
+  },
+  {
+    "label": "file upload to an OSS host in upper case, reported by object-storage-file-upload",
+    "text": "curl -T f https://B.OSS-CN-HANGZHOU.ALIYUNCS.COM/x",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "data upload to an OSS host in upper case, reported by object-storage-upload",
+    "text": "curl -X PUT --data-binary \"x\" https://B.OSS-CN-HANGZHOU.ALIYUNCS.COM/u",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
   }
 ]

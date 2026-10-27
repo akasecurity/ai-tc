@@ -100,5 +100,23 @@
     "text": "az storage blob upload --account-name acct -c c -n f --file ./f.tgz",
     "shouldMatch": false,
     "eventKind": "tool_use"
+  },
+  {
+    "label": "data upload to an OSS host in upper case",
+    "text": "curl -X PUT --data-binary \"x\" https://B.OSS-CN-HANGZHOU.ALIYUNCS.COM/u",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "data upload to an Azure blob host in upper case",
+    "text": "curl -X PUT -d x https://ACCT.BLOB.CORE.WINDOWS.NET/c/b",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "download from a Cloud Storage host in upper case",
+    "text": "curl -sSf -o /tmp/a https://STORAGE.GOOGLEAPIS.COM/b/o",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
   }
 ]

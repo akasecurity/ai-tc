@@ -142,5 +142,23 @@
     "text": "aws s3api put-object --bucket my-bucket --key probe.txt",
     "shouldMatch": false,
     "eventKind": "tool_use"
+  },
+  {
+    "label": "file upload to an OSS host in upper case",
+    "text": "curl -T f https://B.OSS-CN-HANGZHOU.ALIYUNCS.COM/x",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "file upload to an S3 host in upper case",
+    "text": "curl -T /tmp/dump.tgz https://MYBUCKET.S3.US-EAST-1.AMAZONAWS.COM/d.tgz",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "download from an S3 host in upper case",
+    "text": "curl -s https://MYBUCKET.S3.AMAZONAWS.COM/a.txt",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
   }
 ]

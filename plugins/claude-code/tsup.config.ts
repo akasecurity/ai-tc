@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { defineConfig } from 'tsup';
 
 import { pathGateScript } from './src/hooks/credential-name-hints.ts';
+import { hookClientScript } from './src/hooks/hook-server/client-script.ts';
 
 // esbuild (on releases predating node:sqlite in its builtin list) externalizes
 // the import but strips the `node:` prefix, emitting a bare `sqlite` specifier —
@@ -64,6 +65,9 @@ const HOOK_ENTRIES: Record<string, string> = {
   stop: 'src/hooks/stop.ts',
 };
 
+const PLUGIN_VERSION = (JSON.parse(readFileSync('package.json', 'utf8')) as { version: string })
+  .version;
+
 export default defineConfig({
   // Named entries keep the output flat in scripts/ — hooks.json paths depend on it
   entry: {
@@ -73,6 +77,9 @@ export default defineConfig({
         [`${name}.body`, source],
       ]),
     ),
+    // The long-lived process the hook client script (hook-client.sh) talks to.
+    // Not a launcher pair: it is started once and then serves many calls.
+    'hook-server': 'src/hook-server.ts',
     // The prompt.submit mod's helper (hooks/mod.ts runs it with $.process.run):
     // the one place a vault pointer is minted for a mod-rewritten prompt, so the
     // key stays out of the mod. Lands flat in scripts/ beside the hook scripts.
@@ -145,5 +152,10 @@ export default defineConfig({
     // that starts pre-tool-use.js only for a path that may name a credential
     // file. Generated from the same hint list the hook captures with.
     writeFileSync(join('scripts', 'path-gate.sh'), pathGateScript(), { mode: 0o755 });
+    // The script hooks.json runs for a hook the server can run: it asks the
+    // server and falls back to the node hook, so it is never the slower path.
+    writeFileSync(join('scripts', 'hook-client.sh'), hookClientScript(PLUGIN_VERSION), {
+      mode: 0o755,
+    });
   },
 });

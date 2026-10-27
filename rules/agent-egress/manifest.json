@@ -3,7 +3,6 @@
   "id": "agent-egress",
   "name": "Agent egress and credential reach",
   "version": "0.1.0",
-  "defaultPolicy": "block",
   "rules": [
     "cloud-metadata-access",
     "object-storage-file-upload",

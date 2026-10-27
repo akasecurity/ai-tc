@@ -150,7 +150,6 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
     packId: 'agent-egress',
     name: 'Agent egress and credential reach',
     version: '0.1.0',
-    defaultPolicy: 'block',
     rawRules: [
       agentEgressCloudMetadataAccess,
       agentEgressObjectStorageFileUpload,

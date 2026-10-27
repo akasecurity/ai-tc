@@ -64,5 +64,41 @@
     "text": "curl -s -m 10 -o /tmp/put_probe -X PUT --data-binary \"PROBE_PAYLOAD_ABC123\" http://sanmaohe.oss-cn-beijing.aliyuncs.com/upload/test.bin",
     "shouldMatch": false,
     "eventKind": "response"
+  },
+  {
+    "label": "aws s3api put-object with no body",
+    "text": "aws s3api put-object --bucket my-bucket --key probe.txt",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "az storage blob upload of inline data",
+    "text": "az storage blob upload --account-name acct -c c -n probe.txt --data \"hello\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "aws s3 cp of a local file, reported by object-storage-file-upload",
+    "text": "aws s3 cp ./dump.sql s3://my-bucket/dump.sql",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "aws s3api put-object with a body file, reported by object-storage-file-upload",
+    "text": "aws s3api put-object --bucket my-bucket --key env.txt --body /tmp/env.txt",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "aws s3 cp download to a local file",
+    "text": "aws s3 cp s3://my-bucket/dump.sql ./dump.sql",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "az storage blob upload of a file, reported by object-storage-file-upload",
+    "text": "az storage blob upload --account-name acct -c c -n f --file ./f.tgz",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
   }
 ]

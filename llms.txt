@@ -69,5 +69,5 @@ A local SQLite store at `~/.aka/data/aka.db`, settings beside it under `~/.aka/s
 
 - [akasecurity/marketplace](https://github.com/akasecurity/marketplace): One place to install AKA Security's tools for coding agents; `ai-tc` is served from here.
 - [akasecurity/ai-tc-docs](https://github.com/akasecurity/ai-tc-docs): Source for the documentation site above.
-- [akasecurity/claude-tools](https://github.com/akasecurity/claude-tools): The security defaults Claude Code doesn't ship with (guard hooks on an isolated profile).
+- [akasecurity/aka-claude-tools](https://github.com/akasecurity/aka-claude-tools): The security defaults Claude Code doesn't ship with (guard hooks on an isolated profile).
 - [akasecurity/preflight-skills](https://github.com/akasecurity/preflight-skills): An independent multi-model review crew for coding agents. Report-only.

@@ -36,6 +36,7 @@ import { bundledDetections, LARGE_INPUT_THRESHOLD_CHARS } from '@akasecurity/plu
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { ISSUED_TWILIO_SID } from '../../../../test/helpers/issued-secret.ts';
 import {
   tooLargeToScanMessage,
   unscannedWorkerUnavailableMessage,
@@ -294,7 +295,7 @@ describe.each(DIALECTS)(
 // import — the exact failures an absence check cannot tell apart from success.
 
 const RULE_ID = 'secrets/twilio-key';
-const FIXTURE = ruleExample(RULE_ID);
+const FIXTURE = { ...ruleExample(RULE_ID), example: ISSUED_TWILIO_SID };
 
 function seedPolicy(home: string, policy: BuiltinPolicyId): void {
   const db = openLocalDatabase(join(home, '.aka', 'data'));

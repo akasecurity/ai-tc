@@ -9,6 +9,8 @@
 // that skips is the one that vaults a value the user only asked to monitor.
 import { randomUUID } from 'node:crypto';
 
+import type { MatchResult } from '@akasecurity/detections';
+import { isFabricatedCredential } from '@akasecurity/detections';
 import type { ActionTaken, Policy, PolicyBundle } from '@akasecurity/schema';
 import { DEFAULT_ACTIONS } from '@akasecurity/schema';
 
@@ -26,6 +28,20 @@ export interface PolicyResolver {
    * vaulted.
    */
   isReversible(ruleId: string): boolean;
+}
+
+/**
+ * The policy action for one finding, with a block on a fabricated provider
+ * token (a hand-typed value such as a run of consecutive characters) lowered to
+ * a warn. The live capture path and the folder scan both resolve a finding's
+ * action through this, so the same value records the same action whichever
+ * path saw it. An issued token is never lowered.
+ */
+export function lowerFabricatedBlock(
+  action: ActionTaken,
+  finding: Pick<MatchResult, 'ruleId' | 'rawMatch'>,
+): ActionTaken {
+  return action === 'block' && isFabricatedCredential(finding) ? 'warn' : action;
 }
 
 /**

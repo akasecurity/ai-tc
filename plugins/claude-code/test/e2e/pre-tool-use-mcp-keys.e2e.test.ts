@@ -19,6 +19,7 @@ import { openLocalDatabase } from '@akasecurity/persistence';
 import { bundledDetections } from '@akasecurity/plugin-sdk';
 import { describe, expect, it } from 'vitest';
 
+import { ISSUED_TWILIO_SID } from '../../../../test/helpers/issued-secret.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { runHook, tempHomeEnv, withTempHome } from '../helpers/run-hook.ts';
 
@@ -42,7 +43,8 @@ function secretFixture(): { pack: ReturnType<typeof bundledDetections>[number]; 
   return { pack, example };
 }
 
-const { pack: SECRET_PACK, example: SECRET } = secretFixture();
+const { pack: SECRET_PACK } = secretFixture();
+const SECRET = ISSUED_TWILIO_SID;
 
 // Pins the pack to `block` so every positive case denies outright — the
 // mechanics of a redact-on-an-executable-field fallback are already covered

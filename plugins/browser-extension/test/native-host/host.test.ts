@@ -356,6 +356,13 @@ const { pack: SECRET_PACK, example: SECRET_EXAMPLE } = secretFixture();
 // "1234567890" cycle the example is built from, and would still collide.
 const SECRET_AT_REST = `ACQWERTYUIOPASDFGHJKLZXCVBNMqwerty`;
 
+// The value a capture carries where the policy's own action is asserted. The
+// rule's example is a placeholder (a repeating digit run), and a block on a
+// fabricated provider token is lowered to a warn, so a capture asserting a
+// block or a redact carries a value shaped like an issued one. Spelled by
+// joining so no credential-shaped literal sits in the source.
+const SECRET_ISSUED = ['AC', 'f3Kq9ZpL', '2xWm7RtB', '4vNc8YhD', '6jS1uGe5'].join('');
+
 // Install the bundled packs the way the gateway does on open, then assign the
 // secrets pack the policy under test — per-rule pack policies are what the
 // runtime's action resolution prefers.
@@ -379,7 +386,7 @@ async function captureSecret(): Promise<
       sessionId: 'browser-p1',
       tool: 'chatgpt',
       kind: 'prompt',
-      text: `deploy with ${SECRET_EXAMPLE} now`,
+      text: `deploy with ${SECRET_ISSUED} now`,
     },
     config,
   );
@@ -406,7 +413,7 @@ describe('capture response text shaping (per-detection policy)', () => {
     expect(response.text).toContain('[REDACTED:SECRET]');
     // Same positive control as the stored-row case above.
     expect(response.text).toContain('deploy with');
-    expect(response.text).not.toContain(SECRET_EXAMPLE);
+    expect(response.text).not.toContain(SECRET_ISSUED);
     expect(response.ruleIds).toContain(RULE_ID);
   });
 });

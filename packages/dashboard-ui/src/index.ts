@@ -232,7 +232,11 @@ export {
 } from './inventory/data.ts';
 export { HarnessInventory } from './inventory/HarnessInventory.tsx';
 export { Ico } from './inventory/Ico.tsx';
-export { InventoryNav, type InventoryNavLink } from './inventory/InventoryNav.tsx';
+export {
+  InventoryNav,
+  type InventoryNavLink,
+  type InventoryNavUnavailable,
+} from './inventory/InventoryNav.tsx';
 export { ProjectDetail } from './inventory/ProjectDetail.tsx';
 export { TypeInventory } from './inventory/TypeInventory.tsx';
 

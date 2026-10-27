@@ -13,6 +13,6 @@
     "@types/node": "^25.9.9",
     "eslint": "^9.39.5",
     "typescript": "^5.8.0",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12"
   }
 }

@@ -165,6 +165,7 @@ describe('FindingDetailView — the matched content', () => {
     },
     contextLoading = false,
     line?: number,
+    collectsExcerpts = true,
   ): void {
     const group = { ...finding, match: { contextPrefix: '', ...match } } as FindingGroup;
     const shown = line === undefined ? instance : { ...instance, line };
@@ -176,6 +177,7 @@ describe('FindingDetailView — the matched content', () => {
             selection={{ finding: group, instance: shown }}
             renderedAt={RENDERED_AT}
             contextLoading={contextLoading}
+            {...(collectsExcerpts ? {} : { collectsExcerpts })}
           />
         </SheetContent>
       </Sheet>,
@@ -240,6 +242,28 @@ describe('FindingDetailView — the matched content', () => {
     expect(text).toContain('Matched content');
     expect(text).toContain('The code around this match wasn\u2019t kept.');
     expect(text).not.toContain('***');
+  });
+
+  it('says an excerpt is not collected where the host records none', () => {
+    renderWith({ maskedValue: 'sk-****' }, false, undefined, false);
+    const text = document.body.textContent;
+    expect(text).toContain('The code around this match isn\u2019t collected.');
+    expect(text).not.toContain('wasn\u2019t kept');
+    // The masked preview is still the only readable part of the match.
+    expect(text).toContain('Matched value: sk-****');
+  });
+
+  it('shows a prefix the host did send, rather than accounting for the excerpt', () => {
+    renderWith(
+      { maskedValue: 'AKIA****KEY', contextPrefix: 'const key = ' },
+      false,
+      undefined,
+      false,
+    );
+    const text = document.body.textContent;
+    expect(text).toContain('const key = "AKIA****KEY"');
+    expect(text).not.toContain('isn\u2019t collected');
+    expect(text).not.toContain('wasn\u2019t kept');
   });
 
   it('says the excerpt is loading while the host fetches it', () => {

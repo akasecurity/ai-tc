@@ -10,7 +10,7 @@
 // Regenerate after adding/removing a rule or pack under rules/:
 //   pnpm --filter @akasecurity/plugin-sdk gen:bundled-packs
 //
-// 8 packs / 112 rules.
+// 8 packs / 113 rules.
 /* eslint-disable simple-import-sort/imports */
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import codeFlawsAuthJwtNoVerify from '../../../rules/code-flaws/auth-jwt-no-verify.json';
@@ -43,6 +43,7 @@ import codeFlawsXssDangerouslySet from '../../../rules/code-flaws/xss-dangerousl
 import codeFlawsXssInnerHtml from '../../../rules/code-flaws/xss-inner-html.json';
 import codeFlawsXssUnescapedRender from '../../../rules/code-flaws/xss-unescaped-render.json';
 import commandRiskCredentialFileAccess from '../../../rules/command-risk/credential-file-access.json';
+import commandRiskCredentialFileGrep from '../../../rules/command-risk/credential-file-grep.json';
 import commandRiskCredentialFileRead from '../../../rules/command-risk/credential-file-read.json';
 import commandRiskCurlPipeShell from '../../../rules/command-risk/curl-pipe-shell.json';
 import commandRiskGitForcePush from '../../../rules/command-risk/git-force-push.json';
@@ -208,7 +209,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'command-risk',
     name: 'Risky agent commands',
-    version: '0.2.0',
+    version: '0.3.0',
     defaultPolicy: 'warn',
     rawRules: [
       commandRiskPkillBroad,
@@ -217,6 +218,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       commandRiskGitResetHard,
       commandRiskCurlPipeShell,
       commandRiskCredentialFileRead,
+      commandRiskCredentialFileGrep,
       commandRiskCredentialFileAccess,
       commandRiskProtectedPathAccess,
     ],
@@ -227,6 +229,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       'command-risk/git-reset-hard': 'Git reset --hard',
       'command-risk/curl-pipe-shell': 'Curl piped to shell',
       'command-risk/credential-file-read': 'Credential file read',
+      'command-risk/credential-file-grep': 'Credential file search',
       'command-risk/credential-file-access': 'Credential file read',
       'command-risk/protected-path-access': 'Protected path access',
     },

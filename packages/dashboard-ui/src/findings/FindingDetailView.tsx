@@ -48,14 +48,21 @@ export function FindingDetailView({
   deployment,
   renderedAt,
   contextLoading = false,
+  collectsExcerpts = true,
 }: {
   selection: Selection;
   footer?: ReactNode;
   /**
    * True while the host is still fetching this finding's excerpt, so the
-   * Matched content block says so instead of reporting it was not kept.
+   * Matched content block says so rather than accounting for its absence.
    */
   contextLoading?: boolean;
+  /**
+   * False on a host that does not record the code around a match, so the
+   * Matched content block says an excerpt is not collected rather than
+   * reporting that one was not kept.
+   */
+  collectsExcerpts?: boolean;
   /**
    * The deployment this machine sends to, or null/absent where it is not
    * attached — which renders no Deployment row.
@@ -107,6 +114,7 @@ export function FindingDetailView({
           contextPrefix={finding.match.contextPrefix}
           line={instance.line}
           loading={contextLoading}
+          collectsExcerpts={collectsExcerpts}
           maskedValue={finding.match.maskedValue}
           file={instanceLocationLabel(instance)}
         />
@@ -219,6 +227,7 @@ function MatchedContent({
   contextPrefix,
   line,
   loading,
+  collectsExcerpts,
   maskedValue,
   file,
 }: {
@@ -228,9 +237,12 @@ function MatchedContent({
   contextPrefix: string;
   line: number | undefined;
   loading: boolean;
+  collectsExcerpts: boolean;
   maskedValue: string;
   file: string;
 }) {
+  // A prefix is readable content, so it outranks either account of a missing
+  // excerpt below — a host that keeps none still shows the prefix it sent.
   const prefixOnly = context === undefined && !loading && contextPrefix !== '';
   return (
     <div>
@@ -247,7 +259,9 @@ function MatchedContent({
           <div className="text-code-muted">
             {loading
               ? 'Loading the code around this match…'
-              : 'The code around this match wasn’t kept.'}
+              : collectsExcerpts
+                ? 'The code around this match wasn’t kept.'
+                : 'The code around this match isn’t collected.'}
           </div>
         ) : (
           <ExcerptLines context={context} markedLine={findingLine(context, line)} />

@@ -25,14 +25,14 @@
     "@akasecurity/plugin-runtime": "workspace:*",
     "@akasecurity/plugin-sdk": "workspace:*",
     "@akasecurity/schema": "workspace:*",
-    "@types/chrome": "^0.3.5",
+    "@types/chrome": "^0.3.6",
     "@types/node": "^25.9.9",
-    "@vitest/coverage-v8": "^4.1.11",
+    "@vitest/coverage-v8": "^4.1.12",
     "esbuild": "^0.28.1",
     "eslint": "^9.39.5",
     "jsdom": "~30.1.3",
     "tsup": "^9.0.0",
     "typescript": "^5.8.0",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12"
   }
 }

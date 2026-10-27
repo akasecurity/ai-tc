@@ -107,6 +107,22 @@ describe('the PreToolUse matcher selects every tool the hook can act on', () => 
     expect(gate.test('Write')).toBe(false);
   });
 
+  it('starts the path gate for those three tools by exact name only', () => {
+    // The harness matches a bare name by substring, so an unanchored
+    // `Read|Grep|Glob` also started a shell for `ReadMcpResourceTool` and any
+    // other tool with one of those words in its name. None of them has a path
+    // field the hook reads: with no scannable field the hook returns before any
+    // decision, so leaving them out changes nothing but the process started.
+    const gate = entryMatcher(preToolUseEntryRunning('path-gate.sh'), 'PreToolUse');
+    for (const tool of ['ReadMcpResourceTool', 'NotebookRead', 'GlobTool', 'GrepSearch']) {
+      expect(gate.test(tool), `${tool} skips the gate`).toBe(false);
+      expect(
+        scannableInputFields(tool, { file_path: '/home/agent/.ssh/id_rsa', path: '/x', uri: 'x' }),
+        `${tool} has nothing for the hook to scan`,
+      ).toEqual([]);
+    }
+  });
+
   it('selects every tool the protected-path list governs', () => {
     // Derived from the set the pipeline checks, so a tool added there and
     // forgotten in the manifest fails here instead of never being spawned for.
@@ -181,8 +197,8 @@ describe('the PostToolUse matcher selects every tool whose output the hook scans
  */
 function alternatives(event: string): { names: string[]; patterns: string[] } {
   // An event may carry SEVERAL entries, each with its own hook command: on
-  // PreToolUse the scanning hook rides the anchored alternation and the
-  // credential-path gate rides a bare `Read|Grep|Glob`. The tools the event reaches
+  // PreToolUse the scanning hook and the credential-path gate each ride an
+  // anchored alternation. The tools the event reaches
   // are therefore the union over every entry, and reading only the first one
   // reports the gate's tools as missing.
   const names = new Set<string>();
@@ -190,7 +206,8 @@ function alternatives(event: string): { names: string[]; patterns: string[] } {
   for (const entry of manifest.hooks[event] ?? []) {
     const source = entry.matcher ?? '';
     expect(source, `${event} has a matcher on every entry`).not.toBe('');
-    // Either the anchored alternation the scanning hook uses, or a bare list.
+    // Every entry currently spells the anchored alternation; a bare list is
+    // tolerated here only so a manifest that adds one is read, not endorsed.
     const body = /^\^\(\?:(.*)\)\$$/.exec(source)?.[1] ?? source;
     for (const part of body.split('|')) {
       if (/^\w+$/.test(part)) names.add(part);

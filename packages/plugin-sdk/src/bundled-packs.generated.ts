@@ -351,7 +351,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'secrets',
     name: 'Secrets & Credentials',
-    version: '0.2.0',
+    version: '0.2.1',
     defaultPolicy: 'warn',
     rawRules: [
       secretsAwsAccessKey,

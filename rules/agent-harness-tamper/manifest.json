@@ -3,7 +3,6 @@
   "id": "agent-harness-tamper",
   "name": "Agent harness tampering",
   "version": "0.1.0",
-  "defaultPolicy": "block",
   "rules": [
     "mcp-server-launcher",
     "agent-endpoint-redirect",

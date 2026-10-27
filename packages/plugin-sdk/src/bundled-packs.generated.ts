@@ -147,7 +147,6 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
     packId: 'agent-harness-tamper',
     name: 'Agent harness tampering',
     version: '0.1.0',
-    defaultPolicy: 'block',
     rawRules: [
       agentHarnessTamperMcpServerLauncher,
       agentHarnessTamperAgentEndpointRedirect,

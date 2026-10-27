@@ -27,6 +27,55 @@
     "filePath": "/Users/a/.codex/config.toml"
   },
   {
+    "label": "a base URL in .env.local",
+    "text": "ANTHROPIC_BASE_URL=https://gw.example.net",
+    "shouldMatch": true,
+    "eventKind": "code_change",
+    "filePath": "/w/.env.local"
+  },
+  {
+    "label": "a base URL in .env.production",
+    "text": "OPENAI_BASE_URL=\"https://relay.example.org/v1\"",
+    "shouldMatch": true,
+    "eventKind": "code_change",
+    "filePath": "/w/.env.production"
+  },
+  {
+    "label": "exported in ~/.bashrc",
+    "text": "export ANTHROPIC_BASE_URL=https://gw.example.net",
+    "shouldMatch": true,
+    "eventKind": "code_change",
+    "filePath": "/Users/a/.bashrc"
+  },
+  {
+    "label": "exported in ~/.bash_profile",
+    "text": "export OPENAI_BASE_URL=https://relay.example.org/v1",
+    "shouldMatch": true,
+    "eventKind": "code_change",
+    "filePath": "/Users/a/.bash_profile"
+  },
+  {
+    "label": "exported in ~/.profile",
+    "text": "export ANTHROPIC_BASE_URL=https://gw.example.net",
+    "shouldMatch": true,
+    "eventKind": "code_change",
+    "filePath": "/Users/a/.profile"
+  },
+  {
+    "label": "a Codex model provider pointed at a gateway",
+    "text": "model_provider = \"corp\"\n\n[model_providers.corp]\nname = \"Corp gateway\"\nbase_url = \"https://llm-gateway.corp.example/v1\"\nenv_key = \"CORP_KEY\"",
+    "shouldMatch": true,
+    "eventKind": "code_change",
+    "filePath": "/Users/a/.codex/config.toml"
+  },
+  {
+    "label": "a Codex model provider on Azure OpenAI",
+    "text": "[model_providers.azure]\nname = \"Azure\"\nbase_url = \"https://myresource.openai.azure.com/openai\"",
+    "shouldMatch": true,
+    "eventKind": "code_change",
+    "filePath": "/Users/a/.codex/config.toml"
+  },
+  {
     "label": "a permission rule added to settings.json",
     "text": "{\"permissions\": {\"allow\": [\"Bash(pnpm test:*)\"]}}",
     "shouldMatch": false,
@@ -60,5 +109,33 @@
     "shouldMatch": false,
     "eventKind": "code_change",
     "filePath": "/w/.devcontainer/devcontainer.json"
+  },
+  {
+    "label": "a Codex model provider on the vendor host",
+    "text": "[model_providers.openai-direct]\nname = \"OpenAI\"\nbase_url = \"https://api.openai.com/v1\"",
+    "shouldMatch": false,
+    "eventKind": "code_change",
+    "filePath": "/Users/a/.codex/config.toml"
+  },
+  {
+    "label": "a Codex model provider on the local machine",
+    "text": "[model_providers.ollama]\nname = \"Ollama\"\nbase_url = \"http://localhost:11434/v1\"",
+    "shouldMatch": false,
+    "eventKind": "code_change",
+    "filePath": "/Users/a/.codex/config.toml"
+  },
+  {
+    "label": "a base_url in a later table",
+    "text": "[model_providers.ollama]\nname = \"Ollama\"\n\n[profiles.fast]\nbase_url = \"https://example.net\"",
+    "shouldMatch": false,
+    "eventKind": "code_change",
+    "filePath": "/Users/a/.codex/config.toml"
+  },
+  {
+    "label": "a local base URL in .env.local",
+    "text": "ANTHROPIC_BASE_URL=http://127.0.0.1:4000",
+    "shouldMatch": false,
+    "eventKind": "code_change",
+    "filePath": "/w/.env.local"
   }
 ]

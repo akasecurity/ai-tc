@@ -6,7 +6,7 @@
   "severity": "critical",
   "matcher": {
     "type": "regex",
-    "pattern": "\\b(?:ANTHROPIC_BASE_URL|ANTHROPIC_BEDROCK_BASE_URL|ANTHROPIC_VERTEX_BASE_URL|OPENAI_BASE_URL|CODEX_BASE_URL)[\"']?[ \\t]*[:=][ \\t]*[\"']?https?://(?!(?:localhost|127\\.0\\.0\\.1|\\[::1\\]|(?:[\\w-]+\\.)*anthropic\\.com|(?:[\\w-]+\\.)*openai\\.com)(?=[:/\"'\\s]|$))[\\w.-]|\"env\"[ \\t]*:[ \\t]*\\{[^{}]{0,800}?\"(?:HTTPS?_PROXY|https?_proxy|ALL_PROXY|all_proxy)\"[ \\t]*:[ \\t]*\"(?:https?|socks5h?)://(?!(?:localhost|127\\.0\\.0\\.1|\\[::1\\]|(?:[\\w-]+\\.)*anthropic\\.com|(?:[\\w-]+\\.)*openai\\.com)(?=[:/\"'\\s]|$))[\\w.-]",
+    "pattern": "\\b(?:ANTHROPIC_BASE_URL|ANTHROPIC_BEDROCK_BASE_URL|ANTHROPIC_VERTEX_BASE_URL|OPENAI_BASE_URL|CODEX_BASE_URL)[\"']?[ \\t]*[:=][ \\t]*[\"']?https?://(?!(?:localhost|127\\.0\\.0\\.1|\\[::1\\]|(?:[\\w-]+\\.)*anthropic\\.com|(?:[\\w-]+\\.)*openai\\.com)(?=[:/\"'\\s]|$))[\\w.-]|\"env\"[ \\t]*:[ \\t]*\\{[^{}]{0,800}?\"(?:HTTPS?_PROXY|https?_proxy|ALL_PROXY|all_proxy)\"[ \\t]*:[ \\t]*\"(?:https?|socks5h?)://(?!(?:localhost|127\\.0\\.0\\.1|\\[::1\\]|(?:[\\w-]+\\.)*anthropic\\.com|(?:[\\w-]+\\.)*openai\\.com)(?=[:/\"'\\s]|$))[\\w.-]|\\[model_providers\\.[^\\]\\n]{1,100}\\](?:[^\\n]|\\n(?![ \\t]*\\[)){0,800}?\\bbase_url[ \\t]*=[ \\t]*[\"']https?://(?!(?:localhost|127\\.0\\.0\\.1|\\[::1\\]|api\\.openai\\.com)(?=[:/\"'\\s]|$))[\\w.-]",
     "flags": "g"
   },
   "examples": [
@@ -15,6 +15,6 @@
   ],
   "appliesTo": {
     "eventKinds": ["tool_use", "code_change"],
-    "extensions": [".json", ".toml", ".env", ".sh", ".zsh", ".bash"]
+    "extensions": [".json", ".toml", ".env", ".sh", ".zsh", ".bash", ".local", ".production"]
   }
 }

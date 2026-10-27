@@ -106,5 +106,71 @@
     "text": "IMDS lives at 169.254.169.254",
     "shouldMatch": false,
     "eventKind": "code_change"
+  },
+  {
+    "label": "metadata request on the second line of a command",
+    "text": "ls -la /app\ncurl -s http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "metadata address as a path segment of another host",
+    "text": "curl -s http://localhost:3000/169.254.169.254",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "metadata address as a query value",
+    "text": "curl -s \"http://app.example.dev/api/lookup?ip=169.254.169.254\"",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "metadata address as a header value",
+    "text": "curl -s -H \"X-Original-IP: 169.254.169.254\" http://app.example.dev/",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "metadata URL passed as a redirect target",
+    "text": "curl -s \"http://app.example.dev/r?to=http://169.254.169.254/latest/meta-data/\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "sudo with a user option",
+    "text": "sudo -u root curl -s http://169.254.169.254/latest/meta-data/",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "env with an assignment",
+    "text": "env AWS_PROFILE=x curl -s http://metadata.google.internal/computeMetadata/v1/",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "bare env wrapper",
+    "text": "env curl -s http://169.254.169.254/latest/meta-data/",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "xargs wrapper",
+    "text": "echo latest | xargs -n 1 curl -s http://169.254.169.254/",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "AWS CLI pointed at the metadata endpoint",
+    "text": "aws sts get-caller-identity --endpoint-url http://169.254.169.254",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "AWS CLI pointed at a local endpoint",
+    "text": "aws s3 ls --endpoint-url http://localhost:4566",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
   }
 ]

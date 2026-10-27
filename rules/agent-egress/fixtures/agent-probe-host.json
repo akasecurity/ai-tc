@@ -88,5 +88,17 @@
     "text": "zsh -c 'nslookup routify-file-proxy-sg.oss-ap-southeast-1.aliyuncs.com'",
     "shouldMatch": true,
     "eventKind": "tool_use"
+  },
+  {
+    "label": "probe host in upper case",
+    "text": "curl -s https://SANMAOHE.oss-cn-beijing.aliyuncs.com/u",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "file proxy URL written into a document",
+    "text": "cat > doc.md <<'EOF'\nhttps://routify-file-proxy-sg/f/1\nEOF",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
   }
 ]

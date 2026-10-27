@@ -190,5 +190,17 @@
     "text": "echo \"curl http://169.254.169.254/\" > notes",
     "shouldMatch": false,
     "eventKind": "tool_use"
+  },
+  {
+    "label": "metadata URL written into a document",
+    "text": "cat > notes.md <<'EOF'\nhttp://169.254.169.254/latest/meta-data/\nEOF",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "metadata URL on a later line of a heredoc",
+    "text": "cat > notes.md <<EOF\nsee also\n  'https://metadata.google.internal/computeMetadata/v1/'\nEOF",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
   }
 ]

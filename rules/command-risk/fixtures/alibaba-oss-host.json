@@ -82,5 +82,23 @@
     "text": "curl -X PUT -d x https://a.example.dev/u; curl -s https://b.oss-cn-hangzhou.aliyuncs.com/a",
     "shouldMatch": true,
     "eventKind": "tool_use"
+  },
+  {
+    "label": "bucket host in upper case",
+    "text": "curl -s https://MYBUCKET.OSS-CN-HANGZHOU.ALIYUNCS.COM/report.json",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "known probe host in upper case, reported by its own rule",
+    "text": "curl -s https://SANMAOHE.oss-cn-beijing.aliyuncs.com/u",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "file proxy host in upper case, reported by the probe rule",
+    "text": "curl -s https://ROUTIFY-FILE-PROXY-SG.oss-ap-southeast-1.aliyuncs.com/f/1",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
   }
 ]

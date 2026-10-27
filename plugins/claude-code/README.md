@@ -94,7 +94,25 @@ starts the hook, which costs about a tenth of a second per call.
 
 It also adds slash commands for reports and setup (`/aka:health`, `/aka:findings`, `/aka:dashboard`, and more).
 
-The plugin works standalone, and governs what a session carries: rule packs, findings, policy, and an audit trail. To harden the harness itself — safe-default permissions, structural command guards, and credential deny rules — pair it with [claude-tools](https://github.com/akasecurity/claude-tools). They compose: claude-tools hardens the harness, `ai-tc` governs the traffic.
+The plugin works standalone, and governs what a session carries: rule packs, findings, policy, and an audit trail. To harden the harness itself — safe-default permissions, structural command guards, and credential deny rules — pair it with [claude-tools](https://github.com/akasecurity/aka-claude-tools). They compose: claude-tools hardens the harness, `ai-tc` governs the traffic.
+
+### Hook server
+
+Claude Code starts a new `node` process for every hook call, and for a Bash command that start, the
+load of the hook bundle and the store open cost several hundred milliseconds of CPU, on a busy
+machine many times the work of the scan itself. The PreToolUse and PostToolUse hooks therefore run
+through a small shell client (`scripts/hook-client.sh`) that hands the call to a hook server: one
+long-lived `node` process, started by the first call, that keeps the bundle loaded, the store open
+and the scanner built, and answers over a unix-domain socket at `~/.aka/run/hook-<version>.sock`.
+The socket's directory is owner-only, the server listens on no port, and it runs one call at a time
+with the same detection, policy and fail-open behavior as the `node` hook.
+
+The client runs the `node` hook itself, exactly as before, whenever the server cannot answer: no
+server yet (the first call starts one for the next), no `perl` on the machine, a request over
+256 KB, a full queue, a machine with the vault turned on, or a server that stopped. The server exits
+after ten minutes without a call, after six hours, and when the plugin files it runs are replaced.
+Set `AKA_HOOK_SERVER=0` in the environment the host runs hooks in to turn it off. What a hook writes
+to standard error goes to `~/.aka/run/hook-server.log` instead of a terminal.
 
 ## Docs
 

@@ -5,6 +5,7 @@
   "command-risk/git-reset-hard": "Git reset --hard",
   "command-risk/curl-pipe-shell": "Curl piped to shell",
   "command-risk/credential-file-read": "Credential file read",
+  "command-risk/credential-file-grep": "Credential file search",
   "command-risk/credential-file-access": "Credential file read",
   "command-risk/protected-path-access": "Protected path access",
   "command-risk/object-storage-upload": "Object storage upload",

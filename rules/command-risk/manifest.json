@@ -11,6 +11,7 @@
     "git-reset-hard",
     "curl-pipe-shell",
     "credential-file-read",
+    "credential-file-grep",
     "credential-file-access",
     "protected-path-access",
     "object-storage-upload",

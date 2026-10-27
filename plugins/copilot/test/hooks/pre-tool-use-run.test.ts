@@ -29,6 +29,7 @@ import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { POINTER_TOKEN_ANCHORED } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ISSUED_TWILIO_SID } from '../../../../test/helpers/issued-secret.ts';
 import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
 import { tooLargeToScanMessage } from '../../src/exception-guidance.ts';
 import { denyPointerMessage } from '../../src/hooks/pre-tool-use-decision.ts';
@@ -46,7 +47,7 @@ function fixture(dir: string, name: string): Record<string, unknown> {
 }
 
 const RULE_ID = 'secrets/twilio-key';
-const FIXTURE = ruleExample(RULE_ID);
+const FIXTURE = { ...ruleExample(RULE_ID), example: ISSUED_TWILIO_SID };
 
 // A real pointer token, assembled from parts so neither this repository's own
 // scanning nor a reader mistakes the source for one: the vault's

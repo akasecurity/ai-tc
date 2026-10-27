@@ -86,13 +86,16 @@ const RULE_EXAMPLE = SECRET_PACK?.rules.find((r) => r.id === RULE_ID)?.examples?
 
 // The value a prompt carries. Blocking needs the pack inventory in the store,
 // and that inventory holds each rule's own examples, so the example itself is
-// at rest by design and a byte scan for it would always find it. Reversing the
-// body after the two-letter prefix gives a value the same rule matches and no
-// file holds.
+// at rest by design and a byte scan for it would always find it. The example is
+// also a placeholder (a repeating digit run), and a block on a fabricated
+// provider token is lowered to a warn, so the prompt carries a value the same
+// rule matches, shaped like an issued token, that no file holds. Spelled by
+// joining so no credential-shaped literal sits in the source.
 function liveValue(): string {
   if (RULE_EXAMPLE === undefined) throw new Error(`bundled rule ${RULE_ID} has no example`);
-  const value = RULE_EXAMPLE.slice(0, 2) + RULE_EXAMPLE.slice(2).split('').reverse().join('');
-  if (value === RULE_EXAMPLE) throw new Error(`bundled rule ${RULE_ID} has a palindromic example`);
+  const value = ['AC', 'f3Kq9ZpL', '2xWm7RtB', '4vNc8YhD', '6jS1uGe5'].join('');
+  if (value === RULE_EXAMPLE)
+    throw new Error(`bundled rule ${RULE_ID} example equals the live value`);
   return value;
 }
 

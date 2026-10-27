@@ -12,6 +12,7 @@ import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ISSUED_TWILIO_SID } from '../../../../test/helpers/issued-secret.ts';
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { runModReveal } from '../../src/mod/reveal-run.ts';
 import { runModTokenize } from '../../src/mod/tokenize-run.ts';
@@ -19,7 +20,7 @@ import { runModToolCall } from '../../src/mod/tool-call-run.ts';
 
 const RULE_ID = 'secrets/twilio-key';
 const pack = bundledDetections().find((p) => p.rules.some((r) => r.id === RULE_ID));
-const SECRET = pack?.rules.find((r) => r.id === RULE_ID)?.examples?.[0] ?? '';
+const SECRET = ISSUED_TWILIO_SID;
 const UNBACKED = ['[[aka:secret:', 'AB.', 'C'.repeat(26), '.', 'D'.repeat(16), ']]'].join('');
 
 let home: string;

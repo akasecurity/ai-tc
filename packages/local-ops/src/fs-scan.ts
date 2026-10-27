@@ -47,6 +47,7 @@ import {
   type IgnoreLayer,
   isProtectedScanPath,
   isScanVaultable,
+  lowerFabricatedBlock,
   openScanVault,
   type PolicyResolver,
   protectedScanRoots,
@@ -739,12 +740,14 @@ export async function scanPathIntoStore(
 
     // Resolved through the same reading the live path uses (see
     // scanPolicyResolver), ONCE per match here because two things read it: the
-    // stamped actionTaken below, and the at-rest masking immediately after.
+    // stamped actionTaken below, and the at-rest masking immediately after. A
+    // block on a fabricated provider token is lowered to a warn here exactly as
+    // the live path lowers it.
     resolver ??= await scanPolicyResolver(db, opts);
     const policy = resolver;
     const resolved = matches.map((match) => ({
       match,
-      action: policy.actionFor(match.ruleId, match.category),
+      action: lowerFabricatedBlock(policy.actionFor(match.ruleId, match.category), match),
     }));
     // At-rest masking is an ENFORCEMENT effect, not hygiene. A pack assigned
     // Monitor or Warn may log a match and do nothing else to the value, so only

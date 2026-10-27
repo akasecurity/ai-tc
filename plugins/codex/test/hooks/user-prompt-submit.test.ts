@@ -7,6 +7,7 @@ import { bundledDetections } from '@akasecurity/plugin-sdk';
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { ISSUED_TWILIO_SID } from '../../../../test/helpers/issued-secret.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { withTempHome } from '../helpers/run-hook.ts';
 
@@ -56,7 +57,8 @@ function secretFixture(): { pack: ReturnType<typeof bundledDetections>[number]; 
   }
   return { pack, example };
 }
-const { pack: SECRET_PACK, example: SECRET_EXAMPLE } = secretFixture();
+const { pack: SECRET_PACK } = secretFixture();
+const SECRET_EXAMPLE = ISSUED_TWILIO_SID;
 const SECRET_PROMPT = `please deploy using this key: ${SECRET_EXAMPLE}`;
 
 // Install the bundled packs the way the gateway does on open, then assign the

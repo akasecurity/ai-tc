@@ -557,6 +557,54 @@ describe('scanPathIntoStore', () => {
     }
   });
 
+  // The same rule under a secrets-pack id, where a fabricated provider token is
+  // lowered. SECRET is AKIA followed by one repeated character, a value no
+  // provider issues.
+  const SECRETS_PACK_RULES: Rule[] = [
+    {
+      specVersion: 1,
+      id: 'secrets/test-aws-key',
+      name: 'AWS access key',
+      category: 'secret',
+      severity: 'high',
+      matcher: { type: 'regex', pattern: 'AKIA[0-9A-Z]{16}', flags: 'g' },
+    },
+  ];
+
+  it('lowers a block on a fabricated provider token to warn, as the live path does', async () => {
+    writeFileSync(join(root, 'app.ts'), `const key = '${SECRET}';\n`);
+    const db = openLocalDatabase(store);
+    try {
+      await scanPathIntoStore(db, root, {
+        rules: SECRETS_PACK_RULES,
+        ruleActions: new Map([['secrets/test-aws-key', 'block']]),
+      });
+      const findings = await db.findings.recentFindings({ limit: 10 });
+      const recorded = findings.find((f) => f.ruleId === 'secrets/test-aws-key');
+      expect(recorded?.actionTaken).toBe('warn');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('keeps a block on an issued-looking provider token', async () => {
+    // Assembled at runtime so no token-shaped literal sits in the tree.
+    const issued = ['AKIA', 'Q7XK2M9PLR4TWZ8N'].join('');
+    writeFileSync(join(root, 'app.ts'), `const key = '${issued}';\n`);
+    const db = openLocalDatabase(store);
+    try {
+      await scanPathIntoStore(db, root, {
+        rules: SECRETS_PACK_RULES,
+        ruleActions: new Map([['secrets/test-aws-key', 'block']]),
+      });
+      const findings = await db.findings.recentFindings({ limit: 10 });
+      const recorded = findings.find((f) => f.ruleId === 'secrets/test-aws-key');
+      expect(recorded?.actionTaken).toBe('block');
+    } finally {
+      db.close();
+    }
+  });
+
   it('falls back to DEFAULT_ACTIONS only where the category has no policy row', async () => {
     writeFileSync(join(root, 'app.ts'), `const key = '${SECRET}';\n`);
     const db = openLocalDatabase(store);

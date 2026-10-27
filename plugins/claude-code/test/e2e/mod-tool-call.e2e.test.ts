@@ -21,6 +21,7 @@ import { bundledDetections, createVaultGlue } from '@akasecurity/plugin-sdk';
 import { POINTER_TOKEN_ANCHORED, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { ISSUED_TWILIO_SID } from '../../../../test/helpers/issued-secret.ts';
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { recordToolHandoff } from '../../src/mod/handoff.ts';
 import { runHook, tempHomeEnv } from '../helpers/run-hook.ts';
@@ -38,15 +39,6 @@ async function inHome<T>(fn: (home: string) => Promise<T>): Promise<T> {
   } finally {
     removeTree(home);
   }
-}
-
-function exampleOf(ruleId: string): string {
-  const pack = bundledDetections().find((p) => p.rules.some((r) => r.id === ruleId));
-  const example = pack?.rules.find((r) => r.id === ruleId)?.examples?.[0];
-  if (pack === undefined || example === undefined) {
-    throw new Error(`bundled rule ${ruleId} is missing or has no example`);
-  }
-  return example;
 }
 
 // Spelled by joining so no pointer-shaped literal sits in the source.
@@ -76,7 +68,7 @@ async function seed(home: string, scenario: Scenario): Promise<Values> {
     db.close();
   }
 
-  const secret = exampleOf(RULE_IDS.secret);
+  const secret = ISSUED_TWILIO_SID;
   const values: Values = {
     SECRET: secret,
     IP: ['45', '79', '142', '6'].join('.'),

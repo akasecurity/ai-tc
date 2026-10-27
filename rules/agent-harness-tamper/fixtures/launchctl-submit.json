@@ -18,6 +18,24 @@
     "eventKind": "tool_use"
   },
   {
+    "label": "behind sudo and env",
+    "text": "sudo env launchctl submit -l x -- /tmp/run.sh",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "behind timeout",
+    "text": "timeout 10 launchctl submit -l x -- /tmp/run.sh",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "behind setsid with a full path",
+    "text": "setsid /bin/launchctl submit -l x -- /tmp/run.sh",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
     "label": "listing jobs",
     "text": "launchctl list | grep com.acme",
     "shouldMatch": false,
@@ -32,6 +50,24 @@
   {
     "label": "mentioned inside an echo",
     "text": "echo \"prefer a plist over launchctl submit\"",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "listing jobs behind env",
+    "text": "env launchctl list",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "quoted in an echo",
+    "text": "echo \"launchctl submit is risky\"",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "a grep after env",
+    "text": "env | grep \"launchctl submit\"",
     "shouldMatch": false,
     "eventKind": "tool_use"
   }

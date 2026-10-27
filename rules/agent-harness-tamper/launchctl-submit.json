@@ -6,7 +6,7 @@
   "severity": "critical",
   "matcher": {
     "type": "regex",
-    "pattern": "\\b(?=(?:launchctl)\\b)(?<=(?:^|[;&|({\\x60'\"]|\\$\\()[ \\t]*(?:(?:sudo|doas|command|exec|nohup|time)[ \\t]+(?:-[A-Za-z]{1,8}[ \\t]+){0,3})?(?:[\\w.~-]*/){0,8})(?:launchctl)\\b(?:[ \\t]+-[A-Za-z]{1,8}){0,3}[ \\t]+submit(?![\\w-])",
+    "pattern": "\\b(?=(?:launchctl)\\b)(?<=(?:^|[;&|({\\x60]|\\$\\(|(?<![\\w.-])(?:ba|z|da|k|fi)?sh(?:[ \\t]+-[A-Za-z]{1,8}){0,3}?[ \\t]+-[A-Za-z]{0,7}c[ \\t]+[\"']|(?<![\\w.-])eval[ \\t]+[\"'])[ \\t]*(?:(?:sudo|doas|env|command|exec|nohup|time|timeout|xargs|setsid)(?:[ \\t]+(?:-[^\\s;|&\"'\\x60]{1,40}|[A-Za-z_]\\w{0,60}=[^\\s;|&\"'\\x60]{0,200}|\\d{1,6}(?:\\.\\d{1,3})?[smhd]?)){0,4}[ \\t]+){0,3}(?:[\\w.~-]*/){0,8})(?:launchctl)\\b(?:[ \\t]+-[A-Za-z]{1,8}){0,3}[ \\t]+submit(?![\\w-])",
     "flags": "gm"
   },
   "examples": [

@@ -17,13 +17,9 @@ export function postToolUseForward(
   sessionId: string | undefined,
   repoKey: string | undefined,
 ): { maxChars: number } | undefined {
-  try {
-    const forward = toolOutputForwardFor(readHookCaptureSettings(dataDir), repoKey);
-    if (forward === undefined) return undefined;
-    return promptRedactionMode(dataDir, sessionId) === 'in-place' ? undefined : forward;
-  } catch {
-    return undefined;
-  }
+  const forward = toolOutputForwardFor(readHookCaptureSettings(dataDir), repoKey);
+  if (forward === undefined) return undefined;
+  return promptRedactionMode(dataDir, sessionId) === 'in-place' ? undefined : forward;
 }
 
 /** What a held session's tool call is refused with when the deployment gives no reason. */
@@ -32,23 +28,19 @@ export const SESSION_HELD_REASON = 'Your organization has paused tool calls in t
 /**
  * The refusal for this tool call when the deployment holds the session, or null
  * to let the call go on. Asked only when the capture settings turn the check on,
- * and null on any fault (`checkSessionHold`).
+ * and null on any fault, since `checkSessionHold` answers not held to every one.
  */
 export async function sessionHoldDenial(
   dataDir: string,
   sessionId: string | undefined,
 ): Promise<PreToolUseDenyOutput | null> {
-  try {
-    const hold = await checkSessionHold({ dataDir, sessionId });
-    if (!hold.held) return null;
-    return {
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'deny',
-        permissionDecisionReason: `AKA: ${hold.reason ?? SESSION_HELD_REASON}`,
-      },
-    };
-  } catch {
-    return null;
-  }
+  const hold = await checkSessionHold({ dataDir, sessionId });
+  if (!hold.held) return null;
+  return {
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: `AKA: ${hold.reason ?? SESSION_HELD_REASON}`,
+    },
+  };
 }

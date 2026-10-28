@@ -1,4 +1,12 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -56,6 +64,12 @@ describe('the hook capture settings file', () => {
     expect(existsSync(file())).toBe(false);
     await writeHookCaptureSettings(dir, undefined);
     expect(existsSync(file())).toBe(false);
+  });
+
+  it('leaves no temp file behind when the publish fails', async () => {
+    mkdirSync(file());
+    await expect(writeHookCaptureSettings(dir, { sessionHold: true })).rejects.toThrow();
+    expect(readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([]);
   });
 
   it('reads a malformed, out-of-range or unversioned file as nothing set', () => {

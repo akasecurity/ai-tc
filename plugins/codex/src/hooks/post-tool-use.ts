@@ -31,15 +31,7 @@ import {
   responseEmitPayload,
   scanResponseFields,
 } from './scan-response.ts';
-import {
-  baseMetadata,
-  captureScopeKey,
-  countFailOpen,
-  emit,
-  getString,
-  parseJson,
-  readStdin,
-} from './shared.ts';
+import { baseMetadata, countFailOpen, emit, getString, parseJson, readStdin } from './shared.ts';
 import { captureStamped } from './stamped-capture.ts';
 import { warnIfStoreRedirected } from './store-health.ts';
 import { collectResponseFields } from './tool-response.ts';
@@ -98,10 +90,7 @@ async function main(): Promise<void> {
   });
 
   // Set only when the organization forwards this repository's tool output.
-  const forward = toolOutputForward(
-    config.dataDir,
-    rawToolName === 'apply_patch' ? undefined : captureScopeKey(input, filePath),
-  );
+  const forward = toolOutputForward(config.dataDir, input, rawToolName, filePath);
 
   let outcome;
   try {

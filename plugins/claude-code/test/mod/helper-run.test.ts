@@ -1,12 +1,12 @@
 // The three mod helpers' logic (src/mod/*-run.ts), driven in-process against a
 // throwaway store so its lines are measured; test/e2e/mod-*.e2e.test.ts drives
 // the same cases through the built scripts.
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import { openLocalDatabase } from '@akasecurity/persistence';
+import { ATTACHED_CAPTURE_SETTINGS_FILENAME, openLocalDatabase } from '@akasecurity/persistence';
 import { bundledDetections } from '@akasecurity/plugin-sdk';
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { VAULT_CONSENT_VERSION } from '@akasecurity/schema';
@@ -70,6 +70,63 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllEnvs();
   removeTree(home);
+});
+
+function responseRows(): { content: string }[] {
+  const file = join(home, '.aka', 'data', 'aka.db');
+  if (!existsSync(file)) return [];
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    return db
+      .prepare("SELECT content FROM audit_events WHERE event_type = 'response' ORDER BY rowid")
+      .all() as { content: string }[];
+  } finally {
+    db.close();
+  }
+}
+
+function captureSettings(body: Record<string, unknown>): void {
+  const dir = join(home, '.aka', 'data');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, ATTACHED_CAPTURE_SETTINGS_FILENAME), JSON.stringify({ v: 1, ...body }));
+}
+
+describe('runModTokenize — a tool result handed over to be forwarded', () => {
+  const forwardRow = (text: string, forward: Record<string, unknown>) =>
+    tokenize({ text, row: { door: 'tool-result', tool: 'Read', forward } });
+
+  it('records a clean result under the cap, with the length it was cut from', async () => {
+    seed('redact', { vault: false });
+    captureSettings({ toolOutput: { maxChars: 100 } });
+    const run = await forwardRow('a clean tool result', { maxChars: 100, length: 4_000 });
+    expect(run).toEqual({ code: 1, stdout: '' });
+    expect(responseRows()).toEqual([{ content: 'a clean tool result' }]);
+  });
+
+  it('records nothing without settings, or for a repository they do not name', async () => {
+    seed('redact', { vault: false });
+    expect(await forwardRow('a clean tool result', { maxChars: 100 })).toEqual({
+      code: 1,
+      stdout: '',
+    });
+    captureSettings({ toolOutput: { maxChars: 100, repos: ['github.com/acme/app'] } });
+    await forwardRow('a clean tool result', { maxChars: 100 });
+    expect(responseRows()).toEqual([]);
+  });
+
+  it('records nothing for a result with a finding', async () => {
+    seed('monitor', { vault: false });
+    captureSettings({ toolOutput: { maxChars: 100 } });
+    expect(await forwardRow(`key ${SECRET}`, { maxChars: 100 })).toEqual({ code: 1, stdout: '' });
+    expect(responseRows()).toEqual([]);
+  });
+
+  it('takes a malformed mark as an ordinary row', async () => {
+    seed('redact', { vault: false });
+    captureSettings({ toolOutput: { maxChars: 100 } });
+    const run = await forwardRow(`key ${SECRET}`, { maxChars: 'many' });
+    expect(run.code).toBe(0);
+  });
 });
 
 describe('runModTokenize', () => {

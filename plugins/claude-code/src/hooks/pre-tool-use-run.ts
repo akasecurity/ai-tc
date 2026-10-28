@@ -12,6 +12,7 @@ import type { PluginConfig, VaultGlue } from '@akasecurity/plugin-sdk';
 import {
   createPluginRuntime,
   createVaultGlue,
+  dataDir,
   LARGE_INPUT_THRESHOLD_CHARS,
   loadConfig,
   realpathBestEffort,
@@ -31,6 +32,7 @@ import { isAuthorizedValue, takeToolHandoff } from '../mod/handoff.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote, userDisclosure } from '../protocol/notes.ts';
 import { resolveHookAccount, stampFor } from './account-stamp.ts';
+import { sessionHoldDenial } from './capture-forward.ts';
 import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
 import { handleSubagentSpawn } from './model-guard.ts';
 import { replaceAtPath } from './paths.ts';
@@ -103,6 +105,16 @@ export async function runPreToolUse(
   // neither the spawn seam nor the scan, and those must still cost nothing.
   let configMemo: PluginConfig | undefined;
   const loadConfigOnce = (): PluginConfig => (configMemo ??= loadConfig());
+
+  // A session the deployment holds refuses every tool call, scannable or not.
+  // The mod's helper leaves it to the hook, which runs after it.
+  if (options.mode === 'hook') {
+    const held = await sessionHoldDenial(dataDir(), sessionId);
+    if (held !== null) {
+      await emit(held);
+      return 'finished';
+    }
+  }
 
   // PROHIBITED-MODEL GOVERNANCE for a subagent spawn, ahead of BOTH the scan
   // and the early return below.

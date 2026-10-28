@@ -1024,6 +1024,17 @@ export const DeviceCommandPollResponse = z.object({ command: DeviceCommand.nulla
 export type DeviceCommandPollResponse = z.infer<typeof DeviceCommandPollResponse>;
 
 /**
+ * `GET /v1/plugin/sessions/:sessionId/hold` — whether the deployment holds this
+ * machine's session, so its next tool call is refused. `reason` is shown to the
+ * user and the agent, so it is bounded and printable.
+ */
+export const SessionHoldResponse = z.object({
+  held: z.boolean(),
+  reason: printable(500).optional(),
+});
+export type SessionHoldResponse = z.infer<typeof SessionHoldResponse>;
+
+/**
  * Why a device could not service a command. A CLOSED enum, sent by the device
  * and read back by an operator on the other side, so it is the reason no
  * device-supplied free text can ever reach a human's screen through this

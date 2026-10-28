@@ -122,6 +122,39 @@ export const ModelPolicy = z
   .meta({ id: 'ModelPolicy' });
 export type ModelPolicy = z.infer<typeof ModelPolicy>;
 
+/** The largest tool output, in UTF-16 code units, one forwarded capture may carry. */
+export const TOOL_OUTPUT_FORWARD_MAX_CHARS = 65_536;
+
+/** The most repositories one `CaptureSettings` list may name. */
+export const CAPTURE_REPOS_MAX = 1_000;
+
+// What an attached machine sends beyond its findings-bearing captures, as its
+// organization sets it. Every member is optional and an absent one leaves the
+// machine as it is without the block.
+//
+//   toolOutput        forward tool output with no findings too, cut to `maxChars`;
+//                     with `repos`, only output keyed to one of those repositories.
+//   reviewValueRepos  the canonical repository keys (`host/owner/repo`) whose
+//                     forwarded captures also carry each finding's raw value as a
+//                     review value.
+//   sessionHold       ask the deployment before each tool call whether the
+//                     session is held.
+const CaptureRepos = z.array(z.string().min(1).max(512)).max(CAPTURE_REPOS_MAX);
+
+export const CaptureSettings = z
+  .object({
+    toolOutput: z
+      .object({
+        maxChars: z.number().int().min(1).max(TOOL_OUTPUT_FORWARD_MAX_CHARS),
+        repos: CaptureRepos.optional(),
+      })
+      .optional(),
+    reviewValueRepos: CaptureRepos.optional(),
+    sessionHold: z.boolean().optional(),
+  })
+  .meta({ id: 'CaptureSettings' });
+export type CaptureSettings = z.infer<typeof CaptureSettings>;
+
 export const PolicyBundle = z
   .object({
     version: z.string(),
@@ -186,6 +219,9 @@ export const PolicyBundle = z
     // absent leaves the device's own setting in force, which is the behaviour
     // that predates the field and the safe direction to default.
     redactFallback: RedactFallback.optional(),
+    // Optional so an older backend, and an older on-disk cache, still parses; absent sends what
+    // the machine sent before the field existed.
+    capture: CaptureSettings.optional(),
     customKeywords: z.array(z.string()),
     fetchedAt: z.iso.datetime(),
   })
@@ -250,6 +286,7 @@ export const POLICY_BUNDLE_SHAPE_ID: string = [
     .map((key) => `policies.target.${key}`),
   ...Object.keys(ExceptionBundleEntry.shape).map((key) => `exceptions.${key}`),
   ...Object.keys(ModelPolicy.shape).map((key) => `modelPolicy.${key}`),
+  ...Object.keys(CaptureSettings.shape).map((key) => `capture.${key}`),
 ]
   .sort()
   .join(',');

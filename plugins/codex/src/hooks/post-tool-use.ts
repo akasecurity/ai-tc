@@ -24,13 +24,22 @@ import { createPluginRuntime, loadConfig } from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 
 import { codexToolStamp, threadAccountKey } from './account-stamp.ts';
+import { toolOutputForward } from './capture-forward.ts';
 import { largeInputBound } from './large-input.ts';
 import {
   RESPONSE_SCAN_DEADLINE_MS,
   responseEmitPayload,
   scanResponseFields,
 } from './scan-response.ts';
-import { baseMetadata, countFailOpen, emit, getString, parseJson, readStdin } from './shared.ts';
+import {
+  baseMetadata,
+  captureScopeKey,
+  countFailOpen,
+  emit,
+  getString,
+  parseJson,
+  readStdin,
+} from './shared.ts';
 import { captureStamped } from './stamped-capture.ts';
 import { warnIfStoreRedirected } from './store-health.ts';
 import { collectResponseFields } from './tool-response.ts';
@@ -88,6 +97,12 @@ async function main(): Promise<void> {
     largeInput: largeInputBound(RESPONSE_SCAN_DEADLINE_MS),
   });
 
+  // Set only when the organization forwards this repository's tool output.
+  const forward = toolOutputForward(
+    config.dataDir,
+    rawToolName === 'apply_patch' ? undefined : captureScopeKey(input, filePath),
+  );
+
   let outcome;
   try {
     outcome = await scanResponseFields(
@@ -98,7 +113,7 @@ async function main(): Promise<void> {
           runtime,
           { kind: 'response', sourceTool: SOURCE_TOOL.Codex, text, metadata },
           scopeKey,
-          { persist: 'with-findings' },
+          { persist: 'with-findings', ...(forward === undefined ? {} : { forward }) },
         ),
       { at: RESPONSE_SCAN_DEADLINE_MS, now: () => performance.now() },
     );

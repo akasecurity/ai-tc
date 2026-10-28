@@ -29,6 +29,7 @@
  * written to stderr.
  */
 import { redact } from '@akasecurity/detections';
+import { readHookCaptureSettings, toolOutputForwardFor } from '@akasecurity/plugin-runtime';
 import type { CaptureResult } from '@akasecurity/plugin-sdk';
 import { createPluginRuntime, createVaultGlue, loadConfig } from '@akasecurity/plugin-sdk';
 import type { ModFinding, ModFindingWhere } from '@akasecurity/schema';
@@ -66,6 +67,73 @@ function categoryOf(token: string): string {
   return token.split(':')[1] ?? 'secret';
 }
 
+// The forward mark a tool-result row carries, or undefined for any other row.
+function forwardOf(
+  row: Record<string, unknown>,
+): { maxChars: number; truncatedFrom?: number } | undefined {
+  const forward = row.forward;
+  if (typeof forward !== 'object' || forward === null) return undefined;
+  const { maxChars, length } = forward as { maxChars?: unknown; length?: unknown };
+  if (typeof maxChars !== 'number' || !Number.isInteger(maxChars) || maxChars < 1) return undefined;
+  return {
+    maxChars,
+    ...(typeof length === 'number' && Number.isInteger(length) && length > maxChars
+      ? { truncatedFrom: length }
+      : {}),
+  };
+}
+
+// A tool result the mod hands over to be forwarded: recorded only when the
+// capture settings forward this repository's tool output, and only when clean,
+// since a value in it was recorded by PostToolUse or the backstop already.
+// Answers no rewrite.
+async function forwardToolResult(
+  input: Record<string, unknown>,
+  row: Record<string, unknown>,
+  text: string,
+  forward: { maxChars: number; truncatedFrom?: number },
+): Promise<HelperRun> {
+  const sessionId = getString(input, 'sessionId');
+  const hookInput: Record<string, unknown> = {
+    session_id: sessionId,
+    cwd: getString(input, 'cwd'),
+  };
+  const config = loadConfig();
+  const repoKey = captureScopeKey(hookInput);
+  const allowed = toolOutputForwardFor(readHookCaptureSettings(config.dataDir), repoKey);
+  if (allowed === undefined) return { code: 1, stdout: '' };
+  const opened = openGateway(config);
+  if (opened.gateway === null) return { code: 1, stdout: '' };
+  const runtime = createPluginRuntime(opened.gateway, config.settings, { dataDir: config.dataDir });
+  try {
+    const account = resolveHookAccount(opened.gateway, {
+      dataDir: config.dataDir,
+      sessionId,
+      transcriptPath: locateSessionTranscript(config, sessionId),
+      cwd: getString(input, 'cwd'),
+    });
+    const metadata = baseMetadata(hookInput) ?? {};
+    const tool = getString(row, 'tool');
+    if (tool !== undefined) metadata.toolName = tool;
+    const deferred = await captureDeferredStamped(
+      runtime,
+      { kind: 'response', sourceTool: SOURCE_TOOL.ClaudeCode, text, metadata },
+      stampFor(opened.gateway, account, repoKey),
+      {
+        persist: 'with-findings',
+        forward: { ...forward, maxChars: Math.min(forward.maxChars, allowed.maxChars) },
+      },
+    );
+    const { result } = deferred;
+    if (result.findings.length === 0 && result.scanIncomplete === undefined) {
+      await deferred.record();
+    }
+  } finally {
+    await runtime.close();
+  }
+  return { code: 1, stdout: '' };
+}
+
 async function tokenize(stdin: string): Promise<HelperRun> {
   const input = parseJson(stdin);
   const text = input === null ? undefined : getString(input, 'text');
@@ -79,6 +147,12 @@ async function tokenize(stdin: string): Promise<HelperRun> {
       : undefined;
   const isRow = rowInput !== undefined;
   if (isRow && rowDoor === undefined) return { code: 1, stdout: '' };
+  if (isRow && rowDoor === 'tool-result') {
+    const forward = forwardOf(rowInput as Record<string, unknown>);
+    if (forward !== undefined) {
+      return forwardToolResult(input, rowInput as Record<string, unknown>, text, forward);
+    }
+  }
   const hookInput: Record<string, unknown> = {
     session_id: sessionId,
     cwd: getString(input, 'cwd'),

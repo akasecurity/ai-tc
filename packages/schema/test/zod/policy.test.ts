@@ -6,6 +6,7 @@ import { DetectionCategory } from '../../src/zod/finding.ts';
 import {
   actionRank,
   builtinPolicyToAction,
+  CaptureSettings,
   DEFAULT_ACTIONS,
   FULL_ENFORCEMENT_POSTURE,
   mergeRaiseOnly,
@@ -501,6 +502,7 @@ describe('POLICY_BUNDLE_SHAPE_ID tracks the schema it describes', () => {
         .map((key) => `policies.target.${key}`),
       ...Object.keys(ExceptionBundleEntry.shape).map((key) => `exceptions.${key}`),
       ...Object.keys(ModelPolicy.shape).map((key) => `modelPolicy.${key}`),
+      ...Object.keys(CaptureSettings.shape).map((key) => `capture.${key}`),
     ].sort();
     expect(POLICY_BUNDLE_SHAPE_ID.split(',')).toEqual(expected);
   });

@@ -10,9 +10,14 @@
 // Regenerate after adding/removing a rule or pack under rules/:
 //   pnpm --filter @akasecurity/plugin-sdk gen:bundled-packs
 //
-// 8 packs / 111 rules.
+// 9 packs / 118 rules.
 /* eslint-disable simple-import-sort/imports */
 import type { BuiltinPolicyId } from '@akasecurity/schema';
+import agentHarnessTamperAgentApprovalBypass from '../../../rules/agent-harness-tamper/agent-approval-bypass.json';
+import agentHarnessTamperAgentEndpointRedirect from '../../../rules/agent-harness-tamper/agent-endpoint-redirect.json';
+import agentHarnessTamperKnownMaliciousNpmPackage from '../../../rules/agent-harness-tamper/known-malicious-npm-package.json';
+import agentHarnessTamperLaunchctlSubmit from '../../../rules/agent-harness-tamper/launchctl-submit.json';
+import agentHarnessTamperMcpServerLauncher from '../../../rules/agent-harness-tamper/mcp-server-launcher.json';
 import codeFlawsAuthJwtNoVerify from '../../../rules/code-flaws/auth-jwt-no-verify.json';
 import codeFlawsAuthSslVerifyFalse from '../../../rules/code-flaws/auth-ssl-verify-false.json';
 import codeFlawsCmdInjectExec from '../../../rules/code-flaws/cmd-inject-exec.json';
@@ -43,6 +48,7 @@ import codeFlawsXssDangerouslySet from '../../../rules/code-flaws/xss-dangerousl
 import codeFlawsXssInnerHtml from '../../../rules/code-flaws/xss-inner-html.json';
 import codeFlawsXssUnescapedRender from '../../../rules/code-flaws/xss-unescaped-render.json';
 import commandRiskCredentialFileAccess from '../../../rules/command-risk/credential-file-access.json';
+import commandRiskCredentialFileGrep from '../../../rules/command-risk/credential-file-grep.json';
 import commandRiskCredentialFileRead from '../../../rules/command-risk/credential-file-read.json';
 import commandRiskCurlPipeShell from '../../../rules/command-risk/curl-pipe-shell.json';
 import commandRiskGitForcePush from '../../../rules/command-risk/git-force-push.json';
@@ -139,6 +145,25 @@ export interface BundledPack {
 
 export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
+    packId: 'agent-harness-tamper',
+    name: 'Agent harness tampering',
+    version: '0.1.0',
+    rawRules: [
+      agentHarnessTamperMcpServerLauncher,
+      agentHarnessTamperAgentEndpointRedirect,
+      agentHarnessTamperAgentApprovalBypass,
+      agentHarnessTamperLaunchctlSubmit,
+      agentHarnessTamperKnownMaliciousNpmPackage,
+    ],
+    shortNames: {
+      'agent-harness-tamper/mcp-server-launcher': 'MCP server launcher',
+      'agent-harness-tamper/agent-endpoint-redirect': 'Agent endpoint redirect',
+      'agent-harness-tamper/agent-approval-bypass': 'Agent approval bypass',
+      'agent-harness-tamper/launchctl-submit': 'launchctl submit',
+      'agent-harness-tamper/known-malicious-npm-package': 'Malicious npm package',
+    },
+  },
+  {
     packId: 'code-flaws',
     name: 'Code Security Flaws',
     version: '0.1.3',
@@ -208,7 +233,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'command-risk',
     name: 'Risky agent commands',
-    version: '0.2.0',
+    version: '0.3.0',
     defaultPolicy: 'warn',
     rawRules: [
       commandRiskPkillBroad,
@@ -217,6 +242,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       commandRiskGitResetHard,
       commandRiskCurlPipeShell,
       commandRiskCredentialFileRead,
+      commandRiskCredentialFileGrep,
       commandRiskCredentialFileAccess,
       commandRiskProtectedPathAccess,
     ],
@@ -227,6 +253,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       'command-risk/git-reset-hard': 'Git reset --hard',
       'command-risk/curl-pipe-shell': 'Curl piped to shell',
       'command-risk/credential-file-read': 'Credential file read',
+      'command-risk/credential-file-grep': 'Credential file search',
       'command-risk/credential-file-access': 'Credential file read',
       'command-risk/protected-path-access': 'Protected path access',
     },
@@ -348,7 +375,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'secrets',
     name: 'Secrets & Credentials',
-    version: '0.2.0',
+    version: '0.2.2',
     defaultPolicy: 'warn',
     rawRules: [
       secretsAwsAccessKey,

@@ -7,7 +7,7 @@ import { Badge, Button, cn } from '@akasecurity/ui-kit';
 import { type ReactNode } from 'react';
 
 import { RefusalReason, refusedControlProps } from '../shared/Refusal.tsx';
-import { FLAG, TRUST } from './data.ts';
+import { FLAG, TRUST, TRUST_ORDER } from './data.ts';
 import { Ico } from './Ico.tsx';
 import { type IconName } from './icons.ts';
 
@@ -69,6 +69,7 @@ export function RadioCardList<T extends string, M extends RadioCardMeta>({
   onChange,
   accentOf,
   refusal,
+  locked = false,
 }: {
   order: T[];
   meta: Record<T, M>;
@@ -83,8 +84,12 @@ export function RadioCardList<T extends string, M extends RadioCardMeta>({
    * per-option one.
    */
   refusal?: { id: string; reason: string } | undefined;
+  /** Every option is `aria-disabled` and `aria-busy` and `onChange` is not called, with no
+   * reason shown. */
+  locked?: boolean | undefined;
 }) {
   const refused = refusal ? refusedControlProps(refusal.id, refusal.reason, '') : null;
+  const inert = refused !== null || locked;
   return (
     <div className="flex flex-col gap-2">
       {order.map((k) => {
@@ -95,16 +100,18 @@ export function RadioCardList<T extends string, M extends RadioCardMeta>({
             key={k}
             type="button"
             onClick={
-              refused
+              inert
                 ? undefined
                 : () => {
                     onChange(k);
                   }
             }
+            {...(locked && !refused ? { 'aria-disabled': true, 'aria-busy': true } : {})}
             {...refused}
             className={cn(
               'flex items-center gap-3 rounded-lg border px-3 py-2.5 text-left cursor-pointer',
               on ? cn(m.bg, 'border-current', m.fg) : 'border-border bg-surface',
+              locked && !refused && 'cursor-progress',
               refused?.className,
             )}
           >
@@ -138,6 +145,33 @@ export function RadioCardList<T extends string, M extends RadioCardMeta>({
         </RefusalReason>
       )}
     </div>
+  );
+}
+
+/** The MCP trust picker: one radio card per trust level, the current one checked. */
+export function TrustChoice({
+  value,
+  onChange,
+  refusal,
+  locked,
+}: {
+  value: TrustLevel;
+  onChange: (v: TrustLevel) => void;
+  /** Renders every option offered-and-disabled with this reason; `onChange` is never called. */
+  refusal?: { id: string; reason: string } | undefined;
+  /** Every option is `aria-disabled` while the host applies a change. */
+  locked?: boolean | undefined;
+}) {
+  return (
+    <RadioCardList
+      order={TRUST_ORDER}
+      meta={TRUST}
+      value={value}
+      onChange={onChange}
+      accentOf={(t) => t.iconBg}
+      refusal={refusal}
+      locked={locked}
+    />
   );
 }
 

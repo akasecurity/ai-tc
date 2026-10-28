@@ -134,7 +134,11 @@ export { resolveNonGitProject, toPosix } from './paths.ts';
 export type { ShieldedSpan, ShieldedText } from './pointer-shield.ts';
 export { dropShieldedFindings, shieldPointers } from './pointer-shield.ts';
 export type { PolicyResolver } from './policy-resolver.ts';
-export { assignedRulePolicies, createPolicyResolver } from './policy-resolver.ts';
+export {
+  assignedRulePolicies,
+  createPolicyResolver,
+  lowerFabricatedBlock,
+} from './policy-resolver.ts';
 export type { PostureChange } from './posture.ts';
 export { applyCategoryPosture, detectPostureChanges, severityFloorPosture } from './posture.ts';
 export type { ProjectWalkBounds } from './project-files.ts';
@@ -207,6 +211,7 @@ export {
   LARGE_INPUT_SCAN_BUDGET_MS,
   LARGE_INPUT_START_BUDGET_MS,
   LARGE_INPUT_THRESHOLD_CHARS,
+  reuseScanners,
 } from './runtime.ts';
 export type { ScanFileKind } from './scan-files.ts';
 export {

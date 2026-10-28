@@ -1,8 +1,8 @@
 /**
- * Replays the Downloads-folder attack chain (test/helpers/replay-cases/forever.ts)
+ * Replays the Downloads-folder attack chain (eval/2026-10-28-forever-downloads-agents-md/cases.json)
  * through the BUILT PreToolUse hook on a default install and with the
  * agent-harness-tamper pack on Block, and writes the table to
- * eval-results/forever.md. Run it on its own with `pnpm eval:replay`.
+ * that folder's results/results.md. Run it on its own with `pnpm eval:replay`.
  */
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -11,6 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import {
+  evalDir,
+  loadReplaySet,
   packRules,
   renderResults,
   type ReplayMode,
@@ -18,12 +20,15 @@ import {
   replaySet,
   writeResults,
 } from '../helpers/replay.ts';
-import { FOREVER } from '../helpers/replay-cases/forever.ts';
 
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const manifest = JSON.parse(
   readFileSync(join(PLUGIN_ROOT, '.claude-plugin', 'plugin.json'), 'utf8'),
 ) as { version: string };
+
+const FOLDER = '2026-10-28-forever-downloads-agents-md';
+const DIR = evalDir(PLUGIN_ROOT, FOLDER);
+const FOREVER = loadReplaySet(DIR);
 
 const TIMEOUT_MS = 180_000;
 
@@ -88,7 +93,7 @@ describe('Downloads-folder attack chain replayed through the built hook', () => 
         { default: await outcomesFor('default'), strict: await outcomesFor('strict') },
         manifest.version,
       );
-      const file = writeResults(FOREVER, markdown, PLUGIN_ROOT);
+      const file = writeResults(FOREVER, markdown, DIR);
       expect(readFileSync(file, 'utf8')).toContain('| attack |');
     },
     TIMEOUT_MS,

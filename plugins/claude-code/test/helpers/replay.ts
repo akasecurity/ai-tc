@@ -12,7 +12,7 @@
  * Every call runs in its own empty home, so no outcome depends on another call
  * and the live store is never read.
  */
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -31,8 +31,8 @@ export interface ReplayCall {
   /** `attack` calls must be caught; `lookalike` calls must stay silent. */
   kind: 'attack' | 'lookalike';
   tool: 'Bash' | 'Write' | 'Edit';
-  /** The tool input, built against the call's own empty home. */
-  input: (home: string) => Record<string, unknown>;
+  /** The tool input; `{home}` in a string stands for the call's own empty home. */
+  input: Record<string, unknown>;
   cwd?: string;
   /** Rules of the set's packs the call is expected to trigger. */
   rules?: readonly string[];
@@ -71,6 +71,18 @@ function seededHome(set: ReplaySet, mode: ReplayMode): string {
   return home;
 }
 
+function withHome(value: unknown, home: string): Record<string, unknown> {
+  const walk = (v: unknown): unknown => {
+    if (typeof v === 'string') return v.replaceAll('{home}', home);
+    if (Array.isArray(v)) return v.map(walk);
+    if (typeof v === 'object' && v !== null) {
+      return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
+    }
+    return v;
+  };
+  return walk(value) as Record<string, unknown>;
+}
+
 async function replayCall(
   set: ReplaySet,
   call: ReplayCall,
@@ -85,7 +97,7 @@ async function replayCall(
         cwd: call.cwd ?? home,
         hook_event_name: 'PreToolUse',
         tool_name: call.tool,
-        tool_input: call.input(home),
+        tool_input: withHome(call.input, home),
       }),
       { env: tempHomeEnv(home) },
     );
@@ -161,8 +173,18 @@ export function renderResults(
   ].join('\n');
 }
 
-export function writeResults(set: ReplaySet, markdown: string, pluginRoot: string): string {
-  const file = join(pluginRoot, 'eval-results', `${set.id}.md`);
+/** The folder of the eval whose cases a set was loaded from, under the repo's top-level `eval/`. */
+export function evalDir(pluginRoot: string, folder: string): string {
+  return join(pluginRoot, '..', '..', 'eval', folder);
+}
+
+/** A set is the `cases.json` of one eval folder. */
+export function loadReplaySet(dir: string): ReplaySet {
+  return JSON.parse(readFileSync(join(dir, 'cases.json'), 'utf8')) as ReplaySet;
+}
+
+export function writeResults(set: ReplaySet, markdown: string, dir: string): string {
+  const file = join(dir, 'results', 'results.md');
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, markdown);
   return file;

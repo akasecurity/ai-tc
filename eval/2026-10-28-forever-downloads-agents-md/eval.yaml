@@ -3,9 +3,9 @@ source: Forever Security
 source_url: https://forever.security/blog/hijacking-ai-agents-via-downloads-folder/
 source_date: 2026-10-22
 target: ai-tc Claude Code plugin, PreToolUse hook, agent-harness-tamper pack
-goal:
-  default: detect
-  strict: block
+kind: vulnerability
+goal: block
+policy: agent-harness-tamper pack on Block (not the default)
 tool_version: 0.9.21
 cases:
   attack: 7

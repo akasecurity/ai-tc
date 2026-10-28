@@ -431,7 +431,11 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
     );
 
     // Attention: an asset with a flag or an attention-level effective trust,
-    // counted once, plus listed projects with a finding in the window.
+    // counted once, plus listed projects with a finding in the window. The two
+    // asset populations are disjoint and counted by separate code: this SQL
+    // reads inventory_asset, which only the sample fixtures write, while the
+    // skills, hooks and MCP servers a config scan finds are counted by the
+    // configRows fold below.
     const flaggedAssets = countScalar(
       this.db,
       `SELECT count(*) AS n

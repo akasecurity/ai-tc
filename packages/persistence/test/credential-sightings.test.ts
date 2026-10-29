@@ -382,7 +382,7 @@ describe('forwardCredentialSightings', () => {
     ]);
     expect(body?.scanId).toMatch(/^[0-9a-f-]{36}$/);
     expect(body?.supersededProjectKeys).toEqual(supersededProjectKeys(`git:${REPO_URL}`));
-    expect(body?.supersededProjectKeys).toHaveLength(1);
+    expect(body?.supersededProjectKeys).toHaveLength(2);
 
     const wire = JSON.stringify(rec.requests);
     expectNoEchoOf(wire, VALUE_A);

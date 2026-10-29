@@ -45,14 +45,20 @@ import {
 export const PROJECT_KEY_DIGEST_VERSION = 'v3';
 
 /**
- * Each earlier digest version, newest first, and whether its canonical form
- * folded a path's case on a host in `CASE_INSENSITIVE_FORGES`. Every other
- * rule of the reduction is the same in each of them.
+ * Every digest a project key was sent under before `PROJECT_KEY_DIGEST_VERSION`,
+ * newest first:
+ *
+ *   - `v2`, sent by 0.9.12 to 0.9.20. Its canonical form did not fold a path's
+ *     case on a host in `CASE_INSENSITIVE_FORGES`, and was otherwise the same.
+ *   - the unversioned form, sent by 0.9.10 and 0.9.11: SHA-256 of the key
+ *     exactly as written, with no canonicalization and no version prefix.
+ *
+ * No earlier release sent a project digest on the wire.
  */
-const EARLIER_PROJECT_KEY_DIGESTS: readonly {
-  readonly version: string;
-  readonly foldsForgePathCase: boolean;
-}[] = [{ version: 'v2', foldsForgePathCase: false }];
+const EARLIER_PROJECT_KEY_DIGESTS: readonly ((projectKey: string) => string)[] = [
+  (projectKey) => digestUnder('v2', projectKey, false),
+  (projectKey) => createHash('sha256').update(projectKey, 'utf8').digest('hex'),
+];
 
 // A `git:` URL in scp form — `[user@]host:path`, which has no `://` and whose
 // first colon separates host from path. Anchored on a host that cannot contain
@@ -280,20 +286,20 @@ export function hashProjectKey(projectKey: string): string {
 }
 
 /**
- * The digests `projectKey` had under each earlier `PROJECT_KEY_DIGEST_VERSION`,
- * newest first, each computed with that version's own canonical form, and
- * never the current digest. A receiver that stored rows under one of them
+ * The digests `projectKey` was sent under before, one per form in
+ * `EARLIER_PROJECT_KEY_DIGESTS`, newest first, each computed with that form's
+ * own construction, and never the current digest. A receiver that stored rows under one of them
  * files those rows under `hashProjectKey(projectKey)`.
  *
- * Every key has one: the version is part of the digested string, so even a
- * key whose canonical form did not change digests differently under each
- * version.
+ * Every key has one per earlier form: the version, or its absence, is part of
+ * the digested string, so even a key whose canonical form did not change
+ * digests differently under each.
  */
 export function supersededProjectKeys(projectKey: string): string[] {
   const current = hashProjectKey(projectKey);
   const digests: string[] = [];
-  for (const { version, foldsForgePathCase } of EARLIER_PROJECT_KEY_DIGESTS) {
-    const digest = digestUnder(version, projectKey, foldsForgePathCase);
+  for (const digestOf of EARLIER_PROJECT_KEY_DIGESTS) {
+    const digest = digestOf(projectKey);
     if (digest !== current && !digests.includes(digest)) digests.push(digest);
   }
   return digests.slice(0, SUPERSEDED_PROJECT_KEYS_MAX);

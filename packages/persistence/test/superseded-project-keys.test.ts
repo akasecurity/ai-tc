@@ -21,19 +21,25 @@ const V2 = {
   selfHosted: 'fb2bd17c8487b3a77653a8818b1d8ca16a1413839b132792b65df089a2af4c8b',
 };
 
+// Digests 0.9.10 and 0.9.11 sent: SHA-256 of the key as written, unversioned.
+const UNVERSIONED = {
+  githubHttps: 'fb2e86c96941e5f7c67280f0cf839f34ff4889015cc198d1b0393c3c253ac103',
+  githubMixedScp: 'ff54745c63a763f9d95a4ff17e6df9401328bf81521442f342df7e63301ea9a6',
+};
+
 describe('supersededProjectKeys', () => {
-  it('names the v2 digest of a key whose canonical form is unchanged', () => {
+  it('names the v2 digest, then the unversioned one, of a key whose canonical form is unchanged', () => {
     const key = 'git:https://github.com/acme/payments.git';
     expect(hashProjectKey(key)).toBe(
       '97ed46e8a9b000a920fb18990171f59d06495a22e403264f4e302264965001c5',
     );
-    expect(supersededProjectKeys(key)).toEqual([V2.githubLower]);
+    expect(supersededProjectKeys(key)).toEqual([V2.githubLower, UNVERSIONED.githubHttps]);
   });
 
   it('keeps the path case a forge folds now, as the v2 form did', () => {
     const mixed = 'git:git@github.com:Acme/Payments.git';
     expect(hashProjectKey(mixed)).toBe(hashProjectKey('git:https://github.com/acme/payments'));
-    expect(supersededProjectKeys(mixed)).toEqual([V2.githubMixed]);
+    expect(supersededProjectKeys(mixed)).toEqual([V2.githubMixed, UNVERSIONED.githubMixedScp]);
   });
 
   it('gives each clone spelling of one repository the v2 digest that spelling had', () => {
@@ -42,20 +48,26 @@ describe('supersededProjectKeys', () => {
       'git:git@github.com:acme/payments.git',
       'git:ssh://git@GitHub.com:22/acme/payments/',
     ];
-    for (const key of spellings) expect(supersededProjectKeys(key)).toEqual([V2.githubLower]);
+    for (const key of spellings) {
+      expect(supersededProjectKeys(key)).toEqual([V2.githubLower, sha256(key)]);
+    }
   });
 
   it('keeps the case on a host that is not a known forge', () => {
-    expect(supersededProjectKeys('git:https://git.internal.example/team/svc.git')).toEqual([
-      V2.selfHosted,
-    ]);
-    expect(supersededProjectKeys('git:https://git.internal.example/Team/Svc.git')).toEqual([
+    const lower = 'git:https://git.internal.example/team/svc.git';
+    const mixed = 'git:https://git.internal.example/Team/Svc.git';
+    expect(supersededProjectKeys(lower)).toEqual([V2.selfHosted, sha256(lower)]);
+    expect(supersededProjectKeys(mixed)).toEqual([
       sha256('v2:git:git.internal.example/Team/Svc'),
+      sha256(mixed),
     ]);
   });
 
-  it('names the v2 digest of a path: key, which is hashed as written', () => {
-    expect(supersededProjectKeys('path:/work/Demo')).toEqual([sha256('v2:path:/work/Demo')]);
+  it('names both earlier digests of a path: key, which is hashed as written', () => {
+    expect(supersededProjectKeys('path:/work/Demo')).toEqual([
+      sha256('v2:path:/work/Demo'),
+      sha256('path:/work/Demo'),
+    ]);
   });
 
   it('never names the current digest and stays within the wire cap', () => {
@@ -79,7 +91,7 @@ describe('toEgressIngestRequest — superseded project keys', () => {
   it('carries the earlier digests beside the current one, and parses', () => {
     const request = toEgressIngestRequest(input);
     expect(request.projectKey).toBe(hashProjectKey(input.projectKey));
-    expect(request.supersededProjectKeys).toEqual([V2.githubMixed]);
+    expect(request.supersededProjectKeys).toEqual([V2.githubMixed, UNVERSIONED.githubMixedScp]);
     expect(EgressIngestRequest.parse(request)).toEqual(request);
   });
 

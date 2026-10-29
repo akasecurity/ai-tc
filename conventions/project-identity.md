@@ -93,12 +93,19 @@ no read surface can reach, which is worse than the duplicate it removes.
 
 **Bumping `PROJECT_KEY_DIGEST_VERSION` also re-keys the RECEIVING side, and the
 wire says how to fold it.** Every forward carries `supersededProjectKeys`: the
-same key's digest under each earlier version, computed by
+same key's digest under each form it was sent under before, computed by
 `supersededProjectKeys` from `EARLIER_PROJECT_KEY_DIGESTS` in `repo-key.ts`. A
-receiver files rows it holds under any of them under the current digest. A bump
-therefore adds the outgoing version to that table, with the canonical form it
-used — a digest cannot be reversed, so a version left out of the table strands
-every row filed under it.
+receiver files rows it holds under any of them under the current digest. The
+table holds every form ever sent, the unversioned one included, and says which
+releases sent each. A bump therefore adds the outgoing version to that table,
+with the canonical form it used — a digest cannot be reversed, so a form left
+out of the table strands every row filed under it.
+
+**The field is additive only against a reader that ignores unknown keys.**
+`CredentialSightingsRequest` is `.strict()`, and a receiver may validate either
+request strictly, so a deployment that predates the field rejects the whole
+request. The receiving side has to accept `supersededProjectKeys` before a
+release that sends it.
 
 **The ENROLMENT LIST is matched byte for byte, so a re-key has to MOVE it.**
 `AttachmentScopeEntry.identity` is a plain string (`scopeVerdict` is

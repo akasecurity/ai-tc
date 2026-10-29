@@ -121,6 +121,7 @@ packages/             the workspace libraries (schema · persistence · local-op
                       remote ·
                       extract · dashboard-ui · ui-kit · plugin-runtime · plugin-sdk · scanner …)
 rules/                the built-in detection packs (rule JSON + fixtures)
+eval/                 replayed attack-chain evals and their results (`pnpm eval:replay`)
 skills/               agent skills (e.g. write-detection-rule)
 tools/                repo tooling, never shipped: the installer one-liners and
                       the installer workspace package whose suite drives them end

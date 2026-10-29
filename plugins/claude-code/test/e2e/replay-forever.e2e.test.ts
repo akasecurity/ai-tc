@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import {
+  allRules,
   evalDir,
   loadReplaySet,
   packRules,
@@ -78,7 +79,7 @@ describe('Downloads-folder attack chain replayed through the built hook', () => 
         const outcomes = await outcomesFor(mode);
         for (const o of outcomes.filter((x) => x.call.kind === 'lookalike')) {
           expect(o.verdict, `${mode}: ${o.call.label}`).toBe('allowed');
-          expect(packRules(FOREVER, o), `${mode}: ${o.call.label}`).toEqual([]);
+          expect(allRules(o), `${mode}: ${o.call.label}`).toEqual([]);
         }
       }
     },

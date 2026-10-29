@@ -22,6 +22,9 @@ import { bundledDetections } from '@akasecurity/plugin-sdk';
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { runHookAsync, tempHomeEnv } from './run-hook.ts';
 
+// Per spawn, so a loaded box does not trip run-hook's 15 s default across the 24 parallel hooks.
+const HOOK_TIMEOUT_MS = 90_000;
+
 export type ReplayMode = 'default' | 'strict';
 export type Verdict = 'blocked' | 'warned' | 'allowed';
 
@@ -99,7 +102,7 @@ async function replayCall(
         tool_name: call.tool,
         tool_input: withHome(call.input, home),
       }),
-      { env: tempHomeEnv(home) },
+      { env: tempHomeEnv(home), timeoutMs: HOOK_TIMEOUT_MS },
     );
     if (run.status !== 0)
       throw new Error(`pre-tool-use exited ${String(run.status)} for ${call.label}`);
@@ -127,6 +130,11 @@ export async function replaySet(set: ReplaySet, mode: ReplayMode): Promise<Repla
   return Promise.all(set.calls.map((call) => replayCall(set, call, mode)));
 }
 
+/** Every rule that fired on a call, whichever pack it belongs to. */
+export function allRules(outcome: ReplayOutcome): string[] {
+  return [...new Set(outcome.findings.map((f) => f.ruleId))].sort();
+}
+
 /** The rules of the set's own packs among a call's findings. */
 export function packRules(set: ReplaySet, outcome: ReplayOutcome): string[] {
   return [
@@ -139,7 +147,8 @@ export function packRules(set: ReplaySet, outcome: ReplayOutcome): string[] {
 }
 
 function cell(set: ReplaySet, outcome: ReplayOutcome): string {
-  const rules = packRules(set, outcome).map((r) => `\`${r}\``);
+  const fired = outcome.call.kind === 'lookalike' ? allRules(outcome) : packRules(set, outcome);
+  const rules = fired.map((r) => `\`${r}\``);
   if (outcome.verdict === 'blocked')
     return `blocked${rules.length > 0 ? `: ${rules.join(', ')}` : ''}`;
   if (rules.length > 0) {

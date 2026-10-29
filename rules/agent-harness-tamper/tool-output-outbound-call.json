@@ -6,12 +6,13 @@
   "severity": "high",
   "matcher": {
     "type": "regex",
-    "pattern": "^aka-session-state: mcp-output-in-session; outbound tool (?:mcp|Bash)$",
+    "pattern": "^aka-session-state: mcp-output-in-session; outbound tool (?:mcp|Bash|WebFetch)$",
     "flags": ""
   },
   "examples": [
     "aka-session-state: mcp-output-in-session; outbound tool mcp",
-    "aka-session-state: mcp-output-in-session; outbound tool Bash"
+    "aka-session-state: mcp-output-in-session; outbound tool Bash",
+    "aka-session-state: mcp-output-in-session; outbound tool WebFetch"
   ],
   "appliesTo": {
     "eventKinds": ["tool_use"]

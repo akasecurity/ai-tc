@@ -12,6 +12,12 @@
     "eventKind": "tool_use"
   },
   {
+    "label": "a WebFetch after MCP output",
+    "text": "aka-session-state: mcp-output-in-session; outbound tool WebFetch",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
     "label": "the state line quoted inside a command",
     "text": "echo aka-session-state: mcp-output-in-session; outbound tool mcp",
     "shouldMatch": false,

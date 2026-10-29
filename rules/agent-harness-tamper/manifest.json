@@ -3,7 +3,7 @@
   "id": "agent-harness-tamper",
   "name": "Agent harness tampering",
   "version": "0.2.0",
-  "description": "Detects changes that take an AI coding agent out of its user's control: an MCP server entry that launches a background job or a shell command, the agent's model endpoint or proxy pointed at another host, an agent CLI run with approvals or its sandbox switched off, launchctl submit, the install of a known malicious npm package (the package.json arm catches a dependency being added), and an outbound call (an MCP tool that sends, exports, uploads or writes, a WebFetch, or a Bash network, push or upload command) in a session where an MCP tool has returned text. For the endpoint rule only the vendor hosts and the local machine are allowed, so Azure OpenAI, LiteLLM and corporate gateways are reported.",
+  "description": "Detects changes that take an AI coding agent out of its user's control: an MCP server entry that launches a background job or a shell command, the agent's model endpoint or proxy pointed at another host, an agent CLI run with approvals or its sandbox switched off, launchctl submit, the install of a known malicious npm package (the package.json arm catches a dependency being added), and an outbound call (an MCP tool that sends, exports, uploads, publishes or pushes, a WebFetch, or a Bash network, push or upload command) in a session where an MCP tool has returned text. For the endpoint rule only the vendor hosts and the local machine are allowed, so Azure OpenAI, LiteLLM and corporate gateways are reported.",
   "rules": [
     "mcp-server-launcher",
     "agent-endpoint-redirect",

@@ -6,13 +6,13 @@
   "severity": "high",
   "matcher": {
     "type": "regex",
-    "pattern": "^aka-session-state: mcp-output-in-session; outbound tool (?:mcp|Bash|WebFetch)$",
+    "pattern": "^aka-session-state: mcp-output-in-session; outbound tool (?:mcp|Bash|WebFetch)(?=; call [\\w./:@-]{1,120}$)",
     "flags": ""
   },
   "examples": [
-    "aka-session-state: mcp-output-in-session; outbound tool mcp",
-    "aka-session-state: mcp-output-in-session; outbound tool Bash",
-    "aka-session-state: mcp-output-in-session; outbound tool WebFetch"
+    "aka-session-state: mcp-output-in-session; outbound tool mcp; call mcp__mail__send_email",
+    "aka-session-state: mcp-output-in-session; outbound tool Bash; call curl",
+    "aka-session-state: mcp-output-in-session; outbound tool WebFetch; call WebFetch"
   ],
   "appliesTo": {
     "eventKinds": ["tool_use"]

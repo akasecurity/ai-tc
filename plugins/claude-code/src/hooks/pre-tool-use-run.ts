@@ -161,7 +161,7 @@ export async function runPreToolUse(
     ...protectedFieldsOf(toolName, toolInput, getString(input, 'cwd'), loadConfigOnce),
     ...(isOutboundCall(toolName, toolInput) &&
     isSessionMarked(loadConfigOnce().dataDir, MCP_OUTPUT_SESSION_MARKER, sessionId)
-      ? [mcpOutputSessionField(toolName)]
+      ? [mcpOutputSessionField(toolName, toolInput)]
       : []),
   ];
   if (fields.length === 0) return 'nothing-to-scan';

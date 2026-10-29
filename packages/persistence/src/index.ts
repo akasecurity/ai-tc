@@ -107,6 +107,7 @@ export {
   namesARemoteAddress,
   respelledRepoKey,
   scopeKeyOfProjectKey,
+  supersededProjectKeys,
   toEgressIngestRequest,
 } from './egress-wire.ts';
 export type { EnrolmentRespellOutcome } from './enrolment-respell.ts';

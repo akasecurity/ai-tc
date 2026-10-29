@@ -215,6 +215,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'signPointer',
   'sourceProjectId',
   'storeTargets',
+  'supersededProjectKeys',
   'symlinkedStorePaths',
   'tightenFile',
   'tightenPerms',

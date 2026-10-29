@@ -22,7 +22,7 @@ import {
   planSightingShare,
   sightingLocationClass,
 } from '../src/credential-sightings.ts';
-import { hashProjectKey } from '../src/egress-wire.ts';
+import { hashProjectKey, supersededProjectKeys } from '../src/egress-wire.ts';
 import { keysDir } from '../src/local-layout.ts';
 import { applyOnboarding } from '../src/settings.ts';
 import {
@@ -381,6 +381,8 @@ describe('forwardCredentialSightings', () => {
       },
     ]);
     expect(body?.scanId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(body?.supersededProjectKeys).toEqual(supersededProjectKeys(`git:${REPO_URL}`));
+    expect(body?.supersededProjectKeys).toHaveLength(1);
 
     const wire = JSON.stringify(rec.requests);
     expectNoEchoOf(wire, VALUE_A);

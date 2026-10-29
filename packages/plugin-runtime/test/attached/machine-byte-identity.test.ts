@@ -3,7 +3,12 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { hashProjectKey, llmCallId, toolCallId } from '@akasecurity/persistence';
+import {
+  hashProjectKey,
+  llmCallId,
+  supersededProjectKeys,
+  toolCallId,
+} from '@akasecurity/persistence';
 import type {
   AuditEventInput,
   AuditEventRow,
@@ -313,7 +318,8 @@ const CAPTURE_WIRE =
   '"content":"content of capture-1","metadata":{"sessionId":"session-1","repo":"org/api"}}]}';
 
 const EGRESS_WIRE =
-  `{"projectKey":"${hashProjectKey(`git:${REMOTE}`)}","project":"api",` +
+  `{"projectKey":"${hashProjectKey(`git:${REMOTE}`)}",` +
+  `"supersededProjectKeys":${JSON.stringify(supersededProjectKeys(`git:${REMOTE}`))},"project":"api",` +
   '"reconcile":{"mode":"walk","walkedPrefix":"/work/api"},"hits":[]}';
 
 const INVENTORY_WIRE = `{"project":{"url":"${REMOTE}","name":"api","attributes":{}}}`;

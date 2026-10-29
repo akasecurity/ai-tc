@@ -23,7 +23,7 @@ import type {
 } from '@akasecurity/schema';
 import { CREDENTIAL_REFS_PER_CALL_SITE_MAX, EgressCredentialRef } from '@akasecurity/schema';
 
-import { hashProjectKey } from './repo-key.ts';
+import { hashProjectKey, supersededProjectKeys } from './repo-key.ts';
 import { capHits, withoutDroppedFiles } from './repositories/shares.ts';
 
 export {
@@ -36,6 +36,7 @@ export {
   PROJECT_KEY_DIGEST_VERSION,
   respelledRepoKey,
   scopeKeyOfProjectKey,
+  supersededProjectKeys,
 } from './repo-key.ts';
 
 function wireCredentialRefs(hit: ResolvedEgressHit): EgressCredentialRefT[] {
@@ -78,7 +79,8 @@ function toIngestHit(hit: ResolvedEgressHit, shareCredentialRefs: boolean): Egre
  * Applies the same per-project cap the local write enforces (`capHits`), drops
  * the corresponding files from the reconcile set (`withoutDroppedFiles`), then
  * strips everything that must not leave the device: `site.snippet` (source
- * text), the plaintext `projectKey` (replaced with its digest), and
+ * text), the plaintext `projectKey` (replaced with its digest and its digests
+ * under earlier versions), and
  * `projectId` (a device-local id the tenant's inventory cannot resolve).
  *
  * A call site's credential references are carried only when
@@ -94,6 +96,7 @@ export function toEgressIngestRequest(
   const reconcile = withoutDroppedFiles(input.reconcile, droppedFiles);
   return {
     projectKey: hashProjectKey(input.projectKey),
+    supersededProjectKeys: supersededProjectKeys(input.projectKey),
     project: input.project,
     reconcile,
     hits: hits.map((hit) => toIngestHit(hit, shareCredentialRefs)),

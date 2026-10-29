@@ -91,6 +91,15 @@ remote is that path keys on it, new events attach to it, and it reads the same
 from every worktree — so hiding it would leave a project being written to that
 no read surface can reach, which is worse than the duplicate it removes.
 
+**Bumping `PROJECT_KEY_DIGEST_VERSION` also re-keys the RECEIVING side, and the
+wire says how to fold it.** Every forward carries `supersededProjectKeys`: the
+same key's digest under each earlier version, computed by
+`supersededProjectKeys` from `EARLIER_PROJECT_KEY_DIGESTS` in `repo-key.ts`. A
+receiver files rows it holds under any of them under the current digest. A bump
+therefore adds the outgoing version to that table, with the canonical form it
+used — a digest cannot be reversed, so a version left out of the table strands
+every row filed under it.
+
 **The ENROLMENT LIST is matched byte for byte, so a re-key has to MOVE it.**
 `AttachmentScopeEntry.identity` is a plain string (`scopeVerdict` is
 `keys.has(key)`), so an entry left under a spelling the canonical form has moved

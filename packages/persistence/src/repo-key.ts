@@ -19,7 +19,11 @@
 // test suite stayed green. Nothing here may read a file.
 import { createHash } from 'node:crypto';
 
-import { ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH, printable } from '@akasecurity/schema';
+import {
+  ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH,
+  printable,
+  SUPERSEDED_PROJECT_KEYS_MAX,
+} from '@akasecurity/schema';
 
 /**
  * The shape of the string that is digested, stamped into the digest itself.
@@ -39,6 +43,16 @@ import { ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH, printable } from '@akasecurity/sc
  * refuses to leave unversioned.
  */
 export const PROJECT_KEY_DIGEST_VERSION = 'v3';
+
+/**
+ * Each earlier digest version, newest first, and whether its canonical form
+ * folded a path's case on a host in `CASE_INSENSITIVE_FORGES`. Every other
+ * rule of the reduction is the same in each of them.
+ */
+const EARLIER_PROJECT_KEY_DIGESTS: readonly {
+  readonly version: string;
+  readonly foldsForgePathCase: boolean;
+}[] = [{ version: 'v2', foldsForgePathCase: false }];
 
 // A `git:` URL in scp form — `[user@]host:path`, which has no `://` and whose
 // first colon separates host from path. Anchored on a host that cannot contain
@@ -121,6 +135,13 @@ function trimSlashes(path: string): string {
 export function parseGitRemote(
   url: string,
 ): { readonly host: string; readonly path: string } | undefined {
+  return parseRemote(url, true);
+}
+
+function parseRemote(
+  url: string,
+  foldsForgePathCase: boolean,
+): { readonly host: string; readonly path: string } | undefined {
   const trimmed = url.trim();
   if (DOS_DRIVE.test(trimmed) || FILE_URL.test(trimmed)) return undefined;
   const scheme = SCHEME_FORM.exec(trimmed);
@@ -129,7 +150,8 @@ export function parseGitRemote(
   if (host === undefined) return undefined;
   const bare = trimSlashes((scheme === null ? scp?.[2] : scheme[2]) ?? '');
   const path = bare.endsWith(GIT_SUFFIX) ? bare.slice(0, -GIT_SUFFIX.length) : bare;
-  return { host, path: CASE_INSENSITIVE_FORGES.has(host) ? path.toLowerCase() : path };
+  const folds = foldsForgePathCase && CASE_INSENSITIVE_FORGES.has(host);
+  return { host, path: folds ? path.toLowerCase() : path };
 }
 
 /**
@@ -209,9 +231,20 @@ export function namesARemoteAddress(url: string): boolean {
  * one machine rather than a remote every clone shares.
  */
 export function canonicalGitUrl(url: string): string {
-  const remote = parseGitRemote(url);
+  return canonicalUnder(url, true);
+}
+
+function canonicalUnder(url: string, foldsForgePathCase: boolean): string {
+  const remote = parseRemote(url, foldsForgePathCase);
   if (remote === undefined) return url.trim();
   return remote.path === '' ? remote.host : `${remote.host}/${remote.path}`;
+}
+
+function digestUnder(version: string, projectKey: string, foldsForgePathCase: boolean): string {
+  const canonical = projectKey.startsWith('git:')
+    ? `git:${canonicalUnder(projectKey.slice('git:'.length), foldsForgePathCase)}`
+    : projectKey;
+  return createHash('sha256').update(`${version}:${canonical}`, 'utf8').digest('hex');
 }
 
 /**
@@ -243,12 +276,27 @@ export function canonicalGitUrl(url: string): string {
  * contract change, not a one-line swap here.
  */
 export function hashProjectKey(projectKey: string): string {
-  const canonical = projectKey.startsWith('git:')
-    ? `git:${canonicalGitUrl(projectKey.slice('git:'.length))}`
-    : projectKey;
-  return createHash('sha256')
-    .update(`${PROJECT_KEY_DIGEST_VERSION}:${canonical}`, 'utf8')
-    .digest('hex');
+  return digestUnder(PROJECT_KEY_DIGEST_VERSION, projectKey, true);
+}
+
+/**
+ * The digests `projectKey` had under each earlier `PROJECT_KEY_DIGEST_VERSION`,
+ * newest first, each computed with that version's own canonical form, and
+ * never the current digest. A receiver that stored rows under one of them
+ * files those rows under `hashProjectKey(projectKey)`.
+ *
+ * Every key has one: the version is part of the digested string, so even a
+ * key whose canonical form did not change digests differently under each
+ * version.
+ */
+export function supersededProjectKeys(projectKey: string): string[] {
+  const current = hashProjectKey(projectKey);
+  const digests: string[] = [];
+  for (const { version, foldsForgePathCase } of EARLIER_PROJECT_KEY_DIGESTS) {
+    const digest = digestUnder(version, projectKey, foldsForgePathCase);
+    if (digest !== current && !digests.includes(digest)) digests.push(digest);
+  }
+  return digests.slice(0, SUPERSEDED_PROJECT_KEYS_MAX);
 }
 
 /**

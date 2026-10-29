@@ -13,7 +13,7 @@ import type {
   ProjectSummary,
   TrustLevel,
 } from '@akasecurity/schema';
-import { INVENTORY_LIST_COUNT_CAP } from '@akasecurity/schema';
+import { INVENTORY_LIST_COUNT_CAP, isAttentionTrust } from '@akasecurity/schema';
 import type { BadgeProps } from '@akasecurity/ui-kit';
 
 import { formatDateTime } from '../lib/dateFormat.ts';
@@ -249,7 +249,7 @@ export const rowType = (row: InventoryRow): AssetType => (isProjectRow(row) ? 'p
 export function statusKeys(row: InventoryRow): StatusKey[] {
   if (isProjectRow(row)) return (row.findingsCount ?? 0) > 0 ? ['findings'] : [];
   const keys = new Set<StatusKey>(row.flags);
-  if (row.type === 'mcp' && (row.trust === 'unapproved' || row.trust === 'risky')) {
+  if (row.type === 'mcp' && isAttentionTrust(row.trust)) {
     keys.add(row.trust);
   }
   return STATUS_ORDER.filter((k) => keys.has(k));

@@ -39,40 +39,18 @@ export class RegexMatcher implements Matcher {
     const maxIterations = scanText.length + 1;
     let iterations = 0;
 
-    // The extent of the match last taken, so a sub-match of it can be told from
-    // a new occurrence that merely overlaps it.
-    let takenStart = -1;
-    let takenEnd = -1;
-
     while ((m = re.exec(scanText)) !== null) {
       if (++iterations > maxIterations) break;
-      const end = m.index + m[0].length;
-      // A match wholly inside the one just taken is a shorter reading of it (a
-      // suffix of a quantified run, or the empty string), never a separate
-      // occurrence, so skip it and resume after the outer match. Without this
-      // the loop reports every suffix of every match, and re-scans each run
-      // once per position in it, which costs time quadratic in the run's
-      // length. `takenEnd` can equal `m.index` for a zero-length match, so
-      // resume at least one character on to keep `lastIndex` advancing.
-      if (takenStart >= 0 && m.index >= takenStart && end <= takenEnd) {
-        re.lastIndex = Math.max(takenEnd, m.index + 1);
-        continue;
-      }
       const group = captureGroup != null ? m[captureGroup] : m[0];
+      // A zero-length match (e.g. "\d*" matching "") never advances `lastIndex`
+      // on its own, so a `g`-flag loop that just re-runs `exec` at the same
+      // index hangs forever. Bump it past the empty match before continuing.
+      if (m[0].length === 0) re.lastIndex++;
       if (group && spans.length < MAX_MATCHES_PER_RULE) {
         const groupIndices = captureGroup != null ? m.indices?.[captureGroup] : undefined;
         const start = groupIndices ? groupIndices[0] : m.index;
         spans.push({ start, end: start + group.length });
       }
-      takenStart = m.index;
-      takenEnd = end;
-      // Resume one character past where this match STARTED, not past where it
-      // ended. Letting `g` skip the whole match drops every occurrence that
-      // overlaps one already taken, which makes the reported set depend on the
-      // offset the scan began at: a scan of part of a text then tiles it
-      // differently from a scan of all of it, and an occurrence that a later
-      // match needed in order to anchor can be consumed by an earlier one.
-      re.lastIndex = m.index + 1;
       if (!flags.includes('g') || spans.length >= MAX_MATCHES_PER_RULE) break;
     }
     return spans;

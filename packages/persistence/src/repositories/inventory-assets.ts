@@ -29,9 +29,11 @@ import type {
   Visibility,
 } from '@akasecurity/schema';
 import {
+  ATTENTION_TRUST_LEVELS,
   DetectionCategory,
   HARNESS,
   HarnessId as HarnessIdSchema,
+  isAttentionTrust,
   listMetaOf,
   MCP_TOOLS_USED_WINDOW_DAYS,
   mcpToolsUsed,
@@ -147,6 +149,8 @@ const HARNESS_LABELS: Record<HarnessId, string> = {
 // last_seen is frozen at seed time, so the window would otherwise blank a demo/eval
 // store's harness cards after 30 days while its sample assets still render.
 const HARNESS_LIVENESS_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
+const ATTENTION_TRUST_SQL = ATTENTION_TRUST_LEVELS.map((t) => `'${t}'`).join(', ');
 
 const PROJECT_FINDINGS_WINDOW_MS = PROJECT_FINDINGS_WINDOW_DAYS * 24 * 60 * 60 * 1000;
 const MCP_TOOLS_USED_WINDOW_MS = MCP_TOOLS_USED_WINDOW_DAYS * 24 * 60 * 60 * 1000;
@@ -426,10 +430,20 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
       { liveSince: this.now() - HARNESS_LIVENESS_WINDOW_MS },
     );
 
-    // Attention: assets with ≥1 flag + listed projects with a finding in the window.
+    // Attention: an asset with a flag or an attention-level effective trust,
+    // counted once, plus listed projects with a finding in the window. The two
+    // asset populations are disjoint and counted by separate code: this SQL
+    // reads inventory_asset, which only the sample fixtures write, while the
+    // skills, hooks and MCP servers a config scan finds are counted by the
+    // configRows fold below.
     const flaggedAssets = countScalar(
       this.db,
-      "SELECT count(*) AS n FROM inventory_asset WHERE flags_json <> '[]'",
+      `SELECT count(*) AS n
+         FROM inventory_asset a
+         LEFT JOIN mcp_trust_override o ON o.asset_id = a.id
+        WHERE a.flags_json <> '[]'
+           OR (a.asset_type = 'mcp'
+               AND coalesce(o.trust, a.trust) IN (${ATTENTION_TRUST_SQL}))`,
     );
     const flaggedProjects = countScalar(
       this.db,
@@ -449,7 +463,9 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
       byType[r.assetType] += 1;
       if (r.assetType === 'mcp' && r.effectiveTrust) mcpTrust[r.effectiveTrust] += 1;
     }
-    const flaggedConfig = configRows.filter((r) => r.flagsJson !== '[]').length;
+    const flaggedConfig = configRows.filter(
+      (r) => r.flagsJson !== '[]' || (r.assetType === 'mcp' && isAttentionTrust(r.effectiveTrust)),
+    ).length;
 
     return Promise.resolve({
       attention: flaggedAssets + flaggedProjects + flaggedConfig,

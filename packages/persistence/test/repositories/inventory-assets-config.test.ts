@@ -466,6 +466,22 @@ describe('Inventory page surfaces real scanned MCP servers', () => {
     expect(stats.mcpTrust).toEqual({ 'known-good': 0, risky: 0, unapproved: 2 });
   });
 
+  it('counts a projected MCP server below known-good toward attention, and drops it on a known-good override', async () => {
+    seedRealHarness();
+    const before = (await db.inventoryAssets.getInventoryStats()).attention;
+
+    db.recordConfigScan(record(mcpScan(), 'scan-1'));
+    // Both servers default to unapproved and neither carries a flag, so the
+    // trust is the only thing putting them on the list.
+    expect((await db.inventoryAssets.getInventoryStats()).attention).toBe(before + 2);
+
+    const { groups } = await db.inventoryAssets.listAssets({ type: ['mcp'] });
+    const github = groups[0]?.items.find((i) => i.name === 'github')?.id ?? '';
+    expect(db.inventoryAssets.setMcpTrust(github, 'known-good')).toBe('ok');
+
+    expect((await db.inventoryAssets.getInventoryStats()).attention).toBe(before + 1);
+  });
+
   it('counts the distinct tools called through each server over the last 30 days, and none for an unused one', async () => {
     seedRealHarness();
     db.recordConfigScan(record(mcpScan(), 'scan-1'));

@@ -4,6 +4,9 @@ Replays the chain from Forever Security's write-up
 [Markdown Is the New Executable: Attackers Are Dropping Agent Instructions Into Your Downloads Folder From the Web](https://forever.security/blog/hijacking-ai-agents-via-downloads-folder/)
 (published 2026-10-22) as tool calls, and shows what the Claude Code plugin does with each.
 
+- Research: _Markdown Is the New Executable: Attackers Are Dropping Agent Instructions Into Your Downloads Folder From the Web_, Forever Security, 2026-10-22
+- Last run: 2026-10-29, ai-tc 0.9.21 (4424e848), 7 of 7 attack calls blocked with agent-harness-tamper on Block, 0 of 5 look-alikes flagged; default install detects and allows all 7
+
 ## The attack
 
 An instructions file planted in a Downloads folder gets a coding agent to add an MCP server launched

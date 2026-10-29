@@ -7,6 +7,10 @@ kind: vulnerability
 goal: block
 policy: agent-harness-tamper pack set to Block (headline); default install asserted as detect only
 tool_version: 0.9.21
+last_run:
+  date: 2026-10-29
+  tool_version: 0.9.21
+  commit: 4424e848
 cases:
   attack: 7
   lookalike: 5

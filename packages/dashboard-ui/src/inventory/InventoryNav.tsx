@@ -61,7 +61,10 @@ export interface InventoryNavProps {
   unavailable?: InventoryNavUnavailable | undefined;
   /**
    * Entries the host adds after the asset types. They are listed under By type
-   * only, and each counts toward the attention summary in either view.
+   * only, and each counts toward the attention summary in either view. Under By
+   * harness the entry's row is gone, so `selected` has nowhere to land:
+   * `aria-current` falls to whichever harness row matches, or to none. A host
+   * showing one of these pages keeps the nav in the By type view.
    */
   links?: readonly InventoryNavLink[] | undefined;
 }

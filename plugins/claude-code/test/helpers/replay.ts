@@ -56,8 +56,6 @@ export interface ReplaySet {
   title: string;
   /** Packs set to Block in strict mode. */
   packs: readonly string[];
-  /** Strict mode sets every bundled pack to Block, not only `packs`. */
-  blockAll?: boolean;
   calls: readonly ReplayCall[];
 }
 
@@ -77,8 +75,7 @@ function seededHome(set: ReplaySet, mode: ReplayMode): string {
   try {
     const packs = bundledDetections();
     db.installedPacks.recordInventory(packs);
-    const blocked = set.blockAll === true ? packs.map((p) => p.packId) : set.packs;
-    for (const packId of blocked) {
+    for (const packId of set.packs) {
       const pack = packs.find((p) => p.packId === packId);
       if (pack === undefined) throw new Error(`bundled pack ${packId} is missing`);
       db.installedPacks.setPolicy(pack.namespace, pack.packId, 'block');

@@ -1,7 +1,7 @@
 /**
  * Replays the steganographic-signature chains (eval/2026-10-29-arxiv-2610.31974-stego-mcp-injection/cases.json)
  * through the BUILT PostToolUse and PreToolUse hooks on a default install and with
- * every bundled pack on Block, and writes the table to that folder's
+ * the agent-harness-tamper pack on Block, and writes the table to that folder's
  * results/results.md. Run it on its own with `pnpm eval:replay:stego`.
  */
 import { readFileSync } from 'node:fs';
@@ -14,6 +14,7 @@ import {
   allRules,
   evalDir,
   loadReplaySet,
+  packRules,
   renderResults,
   type ReplayMode,
   type ReplayOutcome,
@@ -44,22 +45,28 @@ describe('Steganographic-signature attack chains (arXiv 2610.31974) replayed thr
   };
 
   it(
-    'default install: no attack chain is blocked',
+    'default install: every attack chain is detected and logged, none is blocked',
     async () => {
       const outcomes = await outcomesFor('default');
       for (const o of outcomes.filter((x) => x.call.kind === 'attack')) {
         expect(o.verdict, o.call.label).toBe('allowed');
+        expect(packRules(STEGO, o), o.call.label).toEqual(
+          expect.arrayContaining([...(o.call.rules ?? [])]),
+        );
       }
     },
     TIMEOUT_MS,
   );
 
   it(
-    'every pack on Block: every attack chain is blocked',
+    'agent-harness-tamper on Block: every attack chain is blocked',
     async () => {
       const outcomes = await outcomesFor('strict');
       for (const o of outcomes.filter((x) => x.call.kind === 'attack')) {
         expect(o.verdict, o.call.label).toBe('blocked');
+        expect(packRules(STEGO, o), o.call.label).toEqual(
+          expect.arrayContaining([...(o.call.rules ?? [])]),
+        );
       }
     },
     TIMEOUT_MS,

@@ -23,7 +23,7 @@ deployment the customer operates, not one AKA does.)
 - **Runtime:** Node.js 24+ (the CLI and plugin hooks use the built-in `node:sqlite` — no native dependency); `.nvmrc`, CI, and `@types/node` all track the Active LTS line, matching the `engines` floor
 - **Local store:** SQLite via `node:sqlite`, wrapped by `@akasecurity/persistence`; the schema is defined with Drizzle in `@akasecurity/schema`
 - **Validation:** Zod schemas in `@akasecurity/schema` — the single source of truth
-- **Web dashboard:** Next.js 15 + React 19 (Server Components read the store; Server Actions mutate it)
+- **Web dashboard:** Next.js 16 + React 19 (Server Components read the store; Server Actions mutate it)
 - **Testing:** Vitest
 - **Packaging:** the `aka` CLI and the Claude Code / Codex CLI / Antigravity plugins, published to npm as self-contained bundles
 

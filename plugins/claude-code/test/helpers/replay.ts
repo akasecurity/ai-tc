@@ -33,7 +33,12 @@ export interface ReplayCall {
   label: string;
   /** `attack` calls must be caught; `lookalike` calls must stay silent. */
   kind: 'attack' | 'lookalike';
-  tool: 'Bash' | 'Write' | 'Edit';
+  tool: string;
+  /**
+   * Text an earlier tool returned into the session, replayed through the
+   * PostToolUse hook in the same home before this call runs.
+   */
+  decoded?: { tool: string; input?: Record<string, unknown>; text: string };
   /** The tool input; `{home}` in a string stands for the call's own empty home. */
   input: Record<string, unknown>;
   cwd?: string;
@@ -51,12 +56,16 @@ export interface ReplaySet {
   title: string;
   /** Packs set to Block in strict mode. */
   packs: readonly string[];
+  /** Strict mode sets every bundled pack to Block, not only `packs`. */
+  blockAll?: boolean;
   calls: readonly ReplayCall[];
 }
 
 export interface ReplayOutcome {
   call: ReplayCall;
   verdict: Verdict;
+  /** What PostToolUse did with the `decoded` text, when the call has one. */
+  decodeVerdict?: Verdict;
   /** Every finding recorded for the call: rule id and the action taken. */
   findings: { ruleId: string; action: string }[];
 }
@@ -68,7 +77,8 @@ function seededHome(set: ReplaySet, mode: ReplayMode): string {
   try {
     const packs = bundledDetections();
     db.installedPacks.recordInventory(packs);
-    for (const packId of set.packs) {
+    const blocked = set.blockAll === true ? packs.map((p) => p.packId) : set.packs;
+    for (const packId of blocked) {
       const pack = packs.find((p) => p.packId === packId);
       if (pack === undefined) throw new Error(`bundled pack ${packId} is missing`);
       db.installedPacks.setPolicy(pack.namespace, pack.packId, 'block');
@@ -98,6 +108,24 @@ async function replayCall(
 ): Promise<ReplayOutcome> {
   const home = seededHome(set, mode);
   try {
+    let decodeVerdict: Verdict | undefined;
+    if (call.decoded !== undefined) {
+      const post = await runHookAsync(
+        'post-tool-use',
+        JSON.stringify({
+          session_id: `replay-${set.id}-${mode}`,
+          cwd: call.cwd ?? home,
+          hook_event_name: 'PostToolUse',
+          tool_name: call.decoded.tool,
+          tool_input: call.decoded.input ?? {},
+          tool_response: [{ type: 'text', text: call.decoded.text }],
+        }),
+        { env: tempHomeEnv(home), timeoutMs: HOOK_TIMEOUT_MS },
+      );
+      if (post.status !== 0)
+        throw new Error(`post-tool-use exited ${String(post.status)} for ${call.label}`);
+      decodeVerdict = post.stdout === '' ? 'allowed' : 'warned';
+    }
     const run = await runHookAsync(
       'pre-tool-use',
       JSON.stringify({
@@ -122,7 +150,7 @@ async function replayCall(
     try {
       const views = await db.findings.recentFindings({ limit: 100 });
       const findings = views.map((v) => ({ ruleId: v.ruleId, action: v.actionTaken }));
-      return { call, verdict, findings };
+      return { call, verdict, decodeVerdict, findings };
     } finally {
       db.close();
     }
@@ -185,9 +213,9 @@ export function renderResults(
   return [
     `# ${set.title}`,
     '',
-    `Plugin build: ${pluginVersion}. Policies: **default** is a fresh install; **strict** sets ${set.packs
-      .map((p) => `\`${p}\``)
-      .join(', ')} to block.`,
+    `Plugin build: ${pluginVersion}. Policies: **default** is a fresh install; **strict** sets ${
+      set.blockAll === true ? 'every bundled pack' : set.packs.map((p) => `\`${p}\``).join(', ')
+    } to block.`,
     '',
     '| kind | call | default | strict |',
     '| --- | --- | --- | --- |',

@@ -30,7 +30,8 @@
     "typecheck": "tsc --noEmit",
     "prepack": "pnpm run build",
     "test:mod-runtime": "node test/mod-runtime/prepare.mjs && claude plugin test test/mod-runtime",
-    "eval:replay": "vitest run --coverage.enabled=false test/e2e/replay-"
+    "eval:replay": "vitest run --coverage.enabled=false test/e2e/replay-",
+    "eval:replay:stego": "vitest run --coverage.enabled=false test/e2e/replay-stego.e2e.test.ts"
   },
   "devDependencies": {
     "@akasecurity/detections": "workspace:*",

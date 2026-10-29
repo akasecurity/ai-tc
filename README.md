@@ -68,7 +68,11 @@ In Claude Code:
 /plugin install ai-tc@akasecurity
 ```
 
-Claude Desktop: **Settings → Plugins → Add marketplace**, enter `akasecurity/marketplace`, then install **aka**. The standalone `aka` CLI (dashboard, local store, `aka scan`): `brew install akasecurity/tap/aka`.
+Claude Desktop: **Settings → Plugins → Add marketplace**, enter `akasecurity/marketplace`, then install **aka**. The standalone `aka` CLI (dashboard, local store, `aka scan`) installs with Homebrew:
+
+```bash
+brew install akasecurity/tap/aka
+```
 
 <details>
 <summary><b>All install options</b>: Scoop, the bootstrap installer, archives, checksums</summary>
@@ -171,8 +175,10 @@ Those two warn defaults apply only when a pack is first installed. Upgrading an 
 
 </details>
 
+## Where your data lives
+
 <details>
-<summary><b>Where your data lives</b>: one local SQLite file, and what an attached machine sends</summary>
+<summary><b>One local SQLite file</b>, and what an attached machine sends</summary>
 
 `ai-tc` keeps what it records in a local SQLite store at `~/.aka/data/aka.db`, with your settings beside it under `~/.aka/settings`. There is no database server to run and no schema to manage — the CLI, the plugin, and the dashboard all read and write that one file.
 

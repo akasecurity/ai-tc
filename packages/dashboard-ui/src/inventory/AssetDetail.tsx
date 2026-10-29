@@ -2,7 +2,8 @@
 
 // Right pane for one skill / MCP server / hook / config file: status, description,
 // the type's own detail fields, the MCP trust classifier and exposed tools, and
-// per-type actions. The per-type action buttons are visual affordances only.
+// per-type actions. Without a host `actions` node, the per-type action buttons are
+// visual affordances only.
 import type {
   AssetDetail as AssetDetailShape,
   AssetType,
@@ -13,7 +14,7 @@ import type {
 import { Button, cn } from '@akasecurity/ui-kit';
 import { type ReactNode, useId, useState } from 'react';
 
-import { BackButton, FlagChips, RadioCardList, Section, TrustPill } from './chips.tsx';
+import { BackButton, FlagChips, Section, TrustChoice, TrustPill } from './chips.tsx';
 import {
   assetTile,
   endpointsText,
@@ -21,8 +22,6 @@ import {
   fmtDateTime,
   inlineLabel,
   metaText,
-  TRUST,
-  TRUST_ORDER,
   typeMeta,
 } from './data.ts';
 import { Ico } from './Ico.tsx';
@@ -117,9 +116,11 @@ export function AssetDetail({
   backLabel,
   locale,
   trustRefusal,
+  actions,
 }: {
   asset: AssetDetailShape;
-  onTrust: (v: TrustLevel) => void;
+  /** Without it the trust picker is not drawn. */
+  onTrust?: ((v: TrustLevel) => void) | undefined;
   /** Returns to the table this asset was opened from. */
   onBack: () => void;
   /** What the back button returns to, e.g. "Claude Code" or "Skills". */
@@ -132,6 +133,9 @@ export function AssetDetail({
    * never called. Only an MCP asset has a trust picker.
    */
   trustRefusal?: string | undefined;
+  /** The host's actions for this asset, drawn after the details in place of the
+   * per-type action buttons. */
+  actions?: ReactNode;
 }) {
   const isMcp = asset.type === 'mcp';
   const trust = asset.trust; // null for non-MCP assets
@@ -139,6 +143,8 @@ export function AssetDetail({
   const trustReasonId = useId();
   const command = asset.type === 'hook' ? metaText(asset.meta, 'command') : null;
   const fields = detailFields(asset, locale);
+  // null, false and undefined all mean nothing to draw, so the per-type buttons stay.
+  const hostActions = actions ?? false;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -197,20 +203,19 @@ export function AssetDetail({
           <VersionsSection asset={asset} variants={asset.seenOn} />
         )}
 
-        {isMcp && trust && (
+        {isMcp && trust && onTrust && (
           <Section label="Trust classification">
-            <RadioCardList
-              order={TRUST_ORDER}
-              meta={TRUST}
+            <TrustChoice
               value={trust}
               onChange={onTrust}
-              accentOf={(t) => t.iconBg}
               refusal={
                 trustRefusal === undefined ? undefined : { id: trustReasonId, reason: trustRefusal }
               }
             />
           </Section>
         )}
+
+        {hostActions}
 
         {asset.finding && (
           <Section label="Related finding">
@@ -230,7 +235,9 @@ export function AssetDetail({
           <ToolsSection tools={asset.tools} blocked={trust === 'unapproved'} />
         )}
 
-        <div className="flex flex-wrap gap-2">{actionsFor(asset, trust)}</div>
+        {hostActions === false && (
+          <div className="flex flex-wrap gap-2">{actionsFor(asset, trust)}</div>
+        )}
       </div>
     </div>
   );

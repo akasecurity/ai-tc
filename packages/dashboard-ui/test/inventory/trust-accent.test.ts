@@ -19,8 +19,8 @@ describe('the consumers still read the field these assertions are about', () => 
   const read = (rel: string) =>
     readFileSync(fileURLToPath(new URL(`../../src/inventory/${rel}`, import.meta.url)), 'utf8');
 
-  it('AssetDetail feeds the check circle from .iconBg', () => {
-    expect(read('AssetDetail.tsx')).toMatch(/accentOf=\{\(t\) => t\.iconBg\}/);
+  it('TrustChoice feeds the check circle from .iconBg', () => {
+    expect(read('chips.tsx')).toMatch(/accentOf=\{\(t\) => t\.iconBg\}/);
   });
 
   it('the check circle still renders its glyph in text-on-accent', () => {

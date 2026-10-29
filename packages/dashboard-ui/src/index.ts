@@ -209,11 +209,15 @@ export { PolicyDetailView, PolicyListView, PolicyStatsView } from './policies/Po
 // left nav of harnesses or asset types, a table per harness or type, and a
 // details page per project or asset. The apps supply the data and own the
 // selection. Icon identity is data-driven via the local Ico registry
-// (./inventory/icons.ts). Only the views, EmptyState, the data-driven <Ico>, the
-// selection model and the row helpers a host needs are public; the descriptors,
-// chips and icon registry stay module-internal.
+// (./inventory/icons.ts). Only the views, EmptyState, the trust picker, the
+// data-driven <Ico>, the selection model and the row helpers a host needs are
+// public; the descriptors, other chips and icon registry stay module-internal.
 export { AssetDetail } from './inventory/AssetDetail.tsx';
-export { EmptyState, DetailFallback as InventoryDetailFallback } from './inventory/chips.tsx';
+export {
+  EmptyState,
+  DetailFallback as InventoryDetailFallback,
+  TrustChoice,
+} from './inventory/chips.tsx';
 export {
   DEFAULT_SELECTION as DEFAULT_INVENTORY_SELECTION,
   type InventoryItem,

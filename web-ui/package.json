@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --webpack",
     "build:worker": "tsup",
-    "build": "next build",
+    "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint app middleware.ts test *.config.*",
     "test": "vitest run",

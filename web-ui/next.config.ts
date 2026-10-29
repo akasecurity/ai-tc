@@ -56,6 +56,8 @@ const nextConfig: NextConfig = {
       allowedOrigins: ['localhost:4319', '127.0.0.1:4319', '[::1]:4319'],
     },
   },
+  // Lint is run by the monorepo's own eslint (pnpm lint), not by `next build`.
+  eslint: { ignoreDuringBuilds: true },
 };
 
 export default nextConfig;

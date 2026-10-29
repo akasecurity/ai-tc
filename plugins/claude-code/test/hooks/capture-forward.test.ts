@@ -88,6 +88,12 @@ describe('postToolUseForward', () => {
     expect(postToolUseForward(dataDir, 's1', undefined)).toBeUndefined();
   });
 
+  it('marks a repository the settings name even while the mod runs, since only this hook knows the file', () => {
+    settings({ toolOutput: { maxChars: 50, repos: ['github.com/acme/app'] } });
+    modRunning('s1');
+    expect(postToolUseForward(dataDir, 's1', 'github.com/acme/app')).toEqual({ maxChars: 50 });
+  });
+
   it('marks only a repository the settings name', () => {
     settings({ toolOutput: { maxChars: 50, repos: ['github.com/acme/app'] } });
     expect(postToolUseForward(dataDir, 's1', 'github.com/acme/app')).toEqual({ maxChars: 50 });
@@ -140,6 +146,14 @@ describe('the session hold', () => {
         },
       },
     ]);
+
+    for (const toolInput of [undefined, 'ls', ['ls']]) {
+      emitted.length = 0;
+      expect(await runPreToolUse({ ...input, tool_input: toolInput }, emit, { mode: 'hook' })).toBe(
+        'finished',
+      );
+      expect(JSON.stringify(emitted), String(toolInput)).toContain(SESSION_HELD_REASON);
+    }
 
     emitted.length = 0;
     await runPreToolUse(input, emit, { mode: 'mod' });

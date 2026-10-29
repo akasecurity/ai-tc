@@ -9,16 +9,19 @@ import type { PreToolUseDenyOutput } from './model-guard.ts';
 
 /**
  * The forward mark PostToolUse sets on tool output keyed `repoKey`
- * (`toolOutputForwardFor`), unless this session's mod is running, since the
- * mod marks tool output at its own tool-result door. Undefined sets no mark.
+ * (`toolOutputForwardFor`). Without a repository list it defers to this
+ * session's running mod, which marks tool output at its own tool-result door;
+ * with one it always marks, since only this hook knows the file the tool
+ * touched. Undefined sets no mark.
  */
 export function postToolUseForward(
   dataDir: string,
   sessionId: string | undefined,
   repoKey: string | undefined,
 ): { maxChars: number } | undefined {
-  const forward = toolOutputForwardFor(readHookCaptureSettings(dataDir), repoKey);
-  if (forward === undefined) return undefined;
+  const settings = readHookCaptureSettings(dataDir);
+  const forward = toolOutputForwardFor(settings, repoKey);
+  if (forward === undefined || settings.toolOutput?.repos !== undefined) return forward;
   return promptRedactionMode(dataDir, sessionId) === 'in-place' ? undefined : forward;
 }
 

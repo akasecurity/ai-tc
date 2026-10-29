@@ -13,6 +13,7 @@ import {
   POLICY_BUNDLE_SHAPE_ID,
   PolicyBundle,
   TOOL_OUTPUT_FORWARD_MAX_CHARS,
+  TOOL_OUTPUT_FORWARD_MIN_CHARS,
 } from '../../src/zod/policy.ts';
 
 const bundle = {
@@ -39,6 +40,14 @@ describe('CaptureSettings', () => {
 
   it('bounds the tool output cap', () => {
     expect(CaptureSettings.safeParse({ toolOutput: { maxChars: 0 } }).success).toBe(false);
+    expect(
+      CaptureSettings.safeParse({ toolOutput: { maxChars: TOOL_OUTPUT_FORWARD_MIN_CHARS - 1 } })
+        .success,
+    ).toBe(false);
+    expect(
+      CaptureSettings.safeParse({ toolOutput: { maxChars: TOOL_OUTPUT_FORWARD_MIN_CHARS } })
+        .success,
+    ).toBe(true);
     expect(
       CaptureSettings.safeParse({ toolOutput: { maxChars: TOOL_OUTPUT_FORWARD_MAX_CHARS + 1 } })
         .success,

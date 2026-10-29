@@ -92,6 +92,18 @@ test('hands nothing over without the settings file', async ($, on) => {
   expect(asked).toHaveLength(0);
 });
 
+test('hands nothing over when the settings name repositories', async ($, on) => {
+  const asked = world(
+    on,
+    JSON.stringify({ v: 1, toolOutput: { maxChars: 5, repos: ['github.com/acme/app'] } }),
+  );
+
+  await $.session.append(resultRow('abcdefghij'));
+  await settle(asked, 1);
+
+  expect(asked).toHaveLength(0);
+});
+
 test('hands nothing over when the settings name no tool output', async ($, on) => {
   const asked = world(on, JSON.stringify({ v: 1, sessionHold: true }));
 

@@ -439,6 +439,8 @@ async function backstopRow(
 // backstop's rewrite), cut to the cap, to be recorded so it is forwarded. Nothing
 // awaits it, so the row is never held. While this mod runs, PostToolUse leaves
 // tool output to it; the reader of that is packages/plugin-sdk/src/mod-host-mode.ts.
+// A setting that names repositories is PostToolUse's alone: it keys the output by
+// the file the tool touched, which a row does not carry.
 
 const MAX_CAPTURE_SETTINGS_BYTES = 64 * 1024;
 
@@ -450,17 +452,20 @@ function captureSettingsPath(home: string): string {
   return [root, '.aka', 'data', 'attached-capture.json'].join(sep);
 }
 
-// The forwarding cap the settings file names, or null when it names none.
+// The forwarding cap the settings file names, or null when it names none or names
+// repositories. The bounds are TOOL_OUTPUT_FORWARD_MIN_CHARS and
+// TOOL_OUTPUT_FORWARD_MAX_CHARS in packages/schema/src/zod/policy.ts.
 function parseToolOutputCap(text: string): number | null {
   try {
     const raw: unknown = JSON.parse(text);
     if (typeof raw !== 'object' || raw === null) return null;
     const { v, toolOutput } = raw as { v?: unknown; toolOutput?: unknown };
     if (v !== 1 || typeof toolOutput !== 'object' || toolOutput === null) return null;
-    const { maxChars } = toolOutput as { maxChars?: unknown };
+    const { maxChars, repos } = toolOutput as { maxChars?: unknown; repos?: unknown };
+    if (repos !== undefined) return null;
     return typeof maxChars === 'number' &&
       Number.isInteger(maxChars) &&
-      maxChars >= 1 &&
+      maxChars >= 2 &&
       maxChars <= 65_536
       ? maxChars
       : null;
@@ -1241,6 +1246,8 @@ export const register: Register = (on) => {
 
   on('tool.call', async ($, e, next) => {
     void refreshStatus($);
+    // Renewed before the tool runs, so PostToolUse for this call sees the mod running.
+    void noteModRunning($);
     const input = toolArguments(e);
     const needsHelper = toolCallNeedsHelper(e.tool, input, await loadPolicy($));
     if (!needsHelper) return next(e);

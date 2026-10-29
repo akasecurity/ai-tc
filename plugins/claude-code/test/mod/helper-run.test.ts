@@ -121,6 +121,16 @@ describe('runModTokenize — a tool result handed over to be forwarded', () => {
     expect(responseRows()).toEqual([]);
   });
 
+  it('records nothing when the settings name repositories, which PostToolUse keys by file', async () => {
+    seed('redact', { vault: false });
+    captureSettings({ toolOutput: { maxChars: 100, repos: ['github.com/acme/app'] } });
+    expect(await forwardRow('a clean tool result', { maxChars: 100 })).toEqual({
+      code: 1,
+      stdout: '',
+    });
+    expect(responseRows()).toEqual([]);
+  });
+
   it('takes a malformed mark as an ordinary row', async () => {
     seed('redact', { vault: false });
     captureSettings({ toolOutput: { maxChars: 100 } });

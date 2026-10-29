@@ -74,7 +74,7 @@ function forwardOf(
   const forward = row.forward;
   if (typeof forward !== 'object' || forward === null) return undefined;
   const { maxChars, length } = forward as { maxChars?: unknown; length?: unknown };
-  if (typeof maxChars !== 'number' || !Number.isInteger(maxChars) || maxChars < 1) return undefined;
+  if (typeof maxChars !== 'number' || !Number.isInteger(maxChars) || maxChars < 2) return undefined;
   return {
     maxChars,
     ...(typeof length === 'number' && Number.isInteger(length) && length > maxChars
@@ -100,7 +100,10 @@ async function forwardToolResult(
   };
   const config = loadConfig();
   const repoKey = captureScopeKey(hookInput);
-  const allowed = toolOutputForwardFor(readHookCaptureSettings(config.dataDir), repoKey);
+  const settings = readHookCaptureSettings(config.dataDir);
+  // A setting that names repositories is PostToolUse's, which keys by the tool's file.
+  if (settings.toolOutput?.repos !== undefined) return { code: 1, stdout: '' };
+  const allowed = toolOutputForwardFor(settings, repoKey);
   if (allowed === undefined) return { code: 1, stdout: '' };
   const opened = openGateway(config);
   if (opened.gateway === null) return { code: 1, stdout: '' };

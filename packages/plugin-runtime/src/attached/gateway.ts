@@ -650,8 +650,11 @@ export class AttachedDataGateway
   /**
    * `event` carrying the record's review candidates, when the organization's
    * capture settings name the capture's repository; otherwise `event` itself.
-   * Only this live send can carry them: the stored row never holds them, so a
-   * drained resend never does. TOTAL: a fault sends the event without them.
+   * Each is a finding's raw value whatever its policy, redact and block
+   * included, so for a named repository a value the encoder masked in `content`
+   * still crosses here (SECURITY.md, "Data in transit"). Only this live send
+   * can carry them: the stored row never holds them, so a drained resend never
+   * does. TOTAL: a fault sends the event without them.
    */
   private async withReviewValues(event: IngestEvent, record: CaptureRecord): Promise<IngestEvent> {
     try {
@@ -701,7 +704,8 @@ export class AttachedDataGateway
     // never the slug.
     const wireEvent = this.captureForWire(record);
     if (wireEvent === undefined) return;
-    // Secrets leave only as sighting tokens. A capture that cannot be encoded
+    // Secrets in the content leave only as sighting tokens; review values below
+    // are the one field that carries them raw. A capture that cannot be encoded
     // is held owed rather than sent, without touching the forward breaker.
     const encodedEvent = await this.encodeForWire(wireEvent);
     if (encodedEvent === undefined) {

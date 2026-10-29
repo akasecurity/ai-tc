@@ -122,6 +122,12 @@ export const ModelPolicy = z
   .meta({ id: 'ModelPolicy' });
 export type ModelPolicy = z.infer<typeof ModelPolicy>;
 
+/**
+ * The smallest tool output cap: two UTF-16 code units always hold a whole first
+ * character, so a cut that steps back off a surrogate pair is never empty.
+ */
+export const TOOL_OUTPUT_FORWARD_MIN_CHARS = 2;
+
 /** The largest tool output, in UTF-16 code units, one forwarded capture may carry. */
 export const TOOL_OUTPUT_FORWARD_MAX_CHARS = 65_536;
 
@@ -145,7 +151,11 @@ export const CaptureSettings = z
   .object({
     toolOutput: z
       .object({
-        maxChars: z.number().int().min(1).max(TOOL_OUTPUT_FORWARD_MAX_CHARS),
+        maxChars: z
+          .number()
+          .int()
+          .min(TOOL_OUTPUT_FORWARD_MIN_CHARS)
+          .max(TOOL_OUTPUT_FORWARD_MAX_CHARS),
         repos: CaptureRepos.optional(),
       })
       .optional(),

@@ -1,4 +1,8 @@
-import { REVIEW_VALUE_MAX_CHARS, REVIEW_VALUES_MAX } from '@akasecurity/schema';
+import {
+  REVIEW_VALUE_MAX_CHARS,
+  REVIEW_VALUES_MAX,
+  TOOL_OUTPUT_FORWARD_MIN_CHARS,
+} from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { cutForForward, reviewCandidatesOf } from '../src/forward-cut.ts';
@@ -17,6 +21,14 @@ describe('cutForForward', () => {
     const text = 'ab\u{1F600}cd';
     expect(cutForForward(text, 3)).toEqual({ content: 'ab', truncatedFrom: text.length });
     expect(cutForForward(text, 4)).toEqual({ content: 'ab\u{1F600}', truncatedFrom: text.length });
+  });
+
+  it('keeps a whole first character at the smallest cap the settings allow', () => {
+    const text = '\u{1F600}abc';
+    expect(cutForForward(text, TOOL_OUTPUT_FORWARD_MIN_CHARS)).toEqual({
+      content: '\u{1F600}',
+      truncatedFrom: text.length,
+    });
   });
 });
 

@@ -95,18 +95,9 @@ export async function runPreToolUse(
   options: PreToolUseRunOptions,
 ): Promise<PreToolUseRun> {
   const toolName = getString(input, 'tool_name') ?? '';
-  const rawToolInput = input.tool_input;
-  if (typeof rawToolInput !== 'object' || rawToolInput === null) return 'nothing-to-scan';
-
-  const toolInput = rawToolInput as Record<string, unknown>;
   const sessionId = getString(input, 'session_id');
-  // Read at most once per hook, and only if something below actually needs it —
-  // the matcher is broad enough to spawn this hook for tool calls that reach
-  // neither the spawn seam nor the scan, and those must still cost nothing.
-  let configMemo: PluginConfig | undefined;
-  const loadConfigOnce = (): PluginConfig => (configMemo ??= loadConfig());
 
-  // A session the deployment holds refuses every tool call, scannable or not.
+  // A session the deployment holds refuses every tool call, whatever its input.
   // The mod's helper leaves it to the hook, which runs after it.
   if (options.mode === 'hook') {
     const held = await sessionHoldDenial(dataDir(), sessionId);
@@ -115,6 +106,16 @@ export async function runPreToolUse(
       return 'finished';
     }
   }
+
+  const rawToolInput = input.tool_input;
+  if (typeof rawToolInput !== 'object' || rawToolInput === null) return 'nothing-to-scan';
+
+  const toolInput = rawToolInput as Record<string, unknown>;
+  // Read at most once per hook, and only if something below actually needs it —
+  // the matcher is broad enough to spawn this hook for tool calls that reach
+  // neither the spawn seam nor the scan, and those must still cost nothing.
+  let configMemo: PluginConfig | undefined;
+  const loadConfigOnce = (): PluginConfig => (configMemo ??= loadConfig());
 
   // PROHIBITED-MODEL GOVERNANCE for a subagent spawn, ahead of BOTH the scan
   // and the early return below.

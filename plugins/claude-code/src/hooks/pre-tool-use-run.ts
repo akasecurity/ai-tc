@@ -31,6 +31,11 @@ import { isAuthorizedValue, takeToolHandoff } from '../mod/handoff.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote, userDisclosure } from '../protocol/notes.ts';
 import { resolveHookAccount, stampFor } from './account-stamp.ts';
+import {
+  isOutboundCall,
+  MCP_OUTPUT_SESSION_MARKER,
+  mcpOutputSessionField,
+} from './decoded-content.ts';
 import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
 import { handleSubagentSpawn } from './model-guard.ts';
 import { replaceAtPath } from './paths.ts';
@@ -62,6 +67,7 @@ import { baseMetadata, captureScopeKey, getString } from './shared.ts';
 import { captureStamped } from './stamped-capture.ts';
 import {
   claimStoreUnavailableWarning,
+  isSessionMarked,
   openGateway,
   openGatewayOrNull,
   storeDegradedMessage,
@@ -153,6 +159,10 @@ export async function runPreToolUse(
   const fields = [
     ...scannableInputFields(toolName, toolInput),
     ...protectedFieldsOf(toolName, toolInput, getString(input, 'cwd'), loadConfigOnce),
+    ...(isOutboundCall(toolName, toolInput) &&
+    isSessionMarked(loadConfigOnce().dataDir, MCP_OUTPUT_SESSION_MARKER, sessionId)
+      ? [mcpOutputSessionField(toolName)]
+      : []),
   ];
   if (fields.length === 0) return 'nothing-to-scan';
 

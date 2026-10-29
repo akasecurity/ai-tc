@@ -1,0 +1,19 @@
+{
+  "specVersion": 1,
+  "id": "agent-harness-tamper/tool-output-outbound-call",
+  "name": "Outbound call in a session where an MCP tool returned text",
+  "category": "custom",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "^aka-session-state: mcp-output-in-session; outbound tool (?:mcp|Bash)$",
+    "flags": ""
+  },
+  "examples": [
+    "aka-session-state: mcp-output-in-session; outbound tool mcp",
+    "aka-session-state: mcp-output-in-session; outbound tool Bash"
+  ],
+  "appliesTo": {
+    "eventKinds": ["tool_use"]
+  }
+}

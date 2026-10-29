@@ -1,0 +1,32 @@
+[
+  {
+    "label": "send, export or write by an MCP tool after MCP output",
+    "text": "aka-session-state: mcp-output-in-session; outbound tool mcp",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "a Bash network command after MCP output",
+    "text": "aka-session-state: mcp-output-in-session; outbound tool Bash",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "the state line quoted inside a command",
+    "text": "echo aka-session-state: mcp-output-in-session; outbound tool mcp",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "an ordinary mail payload",
+    "text": "{\"to\":\"colleague\",\"subject\":\"Intro\"}",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "a tool other than Bash or an MCP tool",
+    "text": "aka-session-state: mcp-output-in-session; outbound tool Read",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  }
+]

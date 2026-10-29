@@ -14,7 +14,7 @@
 
 <p align="center"><b>Every event in an agent session runs through one control point before it takes effect.</b></p>
 
-<p align="center">Prompts, tool calls, responses and file reads, scanned against your rule packs on your machine.<br>Open source, by <a href="https://akasecurity.io">AKA Security</a>.</p>
+<p align="center">Prompts, tool calls, responses and file reads, scanned against your rule packs on your machine.<br>Open source, by <a href="https://akasecurity.io">AKA Security</a>. We secure agent harnesses at the source.</p>
 
 <p align="center">
   <img alt="Open source" src="https://img.shields.io/badge/Open_source-232F3E?style=flat-square">
@@ -57,7 +57,7 @@
 </tr>
 </table>
 
-Promote any detection from monitor to warn, redact, or block from the dashboard, per rule or per category. Everything is logged to one local SQLite file, `~/.aka/data/aka.db`; live detection and enforcement never send your data to a model or a third party.[^egress]
+Promote any detection from monitor to warn, redact, or block from the dashboard, per rule or per category. Everything is logged to one local SQLite file, `~/.aka/data/aka.db`; live detection and enforcement never send your data to a model or a third party. The one exception is the opt-in `/aka:setup` calibration, which does send what its history scan finds to the model API to be rated.[^egress]
 
 ## Install
 

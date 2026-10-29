@@ -8,6 +8,7 @@ import {
   AssetSummary,
   AssetType,
   AssetVariant,
+  ATTENTION_TRUST_LEVELS,
   ConnectProjectBody,
   FileDetail,
   FileSummary,
@@ -22,6 +23,7 @@ import {
   HarnessId,
   HarnessSummary,
   InventoryStats,
+  isAttentionTrust,
   ListAssetsQuery,
   ListAssetsResponse,
   ListHarnessesResponse,
@@ -627,6 +629,23 @@ describe('ListProjectsResponse', () => {
 
   it('accepts empty items array', () => {
     expect(ListProjectsResponse.safeParse({ items: [] }).success).toBe(true);
+  });
+});
+
+// ─── Attention trust ──────────────────────────────────────────────────────────
+
+describe('isAttentionTrust', () => {
+  it('holds for every ATTENTION_TRUST_LEVELS member and for nothing else', () => {
+    for (const trust of ATTENTION_TRUST_LEVELS) expect(isAttentionTrust(trust)).toBe(true);
+    expect(isAttentionTrust('known-good')).toBe(false);
+    expect(isAttentionTrust(undefined)).toBe(false);
+    expect(isAttentionTrust(null)).toBe(false);
+  });
+
+  it('lists every trust level except known-good, worst first', () => {
+    expect(ATTENTION_TRUST_LEVELS).toEqual(
+      TrustLevel.options.filter((t) => t !== 'known-good').reverse(),
+    );
   });
 });
 

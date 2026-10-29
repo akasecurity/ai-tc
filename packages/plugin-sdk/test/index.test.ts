@@ -180,6 +180,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'isVendoredPath',
   'loadConfig',
   'loadOrCreateFingerprintKey',
+  'lowerFabricatedBlock',
   'manifestKindOf',
   'maskContextSlice',
   'maskMatch',

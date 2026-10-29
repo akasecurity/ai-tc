@@ -98,12 +98,18 @@ const PULLED_KEYWORD: Rule = {
 // A real compiled-in rule and text it matches, taken from the packs themselves
 // rather than restated here — this is the control for "the rules with a bound
 // behind them keep detecting", so it has to be one the guard actually treats as
-// CI-verified, which is decided by probe key.
+// CI-verified, which is decided by probe key. A file scan carries no event
+// kind, so a rule scoped to event kinds never fires there and cannot serve.
 function bundledControl(): { rule: Rule; text: string } {
   for (const pack of bundledDetections()) {
     for (const rule of pack.rules) {
       const example = rule.examples?.[0];
-      if (rule.matcher.type === 'regex' && example !== undefined && example.length > 0) {
+      if (
+        rule.matcher.type === 'regex' &&
+        rule.appliesTo?.eventKinds === undefined &&
+        example !== undefined &&
+        example.length > 0
+      ) {
         return { rule, text: example };
       }
     }

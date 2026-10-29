@@ -17,6 +17,7 @@ import { openLocalDatabase } from '@akasecurity/persistence';
 import { bundledDetections, shippedRegexMatchers } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ISSUED_TWILIO_SID } from '../../../../test/helpers/issued-secret.ts';
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { runPreToolUse } from '../../src/hooks/pre-tool-use-run.ts';
 import type { HookOutput } from '../../src/hooks/shared.ts';
@@ -24,7 +25,7 @@ import { authorizeValues, recordToolHandoff } from '../../src/mod/handoff.ts';
 
 const RULE_ID = 'secrets/twilio-key';
 const pack = bundledDetections().find((p) => p.rules.some((r) => r.id === RULE_ID));
-const SECRET = pack?.rules.find((r) => r.id === RULE_ID)?.examples?.[0] ?? '';
+const SECRET = ISSUED_TWILIO_SID;
 // Spelled by joining so no pointer-shaped literal sits in the source.
 const POINTER = ['[[aka:secret:', 'AB.', 'C'.repeat(26), '.', 'D'.repeat(16), ']]'].join('');
 

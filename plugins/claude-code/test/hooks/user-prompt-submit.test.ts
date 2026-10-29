@@ -9,6 +9,7 @@ import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { ISSUED_TWILIO_SID } from '../../../../test/helpers/issued-secret.ts';
 import { ONBOARDING_NUDGE } from '../../src/hooks/onboarding-nudge.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { withTempHome } from '../helpers/run-hook.ts';
@@ -121,12 +122,14 @@ describe('user-prompt-submit hook — driven end-to-end', () => {
 });
 
 // The enforcement matrix, driven through the REAL built hook against a seeded
-// throwaway store. The secret value comes from the bundled rule's own
-// `examples` fixture so no secret-shaped literal lives in this file, and the
+// throwaway store. The secret value is an issued-shaped token joined at
+// runtime so no secret-shaped literal lives in this file, and the
 // runHook env carries no PATH — the hook's best-effort clipboard spawn cannot
-// find a utility, so no real clipboard is ever written by this suite. The rule
-// is one whose example matches NO other bundled rule: a value two rules match
-// on overlapping spans degrades one-way by design (no pointer to assert on).
+// find a utility, so no real clipboard is ever written by this suite. The
+// prompt must let NO other bundled rule match the value: a value two rules
+// match on overlapping spans degrades one-way by design (no pointer to assert
+// on), and a high-entropy value after `key:` also fires the generic
+// credential-field rule.
 const RULE_ID = 'secrets/twilio-key';
 function secretFixture(): { pack: ReturnType<typeof bundledDetections>[number]; example: string } {
   const pack = bundledDetections().find((p) => p.rules.some((r) => r.id === RULE_ID));
@@ -136,8 +139,9 @@ function secretFixture(): { pack: ReturnType<typeof bundledDetections>[number]; 
   }
   return { pack, example };
 }
-const { pack: SECRET_PACK, example: SECRET_EXAMPLE } = secretFixture();
-const SECRET_PROMPT = `please deploy using this key: ${SECRET_EXAMPLE}`;
+const { pack: SECRET_PACK } = secretFixture();
+const SECRET_EXAMPLE = ISSUED_TWILIO_SID;
+const SECRET_PROMPT = `please deploy to this account: ${SECRET_EXAMPLE}`;
 
 // Install the bundled packs the way the gateway does on open, then assign the
 // secrets pack the policy under test — per-rule pack policies are what the

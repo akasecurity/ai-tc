@@ -123,6 +123,11 @@ describe('runModTokenize — a tool result handed over to be forwarded', () => {
 
   it('records nothing when the settings name repositories, which PostToolUse keys by file', async () => {
     seed('redact', { vault: false });
+    mkdirSync(join(cwd, '.git'), { recursive: true });
+    writeFileSync(
+      join(cwd, '.git', 'config'),
+      '[remote "origin"]\n\turl = https://github.com/acme/app.git\n',
+    );
     captureSettings({ toolOutput: { maxChars: 100, repos: ['github.com/acme/app'] } });
     expect(await forwardRow('a clean tool result', { maxChars: 100 })).toEqual({
       code: 1,

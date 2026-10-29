@@ -12,8 +12,8 @@ last_run:
   tool_version: 0.9.21
   commit: 4424e848
 cases:
-  attack: 25
-  lookalike: 7
+  attack: 29
+  lookalike: 9
 result:
-  block: not met; 0 of 25 attack chains blocked with agent-harness-tamper on Block, no rule reads MCP output or ties a later call to it; 0 of 7 look-alikes flagged
-  default: 0 of 25 attack chains flagged on a default install; 0 of 7 look-alikes flagged
+  block: not met; 0 of 29 attack chains blocked with agent-harness-tamper on Block, no rule reads MCP output or ties a later call to it; 0 of 9 look-alikes flagged
+  default: 0 of 29 attack chains flagged on a default install; 0 of 9 look-alikes flagged

@@ -12,7 +12,7 @@ import { GROUPS, harnessRows, type InventoryView, needsAttention, typeRows } fro
 import { Ico } from './Ico.tsx';
 import type { IconName } from './icons.ts';
 
-/** An entry after the harnesses or asset types that opens a page of its own. */
+/** An entry the host adds after the asset types, opening a page of its own. */
 export interface InventoryNavLink {
   key: string;
   label: string;
@@ -59,7 +59,10 @@ export interface InventoryNavProps {
    * ("At least N to review"), or "Not available" when none of those needs review.
    */
   unavailable?: InventoryNavUnavailable | undefined;
-  /** Entries the host adds after the list, in either view; each counts toward the attention summary. */
+  /**
+   * Entries the host adds after the asset types. They are listed under By type
+   * only, and each counts toward the attention summary in either view.
+   */
   links?: readonly InventoryNavLink[] | undefined;
 }
 
@@ -103,20 +106,19 @@ export function InventoryNav({
   const totalReason = [
     ...new Set([projectsReason, assetsReason].filter((r) => r !== undefined)),
   ].join('\n');
-  const linkRows = links.map((link) => (
-    <NavRow
-      key={link.key}
-      icon={<TileIcon icon={link.icon} fg={link.fg} bg={link.bg} />}
-      label={link.label}
-      count={link.count}
-      attention={link.attention}
-      selected={link.selected ?? false}
-      onSelect={link.onSelect}
-    />
-  ));
-  const linkList = linkRows.length > 0 && (
+  const linkList = view === 'type' && links.length > 0 && (
     <ul aria-label="Pages" className="mt-0.5 flex flex-col gap-0.5">
-      {linkRows}
+      {links.map((link) => (
+        <NavRow
+          key={link.key}
+          icon={<TileIcon icon={link.icon} fg={link.fg} bg={link.bg} />}
+          label={link.label}
+          count={link.count}
+          attention={link.attention}
+          selected={link.selected ?? false}
+          onSelect={link.onSelect}
+        />
+      ))}
     </ul>
   );
 

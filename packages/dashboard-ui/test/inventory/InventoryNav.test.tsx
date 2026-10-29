@@ -83,6 +83,14 @@ afterEach(() => {
 const entries = (): string[] =>
   [...mounted.host.querySelectorAll('nav li button')].map((b) => b.textContent);
 
+/** The attention summary beside the header label, whichever branch it took. */
+const headerTotal = (): string | null => {
+  const label = [...mounted.host.querySelectorAll('span')].find(
+    (s) => s.textContent === 'All assets',
+  );
+  return label?.nextElementSibling?.textContent ?? null;
+};
+
 /** A refusal reaches both of the lists one `endpoints: view` gate covers. */
 const refused = (reason?: string) =>
   reason === undefined ? undefined : { harnesses: reason, assets: reason };
@@ -183,10 +191,25 @@ describe('InventoryNav', () => {
     expect(onSelect).toHaveBeenCalledTimes(1);
   });
 
-  it('lists a host link after the harnesses too, so its attention stays reachable', () => {
+  it('leaves a host link out of the harness list, while still counting its attention', () => {
     withLink('harness');
-    expect(entries().at(-1)).toBe('Credentials7');
+    expect(entries()).toEqual(['CCClaude Code2', 'CuCursor0']);
+    expect(mounted.host.querySelector('nav ul[aria-label="Pages"]')).toBeNull();
     expect(mounted.host.textContent).toContain('5 to review');
+  });
+
+  it('reads the same attention total in either view for the same props', () => {
+    const cases = [
+      [undefined, '5 to review'],
+      ['You need permission to view assets.', 'At least 4 to review'],
+    ] as const;
+    for (const [assetsRefusal, expected] of cases) {
+      withLink('harness', {}, assetsRefusal);
+      const underHarness = headerTotal();
+      withLink('type', {}, assetsRefusal);
+      expect(headerTotal()).toBe(underHarness);
+      expect(underHarness).toBe(expected);
+    }
   });
 
   it('marks a host link as the current entry while its page is shown', () => {
@@ -206,13 +229,11 @@ describe('InventoryNav', () => {
     expect(entries()).toEqual(['Credentials7']);
   });
 
-  it('puts host links in a list of their own in both views', () => {
-    for (const view of ['harness', 'type'] as const) {
-      withLink(view);
-      const pages = mounted.host.querySelector('nav ul[aria-label="Pages"]');
-      expect(pages?.querySelectorAll('li')).toHaveLength(1);
-      expect(pages?.textContent).toBe('Credentials7');
-    }
+  it('puts host links in a list of their own under By type', () => {
+    withLink('type');
+    const pages = mounted.host.querySelector('nav ul[aria-label="Pages"]');
+    expect(pages?.querySelectorAll('li')).toHaveLength(1);
+    expect(pages?.textContent).toBe('Credentials7');
   });
 
   it('selects a harness on click and marks the current one', () => {

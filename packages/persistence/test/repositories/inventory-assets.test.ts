@@ -36,6 +36,37 @@ describe('SqliteInventoryAssetsRepository over the sample dataset', () => {
     expect(stats.attention).toBe(6);
   });
 
+  it('counts an MCP server below known-good toward attention, once', async () => {
+    const before = (await inv.getInventoryStats()).attention;
+    const asset = (id: string, trust: string, flags: string): void => {
+      db.exec(
+        `INSERT INTO inventory_asset (id, asset_type, name, flags_json, meta_json, trust, created_at, updated_at)
+         VALUES ('${id}', 'mcp', '${id}', '${flags}', '{}', '${trust}', 0, 0)`,
+      );
+    };
+    asset('unapproved-clean', 'unapproved', '[]');
+    asset('risky-clean', 'risky', '[]');
+    asset('known-good-clean', 'known-good', '[]');
+    asset('risky-and-flagged', 'risky', '["risk"]');
+
+    // The two clean servers below known-good, plus the flagged one, which its
+    // trust must not count a second time.
+    expect((await inv.getInventoryStats()).attention).toBe(before + 3);
+  });
+
+  it('takes an attention trust from the override, not the stored column', async () => {
+    const before = (await inv.getInventoryStats()).attention;
+    db.exec(
+      `INSERT INTO inventory_asset (id, asset_type, name, flags_json, meta_json, trust, created_at, updated_at)
+       VALUES ('overridden', 'mcp', 'overridden', '[]', '{}', 'unapproved', 0, 0)`,
+    );
+    expect((await inv.getInventoryStats()).attention).toBe(before + 1);
+
+    expect(inv.setMcpTrust('overridden', 'known-good')).toBe('ok');
+
+    expect((await inv.getInventoryStats()).attention).toBe(before);
+  });
+
   it('groups harnesses by resolved id with their assets + projects', async () => {
     const { items } = await inv.listHarnesses();
     expect(items.map((h) => h.id).sort()).toEqual(['claudecode', 'cursor']);

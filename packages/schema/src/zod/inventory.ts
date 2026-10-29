@@ -21,6 +21,18 @@ export type Origin = z.infer<typeof Origin>;
 export const TrustLevel = z.enum(['known-good', 'risky', 'unapproved']).meta({ id: 'TrustLevel' });
 export type TrustLevel = z.infer<typeof TrustLevel>;
 
+/** An MCP server's trust level that puts it on the attention list. */
+export type AttentionTrust = Exclude<TrustLevel, 'known-good'>;
+
+/** The trust levels that put an MCP server on the attention list, worst first. */
+export const ATTENTION_TRUST_LEVELS: readonly AttentionTrust[] = ['unapproved', 'risky'];
+
+/** Whether an MCP server's effective trust puts it on the attention list. */
+export const isAttentionTrust = (trust: TrustLevel | null | undefined): trust is AttentionTrust =>
+  trust !== null &&
+  trust !== undefined &&
+  (ATTENTION_TRUST_LEVELS as readonly TrustLevel[]).includes(trust);
+
 export const Flag = z
   .enum(['update', 'stale', 'conflict', 'unknown', 'change', 'untracked', 'risk', 'findings'])
   .meta({ id: 'Flag' });
@@ -405,8 +417,9 @@ export type ListProjectsResponse = z.infer<typeof ListProjectsResponse>;
 export const InventoryStats = z
   .object({
     /**
-     * Assets with a flag, plus projects with a finding in the last
-     * `PROJECT_FINDINGS_WINDOW_DAYS` days (drives the attention header chip).
+     * Assets with a flag or with an `ATTENTION_TRUST_LEVELS` effective trust,
+     * plus projects with a finding in the last `PROJECT_FINDINGS_WINDOW_DAYS`
+     * days (drives the attention header chip). An asset counts once.
      */
     attention: z.number().int().nonnegative(),
     byType: z.object({

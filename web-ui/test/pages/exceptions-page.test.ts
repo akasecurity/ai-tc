@@ -396,8 +396,9 @@ describe('the exception detail route captures its render instant per request', (
 //
 //   - the count is taken against the key version ON DISK, so a row that was
 //     current before the rotation reads stale after it with no write of its own;
-//   - `total` comes from `countEntries`, so the notice's denominator is every
-//     entry held rather than the stale ones counted twice;
+//   - the denominator is every entry held rather than the stale ones counted
+//     twice, and both halves come back from one `countFingerprintEpochs` call,
+//     so no write can land between them;
 //   - with no key present there is no version to compare against, and the route
 //     has to say nothing rather than call every row stale.
 describe('the exceptions route reads the vault’s fingerprint epoch from the store', () => {

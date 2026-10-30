@@ -94,12 +94,13 @@ export default async function ExceptionsPage({
   // `secret_vault` that cannot be read fails the page the same way an
   // `exceptions` table that cannot be read already does. Swallowing it to 0
   // would be the silent zero this disclosure exists to abolish.
+  //
+  // One repository call, not a stale count beside a total: the pair has to be
+  // consistent for the fraction built from it to mean anything, and a purge
+  // running between two reads is enough to break that.
   const vaultFingerprints =
     keyState.status === 'present'
-      ? {
-          stale: db().secretVault.countStaleFingerprints(keyState.version),
-          total: db().secretVault.countEntries(),
-        }
+      ? db().secretVault.countFingerprintEpochs(keyState.version)
       : { stale: 0, total: 0 };
   // A relative label must be calculated against the exact same instant during
   // SSR and hydration; otherwise crossing a minute boundary can change its text.

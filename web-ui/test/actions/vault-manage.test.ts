@@ -275,10 +275,7 @@ describe('rotateKey keeps the vault whole', () => {
     const db = openLocalDatabase(dataDir());
     try {
       const version = loadOrCreateFingerprintKey(dataDir()).version;
-      return {
-        stale: db.secretVault.countStaleFingerprints(version),
-        total: db.secretVault.countEntries(),
-      };
+      return db.secretVault.countFingerprintEpochs(version);
     } finally {
       db.close();
     }

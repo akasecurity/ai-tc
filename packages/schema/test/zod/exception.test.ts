@@ -341,11 +341,35 @@ describe('vaultRefreshShortfallNote', () => {
   it('treats a negative skip as nothing to disclose rather than a shortfall', () => {
     expect(vaultRefreshShortfallNote(1, -1)).toBeNull();
   });
+
+  // The standing count reaches this helper as `(total - stale, stale)`. A caller
+  // that reads those two halves separately can have a purge land between them
+  // and subtract its way to a negative fresh count, and the sentence would then
+  // state a fraction no state of the vault ever held. The digits are asserted
+  // rather than the absence of a minus sign: the note is full of hyphens
+  // ("re-keyed", "off-key"), so only the numbers can carry this.
+  it('floors the fresh half at zero, so a torn pair cannot state a denominator below the shortfall', () => {
+    expect(vaultRefreshShortfallNote(-1, 1)?.match(/\d+/g)).toEqual(['1', '1']);
+    expect(vaultRefreshShortfallNote(-3, 5)?.match(/\d+/g)).toEqual(['5', '5']);
+    // And the clamp changes nothing for a pair that is already consistent.
+    expect(vaultRefreshShortfallNote(7, 3)?.match(/\d+/g)).toEqual(['3', '10']);
+  });
 });
 
 describe('VAULT_REFRESH_FAILED_NOTE', () => {
   // The whole-pass variant exists because a throw can land before the first row,
   // so there is no denominator to state. Any digit in it would be invented.
+  // One wording for one fact, across both notes. Two whole-pass failures running
+  // leave a row two epochs back, so "the previous one" would overstate how
+  // fresh the stored values are — in the one note whose job is the conservative
+  // account. The reader's question is the same either way: is anything still
+  // under a key I have replaced?
+  it('says the values are under an older key, not the previous one', () => {
+    expect(VAULT_REFRESH_FAILED_NOTE).toContain('still carries an older one');
+    expect(VAULT_REFRESH_FAILED_NOTE).not.toContain('the previous one');
+    expect(vaultRefreshShortfallNote(0, 1)).toContain('an older fingerprint key');
+  });
+
   it('claims no count, because a pass that threw does not have one', () => {
     expect(VAULT_REFRESH_FAILED_NOTE).not.toMatch(/\d/);
   });

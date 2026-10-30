@@ -303,7 +303,14 @@ export function rotationBlockedLedgerNote(stillApprovable: number): string {
  */
 export function vaultRefreshShortfallNote(refreshed: number, skipped: number): string | null {
   if (skipped <= 0) return null;
-  const considered = refreshed + skipped;
+  // The fresh half is floored at 0 so the denominator can never fall below the
+  // numerator. A caller holding the two halves apart — a store count of stale
+  // rows and a count of all rows — can have a purge land between its reads and
+  // arrive here with more skipped than considered, and the sentence would then
+  // state a fraction no state of the vault ever held. Clamped, a torn read
+  // reports every row as behind, which is the reading that cannot understate
+  // the condition.
+  const considered = Math.max(0, refreshed) + skipped;
   const noun = considered === 1 ? 'value' : 'values';
   return `${String(skipped)} of ${String(considered)} stored ${noun} could not be re-keyed and still carry an older fingerprint key. Nothing stored is lost and each one still resolves, but detecting the same value again will miss it and mint a second pointer for a secret that already has one. Only another rotation re-keys them, and rotating again invalidates every exception grant a second time — so find out why the rows will not open before reaching for it. A key directory that cannot be read is worth a second rotation once fixed; a damaged entry will never open again and is better pruned than carried.`;
 }
@@ -318,6 +325,12 @@ export function vaultRefreshShortfallNote(refreshed: number, skipped: number): s
  * never reached — and a figure invented here would be the one thing a reader
  * could check and find wrong.
  *
+ * Says "an older one" rather than "the previous one", matching the per-row note
+ * word for word. Two whole-pass failures running leave a row two epochs back,
+ * so "the previous" would overstate how fresh the stored values are in the one
+ * sentence whose job is the conservative account. The reader's question is the
+ * same either way: is anything still under a key I have replaced?
+ *
  * Names the remedy's cost for the same reason the note above does: another
  * rotation is the only thing that re-keys these rows, and it invalidates every
  * grant again. A whole-pass fault is the likelier one to be transient — the
@@ -326,4 +339,4 @@ export function vaultRefreshShortfallNote(refreshed: number, skipped: number): s
  * only one that can be about a specific unrecoverable entry.
  */
 export const VAULT_REFRESH_FAILED_NOTE =
-  'The vault could not be re-keyed under the new fingerprint key, so every stored value still carries the previous one. Nothing stored is lost and they all still resolve, but detecting one of them again may mint a second pointer for a secret that already has one. Only another rotation re-keys them, and rotating again invalidates every exception grant a second time — check why the vault could not be read before reaching for it.';
+  'The vault could not be re-keyed under the new fingerprint key, so every stored value still carries an older one. Nothing stored is lost and they all still resolve, but detecting one of them again may mint a second pointer for a secret that already has one. Only another rotation re-keys them, and rotating again invalidates every exception grant a second time — check why the vault could not be read before reaching for it.';

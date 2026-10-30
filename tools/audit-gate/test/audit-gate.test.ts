@@ -898,17 +898,22 @@ describe('advisoryIdsFromReport against the human side of the comparison', () =>
 // at 16k repetitions) inside a job with a ten-minute budget.
 describe('advisoryIdsFromReport is linear in its input', () => {
   const witness = (reps: number): string => '| [9](' + '| [GHSA--]('.repeat(reps);
-  const fastest = (input: string): number =>
-    Math.min(
+  // One untimed pass first, so the compiler has warmed the function before the
+  // small side is sampled; the small side is also sized to run for several ms,
+  // since a sub-millisecond denominator swings the ratio on timer noise alone.
+  const fastest = (input: string): number => {
+    advisoryIdsFromReport(input);
+    return Math.min(
       ...Array.from({ length: 5 }, () => {
         const started = process.hrtime.bigint();
         advisoryIdsFromReport(input);
         return Number(process.hrtime.bigint() - started) / 1e6;
       }),
     );
+  };
 
   it('grows about 8x for 8x input, not about 64x', () => {
-    const ratio = fastest(witness(16_000)) / fastest(witness(2_000));
+    const ratio = fastest(witness(64_000)) / fastest(witness(8_000));
     // Quadratic is ~64 here and linear ~8. The ceiling sits between them with
     // room for both a slow runner and an honest constant-factor change; what it
     // separates is the SHAPE, which is the only thing that matters.

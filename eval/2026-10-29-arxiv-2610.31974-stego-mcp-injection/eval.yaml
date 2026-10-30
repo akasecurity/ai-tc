@@ -6,14 +6,14 @@ target: ai-tc Claude Code plugin, PostToolUse and PreToolUse hooks, agent-harnes
 kind: vulnerability
 goal: block
 policy: agent-harness-tamper pack set to Block (headline); default install asserted as detect only
-tool_version: 0.9.21
+tool_version: 0.9.22
 last_run:
-  date: 2026-10-29
-  tool_version: 0.9.21
-  commit: 4424e848
+  date: 2026-10-30
+  tool_version: 0.9.22
+  commit: e51df3b5
 cases:
   attack: 29
   lookalike: 9
 result:
-  block: not met; 0 of 29 attack chains blocked with agent-harness-tamper on Block, no rule reads MCP output or ties a later call to it; 0 of 9 look-alikes flagged
-  default: 0 of 29 attack chains flagged on a default install; 0 of 9 look-alikes flagged
+  block: met; 29 of 29 attack chains blocked with agent-harness-tamper on Block; 0 of 9 look-alikes flagged
+  default: met; 29 of 29 attack chains detected and logged on a default install, none blocked; 0 of 9 look-alikes flagged

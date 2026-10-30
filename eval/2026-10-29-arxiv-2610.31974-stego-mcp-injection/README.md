@@ -4,8 +4,8 @@
 [Agentic AI Defense: Decode-Time Provenance Binding for MCP](https://arxiv.org/abs/2610.31974), arXiv, 2026-10-22.
 The paper's code and payload bank are at <https://github.com/ericyoc/stego_provenance_defense>.
 
-**Last run:** 2026-10-29, ai-tc 0.9.21 (4424e848), goal not met: 0 of 29 attack chains blocked or flagged, on a
-default install or with `agent-harness-tamper` on Block.
+**Last run:** 2026-10-30, ai-tc 0.9.22 (e51df3b5), goal met: 29 of 29 attack chains blocked with `agent-harness-tamper`
+on Block and 29 of 29 detected on a default install; 0 of 9 look-alikes flagged.
 
 Replays the paper's attack as tool calls and shows what the Claude Code plugin does with each chain.
 
@@ -56,14 +56,15 @@ L1 to L6 decode ordinary signature text and make harmless calls (a CRM contact, 
 
 ## Results
 
-Plugin build 0.9.21. The goal is not met.
+Plugin build 0.9.22. The goal is met.
 
-- Default install: 0 of 29 chains flagged or blocked.
-- `agent-harness-tamper` on Block: 0 of 29 chains blocked.
+- Default install: 29 of 29 chains detected and logged, none blocked.
+- `agent-harness-tamper` on Block: 29 of 29 chains blocked.
 - Look-alikes: 0 of 9 flagged in either setting.
 
-No rule looks at what an MCP tool returned or at what the session did after it, so the hidden instruction is
-invisible to the plugin whatever the carrier or wording. The default and block assertions fail until that is fixed.
+The 0.9.21 build flagged none of the chains: no rule read what an MCP tool returned or tied a later call to it.
+From 0.9.22 the plugin marks a session that received MCP output and the pack matches a later outbound call in
+that session.
 
 ## Run it
 

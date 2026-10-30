@@ -171,6 +171,27 @@ describe('rewriteContainedFile', () => {
     expect(readFileSync(target(), 'utf8')).toBe(before);
   });
 
+  it('publishes a group-writable transcript at its exact mode', async (ctx) => {
+    if (process.platform === 'win32') ctx.skip('POSIX permission bits');
+    // 0660 carries bits the usual 0022 umask CLEARS on create, so the write's
+    // `mode` option alone narrows it to 0640 — re-applying the bits rather
+    // than preserving them. The chmod after the exclusive create is what
+    // makes it exact. The probe measures what this process's umask would have
+    // left behind, so a umask that narrows nothing in 0660 says so instead of
+    // passing blind.
+    const probe = join(dirname(target()), 'umask-probe');
+    writeFileSync(probe, '', { mode: 0o660 });
+    if ((statSync(probe).mode & 0o777) === 0o660) {
+      ctx.skip('this process umask narrows nothing in 0660');
+    }
+
+    chmodSync(target(), 0o660);
+
+    await rewriteContainedFile(target(), restore);
+
+    expect(statSync(target()).mode & 0o777).toBe(0o660);
+  });
+
   it('publishes the restored transcript with the permission bits it had', async (ctx) => {
     if (process.platform === 'win32') ctx.skip('POSIX permission bits');
     chmodSync(target(), 0o600);

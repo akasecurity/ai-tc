@@ -4,6 +4,7 @@ import { arc, area, curveMonotoneX, line, pie, type PieArcDatum } from 'd3-shape
 import { type ReactNode, useEffect, useId, useRef, useState } from 'react';
 
 import { COLORS } from '../lib/colors.ts';
+import { dashMask } from './dash.ts';
 
 export interface DonutSegment {
   label: string;
@@ -215,6 +216,26 @@ export interface AreaSeries {
   /** Stable key for the series (used for the dataKey + gradient id). */
   key: string;
   color: string;
+  /**
+   * The series' name, as the hover tooltip prints it beside the value.
+   *
+   * REQUIRED rather than optional, for the reason `interactive` is required on
+   * SeriesLegend: a tooltip row is a value and a chip, and without a name the
+   * chip is the ONLY thing saying which series the value belongs to — which is
+   * a colour, and the four severity hues are 1.03:1 apart. An optional label
+   * reads as safe at every call site that omits it, which is every call site
+   * until somebody remembers.
+   */
+  label: string;
+  /**
+   * SVG `stroke-dasharray` for this series' line; omitted draws solid. This is
+   * what keeps two series apart for a reader who cannot separate their hues,
+   * so a chart whose series are distinguished ONLY by colour owes every series
+   * but one a pattern. It rides the line rather than the area fill because the
+   * fills are translucent and overlap, so a pattern there would read as the
+   * overlap rather than as the series.
+   */
+  dash?: string | undefined;
 }
 
 const MARGIN = { top: 6, right: 6, bottom: 0, left: 6 } as const;
@@ -353,7 +374,13 @@ export function AreaChart<K extends string>({
               return (
                 <g key={s.key}>
                   <path d={areaPath} fill={`url(#${gradientPrefix}-${s.key})`} stroke="none" />
-                  <path d={linePath} fill="none" stroke={s.color} strokeWidth={2} />
+                  <path
+                    d={linePath}
+                    fill="none"
+                    stroke={s.color}
+                    strokeWidth={2}
+                    strokeDasharray={s.dash}
+                  />
                 </g>
               );
             })}
@@ -391,6 +418,9 @@ export function AreaChart<K extends string>({
             const v = hoverPoint[s.key];
             // Skip a no-data series entirely rather than showing a bogus "0".
             if (v === null) return null;
+            // The same chip the legend draws, pattern included: a reader who
+            // learned the dash from the legend finds it again here.
+            const mask = s.dash === undefined ? undefined : dashMask(s.dash);
             return (
               <div
                 key={s.key}
@@ -398,9 +428,14 @@ export function AreaChart<K extends string>({
                 style={{ color: COLORS.text2 }}
               >
                 <span
-                  className="size-2 rounded-xs"
-                  style={{ background: s.color, display: 'inline-block' }}
+                  className="h-2 w-4 shrink-0 rounded-xs"
+                  style={{
+                    background: s.color,
+                    display: 'inline-block',
+                    ...(mask === undefined ? {} : { maskImage: mask, WebkitMaskImage: mask }),
+                  }}
                 />
+                <span>{s.label}</span>
                 <span className="font-semibold">{valueFormat(v, s.key)}</span>
               </div>
             );

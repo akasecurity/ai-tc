@@ -16,6 +16,24 @@ export const SEVERITY_META: Record<Severity, { label: string; color: string }> =
   low: { label: 'Low', color: COLORS.sevLow },
 };
 
+// The channel that tells two severity series apart WITHOUT colour, as an SVG
+// `stroke-dasharray`. The four hues above are mutually indistinguishable by
+// luminance — every one of the six pairs measures under the 3:1 that WCAG 2.2
+// 1.4.11 asks of non-text contrast (1.03:1 to 2.47:1 in light, 1.10:1 to
+// 1.64:1 in dark, worst pair critical/low) — so a line's identity cannot rest
+// on its hue. Dash geometry is theme-independent, which is why it is the
+// channel here: it does not have to be re-tuned per theme the way a hue does.
+//
+// `critical` is solid on purpose. One series has to be the unbroken one for
+// the other three to read as departures from it, and the most urgent series is
+// the one that should not be visually interrupted.
+export const SEVERITY_DASH: Record<Severity, string | undefined> = {
+  critical: undefined,
+  high: '7 3',
+  medium: '2 3',
+  low: '11 3 2 3',
+};
+
 // A severity-tinted icon tile needs no lookup of its own: every Severity member
 // is also a tonal family name, so `TONE_SOFT[severity]` at the call site IS the
 // mapping.

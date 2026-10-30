@@ -21,6 +21,7 @@ import type {
   RecordProjectEgressInput,
   ReportedCaptureDocument,
   ResolvedInventory,
+  ReviewValue,
   RuleProbeVerdict,
   SessionTokenReport,
   SimpleDetectionPolicy,
@@ -51,6 +52,10 @@ export interface CaptureRecord {
   // Local only, like `scopeKey`: never copied onto anything a gateway sends.
   // The SQLite gateway replaces each in a stored row for the same capture.
   vaulted?: readonly VaultedValue[] | undefined;
+  // Each finding's raw value and rule. Local only, like `scopeKey`: the SQLite
+  // gateway never stores it, and only a forwarding gateway whose settings name
+  // the capture's repository puts it on what it sends.
+  reviewCandidates?: readonly ReviewValue[] | undefined;
 }
 
 // One worktree-scan ledger record: a file the scanner has processed (clean or

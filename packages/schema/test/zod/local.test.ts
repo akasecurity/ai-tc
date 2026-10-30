@@ -272,6 +272,9 @@ describe('row mappers (tenant-free local store)', () => {
       scanIncomplete: 'timeout',
       // Wire-only: a forwarded capture's tokens are never stored locally.
       sightings: [],
+      contentTruncatedFrom: 90_000,
+      // Wire-only, and a raw value: never a stored attribute.
+      reviewValues: [{ ruleId: 'core-pii/email', value: 'dev@acme.example' }],
     };
     const event: IngestEvent = {
       id: EVENT,
@@ -308,6 +311,7 @@ describe('row mappers (tenant-free local store)', () => {
       ...event,
       metadata: { ...metadata, scopeKey: 'github.com/acme/widgets' },
     } as IngestEvent;
+    expect(JSON.stringify(toCaptureAttributes(event))).not.toContain('dev@acme.example');
     const attributes = toCaptureAttributes(smuggled);
     expect('scope_key' in attributes).toBe(false);
     expect('scopeKey' in attributes).toBe(false);

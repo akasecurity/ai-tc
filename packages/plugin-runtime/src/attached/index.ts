@@ -7,6 +7,12 @@
 // of it and behaves exactly as it did before this existed.
 // The wire projection lives in persistence, where the gateway imports it from;
 // it stays on this barrel for consumers that import it from here.
+export type { HookCaptureSettings } from './capture-settings.ts';
+export {
+  readHookCaptureSettings,
+  toolOutputForwardFor,
+  writeHookCaptureSettings,
+} from './capture-settings.ts';
 export type { GatewayMeta } from './factory.ts';
 export { hashProjectKey, toEgressIngestRequest } from '@akasecurity/persistence';
 // The device identity, and ONLY that: `aka attach` has to tell a deployment
@@ -83,6 +89,8 @@ export { readStorePosture } from './posture-snapshot.ts';
 export type { PostureState, PostureStore } from './posture-store.ts';
 export { readDeviceIdentity } from './posture-store.ts';
 export { createPostureStore } from './posture-store.ts';
+export type { SessionHoldDeps } from './session-hold.ts';
+export { checkSessionHold, SESSION_HOLD_TIMEOUT_MS } from './session-hold.ts';
 export type {
   ClaudeCodeLoginState,
   ClaudeCodeLoginView,

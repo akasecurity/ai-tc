@@ -6,6 +6,7 @@ import { DATA_FILE_MODE, dataDir, ensureDataDir } from '@akasecurity/plugin-sdk'
 import { POLICY_BUNDLE_SHAPE_ID, PolicyBundle } from '@akasecurity/schema';
 
 import { publishByRename } from './atomic-publish.ts';
+import { writeHookCaptureSettings } from './capture-settings.ts';
 
 // The cached policy bundle, the epoch-ms it was last CONFIRMED FRESH (drives
 // sync throttling and staleness reporting), and the ETag that confirmed it.
@@ -237,6 +238,7 @@ export function createPolicyStore(dir: string = dataDir()) {
         ...(prior as unknown as StoredPolicyBundle),
         fetchedAtMs: Date.now(),
       });
+      await publishHookCaptureSettings(bundle);
       return;
     }
 
@@ -260,6 +262,13 @@ export function createPolicyStore(dir: string = dataDir()) {
       shapeId: POLICY_BUNDLE_SHAPE_ID,
       ...(etag === undefined ? {} : { etag }),
     });
+    await publishHookCaptureSettings(bundle);
+  }
+
+  // A failure leaves the previous file, which a hook reads as it would have
+  // before this write; it never fails the cache write it follows.
+  async function publishHookCaptureSettings(bundle: PolicyBundle): Promise<void> {
+    await writeHookCaptureSettings(dir, bundle.capture).catch(() => undefined);
   }
 
   return { read, write, file };

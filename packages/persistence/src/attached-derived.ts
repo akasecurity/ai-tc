@@ -1,12 +1,13 @@
 /**
  * The files an attachment LEAVES BEHIND, and the one way to clear them.
  *
- * Nine of these are written by the attached runtime rather than by the attach
- * itself — a cached policy bundle, the sync outcome, the forward breaker's state,
+ * Ten of these are written by the attached runtime rather than by the attach
+ * itself — a cached policy bundle, the capture settings taken from it, the sync
+ * outcome, the forward breaker's state,
  * its drop tally, the posture self-report's last outcome, the history drain's
  * progress, the tally of labels too large to report, and the config inventory
  * reports staged for the sync child with what it last delivered of them. The
- * tenth, the record of who attached the machine, is
+ * eleventh, the record of who attached the machine, is
  * written by the attach and kept current by the sync child and by the hooks that
  * validate a work account, all through attached-identity.ts in this package.
  * None of them is the attachment; all of them describe one. Each session's
@@ -41,6 +42,9 @@ import { clearSessionAccountState } from './session-accounts.ts';
 
 /** The policy bundle the sync child caches. */
 export const POLICY_CACHE_FILENAME = 'policy-cache.json';
+
+/** The capture settings of the cached bundle, small enough for every hook to read. */
+export const ATTACHED_CAPTURE_SETTINGS_FILENAME = 'attached-capture.json';
 
 /** The last sync outcome `aka status` reports. */
 export const ATTACHED_SYNC_STATE_FILENAME = 'attached-sync-state.json';
@@ -77,6 +81,7 @@ export const ATTACHED_CONFIG_INVENTORY_STATE_FILENAME = 'attached-config-invento
  */
 export const ATTACHED_DERIVED_FILENAMES: readonly string[] = [
   POLICY_CACHE_FILENAME,
+  ATTACHED_CAPTURE_SETTINGS_FILENAME,
   ATTACHED_SYNC_STATE_FILENAME,
   ATTACHED_FORWARD_STATE_FILENAME,
   ATTACHED_FORWARD_DROPS_FILENAME,

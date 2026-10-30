@@ -26,8 +26,14 @@ const THEME_CSS = readFileSync(
   'utf8',
 );
 
-// Dark is one block, opened by the `.dark, [data-theme='dark']` selector.
-const DARK_AT = THEME_CSS.indexOf('[data-theme=');
+// Dark is one block, opened by the `.dark, [data-theme='dark']` selector. The
+// anchor is that opening line and not a bare search for `[data-theme=`: the
+// same selector is NAMED ten lines earlier inside the `@custom-variant dark`
+// declaration, which says nothing about where the tokens sit, so splitting
+// there would put the boundary in a place no token block controls — and a
+// reordered variant, or a severity token added to `:root` below it, would then
+// hand one theme's hexes to both halves and measure that theme twice.
+const DARK_AT = /^\[data-theme='dark'\] \{/m.exec(THEME_CSS)?.index ?? -1;
 const BLOCKS = {
   light: THEME_CSS.slice(0, DARK_AT),
   dark: THEME_CSS.slice(DARK_AT),
@@ -42,6 +48,38 @@ function hexOf(block: string, token: string): string {
 }
 
 const SEVERITIES: Severity[] = ['critical', 'high', 'medium', 'low'];
+
+/**
+ * The legend chip and the tooltip chip, which spell their size as one shared
+ * class string. Read from source for the reason the hues are: a width restated
+ * here would be true by construction and would move with nothing.
+ */
+const CHIP_SOURCES = ['../../src/shared/SeriesLegend.tsx', '../../src/shared/charts.tsx'];
+
+function chipWidthPx(relative: string): number {
+  const src = readFileSync(new URL(relative, import.meta.url), 'utf8');
+  const units = /\bh-2 w-(\d+) shrink-0 rounded-xs\b/.exec(src)?.[1];
+  // Thrown rather than asserted: a chip whose class this cannot read would
+  // otherwise come back NaN, and every comparison against NaN is false — the
+  // case below would report nothing at all.
+  if (units === undefined) throw new Error(`no series chip class found in ${relative}`);
+  // Tailwind's spacing unit is 0.25rem, which is 4px at the default root size.
+  return Number(units) * 4;
+}
+
+/**
+ * The pixel length of one full repeat of a dasharray. SVG repeats an
+ * odd-length array twice before it closes, so `5` is a 10px cycle and not a
+ * 5px one.
+ */
+function cycleOf(dash: string): number {
+  const lengths = dash
+    .split(/[\s,]+/)
+    .filter(Boolean)
+    .map(Number);
+  const sum = lengths.reduce((total, n) => total + n, 0);
+  return lengths.length % 2 === 0 ? sum : sum * 2;
+}
 
 /** Every unordered pair of severities, which is what 1.4.11 is asked of. */
 const PAIRS: [Severity, Severity][] = SEVERITIES.flatMap((a, i) =>
@@ -59,6 +97,17 @@ describe('a severity series is identifiable without colour', () => {
     // every case would measure light twice and still pass.
     expect(DARK_AT).toBeGreaterThan(0);
     expect(hexOf(BLOCKS.light, '--color-surface')).not.toBe(hexOf(BLOCKS.dark, '--color-surface'));
+    // And the boundary is the token block's OWN opening line. The same selector
+    // is named earlier, inside `@custom-variant dark (…)`, and a boundary that
+    // landed there would still leave two plausible halves — every severity hex
+    // happens to fall on the correct side of it today — so what has to be
+    // pinned is the boundary's shape rather than the hexes either side of it: a
+    // line start, and a line that is the block's opening and nothing else.
+    // Both go red on a bare `indexOf('[data-theme=')`, which lands mid-line
+    // inside that declaration; asserting which half holds the declaration does
+    // NOT, because the split falls after the `@custom-variant` text itself.
+    expect(THEME_CSS[DARK_AT - 1]).toBe('\n');
+    expect(BLOCKS.dark.split('\n')[0]).toBe("[data-theme='dark'] {");
   });
 
   it('computes a ratio the way WCAG does', () => {
@@ -101,6 +150,32 @@ describe('a severity series is identifiable without colour', () => {
         const ratio = hueRatio(block, a, b);
         expect(ratio, `${a} vs ${b} in ${theme} is ${ratio.toFixed(2)}:1`).toBeLessThan(3);
       }
+    }
+  });
+
+  it('keeps every pattern inside the width of the chip that redraws it', () => {
+    // The legend and the tooltip redraw a line's dash as a small chip, and a
+    // cycle wider than the chip is clipped: the chip shows a prefix of the
+    // pattern and silently drops the rest, which is how `11 3 2 3` lost its
+    // trailing gap on a 16px chip and stopped reading as the same rhythm as
+    // its line. Both chips are the same element spelled in two files, so the
+    // width is read from the source rather than restated here.
+    //
+    // A control for the measurement itself: SVG closes an odd-length array by
+    // repeating it, so `9 3 2` is a 28px cycle and not a 14px one. Measured as
+    // 14 it would slip under a 16px chip that in fact clips it.
+    expect(cycleOf('9 3 2')).toBe(28);
+    expect(cycleOf('9 3 2 2')).toBe(16);
+    const widths = CHIP_SOURCES.map(chipWidthPx);
+    expect(new Set(widths).size, `the two chips disagree on width: ${widths.join(' vs ')}`).toBe(1);
+    const [chip] = widths as [number];
+    for (const severity of SEVERITIES) {
+      const dash = SEVERITY_DASH[severity];
+      if (dash === undefined) continue;
+      expect(
+        cycleOf(dash),
+        `${severity} draws a ${dash} cycle on a ${String(chip)}px chip`,
+      ).toBeLessThanOrEqual(chip);
     }
   });
 

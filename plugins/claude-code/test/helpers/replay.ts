@@ -63,7 +63,7 @@ export interface ReplayOutcome {
   call: ReplayCall;
   verdict: Verdict;
   /** What PostToolUse did with the `decoded` text, when the call has one. */
-  decodeVerdict?: Verdict;
+  decodeVerdict?: Verdict | undefined;
   /** Every finding recorded for the call: rule id and the action taken. */
   findings: { ruleId: string; action: string }[];
 }
@@ -210,9 +210,7 @@ export function renderResults(
   return [
     `# ${set.title}`,
     '',
-    `Plugin build: ${pluginVersion}. Policies: **default** is a fresh install; **strict** sets ${
-      set.blockAll === true ? 'every bundled pack' : set.packs.map((p) => `\`${p}\``).join(', ')
-    } to block.`,
+    `Plugin build: ${pluginVersion}. Policies: **default** is a fresh install; **strict** sets ${set.packs.map((p) => `\`${p}\``).join(', ')} to block.`,
     '',
     '| kind | call | default | strict |',
     '| --- | --- | --- | --- |',

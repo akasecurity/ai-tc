@@ -62,6 +62,7 @@ A local SQLite store at `~/.aka/data/aka.db`, settings beside it under `~/.aka/s
 - `plugins/browser-extension/` — the Chrome extension for ChatGPT and Claude.ai web chat (MV3 content scripts + a native-messaging host).
 - `cli/` — the standalone CLI published as `@akasecurity/cli`, binary `aka`.
 - `rules/` — the ten built-in rule packs and their fixtures.
+- `eval/` — replayed attack-chain evals (cases and README per write-up; results are regenerated, not committed).
 - `skills/write-detection-rule/` — the authoring skill for new detection rules.
 - `web-ui/` — the local dashboard.
 

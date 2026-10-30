@@ -719,13 +719,36 @@ describe('the inputs above are adversarial for what they replaced', () => {
 // proportional to the file without noticing, and a manifest's hit count grows
 // with its size by definition.
 //
-// The table is annotated `Record<ManifestKind, …>`, so it is EXHAUSTIVE by
-// typecheck: a twelfth kind added to the union fails the build here until it
-// carries a shape. That is the point of the annotation — a hand-written list of
-// kinds goes stale silently, and a battery that covers two of eleven dialects
-// reports the bound as held for the other nine.
+// The table is annotated `Record<ManifestKind, …>`, so it is EXHAUSTIVE over
+// KINDS by typecheck: a twelfth kind added to the union fails the build here
+// until it carries a shape. That is the point of the annotation — a hand-written
+// list of kinds goes stale silently, and a battery that covers two of eleven
+// dialects reports the bound as held for the other nine.
 //
-// Each shape is the ORDINARY form of its dialect, with a distinct dependency
+// Exhaustive over kinds is NOT exhaustive over a kind's INPUT FORMS, and no
+// annotation can make it so: a parser's internal branches are not a vocabulary
+// there is a type to key on. So each kind carries a LIST, one entry per form
+// that reaches its own code, and THAT list is hand-maintained — the one place in
+// this block where adding a branch to a parser fails no build. Four kinds carry
+// more than one entry:
+//
+//   pyproject.toml  [project] dependencies, and [tool.poetry.dependencies] —
+//                   separate branches, the second keyed on the section name.
+//   go.mod          the `require (` block, and a single-line `require x v1.0.0`
+//                   — separate branches either side of the block-open test.
+//   Cargo.toml      [dependencies], and [dependencies.crate] — separate
+//                   branches, and the dotted one takes its hit from the SECTION
+//                   HEADER rather than from a body line, so its hit count grows
+//                   at half the rate per line.
+//   build.gradle    Groovy, Kotlin DSL, and the platform() BOM wrapper.
+//
+// build.gradle is the odd one and is listed for a different reason: there is no
+// second branch to reach, because build.gradle.kts maps onto this kind at
+// classification and the Kotlin form is read by the same regex. What varies is
+// the REGEX PATH — each form consumes the leading `\s*[('"]*` repetition
+// differently, under a global match run per line — not the control flow.
+//
+// Each shape is an ORDINARY form of its dialect, with a distinct dependency
 // name per entry. That matters only for the shapes built as an OBJECT —
 // package.json and composer.json — where a repeated key collapses in the object
 // literal itself, leaving a manifest holding one dependency rather than
@@ -733,25 +756,110 @@ describe('the inputs above are adversarial for what they replaced', () => {
 // shapes are indifferent to it: those parsers emit a hit per matching line
 // whatever the name on it is. The single-line forms of package.json and pom.xml
 // have their own cases above.
-const MANIFEST_SHAPES: Record<ManifestKind, (bytes: number) => string> = {
-  'package.json': (bytes) => packageJson(bytes, false),
-  'pom.xml': (bytes) => minifiedPom(bytes),
-  'requirements.txt': (bytes) => repeatEntries(bytes, (i) => `requests-${i}==2.0.0\n`),
-  'pyproject.toml': (bytes) =>
-    `[project]\ndependencies = [\n${repeatEntries(bytes, (i) => `  "requests-${i}>=2.0",\n`)}]\n`,
-  'go.mod': (bytes) =>
-    `module x\n\nrequire (\n${repeatEntries(bytes, (i) => `\tgithub.com/aws/aws-sdk-go-${i} v1.0.0\n`)})\n`,
-  'build.gradle': (bytes) =>
-    repeatEntries(bytes, (i) => `    implementation "com.amazonaws.g${i}:aws-java-sdk:1.0"\n`),
-  Gemfile: (bytes) => repeatEntries(bytes, (i) => `gem "aws-sdk-${i}"\n`),
-  'Cargo.toml': (bytes) =>
-    `[dependencies]\n${repeatEntries(bytes, (i) => `rusoto_core_${i} = "0.48"\n`)}`,
-  'composer.json': (bytes) => composerJson(bytes),
-  csproj: (bytes) =>
-    `<Project>\n${repeatEntries(bytes, (i) => `  <PackageReference Include="AWSSDK.Core${i}" Version="3.0" />\n`)}</Project>\n`,
-  'packages.config': (bytes) =>
-    `<packages>\n${repeatEntries(bytes, (i) => `  <package id="AWSSDK.Core${i}" version="3.0" />\n`)}</packages>\n`,
+interface ManifestShape {
+  readonly mode: string;
+  readonly build: (bytes: number) => string;
+}
+
+const MANIFEST_SHAPES: Record<ManifestKind, readonly ManifestShape[]> = {
+  'package.json': [{ mode: 'dependencies', build: (bytes) => packageJson(bytes, false) }],
+  'pom.xml': [{ mode: 'single-line dependencies', build: (bytes) => minifiedPom(bytes) }],
+  'requirements.txt': [
+    {
+      mode: 'pinned requirements',
+      build: (bytes) => repeatEntries(bytes, (i) => `requests-${i}==2.0.0\n`),
+    },
+  ],
+  'pyproject.toml': [
+    {
+      mode: '[project] dependencies',
+      build: (bytes) =>
+        `[project]\ndependencies = [\n${repeatEntries(bytes, (i) => `  "requests-${i}>=2.0",\n`)}]\n`,
+    },
+    {
+      mode: '[tool.poetry.dependencies]',
+      build: (bytes) =>
+        `[tool.poetry.dependencies]\n${repeatEntries(bytes, (i) => `requests-${i} = ">=2.0"\n`)}`,
+    },
+  ],
+  'go.mod': [
+    {
+      mode: 'require block',
+      build: (bytes) =>
+        `module x\n\nrequire (\n${repeatEntries(bytes, (i) => `\tgithub.com/aws/aws-sdk-go-${i} v1.0.0\n`)})\n`,
+    },
+    {
+      mode: 'single-line require',
+      build: (bytes) =>
+        `module x\n\n${repeatEntries(bytes, (i) => `require github.com/aws/aws-sdk-go-${i} v1.0.0\n`)}`,
+    },
+  ],
+  'build.gradle': [
+    {
+      mode: 'Groovy DSL',
+      build: (bytes) =>
+        repeatEntries(bytes, (i) => `    implementation "com.amazonaws.g${i}:aws-java-sdk:1.0"\n`),
+    },
+    {
+      mode: 'Kotlin DSL',
+      build: (bytes) =>
+        repeatEntries(bytes, (i) => `    implementation("com.amazonaws.k${i}:aws-java-sdk:1.0")\n`),
+    },
+    {
+      mode: 'platform() BOM',
+      build: (bytes) =>
+        repeatEntries(
+          bytes,
+          (i) => `    implementation platform("com.amazonaws.b${i}:aws-java-sdk-bom:1.0")\n`,
+        ),
+    },
+  ],
+  Gemfile: [
+    { mode: 'gem lines', build: (bytes) => repeatEntries(bytes, (i) => `gem "aws-sdk-${i}"\n`) },
+  ],
+  'Cargo.toml': [
+    {
+      mode: '[dependencies]',
+      build: (bytes) =>
+        `[dependencies]\n${repeatEntries(bytes, (i) => `rusoto_core_${i} = "0.48"\n`)}`,
+    },
+    {
+      mode: '[dependencies.crate] tables',
+      build: (bytes) =>
+        repeatEntries(bytes, (i) => `[dependencies.rusoto_core_${i}]\nversion = "0.48"\n`),
+    },
+  ],
+  'composer.json': [{ mode: 'require', build: (bytes) => composerJson(bytes) }],
+  csproj: [
+    {
+      mode: 'PackageReference',
+      build: (bytes) =>
+        `<Project>\n${repeatEntries(bytes, (i) => `  <PackageReference Include="AWSSDK.Core${i}" Version="3.0" />\n`)}</Project>\n`,
+    },
+  ],
+  'packages.config': [
+    {
+      mode: 'package entries',
+      build: (bytes) =>
+        `<packages>\n${repeatEntries(bytes, (i) => `  <package id="AWSSDK.Core${i}" version="3.0" />\n`)}</packages>\n`,
+    },
+  ],
 };
+
+// One row per (kind, mode), so every form gets the full three tests and names
+// itself in their titles.
+const MANIFEST_CASES: readonly [ManifestKind, string, (bytes: number) => string][] = Object.entries(
+  MANIFEST_SHAPES,
+).flatMap(([kind, shapes]) =>
+  shapes.map(
+    (shape) =>
+      [kind as ManifestKind, shape.mode, shape.build] as [
+        ManifestKind,
+        string,
+        (bytes: number) => string,
+      ],
+  ),
+);
 
 // Repeats `entry` until the result reaches `bytes`. Counted by the length
 // already accumulated rather than by an estimated entry size, so a dialect
@@ -836,16 +944,16 @@ function expectLinear(
   ).toBeLessThanOrEqual(WORSE_THAN_LINEAR);
 }
 
-describe.each(Object.entries(MANIFEST_SHAPES) as [ManifestKind, (bytes: number) => string][])(
-  'the %s parse is linear in file length',
-  (kind, shape) => {
+describe.each(MANIFEST_CASES)(
+  'the %s parse is linear in file length, reading %s',
+  (kind, mode, shape) => {
     it('extracts a hit count that grows with the file, so the readings below are not vacuous', () => {
       const small = extractManifestSdks(shape(SMALL), kind).length;
       const large = extractManifestSdks(shape(LINEAR_LARGE), kind).length;
       expect(
         small,
-        `this shape yielded ${String(small)} hits for ${kind}, so the parse below is measured ` +
-          `doing nothing and reads linear whatever it does. Fix the shape, not the bar.`,
+        `this shape yielded ${String(small)} hits for ${kind} reading ${mode}, so the parse below ` +
+          `is measured doing nothing and reads linear whatever it does. Fix the shape, not the bar.`,
       ).toBeGreaterThan(10);
       expect(
         large,
@@ -853,12 +961,12 @@ describe.each(Object.entries(MANIFEST_SHAPES) as [ManifestKind, (bytes: number) 
           `${String(LINEAR_SPAN)}, so its hit count does NOT grow with the file. The ratio below ` +
           `then measures a parse whose per-hit work cannot show up in it, and reads linear ` +
           `however the parse behaves. Either this shape stopped growing with its byte budget, or ` +
-          `the dialect stopped matching the entry it emits.`,
+          `${kind} stopped matching the ${mode} entry it emits.`,
       ).toBeGreaterThan(small);
     });
 
     it('stays inside the budget at the 1 MB cap', () => {
-      const text = MANIFEST_SHAPES[kind](MB);
+      const text = shape(MB);
       const hits = extractManifestSdks(text, kind);
       // Controls first: a file the generator built short, or one the parse
       // found nothing in, satisfies the budget while proving nothing.
@@ -868,15 +976,18 @@ describe.each(Object.entries(MANIFEST_SHAPES) as [ManifestKind, (bytes: number) 
       const ms = burned(() => extractManifestSdks(text, kind));
       expect(
         ms,
-        `extractManifestSdks burned ${ms.toFixed(1)}ms of CPU on a 1 MB ${kind} carrying ` +
-          `${String(hits.length)} dependencies (budget ${String(EXTRACTION_BUDGET_MS)}ms). This ` +
-          `pass runs on the calling thread with nothing able to interrupt it.`,
+        `extractManifestSdks burned ${ms.toFixed(1)}ms of CPU on a 1 MB ${kind} reading ${mode} ` +
+          `and carrying ${String(hits.length)} dependencies (budget ` +
+          `${String(EXTRACTION_BUDGET_MS)}ms). This pass runs on the calling thread with nothing ` +
+          `able to interrupt it.`,
       ).toBeLessThan(EXTRACTION_BUDGET_MS);
     });
 
-    it('costs four times as much on four times the input, not sixteen', () => {
+    // Titled from the span rather than around it, so widening LINEAR_SPAN again
+    // cannot leave this name describing the span before it.
+    it(`costs ${String(LINEAR_SPAN)}x as much on ${String(LINEAR_SPAN)}x the input, not ${String(LINEAR_SPAN ** 2)}x`, () => {
       expectLinear(
-        `the ${kind} parse`,
+        `the ${kind} parse reading ${mode}`,
         growth(
           (bytes) => {
             const text = shape(bytes);

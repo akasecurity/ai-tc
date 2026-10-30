@@ -95,6 +95,7 @@ import {
   usesOf,
   writeScopes,
 } from './helpers/workflow-yaml.js';
+import { RETIRED_RUNNER_IMAGES, runnerImageForTarget } from './helpers/runner-images.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const WORKFLOW = join(REPO_ROOT, '.github', 'workflows', 'release-binaries.yml');
@@ -257,6 +258,19 @@ const attestedGlobs = () => inputLines(attestStep(), 'subject-path');
 const publishedGlobs = () => [
   ...new Set(releasePublishSteps().flatMap((step) => inputLines(step, 'files'))),
 ];
+
+describe('the binary fan-out runs on supported runner images', () => {
+  // Resolved inside the `it` for the reason given at the top of this file's
+  // sibling readers: an assertion raised from a `describe` body is a collection
+  // error, which reports the file as `(0 test)` and unruns every other suite in it.
+  it('builds darwin-arm64 on a macOS image GitHub has not retired', () => {
+    const os = runnerImageForTarget(workflow(), 'build', 'darwin-arm64');
+    expect(
+      RETIRED_RUNNER_IMAGES.includes(os),
+      `the darwin-arm64 leg pins \`${os}\`, a retired macOS image: a job queued on one is terminated rather than given a runner, and the macOS archive this release renders its Homebrew formula and Scoop manifest from is never produced`,
+    ).toBe(false);
+  });
+});
 
 describe('the release job attests the assets it publishes', () => {
   it('carries a step named for the attestation, which every case below reads inside', () => {

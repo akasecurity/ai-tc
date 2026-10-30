@@ -157,7 +157,11 @@ export async function runDashboard(argv: string[]): Promise<void> {
     return;
   }
   process.stdout.write('Building the web-ui (first run — this can take a minute)…\n');
-  const build = spawn(process.execPath, [nextBin, 'build'], { cwd: webUiDir, stdio: 'inherit' });
+  // Pinned to webpack: Turbopack (the Next 16 default) cannot resolve the scan worker that is started by path.
+  const build = spawn(process.execPath, [nextBin, 'build', '--webpack'], {
+    cwd: webUiDir,
+    stdio: 'inherit',
+  });
   build.on('exit', (code) => {
     if (code !== 0) {
       process.stderr.write('aka dashboard: web-ui build failed\n');

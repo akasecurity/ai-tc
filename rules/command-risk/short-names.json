@@ -7,5 +7,9 @@
   "command-risk/credential-file-read": "Credential file read",
   "command-risk/credential-file-grep": "Credential file search",
   "command-risk/credential-file-access": "Credential file read",
-  "command-risk/protected-path-access": "Protected path access"
+  "command-risk/protected-path-access": "Protected path access",
+  "command-risk/object-storage-upload": "Object storage upload",
+  "command-risk/alibaba-oss-host": "Alibaba OSS host",
+  "command-risk/download-then-execute": "Download then execute",
+  "command-risk/recon-then-egress": "Recon with egress"
 }

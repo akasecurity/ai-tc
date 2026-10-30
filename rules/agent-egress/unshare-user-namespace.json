@@ -1,0 +1,19 @@
+{
+  "specVersion": 1,
+  "id": "agent-egress/unshare-user-namespace",
+  "name": "unshare into a new user namespace",
+  "category": "custom",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\b(?=(?:unshare)\\b)(?<=(?:^|[;&|({\\x60'\"]|\\$\\()[ \\t]*(?:(?:sudo|doas|command|exec|nohup|time)[ \\t]+(?:-[A-Za-z]{1,8}[ \\t]+){0,3})?(?:[\\w.~-]*/){0,8})(?:unshare)\\b(?:[ \\t]+(?:-[A-Za-z]{1,10}|--(?:propagation|setgroups|setuid|setgid|root|wd|map-group|map-users|map-groups)[ \\t]+[^\\s;|&-][^\\s;|&]{0,59}|--[a-z-]{1,30}(?:=[^\\s;|&]{1,60})?)){0,8}?[ \\t]+(?:-[A-Za-z]{0,10}[Urc][A-Za-z]{0,10}|--user|--map-root-user|--map-current-user|--map-user(?:=|[ \\t]+)[^\\s;|&]{1,60})(?=[\\s;|&)'\"]|$)",
+    "flags": "gm"
+  },
+  "examples": [
+    "unshare -Urm --propagation private sh -c 'mount -t tmpfs none /mnt'",
+    "unshare --user --map-root-user bash"
+  ],
+  "appliesTo": {
+    "eventKinds": ["tool_use"]
+  }
+}

@@ -328,6 +328,26 @@ describe('redactLeakedKeys', () => {
       expect(existsSync(stranded)).toBe(false);
     });
 
+    it('sweeps the pid-free copy an older build stranded', () => {
+      const artifact = join(rolloutRoot, 'legacy.jsonl');
+      writeFileSync(artifact, `leaked ${ROLLOUT_KEY} here`);
+      // The name this module wrote before the pid went into it. No pid means no
+      // owner to ask about, so it is swept unconditionally — otherwise the one
+      // leftover shape already sitting on real disks is the one shape the sweep
+      // cannot see, and a whole plaintext copy stays there for good.
+      const legacy = `${artifact}.aka-redact.tmp`;
+      writeFileSync(legacy, `stranded copy ${ROLLOUT_KEY} here`);
+
+      const count = redactLeakedKeys(
+        [{ where: { filePath: artifact }, rawValue: ROLLOUT_KEY }],
+        scope,
+      );
+
+      expect(count).toBe(1);
+      expect(existsSync(legacy)).toBe(false);
+      expect(orphanedTmpEntries(rolloutRoot)).toEqual([]);
+    });
+
     it('sweeps a stranded copy even when this pass strikes nothing', () => {
       const file = join(rolloutRoot, 'nostrike.jsonl');
       const original = 'nothing leaked here';
@@ -367,8 +387,6 @@ describe('redactLeakedKeys', () => {
       // the sweep would widen to any `*.aka-redact.tmp` in the directory and
       // take a neighbour's bytes with it.
       const bystanders = [
-        // The pid-free shape: nothing this module mints.
-        `${file}.aka-redact.tmp`,
         `${file}.notapid.aka-redact.tmp`,
         `${file}. 7.aka-redact.tmp`,
         // A temp belonging to a DIFFERENT artifact in the same directory.

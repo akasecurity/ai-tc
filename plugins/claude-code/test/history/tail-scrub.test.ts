@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import {
   appendFileSync,
   chmodSync,
+  existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -253,6 +255,148 @@ describe('scrubTranscriptTail', () => {
       expectNoEchoOf(after, SECRET);
     },
   );
+
+  describe('.aka-scrub.tmp cleanup', () => {
+    // A pid no platform can hand out: Linux caps `pid_max` at 2^22 and macOS at
+    // 99999, so `kill(pid, 0)` answers ESRCH here rather than racing some real
+    // process. That makes "a killed earlier run" a fixture rather than a gamble
+    // on pid reuse.
+    const DEAD_PID = 1_073_741_823;
+
+    // The temp path this module mints for `transcript` when it runs as `pid`.
+    const tempName = (transcript: string, pid: number): string =>
+      `${transcript}.${String(pid)}.aka-scrub.tmp`;
+
+    // Entries left behind matching the atomic-write sibling-temp-file naming.
+    const orphanedTmpEntries = (): string[] =>
+      readdirSync(join(transcriptRoot, '-Users-me-project'))
+        .filter((entry) => entry.endsWith('.aka-scrub.tmp'))
+        .sort();
+
+    it('clears a leftover carrying its own pid rather than writing through it', async (ctx) => {
+      if (process.platform === 'win32') ctx.skip('POSIX permission bits');
+      const file = transcriptFile('leftover.jsonl', `{"text":"key ${SECRET}"}\n`);
+      chmodSync(file, 0o600);
+      // The one temp path this process would pick, left behind by an earlier
+      // process that happened to carry the same pid. Writing through it would
+      // publish the transcript with the leftover's permission bits, since a
+      // write applies its mode only when it CREATES the file.
+      writeFileSync(tempName(file, process.pid), 'stale', { mode: 0o644 });
+
+      expect(await scrubTranscriptTail(file, deps)).toEqual({ rewritten: 1 });
+
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+      const after = readFileSync(file, 'utf8');
+      expect(after).toContain('[[aka:');
+      expectNoEchoOf(after, SECRET);
+      expect(orphanedTmpEntries()).toEqual([]);
+    });
+
+    it('sweeps the copy a killed earlier run stranded beside the transcript', async () => {
+      const file = transcriptFile('stranded.jsonl', `{"text":"key ${SECRET}"}\n`);
+      // A temp a run that died between the write and the rename left behind: a
+      // whole copy of the transcript that nothing else would ever remove.
+      const stranded = tempName(file, DEAD_PID);
+      writeFileSync(stranded, `{"text":"stranded copy ${SECRET}"}\n`);
+
+      expect(await scrubTranscriptTail(file, deps)).toEqual({ rewritten: 1 });
+
+      expect(existsSync(stranded)).toBe(false);
+      expect(orphanedTmpEntries()).toEqual([]);
+    });
+
+    it('sweeps the pid-free copy an older build stranded', async () => {
+      const file = transcriptFile('legacy.jsonl', `{"text":"key ${SECRET}"}\n`);
+      // The name this module wrote before the pid went into it. No pid means no
+      // owner to ask about, so it is swept unconditionally — otherwise the one
+      // leftover shape already sitting on real disks is the one shape the sweep
+      // cannot see, and a whole plaintext copy stays there for good.
+      const legacy = `${file}.aka-scrub.tmp`;
+      writeFileSync(legacy, `{"text":"stranded copy ${SECRET}"}\n`);
+
+      expect(await scrubTranscriptTail(file, deps)).toEqual({ rewritten: 1 });
+
+      expect(existsSync(legacy)).toBe(false);
+      expect(orphanedTmpEntries()).toEqual([]);
+    });
+
+    it('sweeps a stranded copy even when this pass rewrites nothing', async () => {
+      const content = '{"text":"all clear"}\n';
+      const file = transcriptFile('clean.jsonl', content);
+      const stranded = tempName(file, DEAD_PID);
+      writeFileSync(stranded, `{"text":"stranded copy ${SECRET}"}\n`);
+
+      // The transcript stays byte-identical — the sweep runs on every transcript
+      // the pass opens, not only on the ones it goes on to rewrite.
+      expect(await scrubTranscriptTail(file, deps)).toEqual({ rewritten: 0 });
+      expect(readFileSync(file, 'utf8')).toBe(content);
+      expect(existsSync(stranded)).toBe(false);
+    });
+
+    it('sweeps a stranded copy even when the transcript is too large to scrub', async () => {
+      const content = `{"text":"key ${SECRET}"}\n`;
+      const file = transcriptFile('oversized.jsonl', content);
+      const stranded = tempName(file, DEAD_PID);
+      writeFileSync(stranded, `{"text":"stranded copy ${SECRET}"}\n`);
+
+      // A transcript over the cap is skipped whole, and it only ever grows — so
+      // a sweep that ran after the size gate would never reach this copy again.
+      expect(await scrubTranscriptTail(file, { ...deps, maxBytes: 8 })).toBeNull();
+      expect(readFileSync(file, 'utf8')).toBe(content);
+      expect(existsSync(stranded)).toBe(false);
+    });
+
+    it("leaves a live run's temp file alone", async () => {
+      const file = transcriptFile('live.jsonl', `{"text":"key ${SECRET}"}\n`);
+      // The parent of this test process is alive by construction, so its temp is
+      // work in progress rather than a leftover — sweeping it would delete
+      // another run's bytes out from under its own rename.
+      const live = tempName(file, process.ppid);
+      writeFileSync(live, 'in flight');
+
+      await scrubTranscriptTail(file, deps);
+
+      expect(readFileSync(live, 'utf8')).toBe('in flight');
+    });
+
+    it('never removes a sibling it did not name', async () => {
+      const file = transcriptFile('bystanders.jsonl', `{"text":"key ${SECRET}"}\n`);
+      const bystanders = [
+        `${file}.notapid.aka-scrub.tmp`,
+        `${file}. 7.aka-scrub.tmp`,
+        // A temp belonging to a DIFFERENT transcript in the same directory.
+        tempName(join(transcriptRoot, '-Users-me-project', 'other.jsonl'), DEAD_PID),
+        // The suffix has to end the name, not merely appear in it.
+        `${tempName(file, DEAD_PID)}.bak`,
+      ];
+      for (const path of bystanders) writeFileSync(path, 'not ours');
+
+      await scrubTranscriptTail(file, deps);
+
+      for (const path of bystanders) expect(existsSync(path)).toBe(true);
+    });
+
+    it('refuses to publish through a symlink planted at its temp path', async (ctx) => {
+      if (process.platform === 'win32') {
+        ctx.skip('unprivileged symlink creation is not available on Windows');
+      }
+      const content = `{"text":"key ${SECRET}"}\n`;
+      const file = transcriptFile('planted.jsonl', content);
+      // A file outside every artifact root, standing in for whatever a planted
+      // link would aim at. Following the link would copy this transcript's whole
+      // contents over it and then rename the link itself over the transcript.
+      const outside = join(outsideRoot, 'notes.txt');
+      writeFileSync(outside, 'untouched');
+      symlinkSync(outside, tempName(file, process.pid));
+
+      // Doubt at the temp path comes out as "did nothing": no write, no rewrite.
+      expect(await scrubTranscriptTail(file, deps)).toBeNull();
+      expect(readFileSync(outside, 'utf8')).toBe('untouched');
+      expect(readFileSync(file, 'utf8')).toBe(content);
+      expect(lstatSync(file).isSymbolicLink()).toBe(false);
+      expect(orphanedTmpEntries()).toEqual([]);
+    });
+  });
 
   // The fault posture when consent vanished mid-pass (the call site gates on
   // consent, so a consent-less glue is only reachable via revocation between

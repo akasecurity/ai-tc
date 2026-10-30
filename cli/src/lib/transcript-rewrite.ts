@@ -137,6 +137,10 @@ function isProcessAlive(pid: number): boolean {
  * when the pid in the name names no living process. A concurrent run's temp is
  * therefore left alone; our own pid needs no liveness check, since the process
  * asking is the one that would be using it.
+ *
+ * Unlike the plugins' sweeps, this one accepts no pid-free legacy name: this
+ * suffix never reached a published build without the pid in it, so there is no
+ * shape of it stranded on any disk to clear.
  */
 function sweepStrandedTemps(realPath: string): void {
   const dir = dirname(realPath);

@@ -175,11 +175,12 @@ function isProcessAlive(pid: number): boolean {
  *
  * Deliberately the narrowest sweep that can do that, because it deletes: only
  * siblings of THIS artifact, only names this module itself mints (the exact
- * `<basename>.<digits>.aka-redact.tmp` shape — the trailing dot on the prefix
- * keeps the artifact itself from ever matching), only regular files, and only
- * when the pid in the name names no living process. A concurrent run's temp is
- * therefore left alone; our own pid needs no liveness check, since the process
- * asking is the one that would be using it.
+ * `<basename>.<digits>.aka-redact.tmp` shape, plus the pid-free
+ * `<basename>.aka-redact.tmp` a published build left behind — the trailing dot on
+ * the prefix keeps the artifact itself from ever matching), only regular files,
+ * and only when the pid in the name names no living process. A concurrent run's
+ * temp is therefore left alone; our own pid needs no liveness check, since the
+ * process asking is the one that would be using it.
  */
 function sweepStrandedTemps(realPath: string): void {
   const dir = dirname(realPath);
@@ -193,9 +194,17 @@ function sweepStrandedTemps(realPath: string): void {
   for (const name of names) {
     if (!name.startsWith(prefix) || !name.endsWith(TMP_SUFFIX)) continue;
     const pidPart = name.slice(prefix.length, name.length - TMP_SUFFIX.length);
-    if (!/^\d+$/.test(pidPart)) continue;
-    const pid = Number(pidPart);
-    if (pid !== process.pid && isProcessAlive(pid)) continue;
+    // An empty pid part is the LEGACY shape — `<basename>.aka-redact.tmp`, the name
+    // a published build wrote before the pid went into it. It names no owner to
+    // ask about, so it is always swept: leaving it keeps a whole plaintext copy
+    // of the artifact on disk for good, where the worst case of removing it is an
+    // older build's rename failing, which that build already treats as having
+    // done nothing.
+    if (pidPart !== '') {
+      if (!/^\d+$/.test(pidPart)) continue;
+      const pid = Number(pidPart);
+      if (pid !== process.pid && isProcessAlive(pid)) continue;
+    }
     try {
       const stranded = join(dir, name);
       // lstat, and regular files only: a symlink or a directory wearing this

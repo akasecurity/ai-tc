@@ -479,6 +479,26 @@ describe('redactLeakedKeys', () => {
       expect(orphanedTmpEntries(transcriptRoot)).toEqual([]);
     });
 
+    it('sweeps the pid-free copy an older build stranded', () => {
+      const artifact = join(transcriptRoot, 'legacy.jsonl');
+      writeFileSync(artifact, `leaked ${TRANSCRIPT_KEY} here`);
+      // The name this module wrote before the pid went into it. No pid means no
+      // owner to ask about, so it is swept unconditionally — otherwise the one
+      // leftover shape already sitting on real disks is the one shape the sweep
+      // cannot see, and a whole plaintext copy stays there for good.
+      const legacy = `${artifact}.aka-redact.tmp`;
+      writeFileSync(legacy, `stranded copy ${TRANSCRIPT_KEY} here`);
+
+      const count = redactLeakedKeys(
+        [{ where: { filePath: artifact }, rawValue: TRANSCRIPT_KEY }],
+        scope,
+      );
+
+      expect(count).toBe(1);
+      expect(existsSync(legacy)).toBe(false);
+      expect(orphanedTmpEntries(transcriptRoot)).toEqual([]);
+    });
+
     it('sweeps a stranded copy even when this pass strikes nothing', () => {
       const transcriptFile = join(transcriptRoot, 'session.jsonl');
       const originalContent = 'nothing leaked here';
@@ -516,8 +536,6 @@ describe('redactLeakedKeys', () => {
       const transcriptFile = join(transcriptRoot, 'session.jsonl');
       writeFileSync(transcriptFile, `leaked ${TRANSCRIPT_KEY} here`);
       const bystanders = [
-        // The pid-free shape: nothing this module mints.
-        `${transcriptFile}.aka-redact.tmp`,
         `${transcriptFile}.notapid.aka-redact.tmp`,
         `${transcriptFile}. 7.aka-redact.tmp`,
         // A temp belonging to a DIFFERENT artifact in the same directory.

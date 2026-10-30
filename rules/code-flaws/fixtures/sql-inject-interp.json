@@ -186,5 +186,61 @@
     "label": "jq select on a field named from stays clean",
     "text": "jq '.[] | select(.from == $h)' file.json",
     "shouldMatch": false
+  },
+  {
+    "label": "INSERT IGNORE modifier",
+    "text": "\"INSERT IGNORE INTO t VALUES (#{v})\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "INSERT OR REPLACE modifier",
+    "text": "\"INSERT OR REPLACE INTO t VALUES (#{v})\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "UPDATE with a table alias",
+    "text": "\"UPDATE users AS u SET name = '#{name}'\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "UPDATE over a comma table list",
+    "text": "\"UPDATE t1, t2 SET a = #{a}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "UPDATE ONLY",
+    "text": "\"UPDATE ONLY users SET a = #{a}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "multi-table DELETE with FROM after the target",
+    "text": "\"DELETE t1 FROM t1 JOIN t2 WHERE id = #{id}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "UPDATE LOW_PRIORITY modifier",
+    "text": "\"UPDATE LOW_PRIORITY users SET a = #{a}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "prose with delete ... from is not a multi-table DELETE",
+    "text": "echo \"delete follows from this. revert.sh and the record sit in the same $B\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "prose with update ... set is not a statement",
+    "text": "msg = \"update the readme and then set #{name} aside\"",
+    "shouldMatch": false,
+    "filePath": "x.rb"
+  },
+  {
+    "label": "interpolated BETWEEN range",
+    "text": "\"SELECT * FROM t WHERE x BETWEEN #{a} AND #{b}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "BETWEEN as the leading WHERE comparison",
+    "text": "sql = \"WHERE created BETWEEN '#{from}' AND '#{to}'\"",
+    "shouldMatch": true
   }
 ]

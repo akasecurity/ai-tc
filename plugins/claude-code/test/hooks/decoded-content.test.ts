@@ -102,7 +102,10 @@ describe('isMcpTool', () => {
 
 describe('isOutboundCall on a long command', () => {
   // CPU time rather than wall time, so a loaded machine that pauses the process
-  // does not count; the fastest of a few runs, so a cold cache does not either.
+  // does not count. Each sample repeats the call until it has used 100 ms of CPU,
+  // so a clock that advances in coarse steps (about 15.6 ms on Windows) still
+  // reads it well, and the sample is the mean per call. The result is the fastest
+  // of a few samples, so a cold cache does not count either.
   const cpuMs = (): number => {
     const { user, system } = process.cpuUsage();
     return (user + system) / 1000;
@@ -111,8 +114,12 @@ describe('isOutboundCall on a long command', () => {
     let best = Infinity;
     for (let run = 0; run < 7; run += 1) {
       const start = cpuMs();
-      isOutboundCall(...bash(command));
-      best = Math.min(best, cpuMs() - start);
+      let calls = 0;
+      do {
+        isOutboundCall(...bash(command));
+        calls += 1;
+      } while (cpuMs() - start < 100);
+      best = Math.min(best, (cpuMs() - start) / calls);
     }
     return best;
   };

@@ -11,7 +11,6 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import {
-  allRules,
   evalDir,
   loadReplaySet,
   packRules,
@@ -49,6 +48,7 @@ describe('Steganographic-signature attack chains (arXiv 2610.31974) replayed thr
     async () => {
       const outcomes = await outcomesFor('default');
       for (const o of outcomes.filter((x) => x.call.kind === 'attack')) {
+        expect(o.decodeVerdict, o.call.label).toBe('allowed');
         expect(o.verdict, o.call.label).toBe('allowed');
         expect(packRules(STEGO, o), o.call.label).toEqual(
           expect.arrayContaining([...(o.call.rules ?? [])]),
@@ -63,6 +63,7 @@ describe('Steganographic-signature attack chains (arXiv 2610.31974) replayed thr
     async () => {
       const outcomes = await outcomesFor('strict');
       for (const o of outcomes.filter((x) => x.call.kind === 'attack')) {
+        expect(o.decodeVerdict, o.call.label).toBe('allowed');
         expect(o.verdict, o.call.label).toBe('blocked');
         expect(packRules(STEGO, o), o.call.label).toEqual(
           expect.arrayContaining([...(o.call.rules ?? [])]),
@@ -79,7 +80,7 @@ describe('Steganographic-signature attack chains (arXiv 2610.31974) replayed thr
         const outcomes = await outcomesFor(mode);
         for (const o of outcomes.filter((x) => x.call.kind === 'lookalike')) {
           expect(o.verdict, `${mode}: ${o.call.label}`).toBe('allowed');
-          expect(allRules(o), `${mode}: ${o.call.label}`).toEqual([]);
+          expect(packRules(STEGO, o), `${mode}: ${o.call.label}`).toEqual([]);
         }
       }
     },

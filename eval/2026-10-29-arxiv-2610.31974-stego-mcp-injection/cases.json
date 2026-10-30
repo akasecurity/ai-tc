@@ -593,7 +593,7 @@
       "kind": "lookalike",
       "tool": "mcp__mail__send_email",
       "input": {
-        "to": "colleague",
+        "to": "colleague@example.com",
         "subject": "Intro",
         "body": "Notes from the call."
       }

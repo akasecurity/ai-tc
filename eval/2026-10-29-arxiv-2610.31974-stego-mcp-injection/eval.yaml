@@ -15,5 +15,5 @@ cases:
   attack: 29
   lookalike: 9
 result:
-  block: met; 29 of 29 attack chains blocked with agent-harness-tamper on Block; 0 of 9 look-alikes flagged
-  default: met; 29 of 29 attack chains detected and logged on a default install, none blocked; 0 of 9 look-alikes flagged
+  block: met; all 29 attack chains (6 distinct outbound calls, 4 decode-tool names; the decoded text never reaches the matcher) blocked with agent-harness-tamper on Block; 0 of 9 look-alikes flagged
+  default: met; all 29 attack chains (6 distinct outbound calls, 4 decode-tool names) detected and logged on a default install, none blocked; 0 of 9 look-alikes flagged

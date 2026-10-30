@@ -25,6 +25,9 @@ import { runHookAsync, tempHomeEnv } from './run-hook.ts';
 // Per spawn, so a loaded box does not trip run-hook's 15 s default across the 24 parallel hooks.
 const HOOK_TIMEOUT_MS = 90_000;
 
+// Calls replayed at once; keeps the hook processes in flight near the 12 the sibling set runs.
+const REPLAY_CONCURRENCY = 12;
+
 export type ReplayMode = 'default' | 'strict';
 export type Verdict = 'blocked' | 'warned' | 'allowed';
 
@@ -33,7 +36,7 @@ export interface ReplayCall {
   label: string;
   /** `attack` calls must be caught; `lookalike` calls must stay silent. */
   kind: 'attack' | 'lookalike';
-  tool: string;
+  tool: 'Bash' | 'Write' | 'Edit' | 'WebFetch' | `mcp__${string}`;
   /**
    * Text an earlier tool returned into the session, replayed through the
    * PostToolUse hook in the same home before this call runs.
@@ -157,7 +160,22 @@ async function replayCall(
 }
 
 export async function replaySet(set: ReplaySet, mode: ReplayMode): Promise<ReplayOutcome[]> {
-  return Promise.all(set.calls.map((call) => replayCall(set, call, mode)));
+  // A bounded pool: each call spawns hook processes, and starting every call at
+  // once loads a small runner enough to trip the per-spawn timeout.
+  const outcomes: (ReplayOutcome | undefined)[] = set.calls.map(() => undefined);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < set.calls.length) {
+      const i = next++;
+      const call = set.calls[i];
+      if (call !== undefined) outcomes[i] = await replayCall(set, call, mode);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(REPLAY_CONCURRENCY, set.calls.length) }, worker));
+  return outcomes.map((o) => {
+    if (o === undefined) throw new Error('missing outcome');
+    return o;
+  });
 }
 
 /** Every rule that fired on a call, whichever pack it belongs to. */
@@ -184,7 +202,7 @@ export function warningRules(outcome: ReplayOutcome): string[] {
 }
 
 function cell(set: ReplaySet, outcome: ReplayOutcome): string {
-  const fired = outcome.call.kind === 'lookalike' ? allRules(outcome) : packRules(set, outcome);
+  const fired = packRules(set, outcome);
   const rules = fired.map((r) => `\`${r}\``);
   if (outcome.verdict === 'blocked')
     return `blocked${rules.length > 0 ? `: ${rules.join(', ')}` : ''}`;

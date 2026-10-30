@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { POINTER_FORMAT_VERSION, PointerToken } from '@akasecurity/schema';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { FingerprintKey } from '../../src/fingerprint.ts';
 import {
@@ -133,7 +133,7 @@ describe('SecretVault', () => {
 
       // Re-keying fingerprints the exact bytes too, so the twins do not collide.
       const next = rotateFingerprintKey(dir);
-      await expect(vault.refreshFingerprints(next)).resolves.toBe(2);
+      await expect(vault.refreshFingerprints(next)).resolves.toEqual({ refreshed: 2, skipped: 0 });
       expect(repo.byValueFingerprint(exactFingerprintValue(next, padded))).not.toBeNull();
       expect(repo.byValueFingerprint(exactFingerprintValue(next, SECRET))).not.toBeNull();
     });
@@ -581,7 +581,7 @@ describe('SecretVault', () => {
       const before = must(repo.listAll()[0], 'a vault row');
 
       const next = rotateFingerprintKey(dir);
-      expect(await vault.refreshFingerprints(next)).toBe(1);
+      expect(await vault.refreshFingerprints(next)).toEqual({ refreshed: 1, skipped: 0 });
 
       const after = must(repo.listAll()[0], 'a vault row');
       expect(after.pointerId).toBe(before.pointerId);
@@ -599,6 +599,80 @@ describe('SecretVault', () => {
       fingerprintKey = next;
       expect(await tokenize(SECRET)).toBe(token);
       expect(repo.countEntries()).toBe(1);
+    });
+
+    // A row whose ciphertext will not authenticate — the fault the pass is
+    // best-effort about. Corrupting the auth tag rather than the ciphertext
+    // targets the AEAD check itself, so the row fails for exactly one reason
+    // and no other field has to be kept consistent with it.
+    const breakRow = (pointerId: string): void => {
+      db.prepare('UPDATE secret_vault SET auth_tag = ? WHERE pointer_id = ?').run(
+        randomBytes(16).toString('base64'),
+        pointerId,
+      );
+    };
+
+    const rowFor = (raw: string): string =>
+      must(repo.byValueFingerprint(exactFingerprintValue(fingerprintKey, raw)), `row for ${raw}`)
+        .pointerId;
+
+    it('counts a row it cannot open as skipped instead of reporting a clean pass', async () => {
+      await tokenize(SECRET);
+      await tokenize(OTHER);
+      const damaged = rowFor(OTHER);
+      const healthy = rowFor(SECRET);
+      breakRow(damaged);
+
+      const next = rotateFingerprintKey(dir);
+      expect(await vault.refreshFingerprints(next)).toEqual({ refreshed: 1, skipped: 1 });
+
+      // The pass did its job on what it could reach, and the skip is the number
+      // the caller needs: the damaged row is still at the OLD epoch, so a fresh
+      // detection of its value fingerprints under the new key, misses it, and
+      // mints a second pointer for a value that already has one.
+      expect(must(repo.byPointerId(healthy), 'healthy row').fingerprintKeyVersion).toBe(
+        next.version,
+      );
+      expect(must(repo.byPointerId(damaged), 'damaged row').fingerprintKeyVersion).toBe(
+        fingerprintKey.version,
+      );
+    });
+
+    // The discrimination the bare count could not make: these two cases are
+    // "nothing needed doing" and "nothing could be done", and a pass that
+    // reported only its successes answered 0 to both.
+    it('reports an empty vault as a clean pass rather than a total failure', async () => {
+      expect(repo.countEntries()).toBe(0);
+      const next = rotateFingerprintKey(dir);
+      expect(await vault.refreshFingerprints(next)).toEqual({ refreshed: 0, skipped: 0 });
+    });
+
+    it('reports every row as skipped when none of them can be opened', async () => {
+      await tokenize(SECRET);
+      await tokenize(OTHER);
+      breakRow(rowFor(SECRET));
+      breakRow(rowFor(OTHER));
+
+      const next = rotateFingerprintKey(dir);
+      expect(await vault.refreshFingerprints(next)).toEqual({ refreshed: 0, skipped: 2 });
+    });
+
+    // The other route into the same skip: `#openRow` turns a fault into null,
+    // while a write that throws lands in the catch. Both are the same loss, so
+    // both have to reach the same counter — an accounting that credits only one
+    // of them understates the shortfall by however many rows took the other.
+    it('counts a refresh write that throws as skipped too', async () => {
+      await tokenize(SECRET);
+      const spy = vi.spyOn(repo, 'refreshFingerprint').mockImplementation(() => {
+        throw new Error('write failed');
+      });
+
+      const next = rotateFingerprintKey(dir);
+      try {
+        expect(await vault.refreshFingerprints(next)).toEqual({ refreshed: 0, skipped: 1 });
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 

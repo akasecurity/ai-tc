@@ -801,4 +801,26 @@ export class SqliteSecretVaultRepository {
       `SELECT COUNT(*) AS n FROM secret_vault v WHERE ${REUSED_PREDICATE}`,
     );
   }
+
+  /**
+   * Entries whose value fingerprint is NOT under `currentVersion` — the standing
+   * record of a fingerprint-key rotation whose re-key did not reach every row.
+   *
+   * This is the durable form of what `SecretVault.refreshFingerprints` reports
+   * once. That count is an event, gone the moment it is printed; this is the
+   * condition, and it stays true until some later rotation re-keys the rows. It
+   * is therefore the one that can answer "is a shortfall still outstanding?" —
+   * including for a rotation run from the CLI, which no dashboard render saw.
+   *
+   * `<>` rather than `<`: a row ahead of the current version is equally
+   * unmatchable, and that is reachable — a key file restored from a backup, or
+   * replaced after being lost, leaves rows stamped higher than the key is.
+   */
+  countStaleFingerprints(currentVersion: number): number {
+    return countScalar(
+      this.db,
+      'SELECT COUNT(*) AS n FROM secret_vault WHERE fingerprint_key_version <> :currentVersion',
+      { currentVersion },
+    );
+  }
 }

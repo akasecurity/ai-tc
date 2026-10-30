@@ -249,3 +249,81 @@ export function rotationBlockedLedgerNote(stillApprovable: number): string {
       : `${String(stillApprovable)} recently blocked detections ${window} are still approvable; after rotating, none are`;
   return `${subject}. They stay listed as a record of what was blocked — trigger the detection again to approve under the new key.`;
 }
+
+/**
+ * What a key rotation costs the secret vault when its fingerprint refresh does
+ * not reach every stored value, as a line the rotate surfaces show AFTER the
+ * rotation.
+ *
+ * Unlike the ledger note above, this one cannot be stated beforehand: whether a
+ * row opens is not known until the pass tries it. The vault is the one store a
+ * rotation re-keys rather than invalidates, so a complete pass has nothing to
+ * disclose — which is exactly why a partial one must say so rather than let the
+ * rotation report unqualified success.
+ *
+ * A row left at the old epoch still resolves, so no value is lost. What is lost
+ * is matchability: the same value detected again fingerprints under the NEW key,
+ * misses the stale row, and mints a second pointer for a secret that already has
+ * one in circulation.
+ *
+ * `skipped` of `refreshed + skipped` rather than a bare count: a numerator with
+ * no denominator cannot tell "nothing needed refreshing" apart from "every row
+ * failed", which is the whole reason this note exists.
+ *
+ * Returns null for a clean pass, so a caller surfaces exactly what it is given
+ * and never has to decide what counts as a shortfall.
+ *
+ * Both arguments are counts of ROWS, not a report of one particular pass, so the
+ * standing condition reads through the same sentence: a store that holds `total`
+ * entries of which `stale` are off the current key calls this with
+ * `(total - stale, stale)`. That is deliberate — the event and the condition are
+ * the same fact, and wording them separately is how two surfaces come to
+ * describe one state differently. Hence "an older fingerprint key" rather than
+ * "the previous" one: after two rotations a row left behind is two epochs back.
+ *
+ * It names the REMEDY'S OWN COST rather than saying "re-run the rotation", and
+ * that is not politeness. Re-keying these rows has exactly one lever — another
+ * rotation — and `rotateFingerprintKey` always mints a HIGHER version, so
+ * reaching for it invalidates every grant a second time. A reader told to retry
+ * without being told that destroys the grants they re-approved after the first
+ * rotation, to repair rows that were resolving fine.
+ *
+ * It also declines to promise the retry will work. A row is skipped because it
+ * could not be OPENED, and that covers two unlike causes the pass cannot tell
+ * apart: a key directory that cannot be read right now, which a later rotation
+ * does fix, and a damaged entry or a discarded key epoch, which nothing fixes —
+ * the plaintext is unrecoverable, so that row stays stale through every future
+ * rotation and re-reports itself each time. Hence "find out why" before a second
+ * rotation, and pruning named as the answer for the half that will never open.
+ *
+ * Lives here, beside `rotationBlockedLedgerNote`, for the same reason: `aka
+ * exception rotate-key` and the dashboard's rotate action disclose the cost of
+ * one irreversible action, and a second copy is how two surfaces come to state
+ * different costs for it.
+ */
+export function vaultRefreshShortfallNote(refreshed: number, skipped: number): string | null {
+  if (skipped <= 0) return null;
+  const considered = refreshed + skipped;
+  const noun = considered === 1 ? 'value' : 'values';
+  return `${String(skipped)} of ${String(considered)} stored ${noun} could not be re-keyed and still carry an older fingerprint key. Nothing stored is lost and each one still resolves, but detecting the same value again will miss it and mint a second pointer for a secret that already has one. Only another rotation re-keys them, and rotating again invalidates every exception grant a second time — so find out why the rows will not open before reaching for it. A key directory that cannot be read is worth a second rotation once fixed; a damaged entry will never open again and is better pruned than carried.`;
+}
+
+/**
+ * The whole-pass version of the note above: the refresh threw before it could
+ * report per-row counts, so every stored value is assumed to be at the old
+ * epoch.
+ *
+ * Deliberately claims no number. The throw can come from opening the store, the
+ * key custody, or the first row, so the pass does not know how many rows it
+ * never reached — and a figure invented here would be the one thing a reader
+ * could check and find wrong.
+ *
+ * Names the remedy's cost for the same reason the note above does: another
+ * rotation is the only thing that re-keys these rows, and it invalidates every
+ * grant again. A whole-pass fault is the likelier one to be transient — the
+ * store or the key custody, rather than any one row — so this variant points at
+ * the read before the retry and leaves pruning to the per-row note, which is the
+ * only one that can be about a specific unrecoverable entry.
+ */
+export const VAULT_REFRESH_FAILED_NOTE =
+  'The vault could not be re-keyed under the new fingerprint key, so every stored value still carries the previous one. Nothing stored is lost and they all still resolve, but detecting one of them again may mint a second pointer for a secret that already has one. Only another rotation re-keys them, and rotating again invalidates every exception grant a second time — check why the vault could not be read before reaching for it.';

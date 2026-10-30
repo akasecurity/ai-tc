@@ -389,3 +389,75 @@ describe('the exception detail route captures its render instant per request', (
     expect(second.renderedAt - first.renderedAt).toBe(2 * 60 * 60 * 1000);
   });
 });
+
+// The vault's side of a rotation, which the route reads from the store rather
+// than from whatever `rotateKey` returned. Three things are only visible here,
+// at the host that holds both halves:
+//
+//   - the count is taken against the key version ON DISK, so a row that was
+//     current before the rotation reads stale after it with no write of its own;
+//   - `total` comes from `countEntries`, so the notice's denominator is every
+//     entry held rather than the stale ones counted twice;
+//   - with no key present there is no version to compare against, and the route
+//     has to say nothing rather than call every row stale.
+describe('the exceptions route reads the vault’s fingerprint epoch from the store', () => {
+  /** One vault row stamped at `fingerprintKeyVersion`, written straight in. */
+  function seedVaultRow(pointerId: string, fingerprintKeyVersion: number): void {
+    const store = openLocalDatabase(dir);
+    try {
+      store.secretVault.upsert(
+        {
+          pointerId,
+          valueFingerprint: Buffer.from(pointerId).toString('hex').padEnd(64, '0'),
+          valueIdentityFingerprint: Buffer.from(pointerId).toString('hex').padEnd(64, '0'),
+          fingerprintKeyVersion,
+          keyVersion: 1,
+          category: 'secret',
+          ruleId: 'secrets/aws-access-key',
+          maskedMatch: 'AKIA…XYZQ',
+          provider: 'aws',
+          ciphertext: 'Y2lwaGVy',
+          nonce: 'bm9uY2U=',
+          authTag: 'dGFn',
+        },
+        Date.now(),
+      );
+    } finally {
+      store.close();
+    }
+  }
+
+  it('reports nothing stale while every row sits on the key that is on disk', async () => {
+    const version = loadOrCreateFingerprintKey(dir).version;
+    seedVaultRow('pointer-fresh', version);
+    resetSingleton();
+
+    expect(await renderPage().then((p) => p.vaultFingerprints)).toEqual({ stale: 0, total: 1 });
+  });
+
+  it('reports the rows an older epoch left behind, against every row held', async () => {
+    const version = loadOrCreateFingerprintKey(dir).version;
+    seedVaultRow('pointer-fresh', version);
+    seedVaultRow('pointer-stale-a', version - 1);
+    seedVaultRow('pointer-stale-b', version - 1);
+    resetSingleton();
+
+    // `total` is every entry, not the stale ones — pass `stale` as both and the
+    // notice reads "2 of 2" for a vault that is 1/3 healthy.
+    expect(await renderPage().then((p) => p.vaultFingerprints)).toEqual({ stale: 2, total: 3 });
+  });
+
+  it('says nothing about the vault when there is no key to compare rows to', async () => {
+    const version = loadOrCreateFingerprintKey(dir).version;
+    seedVaultRow('pointer-stale', version - 1);
+    // The row is stale by the count above; removing the key is what must stop
+    // the route claiming it, because "stale" has no meaning without a current
+    // version and every other surface on this page already reports the key.
+    rmSync(join(dir, 'exception.key'));
+    resetSingleton();
+
+    const props = await renderPage();
+    expect(props.keyState.status).toBe('absent');
+    expect(props.vaultFingerprints).toEqual({ stale: 0, total: 0 });
+  });
+});

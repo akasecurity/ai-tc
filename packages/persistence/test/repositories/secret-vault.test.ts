@@ -962,3 +962,49 @@ describe('SqliteSecretVaultRepository.listDerefs', () => {
     });
   });
 });
+
+// The durable counterpart to what `SecretVault.refreshFingerprints` reports once.
+// That count is an event and is gone the moment it is printed; this is the
+// standing condition, and it is what lets a surface answer "is a rotation's
+// shortfall still outstanding?" on any later render — including after a rotation
+// run from the CLI, which no dashboard render ever saw a result for.
+describe('SqliteSecretVaultRepository.countStaleFingerprints', () => {
+  it('counts nothing when every row sits on the current version', () => {
+    vault.upsert(entry({ fingerprintKeyVersion: 2 }), NOW);
+    vault.upsert(
+      entry({ pointerId: 'pointer-b', valueFingerprint: FINGERPRINT_B, fingerprintKeyVersion: 2 }),
+      NOW,
+    );
+
+    expect(vault.countEntries()).toBe(2);
+    expect(vault.countStaleFingerprints(2)).toBe(0);
+  });
+
+  it('counts only the rows left behind, so the fresh ones are a real denominator', () => {
+    vault.upsert(entry({ fingerprintKeyVersion: 3 }), NOW);
+    vault.upsert(
+      entry({ pointerId: 'pointer-b', valueFingerprint: FINGERPRINT_B, fingerprintKeyVersion: 1 }),
+      NOW,
+    );
+
+    expect(vault.countStaleFingerprints(3)).toBe(1);
+    // Read from the other side: with the key at v1 it is the OTHER row that is
+    // off-key. A count that ignored its argument would answer 1 to both.
+    expect(vault.countStaleFingerprints(1)).toBe(1);
+    expect(vault.countStaleFingerprints(9)).toBe(2);
+  });
+
+  // `<>` rather than `<`. A row stamped HIGHER than the key is equally
+  // unmatchable, and it is reachable: a key file restored from a backup, or
+  // replaced after being lost, leaves rows ahead of the version on disk.
+  it('counts a row stamped ahead of the current version, not just behind it', () => {
+    vault.upsert(entry({ fingerprintKeyVersion: 7 }), NOW);
+
+    expect(vault.countStaleFingerprints(4)).toBe(1);
+  });
+
+  it('counts nothing in an empty vault, which is not a shortfall', () => {
+    expect(vault.countEntries()).toBe(0);
+    expect(vault.countStaleFingerprints(1)).toBe(0);
+  });
+});

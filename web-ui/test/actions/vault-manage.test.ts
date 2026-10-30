@@ -237,12 +237,102 @@ describe('rotateKey keeps the vault whole', () => {
     const pointer = await seedPointer();
     expect(entryCount()).toBe(1);
 
+    // No `warning` key at all on a pass that reached every row — the positive
+    // control for the shortfall case below, and what keeps every other
+    // `toEqual({ ok: true })` in this repo honest.
     expect(await rotateKey('rotate')).toEqual({ ok: true });
     resetSingleton();
 
     const again = await seedPointer();
     expect(again).toBe(pointer);
     expect(entryCount()).toBe(1);
+  });
+
+  /**
+   * Break every stored row's AEAD tag so the re-key pass cannot open any of
+   * them. The tag rather than the ciphertext: no other column has to stay
+   * consistent with it, so each row fails for exactly one reason.
+   */
+  function breakEveryVaultRow(): void {
+    const raw = new DatabaseSync(dbPath());
+    try {
+      const changes = raw
+        .prepare("UPDATE secret_vault SET auth_tag = 'bm90LWEtdGFn'")
+        .run().changes;
+      expect(changes).toBeGreaterThan(0);
+    } finally {
+      raw.close();
+    }
+  }
+
+  /**
+   * Rows off the current fingerprint key, counted the way the Exceptions route
+   * counts them. This is the DURABLE record of a shortfall: the action returns
+   * nothing about it, because a returned count describes a moment while these
+   * rows stay stale until some later rotation clears them.
+   */
+  function staleRows(): { stale: number; total: number } {
+    const db = openLocalDatabase(dataDir());
+    try {
+      const version = loadOrCreateFingerprintKey(dataDir()).version;
+      return {
+        stale: db.secretVault.countStaleFingerprints(version),
+        total: db.secretVault.countEntries(),
+      };
+    } finally {
+      db.close();
+    }
+  }
+
+  // The gap this covers: the rotation itself succeeded, so the action returns
+  // ok — but a row left at the old epoch has lost matchability, and the next
+  // detection of its value mints a SECOND pointer for a secret that already has
+  // one. That happens minutes or days later, which is exactly why the evidence
+  // has to be in the store rather than in the result.
+  it('leaves a skipped row standing in the store as an off-key entry', async () => {
+    await seedPointer();
+    // The control: before the rotation the row is ON the current key, so the
+    // count below is a change this rotation caused rather than a constant.
+    expect(staleRows()).toEqual({ stale: 0, total: 1 });
+
+    breakEveryVaultRow();
+    resetSingleton();
+
+    // Still ok, with nothing added to the result: a failed re-key must never
+    // fail a rotation that already happened and cannot be undone, and the
+    // disclosure is the route's job, off the count asserted next.
+    expect(await rotateKey('rotate')).toEqual({ ok: true });
+    expect(staleRows()).toEqual({ stale: 1, total: 1 });
+  });
+
+  it('clears the off-key count when the re-key does reach every row', async () => {
+    await seedPointer();
+    expect(await rotateKey('rotate')).toEqual({ ok: true });
+    resetSingleton();
+
+    // The positive control for the case above: a healthy rotation moves the row
+    // with the key, so "stale" is a real discrimination and not a count that is
+    // 1 whenever anything is vaulted.
+    expect(staleRows()).toEqual({ stale: 0, total: 1 });
+  });
+
+  // The other arm: a fault that stops the pass before it reaches any row at all.
+  // Dropping the table makes the `listAll()` driving the walk throw, outside the
+  // per-row catch. The rotation must still stand — it already happened, and the
+  // key file cannot be put back.
+  it('still reports the rotation when the pass cannot run at all', async () => {
+    await seedPointer();
+    const raw = new DatabaseSync(dbPath());
+    try {
+      raw.exec('DROP TABLE secret_vault');
+    } finally {
+      raw.close();
+    }
+
+    expect(await rotateKey('rotate')).toEqual({ ok: true });
+    // And it is a real rotation, not a no-op that merely returned ok: the key on
+    // disk moved, which is what makes the vault rows stale in the first place.
+    expect(loadOrCreateFingerprintKey(dataDir()).version).toBeGreaterThan(1);
   });
 });
 

@@ -190,5 +190,115 @@
     "label": "known gap: interpolation-first statement is not matched",
     "text": "#{prefix} UPDATE t SET a = #{x}",
     "shouldMatch": false
+  },
+  {
+    "label": "a WHERE clause compared with \"!=\"",
+    "text": "clause = \"WHERE status != %s\" % status",
+    "shouldMatch": true
+  },
+  {
+    "label": "a WHERE clause compared with \"<>\"",
+    "text": "clause = \"WHERE status <> %s\" % status",
+    "shouldMatch": true
+  },
+  {
+    "label": "a WHERE clause compared with \">\"",
+    "text": "clause = \"WHERE created > %s\" % date",
+    "shouldMatch": true
+  },
+  {
+    "label": "a WHERE clause compared with \"<\"",
+    "text": "clause = \"WHERE score < %d\" % limit",
+    "shouldMatch": true
+  },
+  {
+    "label": "a WHERE .. IN list",
+    "text": "clause = f\"WHERE t.id IN ({ids})\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "a WHERE .. LIKE pattern quoted with \"'\"",
+    "text": "clause = f\"WHERE name LIKE '{pattern}'\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "a WHERE .. LIKE pattern opening on the placeholder itself",
+    "text": "clause = \"WHERE name LIKE %s\" % pattern",
+    "shouldMatch": true
+  },
+  {
+    "label": "a WHERE .. LIKE pattern double-quoted inside a template literal",
+    "text": "const clause = `WHERE name LIKE \"${pattern}\"`",
+    "shouldMatch": true
+  },
+  {
+    "label": "a WHERE .. BETWEEN range",
+    "text": "clause = \"WHERE age BETWEEN %s\" % lo",
+    "shouldMatch": true
+  },
+  {
+    "label": "INSERT IGNORE INTO with a %s placeholder",
+    "text": "q = \"INSERT IGNORE INTO t VALUES (%s)\" % v",
+    "shouldMatch": true
+  },
+  {
+    "label": "INSERT with two modifiers before INTO",
+    "text": "q = \"INSERT LOW_PRIORITY IGNORE INTO t VALUES (%s)\" % v",
+    "shouldMatch": true
+  },
+  {
+    "label": "INSERT DELAYED INTO with a %s placeholder",
+    "text": "q = \"INSERT DELAYED INTO t VALUES (%s)\" % v",
+    "shouldMatch": true
+  },
+  {
+    "label": "INSERT HIGH_PRIORITY INTO with a %s placeholder",
+    "text": "q = \"INSERT HIGH_PRIORITY INTO t VALUES (%s)\" % v",
+    "shouldMatch": true
+  },
+  {
+    "label": "DROP INDEX with a %s placeholder",
+    "text": "q = \"DROP INDEX %s\" % idx",
+    "shouldMatch": true
+  },
+  {
+    "label": "DROP VIEW with a %s placeholder",
+    "text": "q = \"DROP VIEW %s\" % v",
+    "shouldMatch": true
+  },
+  {
+    "label": "unquoted INSERT IGNORE INTO line with a ${} placeholder",
+    "text": "INSERT IGNORE INTO audit (id) VALUES (${uid})",
+    "shouldMatch": true
+  },
+  {
+    "label": "unquoted DROP INDEX line with a ${} placeholder",
+    "text": "DROP INDEX ${IDX_NAME}",
+    "shouldMatch": true
+  },
+  {
+    "label": "prose: several words between \"where\" and the \"=\" is not a WHERE clause",
+    "text": "msg = f\"Click here to see where your order = {oid}\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "prose: \"where you like\" has no quoted LIKE pattern",
+    "text": "msg = f\"Tell me where you like {food} best\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "prose: \"where items in\" has no parenthesised IN list",
+    "text": "msg = f\"Show me where items in {list} are stored\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "\"dropindex\" is one word, not the DROP keyword",
+    "text": "msg = \"dropindex %s\" % idx",
+    "shouldMatch": false
+  },
+  {
+    "label": "\"into_the_void\" is one word, not the INTO keyword",
+    "text": "msg = \"insert into_the_void %s\" % x",
+    "shouldMatch": false
   }
 ]

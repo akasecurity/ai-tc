@@ -6,7 +6,7 @@
   "severity": "high",
   "matcher": {
     "type": "regex",
-    "pattern": "([\"'])\\s*(?=(select\\b(?:(?!\\1\\s*(?:select\\b|insert\\s+into\\b|update\\s+\\S+\\s+set\\b|delete\\s+from\\b|drop\\s+(?:table|database)\\b|where\\b))[^\\n])*?\\bfrom\\b|insert\\s+into\\b|update\\s+\\S+\\s+set\\b|delete\\s+from\\b|drop\\s+(?:table|database)\\b|where\\b(?:(?!\\1\\s*(?:select\\b|insert\\s+into\\b|update\\s+\\S+\\s+set\\b|delete\\s+from\\b|drop\\s+(?:table|database)\\b|where\\b))[^\\n])*?=))\\2(?:(?!\\1\\s*(?:select\\b|insert\\s+into\\b|update\\s+\\S+\\s+set\\b|delete\\s+from\\b|drop\\s+(?:table|database)\\b|where\\b))[^\\n])*?[\"']\\s*\\+",
+    "pattern": "([\"'])\\s*(?=(select\\b(?:(?!\\1\\s*(?:select\\b|insert\\s+(?:(?:ignore|low_priority|delayed|high_priority)\\s+){0,2}into\\b|update\\s+\\S+\\s+set\\b|delete\\s+from\\b|drop\\s+(?:table|database|index|view)\\b|where\\b))[^\\n])*?\\bfrom\\b|insert\\s+(?:(?:ignore|low_priority|delayed|high_priority)\\s+){0,2}into\\b|update\\s+\\S+\\s+set\\b|delete\\s+from\\b|drop\\s+(?:table|database|index|view)\\b|where\\s+[\\w.`\\[\\]]+(?:\\s*(?:!=|[=<>])|\\s+(?:in\\s*\\(|like\\s*(?!\\1)['\"%]|between\\b))))\\2(?:(?!\\1\\s*(?:select\\b|insert\\s+(?:(?:ignore|low_priority|delayed|high_priority)\\s+){0,2}into\\b|update\\s+\\S+\\s+set\\b|delete\\s+from\\b|drop\\s+(?:table|database|index|view)\\b|where\\b))[^\\n])*?[\"']\\s*\\+",
     "flags": "gi"
   },
   "examples": ["\"SELECT * FROM users WHERE id = \" + userId"]

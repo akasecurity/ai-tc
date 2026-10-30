@@ -78,5 +78,105 @@
     "label": "JSON array of quoted SQL words with no + operator",
     "text": "[\"select 1\",\"insert 2\",\"update 3\",\"delete 4\",\"drop 5\",\"where 6\"]",
     "shouldMatch": false
+  },
+  {
+    "label": "a WHERE clause compared with \"!=\"",
+    "text": "String w = \" WHERE status != \" + status;",
+    "shouldMatch": true
+  },
+  {
+    "label": "a WHERE clause compared with \"<>\"",
+    "text": "String w = \" WHERE status <> \" + status;",
+    "shouldMatch": true
+  },
+  {
+    "label": "a WHERE clause compared with \">\"",
+    "text": "String w = \" WHERE created > \" + date;",
+    "shouldMatch": true
+  },
+  {
+    "label": "a WHERE clause compared with \"<\"",
+    "text": "String w = \" WHERE score < \" + max;",
+    "shouldMatch": true
+  },
+  {
+    "label": "a WHERE clause compared with \">=\"",
+    "text": "String w = \" WHERE qty >= \" + min;",
+    "shouldMatch": true
+  },
+  {
+    "label": "a WHERE clause compared with \"<=\"",
+    "text": "String w = \" WHERE qty <= \" + max;",
+    "shouldMatch": true
+  },
+  {
+    "label": "a WHERE .. IN list",
+    "text": "String w = \" WHERE t.id IN (\" + ids + \")\";",
+    "shouldMatch": true
+  },
+  {
+    "label": "a WHERE .. LIKE pattern",
+    "text": "String w = \" WHERE name LIKE '\" + name;",
+    "shouldMatch": true
+  },
+  {
+    "label": "a WHERE .. BETWEEN range",
+    "text": "String w = \" WHERE age BETWEEN \" + lo;",
+    "shouldMatch": true
+  },
+  {
+    "label": "INSERT IGNORE INTO concatenation",
+    "text": "String q = \"INSERT IGNORE INTO t VALUES (\" + v + \")\";",
+    "shouldMatch": true
+  },
+  {
+    "label": "INSERT with two modifiers before INTO",
+    "text": "String q = \"INSERT LOW_PRIORITY IGNORE INTO t VALUES (\" + v + \")\";",
+    "shouldMatch": true
+  },
+  {
+    "label": "INSERT DELAYED INTO concatenation",
+    "text": "String q = \"INSERT DELAYED INTO t VALUES (\" + v + \")\";",
+    "shouldMatch": true
+  },
+  {
+    "label": "INSERT HIGH_PRIORITY INTO concatenation",
+    "text": "String q = \"INSERT HIGH_PRIORITY INTO t VALUES (\" + v + \")\";",
+    "shouldMatch": true
+  },
+  {
+    "label": "DROP INDEX concatenation",
+    "text": "String q = \"DROP INDEX \" + idx;",
+    "shouldMatch": true
+  },
+  {
+    "label": "DROP VIEW concatenation",
+    "text": "String q = \"DROP VIEW \" + v;",
+    "shouldMatch": true
+  },
+  {
+    "label": "prose: several words between \"where\" and the \"=\" is not a WHERE clause",
+    "text": "String m = \"where the value = \" + v;",
+    "shouldMatch": false
+  },
+  {
+    "label": "prose: \"where you like\" has no quoted LIKE pattern",
+    "text": "String m = \"where you like \" + place;",
+    "shouldMatch": false
+  },
+  {
+    "label": "prose: \"where x in\" has no parenthesised IN list",
+    "text": "String m = \"where x in \" + list;",
+    "shouldMatch": false
+  },
+  {
+    "label": "\"dropindex\" is one word, not the DROP keyword",
+    "text": "String s = \"dropindex \" + idx;",
+    "shouldMatch": false
+  },
+  {
+    "label": "\"into_the_void\" is one word, not the INTO keyword",
+    "text": "String s = \"insert into_the_void \" + x;",
+    "shouldMatch": false
   }
 ]

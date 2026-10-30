@@ -191,7 +191,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'code-flaws',
     name: 'Code Security Flaws',
-    version: '0.1.3',
+    version: '0.1.5',
     rawRules: [
       codeFlawsSqlInjectConcat,
       codeFlawsSqlInjectConcatDot,

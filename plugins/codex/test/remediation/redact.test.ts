@@ -441,6 +441,29 @@ describe('redactLeakedKeys', () => {
       expect(statSync(file).mode & 0o777).toBe(0o600);
     });
 
+    it('publishes a group-writable artifact at its exact mode', (ctx) => {
+      if (process.platform === 'win32') ctx.skip('POSIX permission bits');
+      // 0660 carries bits the usual 0022 umask CLEARS on create, so the write's
+      // `mode` option alone narrows it to 0640 — re-applying the bits rather
+      // than preserving them. The chmod after the exclusive create is what
+      // makes it exact. The probe measures what this process's umask would have
+      // left behind, so a umask that narrows nothing in 0660 says so instead of
+      // passing blind.
+      const probe = join(rolloutRoot, 'umask-probe');
+      writeFileSync(probe, '', { mode: 0o660 });
+      if ((statSync(probe).mode & 0o777) === 0o660) {
+        ctx.skip('this process umask narrows nothing in 0660');
+      }
+
+      const file = join(rolloutRoot, 'exact-mode.jsonl');
+      writeFileSync(file, `leaked ${ROLLOUT_KEY} here`);
+      chmodSync(file, 0o660);
+
+      redactLeakedKeys([{ where: { filePath: file }, rawValue: ROLLOUT_KEY }], scope);
+
+      expect(statSync(file).mode & 0o777).toBe(0o660);
+    });
+
     it('clears a leftover carrying its own pid rather than writing through it', (ctx) => {
       if (process.platform === 'win32') ctx.skip('POSIX permission bits');
       const file = join(rolloutRoot, 'leftover.jsonl');

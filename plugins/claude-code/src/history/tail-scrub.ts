@@ -27,6 +27,7 @@
  * detection legitimately rewrote.
  */
 import {
+  chmodSync,
   lstatSync,
   readdirSync,
   readFileSync,
@@ -53,6 +54,15 @@ const DEFAULT_MAX_SCRUB_BYTES = 32 * 1024 * 1024;
 // leftover's permission bits (`writeFileSync` applies `mode` only when it
 // CREATES). It is also the only thing that lets a later run tell a crashed run's
 // leftover from a live run's work in progress.
+//
+// PER-PROCESS, not per-call: the pid is all the name carries, and this rewrite
+// awaits between the sweep and the write, so a caller must not drive two
+// overlapping passes over one transcript. The callers drive it one file at a time.
+// Were two to overlap, the second's exclusive create would fail EEXIST and its
+// cleanup would remove the first's in-flight temp, so the first would abort at
+// the rename and report having done nothing — nothing corrupted, and the next
+// pass retries, but `wx` on its own does not hand two concurrent calls separate
+// temps. A nonce in the name would.
 const TMP_SUFFIX = '.aka-scrub.tmp';
 
 function tempPathFor(realPath: string): string {
@@ -219,6 +229,12 @@ export async function scrubTranscriptTail(
         mode: statBefore.mode & 0o777,
         flag: 'wx',
       });
+      // The `mode` option passes through the process umask, which can only
+      // clear bits: a 0660 transcript would be created 0640 under the usual 0022,
+      // so the write alone RE-APPLIES the bits rather than preserving them. The
+      // chmod is what makes it exact, and it is safe for the same reason `wx`
+      // is: the exclusive create means this path is an inode this call made.
+      chmodSync(tmpPath, statBefore.mode & 0o777);
       // The transcript is LIVE — Claude Code may have appended lines while the
       // scrub tokenized its in-memory snapshot. Renaming the snapshot over a
       // file that changed underneath would silently destroy those lines, so

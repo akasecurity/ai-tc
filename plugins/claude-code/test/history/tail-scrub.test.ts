@@ -256,6 +256,28 @@ describe('scrubTranscriptTail', () => {
     },
   );
 
+  it('publishes a group-writable transcript at its exact mode', async (ctx) => {
+    if (process.platform === 'win32') ctx.skip('POSIX permission bits');
+    // 0660 carries bits the usual 0022 umask CLEARS on create, so the write's
+    // `mode` option alone narrows it to 0640 — re-applying the bits rather
+    // than preserving them. The chmod after the exclusive create is what
+    // makes it exact. The probe measures what this process's umask would have
+    // left behind, so a umask that narrows nothing in 0660 says so instead of
+    // passing blind.
+    const probe = join(transcriptRoot, 'umask-probe');
+    writeFileSync(probe, '', { mode: 0o660 });
+    if ((statSync(probe).mode & 0o777) === 0o660) {
+      ctx.skip('this process umask narrows nothing in 0660');
+    }
+
+    const file = transcriptFile('exact-mode.jsonl', `{"text":"key ${SECRET}"}\n`);
+    chmodSync(file, 0o660);
+
+    expect(await scrubTranscriptTail(file, deps)).toEqual({ rewritten: 1 });
+
+    expect(statSync(file).mode & 0o777).toBe(0o660);
+  });
+
   describe('.aka-scrub.tmp cleanup', () => {
     // A pid no platform can hand out: Linux caps `pid_max` at 2^22 and macOS at
     // 99999, so `kill(pid, 0)` answers ESRCH here rather than racing some real

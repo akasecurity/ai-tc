@@ -24,6 +24,7 @@
  * one bad file cannot abort the sweep of the rest.
  */
 import {
+  chmodSync,
   lstatSync,
   readdirSync,
   readFileSync,
@@ -257,6 +258,12 @@ export function redactLeakedKeysDetailed(
       // already sitting there — a directory, a leftover the sweep would not
       // touch — is doubt, and doubt leaves the artifact untouched.
       writeFileSync(tmpPath, content, { mode, flag: 'wx' });
+      // The `mode` option passes through the process umask, which can only
+      // clear bits: a 0660 artifact would be created 0640 under the usual 0022,
+      // so the write alone RE-APPLIES the bits rather than preserving them. The
+      // chmod is what makes it exact, and it is safe for the same reason `wx`
+      // is: the exclusive create means this path is an inode this call made.
+      chmodSync(tmpPath, mode);
       renameSync(tmpPath, filePath);
     } catch {
       try {

@@ -37,7 +37,7 @@ Detection and enforcement run locally. A handful of narrow paths do reach the ne
 - **Event** — a prompt, response, tool call, or file read captured from an agent session.
 - **Finding** — a rule match the detection engine produces against an event.
 - **Rule** — a JSON file describing what to detect: a keyword list, a regex pattern, or a validator.
-- **Rule pack** — a directory of rules and their fixtures with a `manifest.json`. Nine ship built in: `secrets`, `secrets-infra`, `core-pii`, `core-financial`, `core-phi`, `core-code-context`, `code-flaws`, `command-risk`, `agent-harness-tamper`.
+- **Rule pack** — a directory of rules and their fixtures with a `manifest.json`. Ten ship built in: `secrets`, `secrets-infra`, `core-pii`, `core-financial`, `core-phi`, `core-code-context`, `code-flaws`, `command-risk`, `agent-harness-tamper`, `agent-egress`.
 - **Policy** — the decision taken when a rule or category fires.
 - **Plugin** — the harness extension that intercepts sessions. One package serves Claude Code and Claude Desktop; separate packages ship for Codex CLI, Antigravity and GitHub Copilot, plus a browser extension for ChatGPT and Claude.ai web chat.
 
@@ -61,7 +61,7 @@ A local SQLite store at `~/.aka/data/aka.db`, settings beside it under `~/.aka/s
 - `plugins/claude-code/`, `plugins/codex/`, `plugins/antigravity/`, `plugins/copilot/` — the harness plugins, one per host, published as `@akasecurity/ai-tc-claude-code`, `@akasecurity/ai-tc-codex`, `@akasecurity/ai-tc-antigravity` and `@akasecurity/ai-tc-copilot`.
 - `plugins/browser-extension/` — the Chrome extension for ChatGPT and Claude.ai web chat (MV3 content scripts + a native-messaging host).
 - `cli/` — the standalone CLI published as `@akasecurity/cli`, binary `aka`.
-- `rules/` — the nine built-in rule packs and their fixtures.
+- `rules/` — the ten built-in rule packs and their fixtures.
 - `eval/` — replayed attack-chain evals (cases and README per write-up; results are regenerated, not committed).
 - `skills/write-detection-rule/` — the authoring skill for new detection rules.
 - `web-ui/` — the local dashboard.

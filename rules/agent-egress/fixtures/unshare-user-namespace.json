@@ -1,0 +1,62 @@
+[
+  {
+    "label": "combined short flags",
+    "text": "unshare -Urm --propagation private sh -c 'mount -t tmpfs none /mnt'",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "long options",
+    "text": "unshare --user --map-root-user bash",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "map root user alone",
+    "text": "unshare -r whoami",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "user flag after an option value",
+    "text": "unshare --propagation private -U sh",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "behind sudo, flags reordered",
+    "text": "sudo unshare -mU --fork bash",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "mount namespace only",
+    "text": "unshare -m --propagation private sh -c 'mount -t tmpfs none /mnt'",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "network namespace only",
+    "text": "unshare --net ip link",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "flag belongs to the inner command",
+    "text": "unshare -m sh -c 'ls -r /tmp'",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "mentioned inside an echo",
+    "text": "echo \"try unshare -U next\"",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "command quoted in a tool response",
+    "text": "unshare -Urm sh",
+    "shouldMatch": false,
+    "eventKind": "response"
+  }
+]

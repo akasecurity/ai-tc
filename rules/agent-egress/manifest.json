@@ -1,0 +1,12 @@
+{
+  "specVersion": 1,
+  "id": "agent-egress",
+  "name": "Agent egress and credential reach",
+  "version": "0.1.0",
+  "rules": [
+    "cloud-metadata-access",
+    "object-storage-file-upload",
+    "agent-probe-host",
+    "unshare-user-namespace"
+  ]
+}

@@ -1,0 +1,206 @@
+[
+  {
+    "label": "AWS IAM credentials path",
+    "text": "curl -s http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "GCP metadata server token",
+    "text": "curl -H \"Metadata-Flavor: Google\" http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "Alibaba Cloud metadata RAM credentials",
+    "text": "curl -s http://100.100.100.200/latest/meta-data/ram/security-credentials/",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "AWS IPv6 metadata endpoint",
+    "text": "curl -g -6 -X PUT \"http://[fd00:ec2::254]/latest/api/token\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "metadata URL as a fetched URL",
+    "text": "http://169.254.169.254/latest/meta-data/",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "address with a port, no scheme",
+    "text": "wget -qO- 169.254.169.254:80/latest/user-data",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "neighboring link-local address",
+    "text": "curl -s http://169.254.169.25/latest/",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "longer address sharing the prefix",
+    "text": "ping -c1 169.254.169.2540",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "other link-local host",
+    "text": "ping -c1 169.254.1.1",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "prose about the metadata service",
+    "text": "The instance metadata service hands out role credentials.",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "metadata URL quoted in a tool response",
+    "text": "curl -s http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+    "shouldMatch": false,
+    "eventKind": "response"
+  },
+  {
+    "label": "interpreter one-liner fetching the metadata URL",
+    "text": "python3 -c \"import requests; print(requests.get('http://169.254.169.254/latest/meta-data/').text)\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "search for the address in source",
+    "text": "grep -rn 169.254.169.254 src/",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "search for the GCP metadata host",
+    "text": "rg metadata.google.internal",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "subagent prompt naming the address",
+    "text": "check whether this code calls 169.254.169.254",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "address after the client in a later command",
+    "text": "curl -s https://api.example.dev/x; grep 169.254.169.254 app.log",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "source file written with the metadata URL",
+    "text": "import requests\n\ndef role():\n    return requests.get(\"http://169.254.169.254/latest/meta-data/\").text\n",
+    "shouldMatch": false,
+    "eventKind": "code_change"
+  },
+  {
+    "label": "documentation line naming the address",
+    "text": "IMDS lives at 169.254.169.254",
+    "shouldMatch": false,
+    "eventKind": "code_change"
+  },
+  {
+    "label": "metadata request on the second line of a command",
+    "text": "ls -la /app\ncurl -s http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "metadata address as a path segment of another host",
+    "text": "curl -s http://localhost:3000/169.254.169.254",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "metadata address as a query value",
+    "text": "curl -s \"http://app.example.dev/api/lookup?ip=169.254.169.254\"",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "metadata address as a header value",
+    "text": "curl -s -H \"X-Original-IP: 169.254.169.254\" http://app.example.dev/",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "metadata URL passed as a redirect target",
+    "text": "curl -s \"http://app.example.dev/r?to=http://169.254.169.254/latest/meta-data/\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "sudo with a user option",
+    "text": "sudo -u root curl -s http://169.254.169.254/latest/meta-data/",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "env with an assignment",
+    "text": "env AWS_PROFILE=x curl -s http://metadata.google.internal/computeMetadata/v1/",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "bare env wrapper",
+    "text": "env curl -s http://169.254.169.254/latest/meta-data/",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "xargs wrapper",
+    "text": "echo latest | xargs -n 1 curl -s http://169.254.169.254/",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "AWS CLI pointed at the metadata endpoint",
+    "text": "aws sts get-caller-identity --endpoint-url http://169.254.169.254",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "AWS CLI pointed at a local endpoint",
+    "text": "aws s3 ls --endpoint-url http://localhost:4566",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "metadata request inside bash -c",
+    "text": "bash -c \"curl -s http://169.254.169.254/latest/meta-data/\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "metadata request inside sh -lc",
+    "text": "sh -lc 'wget -qO- http://metadata.google.internal/computeMetadata/v1/'",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "metadata request quoted into a notes file",
+    "text": "echo \"curl http://169.254.169.254/\" > notes",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "metadata URL written into a document",
+    "text": "cat > notes.md <<'EOF'\nhttp://169.254.169.254/latest/meta-data/\nEOF",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "metadata URL on a later line of a heredoc",
+    "text": "cat > notes.md <<EOF\nsee also\n  'https://metadata.google.internal/computeMetadata/v1/'\nEOF",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  }
+]

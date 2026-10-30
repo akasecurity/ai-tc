@@ -10,9 +10,13 @@
 // Regenerate after adding/removing a rule or pack under rules/:
 //   pnpm --filter @akasecurity/plugin-sdk gen:bundled-packs
 //
-// 9 packs / 118 rules.
+// 10 packs / 126 rules.
 /* eslint-disable simple-import-sort/imports */
 import type { BuiltinPolicyId } from '@akasecurity/schema';
+import agentEgressAgentProbeHost from '../../../rules/agent-egress/agent-probe-host.json';
+import agentEgressCloudMetadataAccess from '../../../rules/agent-egress/cloud-metadata-access.json';
+import agentEgressObjectStorageFileUpload from '../../../rules/agent-egress/object-storage-file-upload.json';
+import agentEgressUnshareUserNamespace from '../../../rules/agent-egress/unshare-user-namespace.json';
 import agentHarnessTamperAgentApprovalBypass from '../../../rules/agent-harness-tamper/agent-approval-bypass.json';
 import agentHarnessTamperAgentEndpointRedirect from '../../../rules/agent-harness-tamper/agent-endpoint-redirect.json';
 import agentHarnessTamperKnownMaliciousNpmPackage from '../../../rules/agent-harness-tamper/known-malicious-npm-package.json';
@@ -47,14 +51,18 @@ import codeFlawsSsrfUserUrl from '../../../rules/code-flaws/ssrf-user-url.json';
 import codeFlawsXssDangerouslySet from '../../../rules/code-flaws/xss-dangerously-set.json';
 import codeFlawsXssInnerHtml from '../../../rules/code-flaws/xss-inner-html.json';
 import codeFlawsXssUnescapedRender from '../../../rules/code-flaws/xss-unescaped-render.json';
+import commandRiskAlibabaOssHost from '../../../rules/command-risk/alibaba-oss-host.json';
 import commandRiskCredentialFileAccess from '../../../rules/command-risk/credential-file-access.json';
 import commandRiskCredentialFileGrep from '../../../rules/command-risk/credential-file-grep.json';
 import commandRiskCredentialFileRead from '../../../rules/command-risk/credential-file-read.json';
 import commandRiskCurlPipeShell from '../../../rules/command-risk/curl-pipe-shell.json';
+import commandRiskDownloadThenExecute from '../../../rules/command-risk/download-then-execute.json';
 import commandRiskGitForcePush from '../../../rules/command-risk/git-force-push.json';
 import commandRiskGitResetHard from '../../../rules/command-risk/git-reset-hard.json';
+import commandRiskObjectStorageUpload from '../../../rules/command-risk/object-storage-upload.json';
 import commandRiskPkillBroad from '../../../rules/command-risk/pkill-broad.json';
 import commandRiskProtectedPathAccess from '../../../rules/command-risk/protected-path-access.json';
+import commandRiskReconThenEgress from '../../../rules/command-risk/recon-then-egress.json';
 import commandRiskRmRfHomeOrShared from '../../../rules/command-risk/rm-rf-home-or-shared.json';
 import coreCodeContextDbTableName from '../../../rules/core-code-context/db-table-name.json';
 import coreCodeContextFeatureFlag from '../../../rules/core-code-context/feature-flag.json';
@@ -144,6 +152,23 @@ export interface BundledPack {
 }
 
 export const BUNDLED_PACKS: readonly BundledPack[] = [
+  {
+    packId: 'agent-egress',
+    name: 'Agent egress and credential reach',
+    version: '0.1.0',
+    rawRules: [
+      agentEgressCloudMetadataAccess,
+      agentEgressObjectStorageFileUpload,
+      agentEgressAgentProbeHost,
+      agentEgressUnshareUserNamespace,
+    ],
+    shortNames: {
+      'agent-egress/cloud-metadata-access': 'Cloud metadata access',
+      'agent-egress/object-storage-file-upload': 'Object storage file upload',
+      'agent-egress/agent-probe-host': 'Agent probe host',
+      'agent-egress/unshare-user-namespace': 'User namespace unshare',
+    },
+  },
   {
     packId: 'agent-harness-tamper',
     name: 'Agent harness tampering',
@@ -245,6 +270,10 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       commandRiskCredentialFileGrep,
       commandRiskCredentialFileAccess,
       commandRiskProtectedPathAccess,
+      commandRiskObjectStorageUpload,
+      commandRiskAlibabaOssHost,
+      commandRiskDownloadThenExecute,
+      commandRiskReconThenEgress,
     ],
     shortNames: {
       'command-risk/pkill-broad': 'Broad pkill',
@@ -256,6 +285,10 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       'command-risk/credential-file-grep': 'Credential file search',
       'command-risk/credential-file-access': 'Credential file read',
       'command-risk/protected-path-access': 'Protected path access',
+      'command-risk/object-storage-upload': 'Object storage upload',
+      'command-risk/alibaba-oss-host': 'Alibaba OSS host',
+      'command-risk/download-then-execute': 'Download then execute',
+      'command-risk/recon-then-egress': 'Recon with egress',
     },
   },
   {

@@ -231,9 +231,7 @@ export function AssetDetail({
           </Section>
         )}
 
-        {isMcp && asset.tools && (
-          <ToolsSection tools={asset.tools} />
-        )}
+        {isMcp && asset.tools && <ToolsSection tools={asset.tools} />}
 
         {hostActions === false && (
           <div className="flex flex-wrap gap-2">{actionsFor(asset, trust)}</div>

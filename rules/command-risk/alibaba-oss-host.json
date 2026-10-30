@@ -1,0 +1,19 @@
+{
+  "specVersion": 1,
+  "id": "command-risk/alibaba-oss-host",
+  "name": "Alibaba Cloud OSS host",
+  "category": "custom",
+  "severity": "medium",
+  "matcher": {
+    "type": "regex",
+    "pattern": "(?<![\\w.-])(?![sS][aA][nN][mM][aA][oO][hH][eE]\\.)(?![rR][oO][uU][tT][iI][fF][yY]-[fF][iI][lL][eE]-[pP][rR][oO][xX][yY]-[sS][gG]\\.)(?:[\\w-]{1,63}\\.)?[oO][sS][sS]-[\\w-]{1,40}\\.[aA][lL][iI][yY][uU][nN][cC][sS]\\.[cC][oO][mM](?![\\w-]|\\.[\\w-])(?!(?<=\\bcurl\\b(?:[^\\n;|&\\\\]|\\\\[\\s\\S]|&(?!&)){0,400})(?:(?<=(?:(?<=\\s)(?:-[A-Za-z]{0,6}[dFT]|-X[ \\t]*['\"]?(?:PUT|POST|PATCH)\\b|--request[ \\t=]+['\"]?(?:PUT|POST|PATCH)\\b|--data(?:-binary|-raw|-urlencode|-ascii)?|--json|--form(?:-string)?|--upload-file)(?=[\\s'\"=@]|$)|\\$\\((?:env|printenv)\\b|\\x60(?:env|printenv)\\b)(?:[^\\n;|&\\\\]|\\\\[\\s\\S]|&(?!&)){0,400})|(?:[^\\n;|&\\\\]|\\\\[\\s\\S]|&(?!&)){0,400}?(?:(?<=\\s)(?:-[A-Za-z]{0,6}[dFT]|-X[ \\t]*['\"]?(?:PUT|POST|PATCH)\\b|--request[ \\t=]+['\"]?(?:PUT|POST|PATCH)\\b|--data(?:-binary|-raw|-urlencode|-ascii)?|--json|--form(?:-string)?|--upload-file)(?=[\\s'\"=@]|$)|\\$\\((?:env|printenv)\\b|\\x60(?:env|printenv)\\b)))(?!(?<=\\bwget\\b(?:[^\\n;|&\\\\]|\\\\[\\s\\S]|&(?!&)){0,400})(?:(?<=(?:(?<=\\s)(?:--method[ \\t=]+['\"]?(?:PUT|POST|PATCH)\\b|--post-data|--post-file|--body-data|--body-file)|\\$\\((?:env|printenv)\\b|\\x60(?:env|printenv)\\b)(?:[^\\n;|&\\\\]|\\\\[\\s\\S]|&(?!&)){0,400})|(?:[^\\n;|&\\\\]|\\\\[\\s\\S]|&(?!&)){0,400}?(?:(?<=\\s)(?:--method[ \\t=]+['\"]?(?:PUT|POST|PATCH)\\b|--post-data|--post-file|--body-data|--body-file)|\\$\\((?:env|printenv)\\b|\\x60(?:env|printenv)\\b)))",
+    "flags": "g"
+  },
+  "examples": [
+    "curl -s https://some-bucket.oss-cn-hangzhou.aliyuncs.com/a.txt",
+    "wget https://oss-ap-southeast-1.aliyuncs.com/b/c"
+  ],
+  "appliesTo": {
+    "eventKinds": ["tool_use"]
+  }
+}

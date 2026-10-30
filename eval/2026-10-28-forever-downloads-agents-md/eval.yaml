@@ -1,0 +1,19 @@
+id: 2026-10-28-forever-downloads-agents-md
+source: Forever Security
+source_url: https://forever.security/blog/hijacking-ai-agents-via-downloads-folder/
+source_date: 2026-10-22
+target: ai-tc Claude Code plugin, PreToolUse hook, agent-harness-tamper pack
+kind: vulnerability
+goal: block
+policy: agent-harness-tamper pack set to Block (headline); default install asserted as detect only
+tool_version: 0.9.21
+last_run:
+  date: 2026-10-29
+  tool_version: 0.9.21
+  commit: 4424e848
+cases:
+  attack: 7
+  lookalike: 5
+result:
+  block: 7 of 7 attack calls blocked with agent-harness-tamper on Block; 0 of 5 look-alikes flagged
+  default: 7 of 7 attack calls detected and logged, none blocked, on a default install; 0 of 5 look-alikes flagged

@@ -23,7 +23,7 @@ deployment the customer operates, not one AKA does.)
 - **Runtime:** Node.js 24+ (the CLI and plugin hooks use the built-in `node:sqlite` — no native dependency); `.nvmrc`, CI, and `@types/node` all track the Active LTS line, matching the `engines` floor
 - **Local store:** SQLite via `node:sqlite`, wrapped by `@akasecurity/persistence`; the schema is defined with Drizzle in `@akasecurity/schema`
 - **Validation:** Zod schemas in `@akasecurity/schema` — the single source of truth
-- **Web dashboard:** Next.js 15 + React 19 (Server Components read the store; Server Actions mutate it)
+- **Web dashboard:** Next.js 16 + React 19 (Server Components read the store; Server Actions mutate it); built with `--webpack` because Turbopack cannot resolve the scan worker started by path
 - **Testing:** Vitest
 - **Packaging:** the `aka` CLI and the Claude Code / Codex CLI / Antigravity plugins, published to npm as self-contained bundles
 
@@ -121,6 +121,8 @@ packages/             the workspace libraries (schema · persistence · local-op
                       remote ·
                       extract · dashboard-ui · ui-kit · plugin-runtime · plugin-sdk · scanner …)
 rules/                the built-in detection packs (rule JSON + fixtures)
+eval/                 replayed attack-chain evals: cases and README per write-up; results are regenerated, not committed
+                      (`pnpm --filter @akasecurity/ai-tc-claude-code eval:replay`)
 skills/               agent skills (e.g. write-detection-rule)
 tools/                repo tooling, never shipped: the installer one-liners and
                       the installer workspace package whose suite drives them end

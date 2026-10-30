@@ -69,7 +69,8 @@ describe('isOutboundCall', () => {
     'env A=1 ftp host.example',
     'TOKEN=x ftp host.example',
     'time ftp host.example',
-    'ls | xargs ftp',
+    'ls | xargs ftp host.example',
+    'ftp -n -v host.example',
     'cd /tmp && ftp host.example',
     'smbclient //host/share -c "put notes.txt"',
     'twine upload dist/*',
@@ -88,8 +89,24 @@ describe('isOutboundCall', () => {
     'python3 -c "print(1)"',
     'echo "see ftp://files.example.com/x"',
     'ls ftp-notes.txt',
+    'man ftp',
+    'man ftp | head',
+    'man ftp for the options',
+    'npm install ftp',
+    'which ftp',
+    'pip install ftp-cli',
+    'sftp-notes.txt',
+    'cat tftp.conf',
+    'ls tftp sftp-notes',
   ])('leaves `%s` alone', (command) => {
     expect(isOutboundCall(...bash(command))).toBe(false);
+  });
+
+  it('scans a long run of ftp options in linear time', () => {
+    const started = performance.now();
+    expect(isOutboundCall(...bash(`ftp ${'-a '.repeat(50_000)}|`))).toBe(true);
+    expect(isOutboundCall(...bash(`ftp ${'-a '.repeat(50_000)}`))).toBe(true);
+    expect(performance.now() - started).toBeLessThan(1000);
   });
 });
 

@@ -3,6 +3,8 @@
 import { cn } from '@akasecurity/ui-kit';
 import { useState } from 'react';
 
+import { dashMask } from './dash.ts';
+
 /**
  * Which of a chart's series are currently plotted, and the toggle a legend
  * binds to. `visible` is what the chart is handed, so hiding a series removes
@@ -67,18 +69,35 @@ function metaText(value: string | null | undefined): string | null {
   return value === undefined || value === '' ? null : value;
 }
 
-/** One series' colour chip. Hollow means the series is hidden from the chart. */
-function Swatch({ color, hollow }: { color: string; hollow: boolean }) {
+/**
+ * One series' chip: its colour, and the dash pattern that identifies it when
+ * the colour cannot. A short rule rather than a square, because it stands for a
+ * LINE and a pattern needs length to be read as one.
+ */
+function Swatch({
+  color,
+  hollow,
+  dash,
+}: {
+  color: string;
+  hollow: boolean;
+  dash?: string | undefined;
+}) {
+  // No mask while hollow: the ring is a 1.5px outline, and punching the dash
+  // gaps through it leaves a broken rectangle rather than a readable pattern.
+  // The ring is already carrying the hidden state on its own.
+  const mask = hollow || dash === undefined ? undefined : dashMask(dash);
   return (
     <span
-      className="size-2 rounded-xs"
+      className="h-2 w-4 shrink-0 rounded-xs"
       // Hollow rather than merely dimmer: the ring keeps the series' own colour
       // identifiable, which a faded fill does not.
-      style={
-        hollow
+      style={{
+        ...(hollow
           ? { background: 'transparent', boxShadow: `inset 0 0 0 1.5px ${color}` }
-          : { background: color }
-      }
+          : { background: color }),
+        ...(mask === undefined ? {} : { maskImage: mask, WebkitMaskImage: mask }),
+      }}
     />
   );
 }
@@ -96,7 +115,9 @@ function MetaText({ text }: { text: string | null }) {
  * padding keeps the hover target wider than the text without moving the text,
  * so the interaction costs the header no layout.
  */
-export function SeriesLegend<S extends { key: string; label: string; color: string }>({
+export function SeriesLegend<
+  S extends { key: string; label: string; color: string; dash?: string | undefined },
+>({
   series,
   visibility,
   metaLabel,
@@ -134,7 +155,7 @@ export function SeriesLegend<S extends { key: string; label: string; color: stri
           // Every series drawn as visible: with no chart on screen, a hollow
           // swatch would describe a filter nothing is applying.
           <span key={s.key} className="inline-flex items-center gap-1.5">
-            <Swatch color={s.color} hollow={false} />
+            <Swatch color={s.color} hollow={false} dash={s.dash} />
             {s.label}
             <MetaText text={metaText(metaLabel?.(s.key))} />
           </span>
@@ -198,7 +219,7 @@ export function SeriesLegend<S extends { key: string; label: string; color: stri
               isLast && 'cursor-default hover:bg-transparent',
             )}
           >
-            <Swatch color={s.color} hollow={isHidden} />
+            <Swatch color={s.color} hollow={isHidden} dash={s.dash} />
             {s.label}
             <MetaText text={meta} />
           </button>

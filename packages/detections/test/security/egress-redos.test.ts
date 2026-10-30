@@ -3,7 +3,7 @@ import { isMainThread } from 'node:worker_threads';
 import { describe, expect, it } from 'vitest';
 
 import { extractEgress, redactSnippet } from '../../src/egress/extract.ts';
-import { extractManifestSdks } from '../../src/egress/manifests.ts';
+import { extractManifestSdks, type ManifestKind } from '../../src/egress/manifests.ts';
 
 // Egress extraction is the OTHER unbounded pass over file content, and it is not
 // the one the isolated-scan worker covers. `scanPathIntoStore` runs
@@ -354,6 +354,273 @@ describe('egress extraction is bounded on a 1 MB file', () => {
   });
 });
 
+// ONE unit against FOUR, not against two. The span is what sets the margin
+// this verdict has to survive: across 2x a linear shape reads 2 and a
+// quadratic one 4, so a bar at 3 tolerates 25% of skew either way — and 25%
+// is less skew than a shared runner actually produces. A No-network leg read
+// `the replaced punctuation pattern` at 46.340ms and 119.111ms, a ratio of
+// 2.57 where an idle Mac reads 4.54, on a clock whose measured resolution was
+// 0.2310ms — so quantization was ruled out by the failure message itself, and
+// the skew was 36%. Across 4x the two populations separate far enough that
+// the same 36% lands nowhere near the bar: measured here, a linear shape
+// reads 4.20-4.33 and these quadratic ones 10.42-18.27.
+const SMALL = MB / 256;
+const LARGE = SMALL * 4;
+
+// At the 4x span above a textbook linear shape reads 4 and a textbook
+// quadratic one 16, but neither population is textbook and the bar is set
+// from what they actually read. Measured over 16 readings on an idle machine:
+// these four shapes read 10.42 to 18.27, a shape made genuinely linear
+// (constant work per hit) reads 4.20 to 4.33, and one made flat outright
+// (LARGE = SMALL) reads 0.98 to 1.00.
+//
+// Fold in the window's own error — each side carries at most 1/8, so the
+// quotient carries a factor of (1+1/8)/(1-1/8) either way — and the two
+// worst cases are 4.33 x 1.29 = 5.57 on the linear side and 10.42 x 0.78 =
+// 8.10 on the quadratic one. 6 sits between them, and NOT in the middle:
+//
+//   linear    5.57 -> 6      a 1.08x margin, the TIGHT side
+//   quadratic 8.10 -> 6      a 1.35x margin
+//
+// That asymmetry is chosen rather than inherited, and the reason is that the
+// two errors are not equally likely here. Every skew this file has actually
+// seen DEFLATED the quotient — 2.07 against 4 on a Windows leg, 2.57 against
+// 4.54 on a No-network one, 2.91 against 3.86 on a macOS one — because it
+// inflates whichever side is cheaper or measured first, and that side is the
+// denominator. Deflation walks a QUADRATIC reading down toward the bar, which
+// is the false-LINEAR verdict that has reddened three legs on diffs that
+// could not reach this file. It walks a LINEAR reading away from the bar. So
+// the tight margin sits on the side the observed drift moves away from, and
+// the roomy one on the side it moves toward.
+//
+// Reading it the other way needs the numerator to gain on the denominator by
+// 8% beyond the window's own error — a direction nothing here has produced.
+// If it ever does, RAISE this rather than widening the window: the balance
+// point of the two worst cases above is 6.7, and 7 buys the linear side 1.26x
+// at the cost of taking the quadratic side to 1.16x.
+const SUPERLINEAR = 6;
+
+// Both readings are divided into each other, so everything the two share
+// cancels and a uniformly slower machine moves the quotient not at all. What
+// does NOT cancel is the CLOCK. A delta between two quantized readings
+// carries up to a tick of error whichever way it falls, and at these input
+// sizes a tick can be most of the measurement: POSIX reports microseconds
+// (0.001ms, measured), while Windows credits a whole scheduler tick — ~15.6ms
+// — to whichever thread was running at the timer interrupt.
+//
+// That is not hypothetical, and it is not inferred. A Windows leg read
+// `taking a snippet per hit` at 15.0ms and 31.0ms — a ratio of 2.07 against
+// the 3 demanded, reported out as LINEAR — for a shape that measures 7.9ms
+// and 31.2ms on an arm64 Mac and stays quadratic (3.88 / 3.98 / 4.00) across
+// three further doublings. The runner's own clock produced those two numbers:
+// its smallest non-zero `threadCpuUsage` delta measures 16.0000ms, which the
+// `Runner facts` step in ci.yml reports, so 15.0 and 31.0 are one and two
+// ticks of it and a 7.9ms quantity has nowhere to land but a whole tick.
+//
+// The second case was owed the same fix whatever that leg had done.
+// `counting each hit's line from zero` measures 0.99ms here, where the old
+// floor of 1ms turned its quotient into `large > 3ms` — an absolute threshold
+// wearing a ratio's clothes, which is the one shape this file argues against
+// everywhere else.
+//
+// So each side is measured over as many REPETITIONS as it takes to fill a
+// window the clock can resolve, then divided by its own repetition count.
+// Repetitions rather than a larger input, because these are the quadratic
+// shapes: doubling the input to buy a readable window costs four times the
+// work where doubling the repetitions costs two. And each side is sized
+// independently, so the expensive side fills the same window with a quarter
+// of the passes rather than overshooting it fourfold.
+//
+// The cost is therefore bounded by the WINDOW rather than by the machine — a
+// slower runner fills the same window with fewer passes — so this does not
+// grow the wall clock on the leg that prompted it.
+
+/**
+ * The smallest non-zero interval this thread's CPU clock reports.
+ *
+ * The probe's busy loop GROWS until a delta appears: one sized for a
+ * microsecond clock reads zero on a coarse clock for ever, and reporting zero
+ * would hand the caller a window of no width at all.
+ *
+ * A clock that reports nothing even at the cap is REFUSED here rather than
+ * reported upward. Every number below divides by this one, so an unusable
+ * reading has to stop the measurement at the point where it can still be
+ * named: carried onward it is not a bad quotient but an unbounded loop, and
+ * the loop is synchronous, so nothing can interrupt it.
+ */
+function clockResolutionMs(): number {
+  // The widest loop actually TRIED, reported rather than restated. The levels
+  // are `1_000 * 8^k`, so the ceiling below is not itself one of them — the
+  // walk stops at 32,768,000 and the next step overshoots — and a refusal
+  // naming the ceiling would claim a loop 4x wider than any that ran. Derived
+  // here so it stays true if the ceiling moves.
+  let widest = 0;
+  for (let work = 1_000; work <= 134_217_728; work *= 8) {
+    widest = work;
+    let best = Infinity;
+    let seen = 0;
+    for (let attempt = 0; attempt < 32 && seen < 8; attempt += 1) {
+      const before = cpuMs();
+      let sink = 0;
+      for (let i = 0; i < work; i += 1) sink += i;
+      const delta = cpuMs() - before;
+      // `sink` is read so the loop cannot be optimized away outright. Were it
+      // removed, every delta would read zero, the work would grow to the cap,
+      // and this would report an unusable clock rather than a fast one.
+      if (delta > 0 && sink >= 0) {
+        best = Math.min(best, delta);
+        seen += 1;
+      }
+    }
+    if (best !== Infinity) return best;
+  }
+  throw new Error(
+    `this thread's CPU clock reported no non-zero delta across busy loops up to ` +
+      `${String(widest)} iterations, so its resolution cannot be measured and no window can ` +
+      `be sized against it. Refusing to measure rather than reporting a quotient divided by ` +
+      `a clock that never moved.`,
+  );
+}
+
+const CLOCK_RESOLUTION_MS = clockResolutionMs();
+
+// How many resolutions wide one timed window has to be. Each side then
+// carries at most 1/8 of relative error, so the quotient carries a factor of
+// (1+1/8)/(1-1/8) — about 1.29 — in whichever direction hurts. Applied to the
+// measured populations beside `SUPERLINEAR`, that is 8.10 for the worst
+// quadratic reading and 5.57 for the worst linear one, against a bar of 6.
+// The 4x span above is what pays for this: at a 2x span the same error budget
+// needed twice the window, and on a 16ms clock that is 256ms per side rather
+// than 128ms.
+const RESOLUTION_MARGIN = 8;
+
+// The absolute floor beneath the clock-derived one. On a microsecond clock
+// the margin above lands in the tens of microseconds, and a window that short
+// measures whatever the collector happened to do inside it rather than the
+// shape. It is set well above that for a second reason: a window one pass
+// wide averages nothing, and the cheapest side here is the one whose spread
+// shows it — at a 5ms floor the tag shape's small side was a single ~7ms pass
+// and the quotient ranged 11.78 to 16.81 over three runs. At 25ms each side
+// is averaged over as many passes as it takes, which costs the same total
+// work and spends it on a steadier number.
+const MIN_WINDOW_MS = 25;
+
+const WINDOW_MS = Math.max(MIN_WINDOW_MS, CLOCK_RESOLUTION_MS * RESOLUTION_MARGIN);
+
+// A ceiling on the repetition count, and it is what makes the refusal below
+// REACHABLE rather than decorative. Both growth rules compound — an aimed
+// count divides by a measurement, and the blind one multiplies by 8 — so
+// without a ceiling a window that cannot be filled arrives at attempt 32 with
+// a pass count no machine finishes, and the loop that runs it is synchronous:
+// vitest's timeout cannot interrupt a body that never yields, so the worker
+// hangs where it was supposed to refuse. The largest legitimate count measured
+// is ~164,000 (a deliberately linear shape filling a 16ms clock's window), so
+// this sits ~60x above anything real and still costs under a second to reach.
+const MAX_REPETITIONS = 10_000_000;
+
+/** How many passes of `work` fill one window, sized from a measurement. */
+function repetitionsFilling(work: () => unknown): number {
+  let reps = 1;
+  for (let attempt = 0; attempt < 32; attempt += 1) {
+    const ms = burned(() => {
+      for (let i = 0; i < reps; i += 1) work();
+    });
+    if (ms >= WINDOW_MS) return reps;
+    // Aim at the window from what was just measured, with a little overshoot.
+    // A reading the clock rounded to zero carries no scale to aim with, so
+    // step blind instead of dividing by it.
+    const aimed = ms > 0 ? Math.ceil(reps * (WINDOW_MS / ms) * 1.25) : reps * 8;
+    reps = Math.max(reps + 1, aimed);
+    if (!Number.isFinite(reps) || reps > MAX_REPETITIONS) {
+      throw new Error(
+        `sizing a ${WINDOW_MS.toFixed(3)}ms window reached ${String(reps)} passes, past the ` +
+          `${String(MAX_REPETITIONS)} ceiling, at a measured clock resolution of ` +
+          `${CLOCK_RESOLUTION_MS.toFixed(4)}ms. Refusing rather than running a synchronous ` +
+          `loop that nothing can interrupt.`,
+      );
+    }
+  }
+  throw new Error(
+    `could not fill a ${WINDOW_MS.toFixed(3)}ms window in 32 attempts, at a measured clock ` +
+      `resolution of ${CLOCK_RESOLUTION_MS.toFixed(4)}ms. The growth measurement below cannot ` +
+      `be trusted on this clock, so it is refused rather than reported.`,
+  );
+}
+
+function growth(
+  shape: (bytes: number) => () => unknown,
+  small = SMALL,
+  large = LARGE,
+): {
+  small: number;
+  large: number;
+  ratio: number;
+  span: number;
+  window: string;
+} {
+  const smallWork = shape(small);
+  const largeWork = shape(large);
+  const smallReps = repetitionsFilling(smallWork);
+  const largeReps = repetitionsFilling(largeWork);
+  const over = (work: () => unknown, reps: number) => (): void => {
+    for (let i = 0; i < reps; i += 1) work();
+  };
+  const overSmall = over(smallWork, smallReps);
+  const overLarge = over(largeWork, largeReps);
+
+  // Measured in ALTERNATION, behind a discarded pair, because measuring one
+  // side to completion and then the other puts every drift between them
+  // squarely on the quotient — and the side measured first is the
+  // denominator. A ramping CPU clock, a JIT still tiering up, and a
+  // collection triggered by the setup allocations all drift the same way, and
+  // all of them inflate whichever side goes first. Alternating makes each
+  // side's minimum come from an adjacent pass rather than from a different
+  // phase of the run, so a drift the two share cancels the way a slower
+  // machine does.
+  overSmall();
+  overLarge();
+  let smallBest = Infinity;
+  let largeBest = Infinity;
+  for (let pass = 0; pass < PASSES; pass += 1) {
+    smallBest = Math.min(smallBest, burned(overSmall));
+    largeBest = Math.min(largeBest, burned(overLarge));
+  }
+  const smallMs = smallBest / smallReps;
+  const largeMs = largeBest / largeReps;
+  if (smallMs === 0) {
+    throw new Error(
+      `the small side measured 0ms over ${String(smallReps)} passes, after a window sized to ` +
+        `${WINDOW_MS.toFixed(3)}ms. The clock moved under the measurement; refusing to divide ` +
+        `by it rather than reporting the quotient that produces.`,
+    );
+  }
+  return {
+    small: smallMs,
+    large: largeMs,
+    ratio: largeMs / smallMs,
+    span: large / small,
+    window:
+      `${WINDOW_MS.toFixed(3)}ms windows at a measured clock resolution of ` +
+      `${CLOCK_RESOLUTION_MS.toFixed(4)}ms, filled by ${String(smallReps)} and ` +
+      `${String(largeReps)} passes`,
+  };
+}
+
+function expectSuperlinear(
+  label: string,
+  measured: { small: number; large: number; ratio: number; span: number; window: string },
+): void {
+  expect(
+    measured.ratio,
+    `${label} cost ${measured.small.toFixed(3)}ms and ${measured.large.toFixed(3)}ms per pass ` +
+      `at one and ${String(measured.span)} units of input — a ratio of ` +
+      `${measured.ratio.toFixed(2)}, i.e. LINEAR. ` +
+      `This input no longer makes that shape blow up, so the budget case it backs proves ` +
+      `nothing. Rebuild the hostile shape. Measured over ${measured.window}, so the clock is ` +
+      `not what produced this.`,
+  ).toBeGreaterThan(SUPERLINEAR);
+}
+
 describe('the inputs above are adversarial for what they replaced', () => {
   // Positive controls, without which a case fed a harmless string would satisfy
   // its budget for ever and report the bound as held.
@@ -374,265 +641,6 @@ describe('the inputs above are adversarial for what they replaced', () => {
   // work in a package whose testTimeout is 20s) narrowed the same margin
   // further, because a quadratic side shrinks 4x where a linear one shrinks 2x.
   // Do not put an absolute or cross-implementation comparison back.
-  // ONE unit against FOUR, not against two. The span is what sets the margin
-  // this verdict has to survive: across 2x a linear shape reads 2 and a
-  // quadratic one 4, so a bar at 3 tolerates 25% of skew either way — and 25%
-  // is less skew than a shared runner actually produces. A No-network leg read
-  // `the replaced punctuation pattern` at 46.340ms and 119.111ms, a ratio of
-  // 2.57 where an idle Mac reads 4.54, on a clock whose measured resolution was
-  // 0.2310ms — so quantization was ruled out by the failure message itself, and
-  // the skew was 36%. Across 4x the two populations separate far enough that
-  // the same 36% lands nowhere near the bar: measured here, a linear shape
-  // reads 4.20-4.33 and these quadratic ones 10.42-18.27.
-  const SMALL = MB / 256;
-  const LARGE = SMALL * 4;
-
-  // At the 4x span above a textbook linear shape reads 4 and a textbook
-  // quadratic one 16, but neither population is textbook and the bar is set
-  // from what they actually read. Measured over 16 readings on an idle machine:
-  // these four shapes read 10.42 to 18.27, a shape made genuinely linear
-  // (constant work per hit) reads 4.20 to 4.33, and one made flat outright
-  // (LARGE = SMALL) reads 0.98 to 1.00.
-  //
-  // Fold in the window's own error — each side carries at most 1/8, so the
-  // quotient carries a factor of (1+1/8)/(1-1/8) either way — and the two
-  // worst cases are 4.33 x 1.29 = 5.57 on the linear side and 10.42 x 0.78 =
-  // 8.10 on the quadratic one. 6 sits between them, and NOT in the middle:
-  //
-  //   linear    5.57 -> 6      a 1.08x margin, the TIGHT side
-  //   quadratic 8.10 -> 6      a 1.35x margin
-  //
-  // That asymmetry is chosen rather than inherited, and the reason is that the
-  // two errors are not equally likely here. Every skew this file has actually
-  // seen DEFLATED the quotient — 2.07 against 4 on a Windows leg, 2.57 against
-  // 4.54 on a No-network one, 2.91 against 3.86 on a macOS one — because it
-  // inflates whichever side is cheaper or measured first, and that side is the
-  // denominator. Deflation walks a QUADRATIC reading down toward the bar, which
-  // is the false-LINEAR verdict that has reddened three legs on diffs that
-  // could not reach this file. It walks a LINEAR reading away from the bar. So
-  // the tight margin sits on the side the observed drift moves away from, and
-  // the roomy one on the side it moves toward.
-  //
-  // Reading it the other way needs the numerator to gain on the denominator by
-  // 8% beyond the window's own error — a direction nothing here has produced.
-  // If it ever does, RAISE this rather than widening the window: the balance
-  // point of the two worst cases above is 6.7, and 7 buys the linear side 1.26x
-  // at the cost of taking the quadratic side to 1.16x.
-  const SUPERLINEAR = 6;
-
-  // Both readings are divided into each other, so everything the two share
-  // cancels and a uniformly slower machine moves the quotient not at all. What
-  // does NOT cancel is the CLOCK. A delta between two quantized readings
-  // carries up to a tick of error whichever way it falls, and at these input
-  // sizes a tick can be most of the measurement: POSIX reports microseconds
-  // (0.001ms, measured), while Windows credits a whole scheduler tick — ~15.6ms
-  // — to whichever thread was running at the timer interrupt.
-  //
-  // That is not hypothetical, and it is not inferred. A Windows leg read
-  // `taking a snippet per hit` at 15.0ms and 31.0ms — a ratio of 2.07 against
-  // the 3 demanded, reported out as LINEAR — for a shape that measures 7.9ms
-  // and 31.2ms on an arm64 Mac and stays quadratic (3.88 / 3.98 / 4.00) across
-  // three further doublings. The runner's own clock produced those two numbers:
-  // its smallest non-zero `threadCpuUsage` delta measures 16.0000ms, which the
-  // `Runner facts` step in ci.yml reports, so 15.0 and 31.0 are one and two
-  // ticks of it and a 7.9ms quantity has nowhere to land but a whole tick.
-  //
-  // The second case was owed the same fix whatever that leg had done.
-  // `counting each hit's line from zero` measures 0.99ms here, where the old
-  // floor of 1ms turned its quotient into `large > 3ms` — an absolute threshold
-  // wearing a ratio's clothes, which is the one shape this file argues against
-  // everywhere else.
-  //
-  // So each side is measured over as many REPETITIONS as it takes to fill a
-  // window the clock can resolve, then divided by its own repetition count.
-  // Repetitions rather than a larger input, because these are the quadratic
-  // shapes: doubling the input to buy a readable window costs four times the
-  // work where doubling the repetitions costs two. And each side is sized
-  // independently, so the expensive side fills the same window with a quarter
-  // of the passes rather than overshooting it fourfold.
-  //
-  // The cost is therefore bounded by the WINDOW rather than by the machine — a
-  // slower runner fills the same window with fewer passes — so this does not
-  // grow the wall clock on the leg that prompted it.
-
-  /**
-   * The smallest non-zero interval this thread's CPU clock reports.
-   *
-   * The probe's busy loop GROWS until a delta appears: one sized for a
-   * microsecond clock reads zero on a coarse clock for ever, and reporting zero
-   * would hand the caller a window of no width at all.
-   *
-   * A clock that reports nothing even at the cap is REFUSED here rather than
-   * reported upward. Every number below divides by this one, so an unusable
-   * reading has to stop the measurement at the point where it can still be
-   * named: carried onward it is not a bad quotient but an unbounded loop, and
-   * the loop is synchronous, so nothing can interrupt it.
-   */
-  function clockResolutionMs(): number {
-    // The widest loop actually TRIED, reported rather than restated. The levels
-    // are `1_000 * 8^k`, so the ceiling below is not itself one of them — the
-    // walk stops at 32,768,000 and the next step overshoots — and a refusal
-    // naming the ceiling would claim a loop 4x wider than any that ran. Derived
-    // here so it stays true if the ceiling moves.
-    let widest = 0;
-    for (let work = 1_000; work <= 134_217_728; work *= 8) {
-      widest = work;
-      let best = Infinity;
-      let seen = 0;
-      for (let attempt = 0; attempt < 32 && seen < 8; attempt += 1) {
-        const before = cpuMs();
-        let sink = 0;
-        for (let i = 0; i < work; i += 1) sink += i;
-        const delta = cpuMs() - before;
-        // `sink` is read so the loop cannot be optimized away outright. Were it
-        // removed, every delta would read zero, the work would grow to the cap,
-        // and this would report an unusable clock rather than a fast one.
-        if (delta > 0 && sink >= 0) {
-          best = Math.min(best, delta);
-          seen += 1;
-        }
-      }
-      if (best !== Infinity) return best;
-    }
-    throw new Error(
-      `this thread's CPU clock reported no non-zero delta across busy loops up to ` +
-        `${String(widest)} iterations, so its resolution cannot be measured and no window can ` +
-        `be sized against it. Refusing to measure rather than reporting a quotient divided by ` +
-        `a clock that never moved.`,
-    );
-  }
-
-  const CLOCK_RESOLUTION_MS = clockResolutionMs();
-
-  // How many resolutions wide one timed window has to be. Each side then
-  // carries at most 1/8 of relative error, so the quotient carries a factor of
-  // (1+1/8)/(1-1/8) — about 1.29 — in whichever direction hurts. Applied to the
-  // measured populations beside `SUPERLINEAR`, that is 8.10 for the worst
-  // quadratic reading and 5.57 for the worst linear one, against a bar of 6.
-  // The 4x span above is what pays for this: at a 2x span the same error budget
-  // needed twice the window, and on a 16ms clock that is 256ms per side rather
-  // than 128ms.
-  const RESOLUTION_MARGIN = 8;
-
-  // The absolute floor beneath the clock-derived one. On a microsecond clock
-  // the margin above lands in the tens of microseconds, and a window that short
-  // measures whatever the collector happened to do inside it rather than the
-  // shape. It is set well above that for a second reason: a window one pass
-  // wide averages nothing, and the cheapest side here is the one whose spread
-  // shows it — at a 5ms floor the tag shape's small side was a single ~7ms pass
-  // and the quotient ranged 11.78 to 16.81 over three runs. At 25ms each side
-  // is averaged over as many passes as it takes, which costs the same total
-  // work and spends it on a steadier number.
-  const MIN_WINDOW_MS = 25;
-
-  const WINDOW_MS = Math.max(MIN_WINDOW_MS, CLOCK_RESOLUTION_MS * RESOLUTION_MARGIN);
-
-  // A ceiling on the repetition count, and it is what makes the refusal below
-  // REACHABLE rather than decorative. Both growth rules compound — an aimed
-  // count divides by a measurement, and the blind one multiplies by 8 — so
-  // without a ceiling a window that cannot be filled arrives at attempt 32 with
-  // a pass count no machine finishes, and the loop that runs it is synchronous:
-  // vitest's timeout cannot interrupt a body that never yields, so the worker
-  // hangs where it was supposed to refuse. The largest legitimate count measured
-  // is ~164,000 (a deliberately linear shape filling a 16ms clock's window), so
-  // this sits ~60x above anything real and still costs under a second to reach.
-  const MAX_REPETITIONS = 10_000_000;
-
-  /** How many passes of `work` fill one window, sized from a measurement. */
-  function repetitionsFilling(work: () => unknown): number {
-    let reps = 1;
-    for (let attempt = 0; attempt < 32; attempt += 1) {
-      const ms = burned(() => {
-        for (let i = 0; i < reps; i += 1) work();
-      });
-      if (ms >= WINDOW_MS) return reps;
-      // Aim at the window from what was just measured, with a little overshoot.
-      // A reading the clock rounded to zero carries no scale to aim with, so
-      // step blind instead of dividing by it.
-      const aimed = ms > 0 ? Math.ceil(reps * (WINDOW_MS / ms) * 1.25) : reps * 8;
-      reps = Math.max(reps + 1, aimed);
-      if (!Number.isFinite(reps) || reps > MAX_REPETITIONS) {
-        throw new Error(
-          `sizing a ${WINDOW_MS.toFixed(3)}ms window reached ${String(reps)} passes, past the ` +
-            `${String(MAX_REPETITIONS)} ceiling, at a measured clock resolution of ` +
-            `${CLOCK_RESOLUTION_MS.toFixed(4)}ms. Refusing rather than running a synchronous ` +
-            `loop that nothing can interrupt.`,
-        );
-      }
-    }
-    throw new Error(
-      `could not fill a ${WINDOW_MS.toFixed(3)}ms window in 32 attempts, at a measured clock ` +
-        `resolution of ${CLOCK_RESOLUTION_MS.toFixed(4)}ms. The growth measurement below cannot ` +
-        `be trusted on this clock, so it is refused rather than reported.`,
-    );
-  }
-
-  function growth(shape: (bytes: number) => () => unknown): {
-    small: number;
-    large: number;
-    ratio: number;
-    window: string;
-  } {
-    const smallWork = shape(SMALL);
-    const largeWork = shape(LARGE);
-    const smallReps = repetitionsFilling(smallWork);
-    const largeReps = repetitionsFilling(largeWork);
-    const over = (work: () => unknown, reps: number) => (): void => {
-      for (let i = 0; i < reps; i += 1) work();
-    };
-    const overSmall = over(smallWork, smallReps);
-    const overLarge = over(largeWork, largeReps);
-
-    // Measured in ALTERNATION, behind a discarded pair, because measuring one
-    // side to completion and then the other puts every drift between them
-    // squarely on the quotient — and the side measured first is the
-    // denominator. A ramping CPU clock, a JIT still tiering up, and a
-    // collection triggered by the setup allocations all drift the same way, and
-    // all of them inflate whichever side goes first. Alternating makes each
-    // side's minimum come from an adjacent pass rather than from a different
-    // phase of the run, so a drift the two share cancels the way a slower
-    // machine does.
-    overSmall();
-    overLarge();
-    let smallBest = Infinity;
-    let largeBest = Infinity;
-    for (let pass = 0; pass < PASSES; pass += 1) {
-      smallBest = Math.min(smallBest, burned(overSmall));
-      largeBest = Math.min(largeBest, burned(overLarge));
-    }
-    const small = smallBest / smallReps;
-    const large = largeBest / largeReps;
-    if (small === 0) {
-      throw new Error(
-        `the small side measured 0ms over ${String(smallReps)} passes, after a window sized to ` +
-          `${WINDOW_MS.toFixed(3)}ms. The clock moved under the measurement; refusing to divide ` +
-          `by it rather than reporting the quotient that produces.`,
-      );
-    }
-    return {
-      small,
-      large,
-      ratio: large / small,
-      window:
-        `${WINDOW_MS.toFixed(3)}ms windows at a measured clock resolution of ` +
-        `${CLOCK_RESOLUTION_MS.toFixed(4)}ms, filled by ${String(smallReps)} and ` +
-        `${String(largeReps)} passes`,
-    };
-  }
-
-  function expectSuperlinear(
-    label: string,
-    measured: { small: number; large: number; ratio: number; window: string },
-  ): void {
-    expect(
-      measured.ratio,
-      `${label} cost ${measured.small.toFixed(3)}ms and ${measured.large.toFixed(3)}ms per pass ` +
-        `at one and four units of input — a ratio of ${measured.ratio.toFixed(2)}, i.e. LINEAR. ` +
-        `This input no longer makes that shape blow up, so the budget case it backs proves ` +
-        `nothing. Rebuild the hostile shape. Measured over ${measured.window}, so the clock is ` +
-        `not what produced this.`,
-    ).toBeGreaterThan(SUPERLINEAR);
-  }
 
   it('the manifest line is quadratic under the pattern it replaced', () => {
     expectSuperlinear(
@@ -702,3 +710,182 @@ describe('the inputs above are adversarial for what they replaced', () => {
     );
   });
 });
+// ── every dialect, not just the two that were broken ─────────────────────
+
+// The cases above cover the dialects that WERE quadratic. The property the
+// extraction path owes is linear in file length for all of them, and the two
+// that happened to be reported are not the two that matter next: a dialect's
+// parser is a page of line-oriented code whose per-hit work is easy to make
+// proportional to the file without noticing, and a manifest's hit count grows
+// with its size by definition.
+//
+// The table is annotated `Record<ManifestKind, …>`, so it is EXHAUSTIVE by
+// typecheck: a twelfth kind added to the union fails the build here until it
+// carries a shape. That is the point of the annotation — a hand-written list of
+// kinds goes stale silently, and a battery that covers two of eleven dialects
+// reports the bound as held for the other nine.
+//
+// Each shape is the ORDINARY form of its dialect, with a distinct dependency
+// name per entry. That matters only for the shapes built as an OBJECT —
+// package.json and composer.json — where a repeated key collapses in the object
+// literal itself, leaving a manifest holding one dependency rather than
+// thousands and a measurement of a parse with nothing to do. The line-oriented
+// shapes are indifferent to it: those parsers emit a hit per matching line
+// whatever the name on it is. The single-line forms of package.json and pom.xml
+// have their own cases above.
+const MANIFEST_SHAPES: Record<ManifestKind, (bytes: number) => string> = {
+  'package.json': (bytes) => packageJson(bytes, false),
+  'pom.xml': (bytes) => minifiedPom(bytes),
+  'requirements.txt': (bytes) => repeatEntries(bytes, (i) => `requests-${i}==2.0.0\n`),
+  'pyproject.toml': (bytes) =>
+    `[project]\ndependencies = [\n${repeatEntries(bytes, (i) => `  "requests-${i}>=2.0",\n`)}]\n`,
+  'go.mod': (bytes) =>
+    `module x\n\nrequire (\n${repeatEntries(bytes, (i) => `\tgithub.com/aws/aws-sdk-go-${i} v1.0.0\n`)})\n`,
+  'build.gradle': (bytes) =>
+    repeatEntries(bytes, (i) => `    implementation "com.amazonaws.g${i}:aws-java-sdk:1.0"\n`),
+  Gemfile: (bytes) => repeatEntries(bytes, (i) => `gem "aws-sdk-${i}"\n`),
+  'Cargo.toml': (bytes) =>
+    `[dependencies]\n${repeatEntries(bytes, (i) => `rusoto_core_${i} = "0.48"\n`)}`,
+  'composer.json': (bytes) => composerJson(bytes),
+  csproj: (bytes) =>
+    `<Project>\n${repeatEntries(bytes, (i) => `  <PackageReference Include="AWSSDK.Core${i}" Version="3.0" />\n`)}</Project>\n`,
+  'packages.config': (bytes) =>
+    `<packages>\n${repeatEntries(bytes, (i) => `  <package id="AWSSDK.Core${i}" version="3.0" />\n`)}</packages>\n`,
+};
+
+// Repeats `entry` until the result reaches `bytes`. Counted by the length
+// already accumulated rather than by an estimated entry size, so a dialect
+// whose entry width changes still fills the size the assertions pin.
+function repeatEntries(bytes: number, entry: (index: string) => string): string {
+  const parts: string[] = [];
+  let length = 0;
+  for (let i = 0; length < bytes; i += 1) {
+    const next = entry(String(i));
+    parts.push(next);
+    length += next.length;
+  }
+  return parts.join('');
+}
+
+function composerJson(bytes: number): string {
+  const require: Record<string, string> = {};
+  const count = Math.floor(bytes / 34);
+  for (let i = 0; i < count; i += 1) require[`vendor/package-name-${String(i)}`] = '^1.0';
+  return JSON.stringify({ name: 'x/y', require }, null, 2);
+}
+
+// This direction gets its OWN span, and reusing the 4x one above is the mistake
+// to avoid. That span was sized for a verdict of SUPER-linear, where the only
+// error that matters is a quadratic shape reading low; here BOTH errors matter,
+// because the same quotient has to clear a linear population from below and
+// catch a quadratic one from above. At 4x those two populations are 1.73x
+// apart — the dialects measure 3.78-4.42 and the cheapest quadratic shape this
+// file can produce measures 7.63 — and no bar splits 1.73x with the margin the
+// block above demands on either side: 6 leaves the linear side 1.05x, and the
+// 7 that fixes it puts the quadratic side under the bar outright.
+//
+// Widening the span separates them instead of splitting them, because a linear
+// shape grows with the span and a quadratic one with its SQUARE. That is the
+// same argument that chose 4x over 2x above, applied once more, and it is
+// nearly free here: growth() bounds each side by a fixed time window rather
+// than by a pass count, so a larger input buys separation at the cost of
+// generating it.
+const LINEAR_SPAN = 16;
+const LINEAR_LARGE = SMALL * LINEAR_SPAN;
+
+// Set from both populations at the 16x span, each carrying the window's own
+// error the way the block above folds it in — a factor of (1+1/8)/(1-1/8)
+// either way:
+//
+//   linear    14.82-19.04 measured, worst projecting to 19.04 x 1.286 = 24.49
+//   quadratic 70.95-83.12 measured, worst projecting to 70.95 x 0.778 = 55.19
+//
+// 30 sits between them, and not in the middle:
+//
+//   linear    24.49 -> 30     a 1.23x margin, the TIGHT side
+//   quadratic 55.19 -> 30     a 1.84x margin
+//
+// The asymmetry is the one the block above argues for, and for the same reason:
+// every skew this file has recorded DEFLATED the quotient, which walks a
+// quadratic reading down toward the bar — the missed-defect direction — and a
+// linear reading down away from it. So the tight margin goes on the side the
+// drift moves away from. Both margins beat the 1.08x the 4x span could offer
+// in its tighter direction, which is what buying the wider span was for.
+//
+// The quadratic figures are the CHEAPEST quadratic shape reachable here, not
+// the worst: an `indexOf` per dependency, which is a fast native scan. The
+// expensive shapes (a line number counted from offset zero, a snippet redacted
+// per hit) measure 176.60-227.96 at this span, so the bar clears the cheapest
+// quadratic shape by 1.84x and the rest by at least 5.9x. Calibrating on the
+// cheap one is the point — it is the shape a budget alone reports as held.
+const WORSE_THAN_LINEAR = 30;
+
+function expectLinear(
+  label: string,
+  measured: { small: number; large: number; ratio: number; span: number; window: string },
+): void {
+  expect(
+    measured.ratio,
+    `${label} cost ${measured.small.toFixed(3)}ms and ${measured.large.toFixed(3)}ms per pass ` +
+      `at one and ${String(measured.span)} units of input — a ratio of ` +
+      `${measured.ratio.toFixed(2)} against a bar of ${String(WORSE_THAN_LINEAR)}, which is ` +
+      `worse than linear. Something on this dialect's parse does work proportional to the FILE ` +
+      `once per HIT; find it rather than widening this bar, because a manifest's hit count ` +
+      `grows with its size and the walker hands this path files up to 1 MB. Measured over ` +
+      `${measured.window}, so the clock is not what produced this.`,
+  ).toBeLessThanOrEqual(WORSE_THAN_LINEAR);
+}
+
+describe.each(Object.entries(MANIFEST_SHAPES) as [ManifestKind, (bytes: number) => string][])(
+  'the %s parse is linear in file length',
+  (kind, shape) => {
+    it('extracts a hit count that grows with the file, so the readings below are not vacuous', () => {
+      const small = extractManifestSdks(shape(SMALL), kind).length;
+      const large = extractManifestSdks(shape(LINEAR_LARGE), kind).length;
+      expect(
+        small,
+        `this shape yielded ${String(small)} hits for ${kind}, so the parse below is measured ` +
+          `doing nothing and reads linear whatever it does. Fix the shape, not the bar.`,
+      ).toBeGreaterThan(10);
+      expect(
+        large,
+        `this shape yielded ${String(small)} hits at one unit of input and ${String(large)} at ` +
+          `${String(LINEAR_SPAN)}, so its hit count does NOT grow with the file. The ratio below ` +
+          `then measures a parse whose per-hit work cannot show up in it, and reads linear ` +
+          `however the parse behaves. Either this shape stopped growing with its byte budget, or ` +
+          `the dialect stopped matching the entry it emits.`,
+      ).toBeGreaterThan(small);
+    });
+
+    it('stays inside the budget at the 1 MB cap', () => {
+      const text = MANIFEST_SHAPES[kind](MB);
+      const hits = extractManifestSdks(text, kind);
+      // Controls first: a file the generator built short, or one the parse
+      // found nothing in, satisfies the budget while proving nothing.
+      expect(text.length).toBeGreaterThan(MB / 2);
+      expect(hits.length).toBeGreaterThan(1_000);
+
+      const ms = burned(() => extractManifestSdks(text, kind));
+      expect(
+        ms,
+        `extractManifestSdks burned ${ms.toFixed(1)}ms of CPU on a 1 MB ${kind} carrying ` +
+          `${String(hits.length)} dependencies (budget ${String(EXTRACTION_BUDGET_MS)}ms). This ` +
+          `pass runs on the calling thread with nothing able to interrupt it.`,
+      ).toBeLessThan(EXTRACTION_BUDGET_MS);
+    });
+
+    it('costs four times as much on four times the input, not sixteen', () => {
+      expectLinear(
+        `the ${kind} parse`,
+        growth(
+          (bytes) => {
+            const text = shape(bytes);
+            return () => extractManifestSdks(text, kind);
+          },
+          SMALL,
+          LINEAR_LARGE,
+        ),
+      );
+    });
+  },
+);

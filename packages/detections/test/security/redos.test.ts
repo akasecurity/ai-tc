@@ -191,6 +191,14 @@ function describeProbeBreach(
 //     alphabetic (`=>`, `--`, `::`), sits past the first MAX_LITERAL_TOKENS of
 //     its pattern, or needs more than two of the pattern's words adjacent to
 //     open the walk — the pair family reaches two.
+//   - A gate character a class admits in a form `gateChars` does not model: a
+//     range (`[!-/]`), a `-` at a class edge, or an escape that spells a
+//     character rather than naming a class (`\x22`, `\u0022`, `\p{Ps}`). It
+//     reads plain literals and escaped punctuation only. Every one of these
+//     costs coverage in the SAFE direction — a corpus the pattern cannot enter
+//     is linear, so an unreachable gate can never manufacture a breach — which
+//     is also why nothing but an exact assertion on the corpus built would
+//     notice, and why the two cases beside `gateChars` are written that way.
 //   - Polynomial blowup reachable only on a non-lowercase alphabet (the fixed
 //     polynomial tier is lowercase-and-digit).
 //   - Any rule that arrives at runtime from a pulled or custom pack, which this
@@ -985,6 +993,38 @@ describe('the probe battery itself', () => {
       expect(text, 'a run holding `from` ends every walk at once and costs nothing').not.toContain(
         'from',
       );
+    });
+
+    // A gate has to be a character the pattern's classes ADMIT, and both ways
+    // of getting that wrong are COVERAGE ONLY — a corpus the pattern cannot
+    // enter is linear, so it can never manufacture a false breach, and nothing
+    // else in this file would notice. Hence an exact assertion on which run was
+    // built rather than a timing one.
+    //
+    // `gateChars` exists instead of reading `fuelChars` because that keeps one
+    // representative per class, `body.replace(/\\/g, '')[0]`, chosen before the
+    // class's sense is considered: `[^"\n]` offers the `"` it REFUSES, and
+    // `[\w"]` offers the `w` that is filtered out as alphanumeric while never
+    // offering the `"` it admits. Filtering `fuelChars` by admission reaches
+    // the first of those and cannot reach the second.
+    it.each([
+      [
+        'a negated class supplies no gate, so the run is built bare',
+        '([^"\\n]*)(?:select\\s+)+from',
+        'select ',
+      ],
+      [
+        'a quote past the first character of a positive class still gates the run',
+        '([\\w"]*)(?:select\\s+)+from',
+        '"select ',
+      ],
+    ])('%s', (_label, pattern, expected) => {
+      const runs = literalTokenCorpora(regexRule(pattern, 'gi'))
+        .map((c) => c.name)
+        .filter((name) => name.startsWith('literal token run') && name.includes('select'));
+      // Exact, so each case rejects the other's gate as well as asserting its
+      // own: a family that built both would pass a `toContain` either way.
+      expect(runs).toEqual([`literal token run ${JSON.stringify(expected)}`]);
     });
   });
 

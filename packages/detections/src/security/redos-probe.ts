@@ -548,26 +548,92 @@ function literalTokens(pattern: string): string[] {
   return tokens.slice(0, MAX_LITERAL_TOKENS);
 }
 
-// What a token run has to carry before the pattern will look at it at all: the
-// pattern's literal prefix, and — appended to it — one representative STRUCTURAL
-// character its classes admit, meaning one that is neither alphanumeric nor
-// whitespace. A token run is itself letters and spaces, so an alphanumeric or
-// whitespace fuel character adds nothing a bare run does not already have;
-// a quote, bracket or operator is the gate a bare run cannot pass.
+// Structural characters the pattern's character classes ADMIT: one that is
+// neither alphanumeric nor whitespace, written as a literal inside a class that
+// is not negated. A token run is itself letters and spaces, so an alphanumeric
+// or whitespace character adds nothing a bare run does not already have; a
+// quote, bracket or operator is the gate a bare run cannot pass.
 //
-// `["']...` is the case that decides this. Its literal prefix is empty, so an
-// ungated run of its own `select` never enters the pattern and costs nothing
-// (measured 0.0ms at 64,000 chars against 596ms for the same run behind one
-// `"`). Capped at MAX_TOKEN_GATES, and the prefix alone when the pattern names
-// no structural character — which is the empty gate when it names no prefix
-// either, and that is correct for a pattern whose tokens need nothing in front
-// of them.
+// A scan of its own rather than `fuelChars`, which answers a different question
+// and gets this one wrong in both directions. `fuelChars` keeps ONE
+// representative per class, read as `body.replace(/\\/g, '')[0]`, and that
+// representative is taken before the class's sense is considered:
+//
+//   - `[^"\n]` yields `"`, the first character the class REFUSES. Used as a
+//     gate it builds a corpus the pattern cannot enter, and — because a
+//     non-empty gate list suppresses the bare-prefix fallback below — it
+//     displaces the un-gated run that would have worked.
+//   - `[\w"]` yields `w`, which is filtered out as alphanumeric, and the `"`
+//     the class does admit is never offered at all. Filtering `fuelChars` by
+//     admission fixes the first shape and cannot reach this one.
+//
+// Widening `fuelChars` is not the answer: its single-representative design is
+// what bounds the derived probe count for every other tier, and its quadratic
+// class scan rests on an input bound that more matches would stress. This walk
+// is linear and local to the gate.
+//
+// `["']...` is the case that decides that a gate is needed at all. Its literal
+// prefix is empty, so an ungated run of its own `select` never enters the
+// pattern and costs nothing — measured 0.0ms at 64,000 chars against 596ms for
+// the same run behind one `"`.
+//
+// `-` is skipped deliberately. Inside a class it is a literal at the edges and
+// a range operator in the middle, and reading it wrong puts back exactly the
+// bug above: a gate the class does not admit.
 const MAX_TOKEN_GATES = 2;
 
+function gateChars(pattern: string): string[] {
+  const chars: string[] = [];
+  const seen = new Set<string>();
+  let inClass = false;
+  let negated = false;
+  const offer = (c: string | undefined): void => {
+    if (c === undefined || negated || seen.has(c)) return;
+    if (c === '-' || /[A-Za-z0-9\s]/.test(c)) return;
+    seen.add(c);
+    chars.push(c);
+  };
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i];
+    if (c === '\\') {
+      // A shorthand's letter names a class (`\w`, `\s`, `\d`); escaped
+      // punctuation is a literal the class admits (`\.`, `\[`, `\$`).
+      if (inClass) offer(pattern[i + 1]);
+      i++;
+      continue;
+    }
+    if (!inClass) {
+      if (c === '[') {
+        inClass = true;
+        negated = pattern[i + 1] === '^';
+        if (negated) i++;
+      }
+      continue;
+    }
+    if (c === ']') {
+      inClass = false;
+      negated = false;
+      continue;
+    }
+    offer(c);
+  }
+  return chars;
+}
+
+// What a token run has to carry before the pattern will look at it at all: the
+// pattern's literal prefix, and — appended to it — a structural character its
+// classes admit. Capped at MAX_TOKEN_GATES, and the prefix alone when the
+// pattern admits no structural character — which is the empty gate when it
+// names no prefix either, and that is correct for a pattern whose tokens need
+// nothing in front of them.
+//
+// Only one gate's worth of runs is built per character, and the bare run is not
+// added beside them. For an unanchored pattern it is not missing: a gated
+// corpus is the bare run with one character in front, so a match that starts
+// at position 1 sees the bare run itself.
 function tokenGates(pattern: string): string[] {
   const prefix = literalPrefix(pattern);
-  const gates = fuelChars(pattern)
-    .filter((c) => !/[A-Za-z0-9\s]/.test(c))
+  const gates = gateChars(pattern)
     .slice(0, MAX_TOKEN_GATES)
     .map((c) => prefix + c);
   return gates.length > 0 ? gates : [prefix];

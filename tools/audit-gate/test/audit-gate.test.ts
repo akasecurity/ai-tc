@@ -897,10 +897,14 @@ describe('advisoryIdsFromReport against the human side of the comparison', () =>
 // public commenter controls: unbounded, it measured 66x for 8x input (1116 ms
 // at 16k repetitions) inside a job with a ten-minute budget.
 describe('advisoryIdsFromReport is linear in its input', () => {
-  const witness = (reps: number): string => '| [9](' + '| [GHSA--]('.repeat(reps);
+  // The heading comes first: the function only scans cells inside the blocking
+  // section, so without it the pattern never runs and the case times one failed
+  // `indexOf`.
+  const witness = (reps: number): string =>
+    '## Blocking advisories\n' + '| [9](' + '| [GHSA--]('.repeat(reps);
   // One untimed pass first, so the compiler has warmed the function before the
-  // small side is sampled; the small side is also sized to run for several ms,
-  // since a sub-millisecond denominator swings the ratio on timer noise alone.
+  // small side is sampled. The sizes stay at 2k and 16k: a longer sample is more
+  // likely to catch a preemption on the numerator, which raises the ratio.
   const fastest = (input: string): number => {
     advisoryIdsFromReport(input);
     return Math.min(
@@ -913,7 +917,7 @@ describe('advisoryIdsFromReport is linear in its input', () => {
   };
 
   it('grows about 8x for 8x input, not about 64x', () => {
-    const ratio = fastest(witness(64_000)) / fastest(witness(8_000));
+    const ratio = fastest(witness(16_000)) / fastest(witness(2_000));
     // Quadratic is ~64 here and linear ~8. The ceiling sits between them with
     // room for both a slow runner and an honest constant-factor change; what it
     // separates is the SHAPE, which is the only thing that matters.

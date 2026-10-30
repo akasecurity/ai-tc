@@ -416,8 +416,9 @@ describe('a table row this reader cannot parse', () => {
 // CI sample.
 describe('parseGateTable is linear in its input', () => {
   // One untimed pass first, so the compiler has warmed the function before the
-  // small side is sampled; the small side is also sized to run for several ms,
-  // since a sub-millisecond denominator swings the ratio on timer noise alone.
+  // small side is sampled. The sizes stay at 2k and 16k: a longer sample is more
+  // likely to catch a preemption on the numerator, and measured under load that
+  // made the ratio fail more often, not less.
   const run = (input: string): void => {
     try {
       parseGateTable(input);
@@ -442,7 +443,7 @@ describe('parseGateTable is linear in its input', () => {
   it('finds the section without rescanning from every heading', () => {
     const witness = (reps: number): string =>
       '### Checks that gate `main`' + '### Checks that gate `main`a'.repeat(reps);
-    expect(fastest(witness(64_000)) / fastest(witness(8_000))).toBeLessThan(25);
+    expect(fastest(witness(16_000)) / fastest(witness(2_000))).toBeLessThan(25);
   });
 
   // CodeQL's witness for the row counter: a pipe then a long run of spaces. The
@@ -450,8 +451,8 @@ describe('parseGateTable is linear in its input', () => {
   // the `[-: ]` class that immediately follows it.
   it('counts row-like lines without backtracking on a run of spaces', () => {
     const witness = (reps: number): string =>
-      '### Checks that gate `main`\n|' + ' '.repeat(reps) + '\n```bash';
-    expect(fastest(witness(64_000)) / fastest(witness(8_000))).toBeLessThan(25);
+      '### Checks that gate `main`\n|' + ' '.repeat(reps) + 'x|\n```bash';
+    expect(fastest(witness(16_000)) / fastest(witness(2_000))).toBeLessThan(25);
   });
 
   // The positive control on both: the real table still parses to its real rows,

@@ -64,6 +64,7 @@ describe('isOutboundCall', () => {
     'docker push ghcr.io/a/b',
     'rclone copy data remote:x',
     'ftp host.example',
+    'cd /tmp && ftp host.example',
     'smbclient //host/share -c "put notes.txt"',
     'twine upload dist/*',
     'cargo publish',
@@ -73,12 +74,17 @@ describe('isOutboundCall', () => {
     expect(isOutboundCall(...bash(command))).toBe(true);
   });
 
-  it.each(['git status --short', 'ls -la', 'gh pr view 12', 'git log -3', 'python3 -c "print(1)"'])(
-    'leaves `%s` alone',
-    (command) => {
-      expect(isOutboundCall(...bash(command))).toBe(false);
-    },
-  );
+  it.each([
+    'git status --short',
+    'ls -la',
+    'gh pr view 12',
+    'git log -3',
+    'python3 -c "print(1)"',
+    'echo "see ftp://files.example.com/x"',
+    'ls ftp-notes.txt',
+  ])('leaves `%s` alone', (command) => {
+    expect(isOutboundCall(...bash(command))).toBe(false);
+  });
 });
 
 describe('isMcpTool', () => {
@@ -89,11 +95,24 @@ describe('isMcpTool', () => {
 });
 
 describe('isOutboundCall on a long command', () => {
-  it('returns quickly on 300 kB of repeated interpreter fragments', () => {
-    const command = 'node -e "'.repeat(33_000);
-    const start = performance.now();
-    expect(isOutboundCall(...bash(command))).toBe(false);
-    expect(performance.now() - start).toBeLessThan(100);
+  // Fastest of a few runs, so a pause from a loaded machine does not count.
+  const fastest = (command: string): number => {
+    let best = Infinity;
+    for (let run = 0; run < 7; run += 1) {
+      const start = performance.now();
+      isOutboundCall(...bash(command));
+      best = Math.min(best, performance.now() - start);
+    }
+    return best;
+  };
+
+  it('grows in proportion to the command, not with its square', () => {
+    const small = 'node -e "'.repeat(4_125);
+    const large = 'node -e "'.repeat(33_000);
+    expect(isOutboundCall(...bash(large))).toBe(false); // untimed warm-up
+    // A command 8x as long costs about 8x as much when the work is linear and
+    // about 64x as much when it is quadratic.
+    expect(fastest(large) / fastest(small)).toBeLessThan(24);
   });
 });
 

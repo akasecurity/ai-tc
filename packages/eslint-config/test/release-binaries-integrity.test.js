@@ -68,6 +68,8 @@ import { runInNewContext } from 'node:vm';
 
 import { afterAll, describe, expect, it } from 'vitest';
 
+import { expectSupportedRunnerImages } from './helpers/runner-images.js';
+
 // This file asks structural questions of structure: which jobs there are, which
 // steps a job has, and what a step's `if:`, `with:`, `env:` and `run:` hold.
 // Comments are not part of that structure — a `#` line inside a `run:` body is part
@@ -95,7 +97,6 @@ import {
   usesOf,
   writeScopes,
 } from './helpers/workflow-yaml.js';
-import { RETIRED_RUNNER_IMAGES, runnerImageForTarget } from './helpers/runner-images.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const WORKFLOW = join(REPO_ROOT, '.github', 'workflows', 'release-binaries.yml');
@@ -263,12 +264,8 @@ describe('the binary fan-out runs on supported runner images', () => {
   // Resolved inside the `it` for the reason given at the top of this file's
   // sibling readers: an assertion raised from a `describe` body is a collection
   // error, which reports the file as `(0 test)` and unruns every other suite in it.
-  it('builds darwin-arm64 on a macOS image GitHub has not retired', () => {
-    const os = runnerImageForTarget(workflow(), 'build', 'darwin-arm64');
-    expect(
-      RETIRED_RUNNER_IMAGES.includes(os),
-      `the darwin-arm64 leg pins \`${os}\`, a retired macOS image: a job queued on one is terminated rather than given a runner, and the macOS archive this release renders its Homebrew formula and Scoop manifest from is never produced`,
-    ).toBe(false);
+  it('builds every target on an image GitHub still serves', () => {
+    expectSupportedRunnerImages(workflow(), 'build');
   });
 });
 

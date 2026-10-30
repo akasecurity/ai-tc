@@ -20,7 +20,7 @@ import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 
 import { REPO_ROOT } from './helpers/lint-invocations.js';
-import { RETIRED_RUNNER_IMAGES, runnerImageForTarget } from './helpers/runner-images.js';
+import { expectSupportedRunnerImages } from './helpers/runner-images.js';
 import {
   envOf,
   ifOf,
@@ -160,19 +160,21 @@ describe('build-binaries wait-for-ci gate', () => {
     expect(envOf(step).HEAD_SHA).toBe('${{ github.event.pull_request.head.sha }}');
   });
 
-  // Resolved inside the `it`: the readers assert, and an assertion raised from a
-  // `describe` body is a collection error that reports the file as `(0 test)` and
-  // takes every other case in it with it.
-  it('builds darwin-arm64 on a macOS image GitHub has not retired', () => {
-    const os = runnerImageForTarget(workflow(), 'build', 'darwin-arm64');
-    expect(
-      RETIRED_RUNNER_IMAGES.includes(os),
-      `the darwin-arm64 leg pins \`${os}\`, a retired macOS image: GitHub terminates a job queued on one rather than giving it a runner`,
-    ).toBe(false);
-  });
-
   it('has no push trigger, so there is no ungated push path', () => {
     const on = workflow().on;
     expect(Object.keys(on).sort()).toEqual(['pull_request', 'workflow_dispatch']);
+  });
+});
+
+// Its own suite rather than a case inside the gate's: the gate is a shell step
+// this file executes, and the fan-out's runner images are a property of the
+// matrix beside it. A failure that named the gate would point a reader at the
+// wrong half of the file.
+describe('the binary fan-out runs on supported runner images', () => {
+  // Resolved inside the `it`: the reader asserts, and an assertion raised from a
+  // `describe` body is a collection error that reports the file as `(0 test)` and
+  // takes every other case in it with it.
+  it('builds every target on an image GitHub still serves', () => {
+    expectSupportedRunnerImages(workflow(), 'build');
   });
 });

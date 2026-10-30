@@ -13,6 +13,10 @@
     "credential-file-read",
     "credential-file-grep",
     "credential-file-access",
-    "protected-path-access"
+    "protected-path-access",
+    "object-storage-upload",
+    "alibaba-oss-host",
+    "download-then-execute",
+    "recon-then-egress"
   ]
 }

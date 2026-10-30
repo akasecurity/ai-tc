@@ -19,6 +19,7 @@ import {
   type ReplayMode,
   type ReplayOutcome,
   replaySet,
+  warningRules,
   writeResults,
 } from '../helpers/replay.ts';
 
@@ -49,7 +50,8 @@ describe('Open-weight agent egress behaviors replayed through the built hook', (
     async () => {
       const outcomes = await outcomesFor('default');
       for (const o of outcomes.filter((x) => x.call.kind === 'attack')) {
-        expect(o.verdict, o.call.label).not.toBe('blocked');
+        expect(o.verdict, o.call.label).toBe(o.call.warnedBy === undefined ? 'allowed' : 'warned');
+        expect(warningRules(o), o.call.label).toEqual([...(o.call.warnedBy ?? [])].sort());
         expect(packRules(COHERE, o), o.call.label).toEqual(
           expect.arrayContaining([...(o.call.rules ?? [])]),
         );

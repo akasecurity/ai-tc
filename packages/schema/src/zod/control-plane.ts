@@ -627,6 +627,24 @@ export const EgressIngestHit = z
   .meta({ id: 'EgressIngestHit' });
 export type EgressIngestHit = z.infer<typeof EgressIngestHit>;
 
+/** The most earlier-version digests one request may name for its project. */
+export const SUPERSEDED_PROJECT_KEYS_MAX = 4;
+
+/**
+ * The digests the same project had under each earlier
+ * `PROJECT_KEY_DIGEST_VERSION`, newest first. A receiver files rows it holds
+ * under any of them under the request's own `projectKey`. Absent from a sender
+ * that computes no earlier digest.
+ */
+export const SupersededProjectKeys = z
+  .array(
+    z
+      .string()
+      .regex(/^[0-9a-f]{64}$/, 'a superseded key must be a 64-character lowercase hex digest'),
+  )
+  .max(SUPERSEDED_PROJECT_KEYS_MAX);
+export type SupersededProjectKeys = z.infer<typeof SupersededProjectKeys>;
+
 export const EgressIngestRequest = z
   .object({
     /**
@@ -642,6 +660,7 @@ export const EgressIngestRequest = z
     projectKey: z
       .string()
       .regex(/^[0-9a-f]{64}$/, 'projectKey must be a 64-character lowercase hex digest'),
+    supersededProjectKeys: SupersededProjectKeys.optional(),
     /** Display name only — never keys reconciliation. */
     project: z.string(),
     reconcile: EgressReconcile,
@@ -1225,6 +1244,8 @@ export const CredentialSightingsRequest = z
   .object({
     sightings: z.array(CredentialSighting).min(1).max(CREDENTIAL_SIGHTINGS_BATCH_MAX),
     scanId: z.uuid().optional(),
+    /** The earlier digests of the one project every sighting in the request names. */
+    supersededProjectKeys: SupersededProjectKeys.optional(),
   })
   .strict()
   .meta({ id: 'CredentialSightingsRequest' });

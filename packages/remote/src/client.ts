@@ -19,6 +19,7 @@ import type {
   PolicyBundle as PolicyBundleT,
   RecordAuditEventRequest as AuditEventSubmission,
   ResolvedInventory as ResolvedInventoryT,
+  SessionHoldResponse as SessionHoldResponseT,
   SightingKeyResponse as SightingKeyResponseT,
   StorePostureSnapshot,
 } from '@akasecurity/schema';
@@ -42,6 +43,7 @@ import {
   RecordAuditEventBatch,
   RecordAuditEventRequest,
   ResolvedInventory,
+  SessionHoldResponse,
   SightingKeyResponse,
 } from '@akasecurity/schema';
 import type { z } from 'zod';
@@ -57,10 +59,10 @@ import {
 } from './http.ts';
 import { auditEventForWire, batchForWire } from './repo-label.ts';
 
-// The fourteen routes an attached machine may call, and nothing else.
+// The fifteen routes an attached machine may call, and nothing else.
 //
 // The set is small on purpose and is the same set a deployment scopes a
-// credential to: ten writes and four self-scoped reads. There is
+// credential to: ten writes and five self-scoped reads. There is
 // deliberately no way to ask this client for anything organization-wide — a
 // credential on a laptop should not be able to read what other people's
 // machines reported, and a client that cannot express the request is a
@@ -74,6 +76,10 @@ import { auditEventForWire, batchForWire } from './repo-label.ts';
 // has been told to do and can express no other question — and the ack reports
 // only on a command id the poll itself returned. Neither can name another
 // machine, and neither widens what a laptop credential can read.
+//
+// The session hold is self-scoped the same way: it asks about one of this
+// machine's own sessions, and the deployment answers only for the credential
+// that asks.
 //
 // Every response is PARSED, never cast. The bodies arrive from a host named in
 // a settings file, so "the deployment said so" is not a type guarantee; a
@@ -94,6 +100,7 @@ const ROUTES = {
   sightingKey: '/v1/sighting-key',
   credentialSightings: '/v1/credential-sightings',
   labels: '/v1/plugin/labels',
+  sessions: '/v1/plugin/sessions',
 } as const;
 
 /**
@@ -108,6 +115,11 @@ const ROUTES = {
  */
 function ackRoute(id: string): string {
   return `${ROUTES.commands}/${encodeURIComponent(id)}/ack`;
+}
+
+/** The hold route for one session, its id encoded for the reason `ackRoute` gives. */
+function sessionHoldRoute(sessionId: string): string {
+  return `${ROUTES.sessions}/${encodeURIComponent(sessionId)}/hold`;
 }
 
 export interface RemoteClientOptions {
@@ -202,6 +214,13 @@ export interface RemoteClient {
    * before it is sent; a 404 raises `RemoteRouteAbsent`.
    */
   reportLabels(request: LabelReportRequestT): Promise<LabelReportAckT>;
+
+  /**
+   * GET /v1/plugin/sessions/:sessionId/hold — whether the deployment holds one
+   * of this machine's sessions. A deployment that predates the route answers
+   * 404, which reads as not held.
+   */
+  getSessionHold(sessionId: string): Promise<SessionHoldResponseT>;
 }
 
 /** Header value as a single string; Node reports repeats as an array. */
@@ -513,6 +532,13 @@ export function createRemoteClient(options: RemoteClientOptions): RemoteClient {
       });
       if (response.status === 404) throw new RemoteRouteAbsent(ROUTES.labels);
       return parsed(LabelReportAck, okBody(response), ROUTES.labels);
+    },
+
+    async getSessionHold(sessionId) {
+      const route = sessionHoldRoute(sessionId);
+      const response = await send({ ...common, method: 'GET', url: url(route) });
+      if (response.status === 404) return { held: false };
+      return parsed(SessionHoldResponse, okBody(response), route);
     },
   };
 }

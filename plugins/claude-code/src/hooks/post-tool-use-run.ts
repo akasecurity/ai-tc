@@ -12,6 +12,7 @@ import { pointersByFinding, recordModFindings, toolFieldAction } from '../mod/fi
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote, userDisclosure } from '../protocol/notes.ts';
 import { resolveHookAccount, stampFor } from './account-stamp.ts';
+import { postToolUseForward } from './capture-forward.ts';
 import { warnIfHostBelowFloor } from './host-floor-notice.ts';
 import { largeInputBound } from './large-input.ts';
 import type { ResponseScanOutcome } from './scan-response.ts';
@@ -124,6 +125,10 @@ export async function runPostToolUse(
   // grant this hook behaves exactly as it did before the vault existed.
   const vaultGlue = isVaultConsentValid(config.settings.vaultConsent) ? createVaultGlue() : null;
 
+  // Set only when the organization forwards this repository's tool output and
+  // this session's mod, which marks it at its tool-result door, is not running.
+  const forward = postToolUseForward(config.dataDir, sessionId, repoKey);
+
   let outcome: ResponseScanOutcome;
   const capturedFields: { text: string; result: CaptureResult }[] = [];
   const vaulted: PointersByText = new Map();
@@ -140,7 +145,7 @@ export async function runPostToolUse(
           runtime,
           { kind: 'response', sourceTool: SOURCE_TOOL.ClaudeCode, text, metadata },
           scopeKey,
-          { persist: 'with-findings' },
+          { persist: 'with-findings', ...(forward === undefined ? {} : { forward }) },
         );
         capturedFields.push({ text, result });
         return result;

@@ -60,3 +60,13 @@ test('a refused write leaves the prompt untouched', async ($, on) => {
   expect(result.drop).toBeUndefined();
   expect(seen).toEqual(['hello']);
 });
+
+test('a tool call renews the note before the tool runs', async ($, on) => {
+  const writes = world(on, 'sess-d', { now: 20_000 });
+  on('tool.call', () => ({ result: {}, text: 'ran' }) as never);
+
+  await $.tool.call({ tool: 'Bash', command: 'ls' } as never);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  expect(writes.map((w) => w.path)).toEqual([`${NOTES_DIR}/sess-d.json`]);
+});

@@ -21,10 +21,11 @@
  *
  * Fail-open: any error → no output, exit 0.
  */
-import { createPluginRuntime, loadConfig } from '@akasecurity/plugin-sdk';
+import { createPluginRuntime, dataDir, loadConfig } from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 
 import { codexToolStamp, threadAccountKey } from './account-stamp.ts';
+import { denyIfSessionHeld } from './capture-forward.ts';
 import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
 import type { ScannedField } from './pre-tool-use-decision.ts';
 import {
@@ -44,6 +45,9 @@ import {
 async function main(): Promise<void> {
   const input = parseJson(await readStdin());
   if (!input) return;
+
+  // A session the deployment holds refuses every tool call this hook sees.
+  if (await denyIfSessionHeld(dataDir(), input, emit)) return;
 
   const toolName = getString(input, 'tool_name') ?? '';
   const fields = SCANNABLE_FIELDS[toolName];

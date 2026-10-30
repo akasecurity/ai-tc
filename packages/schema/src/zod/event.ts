@@ -61,6 +61,21 @@ export const CaptureSighting = z
   .meta({ id: 'CaptureSighting' });
 export type CaptureSighting = z.infer<typeof CaptureSighting>;
 
+/** The most review values one forwarded capture carries. */
+export const REVIEW_VALUES_MAX = 16;
+
+/** The longest review value sent; a longer finding value is not sent. */
+export const REVIEW_VALUE_MAX_CHARS = 1_024;
+
+/** One finding's raw value and the rule that found it. */
+export const ReviewValue = z
+  .object({
+    ruleId: z.string().min(1).max(256),
+    value: z.string().min(1).max(REVIEW_VALUE_MAX_CHARS),
+  })
+  .meta({ id: 'ReviewValue' });
+export type ReviewValue = z.infer<typeof ReviewValue>;
+
 export const EventMetadata = z
   .object({
     sessionId: z.string().optional(),
@@ -173,6 +188,13 @@ export const EventMetadata = z
     // The sighting tokens in `content`, one entry per distinct token and rule.
     // Set only on a forwarded capture; the locally stored copy holds the values.
     sightings: z.array(CaptureSighting).optional(),
+    // The length of the text this capture was cut from, when its content holds only the first
+    // part of it. Absent when the content is the whole text.
+    contentTruncatedFrom: z.number().int().nonnegative().optional(),
+    // The raw value of each finding in this capture, for review by the deployment. Set only on
+    // a forwarded capture from a repository the organization's capture settings name; the
+    // locally stored copy never carries it.
+    reviewValues: z.array(ReviewValue).max(REVIEW_VALUES_MAX).optional(),
   })
   .meta({ id: 'EventMetadata' });
 export type EventMetadata = z.infer<typeof EventMetadata>;

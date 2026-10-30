@@ -433,6 +433,132 @@ async function backstopRow(
   return changed ? { ...row, message: { ...row.message, content } } : null;
 }
 
+// Tool output forwarding. An attached machine whose organization asks for it
+// writes ~/.aka/data/attached-capture.json; with `toolOutput` set there, each
+// tool result is handed to the helper as the conversation keeps it (after the
+// backstop's rewrite), cut to the cap, to be recorded so it is forwarded. Nothing
+// awaits it, so the row is never held. While this mod runs, PostToolUse leaves
+// tool output to it; the reader of that is packages/plugin-sdk/src/mod-host-mode.ts.
+// A setting that names repositories is PostToolUse's alone: it keys the output by
+// the file the tool touched, which a row does not carry.
+
+const MAX_CAPTURE_SETTINGS_BYTES = 64 * 1024;
+
+let captureSettingsCache: { key: string; maxChars: number | null } | undefined;
+
+function captureSettingsPath(home: string): string {
+  const sep = home.includes('\\') ? '\\' : '/';
+  const root = home.endsWith('/') || home.endsWith('\\') ? home.slice(0, -1) : home;
+  return [root, '.aka', 'data', 'attached-capture.json'].join(sep);
+}
+
+// The forwarding cap the settings file names, or null when it names none or names
+// repositories. The bounds are TOOL_OUTPUT_FORWARD_MIN_CHARS and
+// TOOL_OUTPUT_FORWARD_MAX_CHARS in packages/schema/src/zod/policy.ts.
+function parseToolOutputCap(text: string): number | null {
+  try {
+    const raw: unknown = JSON.parse(text);
+    if (typeof raw !== 'object' || raw === null) return null;
+    const { v, toolOutput } = raw as { v?: unknown; toolOutput?: unknown };
+    if (v !== 1 || typeof toolOutput !== 'object' || toolOutput === null) return null;
+    const { maxChars, repos } = toolOutput as { maxChars?: unknown; repos?: unknown };
+    if (repos !== undefined) return null;
+    return typeof maxChars === 'number' &&
+      Number.isInteger(maxChars) &&
+      maxChars >= 2 &&
+      maxChars <= 65_536
+      ? maxChars
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function toolOutputCap($: Dollar): Promise<number | null> {
+  try {
+    const home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE'));
+    if (home === undefined || home === '') return null;
+    const path = captureSettingsPath(home);
+    const stat = await $.fs.stat(path);
+    if (stat.kind !== 'file' || stat.size > MAX_CAPTURE_SETTINGS_BYTES) return null;
+    const key = `${path}|${String(stat.mtimeMs)}|${String(stat.size)}`;
+    if (captureSettingsCache?.key === key) return captureSettingsCache.maxChars;
+    const maxChars = parseToolOutputCap(await $.fs.read(path));
+    captureSettingsCache = { key, maxChars };
+    return maxChars;
+  } catch {
+    return null;
+  }
+}
+
+// The first `maxChars` code units of `text`, one fewer when the cut would end on
+// the first half of a surrogate pair; the helper's runtime cuts the same way.
+function cutToolOutput(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const last = text.charCodeAt(maxChars - 1);
+  return text.slice(0, last >= 0xd800 && last <= 0xdbff ? maxChars - 1 : maxChars);
+}
+
+// Every text a tool-result row holds, in order.
+function toolResultTexts(row: Parameters<Hook<'session.append'>>[1]): string[] {
+  const texts: string[] = [];
+  for (const block of row.message.content) {
+    if (block.type !== 'tool_result') continue;
+    const inner = block.content;
+    if (typeof inner === 'string') {
+      if (inner !== '') texts.push(inner);
+    } else if (Array.isArray(inner)) {
+      for (const part of inner as { type?: unknown; text?: unknown }[]) {
+        if (part.type === 'text' && typeof part.text === 'string' && part.text !== '') {
+          texts.push(part.text);
+        }
+      }
+    }
+  }
+  return texts;
+}
+
+// The tool a row's output came from, when the row names one.
+function toolOf(row: object): { tool?: string } {
+  const origin = (row as { origin?: { kind?: unknown; tool?: unknown } }).origin;
+  return origin?.kind === 'tool' && typeof origin.tool === 'string' ? { tool: origin.tool } : {};
+}
+
+async function forwardToolResult(
+  $: Dollar,
+  row: Parameters<Hook<'session.append'>>[1],
+): Promise<void> {
+  try {
+    const maxChars = await toolOutputCap($);
+    if (maxChars === null) return;
+    await noteModRunning($);
+    const texts = toolResultTexts(row);
+    if (texts.length === 0) return;
+    const script = helperScript($.plugin.root, 'mod-tokenize.js');
+    const sessionId = await $.session.id();
+    const cwd = await captureCwd($, row);
+    for (const text of texts) {
+      await $.process.run(['node', script], {
+        stdin: JSON.stringify({
+          v: 1,
+          text: cutToolOutput(text, maxChars),
+          sessionId,
+          cwd,
+          row: {
+            door: 'tool-result',
+            ...agentOf(row),
+            ...toolOf(row),
+            forward: { maxChars, ...(text.length > maxChars ? { length: text.length } : {}) },
+          },
+        }),
+        timeoutMs: HELPER_TIMEOUT_MS,
+      });
+    }
+  } catch {
+    // Not forwarded: the row itself was never held for it.
+  }
+}
+
 // The mod is zod-free and Node-free, so it spells the note's location and shape
 // itself; the reader is packages/plugin-sdk/src/mod-host-mode.ts.
 const NOTE_RENEW_MS = 60 * 1000;
@@ -1094,7 +1220,9 @@ export const register: Register = (on) => {
   on('session.append', async ($, e, next) => {
     if (isHandledElsewhere(e)) return next(e);
     const rewritten = await backstopRow($, e);
-    return next(rewritten ?? e);
+    const row = rewritten ?? e;
+    if (row.door === 'tool-result') void forwardToolResult($, row);
+    return next(row);
   });
 
   on('ui.render', { component: 'AssistantMessage' }, revealRender);
@@ -1118,6 +1246,8 @@ export const register: Register = (on) => {
 
   on('tool.call', async ($, e, next) => {
     void refreshStatus($);
+    // Renewed before the tool runs, so PostToolUse for this call sees the mod running.
+    void noteModRunning($);
     const input = toolArguments(e);
     const needsHelper = toolCallNeedsHelper(e.tool, input, await loadPolicy($));
     if (!needsHelper) return next(e);

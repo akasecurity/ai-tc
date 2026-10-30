@@ -807,6 +807,117 @@ describe('the scope key is a local-only carrier', () => {
   });
 });
 
+// ── review values ride only the live send, only for a named repository ────────
+
+describe('review values', () => {
+  const REPO = 'github.com/acme/widgets';
+  const candidates = [{ ruleId: 'core-pii/email', value: 'dev@acme.example' }];
+  const ack = (): Promise<IngestAck> => Promise.resolve({ accepted: 1, duplicates: 0 });
+  const cachedWith = (reviewValueRepos?: string[]) => () =>
+    Promise.resolve(
+      bundle([], reviewValueRepos === undefined ? {} : { capture: { reviewValueRepos } }),
+    );
+
+  function send(
+    record: CaptureRecord,
+    readCachedBundle: AttachedDataGatewayDeps['readCachedBundle'],
+  ) {
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const recordCapture = vi.fn<(r: CaptureRecord) => Promise<void>>(() => Promise.resolve());
+    const ingestEvents = vi.fn<(batch: IngestBatch) => Promise<IngestAck>>(ack);
+    const { gateway } = build({
+      local: makeLocal(calls, { recordCapture }),
+      client: makeClient(calls, { ingestEvents }),
+      readCachedBundle,
+    });
+    return {
+      done: gateway.recordCapture(record),
+      sent: () => ingestEvents.mock.calls[0]?.[0].events[0],
+      stored: () => recordCapture.mock.calls[0]?.[0],
+    };
+  }
+
+  it('are sent on the wire copy when the settings name the capture repository', async () => {
+    const run = send(
+      { event: event('e1'), findings: [], scopeKey: REPO, reviewCandidates: candidates },
+      cachedWith([REPO]),
+    );
+    await run.done;
+    expect(run.sent()?.metadata?.reviewValues).toEqual(candidates);
+    // The local write is handed the record unchanged: its event holds no review value.
+    expect(run.stored()?.event.metadata?.reviewValues).toBeUndefined();
+  });
+
+  it('are absent when the settings name another repository', async () => {
+    const run = send(
+      { event: event('e1'), findings: [], scopeKey: REPO, reviewCandidates: candidates },
+      cachedWith(['github.com/acme/other']),
+    );
+    await run.done;
+    expect(run.sent()).toEqual(event('e1'));
+    expect(JSON.stringify(run.sent())).not.toContain('dev@acme.example');
+  });
+
+  it('are absent when the settings name no repository, or there are no settings', async () => {
+    for (const readCachedBundle of [
+      cachedWith(undefined),
+      cachedWith([]),
+      () => Promise.resolve(null),
+    ]) {
+      const run = send(
+        { event: event('e1'), findings: [], scopeKey: REPO, reviewCandidates: candidates },
+        readCachedBundle,
+      );
+      await run.done;
+      expect(run.sent()).toEqual(event('e1'));
+    }
+  });
+
+  it('are absent for a capture with no repository key', async () => {
+    const run = send(
+      { event: event('e1'), findings: [], reviewCandidates: candidates },
+      cachedWith([REPO]),
+    );
+    await run.done;
+    expect(run.sent()).toEqual(event('e1'));
+  });
+
+  it('are absent when the settings cannot be read, and the capture still goes', async () => {
+    const run = send(
+      { event: event('e1'), findings: [], scopeKey: REPO, reviewCandidates: candidates },
+      () => Promise.reject(new Error('unreadable')),
+    );
+    await run.done;
+    expect(run.sent()).toEqual(event('e1'));
+  });
+
+  it('never reach the local store, so a drained resend cannot carry them', async () => {
+    migratedStore.seed(dataDir);
+    const local = new StandaloneDataGateway(dataDir);
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const ingestEvents = vi.fn<(batch: IngestBatch) => Promise<IngestAck>>(ack);
+    const { gateway } = build({
+      local,
+      client: makeClient(calls, { ingestEvents }),
+      readCachedBundle: cachedWith([REPO]),
+    });
+
+    await gateway.recordCapture({
+      event: event('kept'),
+      findings: [],
+      scopeKey: REPO,
+      reviewCandidates: candidates,
+    });
+    await local.close();
+
+    expect(ingestEvents.mock.calls[0]?.[0].events[0]?.metadata?.reviewValues).toEqual(candidates);
+    const raw = new DatabaseSync(join(dataDir, DB_FILENAME));
+    const rows = raw.prepare('SELECT * FROM audit_events').all();
+    raw.close();
+    expect(JSON.stringify(rows)).not.toContain('dev@acme.example');
+  });
+});
+
 describe('consumeException is a fail-secure boundary', () => {
   it('delegates the answer unmodified', async () => {
     const { gateway } = build();
@@ -3397,6 +3508,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
       prohibitedModels: 'cache',
       modelPolicy: 'cache',
       redactFallback: 'cache',
+      capture: 'cache',
       policies: 'both',
       rules: 'both',
       customKeywords: 'both',
@@ -3421,6 +3533,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
       prohibitedModels: [`${name}-prohibited`],
       modelPolicy: { mode: 'allowlist', approved: [`${name}-approved`] },
       redactFallback: name === 'local' ? 'warn' : 'block',
+      capture: { reviewValueRepos: [`${name}.example/o/r`] },
     });
     const localBundle = side('local');
     const cached = side('remote');

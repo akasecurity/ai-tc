@@ -163,7 +163,33 @@ on redact or block, so on an attached machine carrying default policy nothing is
 masked before it is sent; that is the default posture, not an edge case.
 Promoting a detection to redact or block masks its matches at rest and in transit
 together, from then on — it does not reach what has already been sent, and what
-has been sent cannot be recalled.
+has been sent cannot be recalled. Review values, below, are the one exception.
+
+The policy an attached machine pulls can ask for three more things. Each is off
+until the deployment sets it, and a machine that has not pulled a policy asking
+for it sends none of them:
+
+- **Tool output with no findings.** After a tool call Claude Code or Codex
+  reports to the plugin, its output is recorded and forwarded even when nothing
+  in it was detected, cut to the length the deployment sets (at most 65,536
+  characters), with its full length when it was cut. It is masked by the same
+  rule as any other capture. The deployment can limit this to repositories it
+  names; for those, the output is matched to the repository of the file the
+  tool touched, or of the session's working directory where it names none. The
+  cut text is also kept in the local store.
+- **Review values.** For the repositories the deployment names, a forwarded
+  capture also carries the raw value of each finding in it, with the rule that
+  found it — at most 16 values of at most 1,024 characters. **This is whatever
+  the detection's policy, redact and block included**: for those repositories a
+  value masked in the forwarded text still reaches the deployment as it was
+  seen, so that it can be reviewed there. Review values ride only the live send;
+  the local store never holds them, and a capture sent later, after a failed
+  delivery or by a backfill, carries none.
+- **A session check.** Before each tool call the machine asks the deployment
+  whether that session is held, naming the session id and nothing else. It
+  waits at most 300 ms and goes ahead when no answer arrives, the request
+  fails, or the deployment predates the check; when the session is held, the
+  call is refused.
 
 The separate `aka sync-history` grant covers three things, and the rule reaches
 the first two of them. The backfill of activity recorded before you attached marks that

@@ -136,5 +136,55 @@
     "label": "known gap: interpolation-first statement is not matched",
     "text": "#{prefix} UPDATE t SET a = #{x}",
     "shouldMatch": false
+  },
+  {
+    "label": "jq filter with select( and a shell variable is not sql",
+    "text": "jq '.[] | select(.id == \"x\" and (.name|startswith($h+\":\")))' file.json",
+    "shouldMatch": false
+  },
+  {
+    "label": "shell command mentioning where and a shell variable is not sql",
+    "text": "echo \"find where $dir lives\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "select with from and a php variable still matches",
+    "text": "$q = \"select id from users where name = '$name'\";",
+    "shouldMatch": true
+  },
+  {
+    "label": "update with set and ruby interpolation still matches",
+    "text": "db.execute(\"update users set name = '#{name}' where id = 1\")",
+    "shouldMatch": true
+  },
+  {
+    "label": "interpolated column list before FROM (php)",
+    "text": "$q = \"SELECT $cols FROM users WHERE id = 1\";",
+    "shouldMatch": true
+  },
+  {
+    "label": "interpolated column list before FROM (ruby)",
+    "text": "\"SELECT #{cols} FROM users\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "interpolated table name before SET",
+    "text": "\"UPDATE $table SET a = 1\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "interpolated table name after FROM",
+    "text": "\"SELECT * FROM $table\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "delete from with where interpolation",
+    "text": "\"DELETE FROM users WHERE id = #{id}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "jq select on a field named from stays clean",
+    "text": "jq '.[] | select(.from == $h)' file.json",
+    "shouldMatch": false
   }
 ]

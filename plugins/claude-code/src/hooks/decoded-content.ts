@@ -27,7 +27,8 @@ const READ_MCP_TOOL =
 const OUTBOUND_BASH = new RegExp(
   [
     String.raw`(?<![\w.-])(?:curl|wget|scp|sftp|rsync|ssh|nc|ncat|netcat|socat|sendmail|mail|mutt|swaks|rclone|smbclient)(?![\w.-])`,
-    String.raw`(?<![\w.-])(?<!\b(?:man|which|whereis|install|add|remove|uninstall|info|help)[ \t]+)ftp[ \t]+(?:-[A-Za-z]+[ \t]+)*(?!://)[\w.-]+`,
+    String.raw`(?<![\w.-])(?<!\b(?:man|which|whereis|install|add|remove|uninstall|info|help)[ \t]+)ftp(?:[ \t]+(?:-[A-Za-z]+[ \t]+)*(?!://)[\w.-]+|[ \t]*<)`,
+    String.raw`(?<=\|[ \t]*)ftp(?=[ \t]*(?:$|[\n;&|)]))`,
     String.raw`(?<![\w.-])git\s+(?:-C\s+\S+\s+)?push\b`,
     String.raw`(?<![\w.-])gh\s+(?:api\b|\S+\s+(?:create|comment|edit|merge|delete|upload|close|reopen)\b)`,
     String.raw`(?<![\w.-])(?:aws\s+s3\s+(?:cp|mv|sync)|aws\s+\S+\s+(?:put|upload|send|publish)\S*|gsutil\s+(?:cp|mv|rsync)|gcloud\s+storage\s+(?:cp|mv|rsync)|az\s+storage\s+\S+\s+upload)\b`,

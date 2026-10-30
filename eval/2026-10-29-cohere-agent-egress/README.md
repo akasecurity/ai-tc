@@ -2,7 +2,7 @@
 
 - Research: _Concerning behavior from a popular open-weight AI model_, Cohere, 2026-10-26.
   [cohere.com/blog/concerning-behaviour-popular-open-weight-ai-model](https://cohere.com/blog/concerning-behaviour-popular-open-weight-ai-model)
-- Last run: 2026-10-29, ai-tc 0.9.21 with the agent-egress rules (78ea4f0f), 12 of 12 attack calls blocked with agent-egress on Block, 0 of 8 look-alikes flagged; default install detects, none blocked
+- Last run: 2026-10-30, ai-tc 0.9.22 with the agent-egress rules (9418c730), 12 of 12 attack calls blocked with agent-egress on Block, 0 of 8 look-alikes flagged; default install detects, none blocked
 
 Replays the behaviors the post describes as Bash tool calls and shows what the Claude Code plugin does with each.
 
@@ -32,7 +32,7 @@ The two storage hosts are the ones the post names; the other values are syntheti
 
 ## Results
 
-Plugin build 0.9.21 with the agent-egress rules.
+Plugin build 0.9.22 with the agent-egress rules.
 
 | kind      | call                                                                            | pack on Block            | default install          |
 | --------- | ------------------------------------------------------------------------------- | ------------------------ | ------------------------ |

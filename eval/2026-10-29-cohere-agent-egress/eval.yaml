@@ -6,11 +6,11 @@ target: ai-tc Claude Code plugin, PreToolUse hook, agent-egress pack
 kind: vulnerability
 goal: block
 policy: agent-egress pack set to Block (headline); default install asserted as detect only
-tool_version: 0.9.21
+tool_version: 0.9.22
 last_run:
-  date: 2026-10-29
-  tool_version: 0.9.21
-  commit: 78ea4f0f
+  date: 2026-10-30
+  tool_version: 0.9.22
+  commit: 9418c730
 cases:
   attack: 12
   lookalike: 8

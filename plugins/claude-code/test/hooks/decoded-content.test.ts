@@ -64,6 +64,12 @@ describe('isOutboundCall', () => {
     'docker push ghcr.io/a/b',
     'rclone copy data remote:x',
     'ftp host.example',
+    '/usr/bin/ftp host.example',
+    'sudo ftp host.example',
+    'env A=1 ftp host.example',
+    'TOKEN=x ftp host.example',
+    'time ftp host.example',
+    'ls | xargs ftp',
     'cd /tmp && ftp host.example',
     'smbclient //host/share -c "put notes.txt"',
     'twine upload dist/*',
@@ -95,13 +101,18 @@ describe('isMcpTool', () => {
 });
 
 describe('isOutboundCall on a long command', () => {
-  // Fastest of a few runs, so a pause from a loaded machine does not count.
+  // CPU time rather than wall time, so a loaded machine that pauses the process
+  // does not count; the fastest of a few runs, so a cold cache does not either.
+  const cpuMs = (): number => {
+    const { user, system } = process.cpuUsage();
+    return (user + system) / 1000;
+  };
   const fastest = (command: string): number => {
     let best = Infinity;
     for (let run = 0; run < 7; run += 1) {
-      const start = performance.now();
+      const start = cpuMs();
       isOutboundCall(...bash(command));
-      best = Math.min(best, performance.now() - start);
+      best = Math.min(best, cpuMs() - start);
     }
     return best;
   };

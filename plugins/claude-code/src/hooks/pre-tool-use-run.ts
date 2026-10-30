@@ -38,9 +38,10 @@ import {
   MCP_OUTPUT_SESSION_MARKER,
   mcpOutputSessionField,
 } from './decoded-content.ts';
+import { bashWrittenPayloads } from './bash-payloads.ts';
 import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
 import { handleSubagentSpawn } from './model-guard.ts';
-import { replaceAtPath } from './paths.ts';
+import { replaceAtPath, stringAtPath } from './paths.ts';
 import type { PointerDenyField, PointerField } from './pointer-substitution.ts';
 import {
   decideInputPointers,
@@ -389,6 +390,28 @@ export async function runPreToolUse(
       // A refused field denies the whole call (decidePreToolUse), so scanning
       // the rest would only spend the time the deadline is there to protect.
       if (result.scanIncomplete !== undefined) break;
+    }
+    // What a Bash command writes to a file is code: scan it as a code_change
+    // under that file, where code_flaw rules apply (they skip the command line
+    // itself, see ruleApplies). Not rewritable: it sits inside the command.
+    if (toolName === 'Bash' && !scanned.some((f) => f.result.scanIncomplete !== undefined)) {
+      const command = stringAtPath(effectiveInput, ['command']) ?? '';
+      for (const payload of bashWrittenPayloads(command)) {
+        const result = await captureStamped(
+          runtime,
+          {
+            kind: 'code_change',
+            sourceTool: SOURCE_TOOL.ClaudeCode,
+            text: payload.text,
+            metadata: { ...metadata, filePath: payload.path },
+            lineBasis: 'file',
+          },
+          scopeKey,
+          { persist: 'with-findings', kindScopedRules: false, rewritable: false },
+        );
+        scanned.push({ spec: { path: ['command'], executable: true }, text: payload.text, result });
+        if (result.scanIncomplete !== undefined) break;
+      }
     }
   } finally {
     await runtime.close();

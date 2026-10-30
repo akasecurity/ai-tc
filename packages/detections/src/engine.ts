@@ -498,6 +498,11 @@ function ruleApplies(
   extension: string | undefined,
   eventKind: EventKind | undefined,
 ): boolean {
+  // A tool_use capture is a command about to run, not source: its code_flaw
+  // findings are the command's own quoting (SQL keywords in a psql argument, a
+  // password flag), never a flaw in code. What a command writes to a file is
+  // captured separately as a code_change and judged there.
+  if (eventKind === 'tool_use' && rule.category === 'code_flaw') return false;
   const scope = rule.appliesTo;
   if (!scope) return true;
   if (

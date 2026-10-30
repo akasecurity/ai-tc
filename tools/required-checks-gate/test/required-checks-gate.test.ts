@@ -411,14 +411,10 @@ describe('a table row this reader cannot parse', () => {
 
 // ReDoS guards for the two patterns CodeQL flagged (alerts 38 and 39), in the
 // ratio shape this repository uses: same work at two sizes, fastest of several
-// runs. A ratio cancels the runner and the fastest sample is the one load
-// cannot inflate; an absolute budget would redden a healthy tree on a preempted
-// CI sample.
+// samples of CPU time. A ratio cancels the runner and CPU time does not count the
+// time a loaded runner pauses the process; an absolute budget would redden a
+// healthy tree on a preempted CI sample.
 describe('parseGateTable is linear in its input', () => {
-  // One untimed pass first, so the compiler has warmed the function before the
-  // small side is sampled. The sizes stay at 2k and 16k: a longer sample is more
-  // likely to catch a preemption on the numerator, and measured under load that
-  // made the ratio fail more often, not less.
   const run = (input: string): void => {
     try {
       parseGateTable(input);
@@ -427,15 +423,28 @@ describe('parseGateTable is linear in its input', () => {
       // and what is being measured is how long reaching it takes.
     }
   };
+  // CPU time rather than wall time, so a loaded machine that pauses the process
+  // does not count. Each sample repeats the call until it has used 100 ms of CPU,
+  // so a clock that advances in coarse steps (about 15.6 ms on Windows) still
+  // reads it well, and the sample is the mean per call. The result is the fastest
+  // of a few samples, so a cold cache does not count either.
+  const cpuMs = (): number => {
+    const { user, system } = process.cpuUsage();
+    return (user + system) / 1000;
+  };
   const fastest = (input: string): number => {
-    run(input);
-    return Math.min(
-      ...Array.from({ length: 5 }, () => {
-        const started = process.hrtime.bigint();
+    run(input); // untimed warm-up
+    let best = Infinity;
+    for (let sample = 0; sample < 7; sample += 1) {
+      const start = cpuMs();
+      let calls = 0;
+      do {
         run(input);
-        return Number(process.hrtime.bigint() - started) / 1e6;
-      }),
-    );
+        calls += 1;
+      } while (cpuMs() - start < 100);
+      best = Math.min(best, (cpuMs() - start) / calls);
+    }
+    return best;
   };
 
   // CodeQL's witness for the section slice: the heading repeated, never closed
@@ -444,7 +453,7 @@ describe('parseGateTable is linear in its input', () => {
     const witness = (reps: number): string =>
       '### Checks that gate `main`' + '### Checks that gate `main`a'.repeat(reps);
     expect(fastest(witness(16_000)) / fastest(witness(2_000))).toBeLessThan(25);
-  });
+  }, 60_000);
 
   // CodeQL's witness for the row counter: a pipe then a long run of spaces. The
   // `(?!\s*[-: ]+\|)` form measured 54x, because a space matches both `\s` and
@@ -453,7 +462,7 @@ describe('parseGateTable is linear in its input', () => {
     const witness = (reps: number): string =>
       '### Checks that gate `main`\n|' + ' '.repeat(reps) + 'x|\n```bash';
     expect(fastest(witness(16_000)) / fastest(witness(2_000))).toBeLessThan(25);
-  });
+  }, 60_000);
 
   // The positive control on both: the real table still parses to its real rows,
   // so a reader that started refusing everything would not satisfy the ratios

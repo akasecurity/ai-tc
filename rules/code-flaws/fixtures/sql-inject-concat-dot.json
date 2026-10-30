@@ -236,5 +236,119 @@
         "end": 58
       }
     ]
+  },
+  {
+    "label": "a WHERE clause compared with \"!=\"",
+    "text": "$w = \" WHERE status != \" . $s;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "a WHERE clause compared with \"<>\"",
+    "text": "$w = \" WHERE status <> \" . $s;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "a WHERE clause compared with \">\"",
+    "text": "$w = \" WHERE created > \" . $date;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "a WHERE clause compared with \"<\"",
+    "text": "$w = \" WHERE score < \" . $max;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "a WHERE clause compared with \">=\"",
+    "text": "$w = \" WHERE qty >= \" . $min;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "a WHERE clause compared with \"<=\"",
+    "text": "$w = \" WHERE qty <= \" . $max;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "a WHERE .. IN list",
+    "text": "$w = \" WHERE t.id IN (\" . $ids . \")\";",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "a WHERE .. LIKE pattern",
+    "text": "$w = \" WHERE name LIKE '\" . $n;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "a WHERE .. BETWEEN range",
+    "text": "$w = \" WHERE age BETWEEN \" . $lo;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "a WHERE clause built across lines, no other SQL on the line",
+    "text": "$sql .= \" WHERE id IN (\" . implode(',', $ids) . \")\";",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "INSERT IGNORE INTO concatenated with the dot operator",
+    "text": "$q = \"INSERT IGNORE INTO t VALUES (\" . $v . \")\";",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "INSERT with two modifiers before INTO",
+    "text": "$q = \"INSERT LOW_PRIORITY IGNORE INTO t VALUES (\" . $v . \")\";",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "DROP INDEX concatenated with the dot operator",
+    "text": "$q = \"DROP INDEX \" . $i;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "DROP VIEW concatenated with the dot operator",
+    "text": "$q = \"DROP VIEW \" . $v;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "prose: \"where you like\" has no quoted LIKE pattern",
+    "text": "$m = \"I know where you like \" . $x;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "prose: \"where x in\" has no parenthesised IN list",
+    "text": "$m = \"where x in \" . $list;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "\"dropindex\" is one word, not the DROP keyword",
+    "text": "$q = \"dropindex \" . $i;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "\"into_the_void\" is one word, not the INTO keyword",
+    "text": "$q = \"insert into_the_void \" . $x;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "prose: \"where you like\" with a later quote on the line is still not a LIKE pattern",
+    "text": "$m = \"I know where you like \" . $a . \" really\" . $b;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
   }
 ]

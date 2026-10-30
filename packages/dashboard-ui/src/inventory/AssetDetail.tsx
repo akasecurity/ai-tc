@@ -232,7 +232,7 @@ export function AssetDetail({
         )}
 
         {isMcp && asset.tools && (
-          <ToolsSection tools={asset.tools} blocked={trust === 'unapproved'} />
+          <ToolsSection tools={asset.tools} />
         )}
 
         {hostActions === false && (
@@ -329,7 +329,7 @@ function VersionsSection({
   );
 }
 
-function ToolsSection({ tools, blocked }: { tools: McpTool[]; blocked: boolean }) {
+function ToolsSection({ tools }: { tools: McpTool[] }) {
   const [open, setOpen] = useState(false);
   const shown = open ? tools : tools.slice(0, 4);
   return (
@@ -339,11 +339,6 @@ function ToolsSection({ tools, blocked }: { tools: McpTool[]; blocked: boolean }
           Exposed tools
         </span>
         <span className="text-xs font-semibold text-text-3">{tools.length}</span>
-        {blocked && (
-          <span className="ml-auto inline-flex items-center gap-1.5 text-xs font-semibold text-sev-critical-ink">
-            <Ico name="slash-circle" className="size-3" /> Calls blocked
-          </span>
-        )}
       </div>
       <div className="flex flex-col gap-1.5">
         {shown.map((t) => (
@@ -352,7 +347,6 @@ function ToolsSection({ tools, blocked }: { tools: McpTool[]; blocked: boolean }
             className={cn(
               'flex items-start gap-2.5 rounded-lg border px-3 py-2.5',
               t.risk ? 'border-sev-high-fill bg-sev-high-fill' : 'border-border bg-surface',
-              blocked && 'opacity-70',
             )}
           >
             <span

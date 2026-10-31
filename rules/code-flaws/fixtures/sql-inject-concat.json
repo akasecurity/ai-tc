@@ -178,5 +178,20 @@
     "label": "\"into_the_void\" is one word, not the INTO keyword",
     "text": "String s = \"insert into_the_void \" + x;",
     "shouldMatch": false
+  },
+  {
+    "label": "known false positive: a literal opening \"where <word> LIKE '\" satisfies the WHERE..LIKE arm",
+    "text": "String m = \"where you like '\" + food;",
+    "shouldMatch": true
+  },
+  {
+    "label": "known false positive: a literal opening \"where <word> in (\" satisfies the WHERE..IN arm",
+    "text": "String m = \"where items in (\" + list;",
+    "shouldMatch": true
+  },
+  {
+    "label": "known false positive: a literal opening \"where <word> between\" satisfies the WHERE..BETWEEN arm",
+    "text": "String m = \"where lunch between \" + a;",
+    "shouldMatch": true
   }
 ]

@@ -300,5 +300,25 @@
     "label": "\"into_the_void\" is one word, not the INTO keyword",
     "text": "msg = \"insert into_the_void %s\" % x",
     "shouldMatch": false
+  },
+  {
+    "label": "known false positive: prose \"where <word> LIKE '<quoted>'\" satisfies the WHERE..LIKE arm",
+    "text": "msg = f\"Tell me where you like '{food}' delivered\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "known false positive: the same prose shape in the % spelling",
+    "text": "msg = \"Tell me where you like '%s' delivered\" % food",
+    "shouldMatch": true
+  },
+  {
+    "label": "known false positive: prose \"where <word> in (\" satisfies the WHERE..IN arm",
+    "text": "msg = f\"Show me where items in ({list}) are stored\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "known false positive: prose \"where <word> between\" satisfies the WHERE..BETWEEN arm",
+    "text": "msg = f\"Pick a slot where lunch between {a} and {b} works\"",
+    "shouldMatch": true
   }
 ]

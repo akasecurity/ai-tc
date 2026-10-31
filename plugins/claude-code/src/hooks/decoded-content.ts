@@ -27,7 +27,7 @@ const READ_MCP_TOOL =
 const OUTBOUND_BASH = new RegExp(
   [
     String.raw`(?<![\w.-])(?:curl|wget|scp|sftp|rsync|ssh|nc|ncat|netcat|socat|sendmail|mail|mutt|swaks|rclone|smbclient)(?![\w.-])`,
-    String.raw`(?<![\w.-])(?<!\b(?:man|which|whereis|install|add|remove|uninstall|info|help)[ \t]+)ftp(?:[ \t]+(?:-[A-Za-z]+[ \t]+)*(?!://)[\w.-]+|[ \t]*<)`,
+    String.raw`(?<![\w.-])(?<!\b(?:man|which|whereis|install|add|remove|uninstall|info|help)[ \t]+)ftp(?:[ \t]+(?:-[A-Za-z]+[ \t]+)*(?!://)(?:["'][^"'\n]+["']?|\$[\w@.-]+|[\w./:@-]+)|[ \t]*<|[ \t]*\n[ \t]*(?:open|user|put|mput|send|append|quote|site|mkdir|lcd|cd)\b)`,
     String.raw`(?<=\|[ \t]*)ftp(?=[ \t]*(?:$|[\n;&|)]))`,
     String.raw`(?<![\w.-])git\s+(?:-C\s+\S+\s+)?push\b`,
     String.raw`(?<![\w.-])gh\s+(?:api\b|\S+\s+(?:create|comment|edit|merge|delete|upload|close|reopen)\b)`,

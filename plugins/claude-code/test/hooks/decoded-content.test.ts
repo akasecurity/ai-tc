@@ -71,6 +71,11 @@ describe('isOutboundCall', () => {
     'time ftp host.example',
     'ls | xargs ftp host.example',
     'ftp -n -v host.example',
+    'ftp "$HOST"',
+    'ftp $HOST',
+    "ftp 'files.example.com'",
+    'TARGET=h ftp $TARGET',
+    'ftp\nopen host.example\nput x\nbye',
     'ftp <<EOF\nopen host.example\nput x\nEOF',
     'ftp < cmds.txt',
     'cat cmds | ftp',
@@ -108,13 +113,6 @@ describe('isOutboundCall', () => {
     'ls tftp sftp-notes',
   ])('leaves `%s` alone', (command) => {
     expect(isOutboundCall(...bash(command))).toBe(false);
-  });
-
-  it('scans a long run of ftp options in linear time', () => {
-    const started = performance.now();
-    expect(isOutboundCall(...bash(`ftp ${'-a '.repeat(50_000)}|`))).toBe(true);
-    expect(isOutboundCall(...bash(`ftp ${'-a '.repeat(50_000)}`))).toBe(true);
-    expect(performance.now() - started).toBeLessThan(1000);
   });
 });
 
@@ -155,6 +153,14 @@ describe('isOutboundCall on a long command', () => {
     expect(isOutboundCall(...bash(large))).toBe(false); // untimed warm-up
     // A command 8x as long costs about 8x as much when the work is linear and
     // about 64x as much when it is quadratic.
+    expect(fastest(large) / fastest(small)).toBeLessThan(24);
+  });
+
+  it('scans a long run of ftp options in linear time', () => {
+    const small = `ftp ${'-a '.repeat(6_250)}`;
+    const large = `ftp ${'-a '.repeat(50_000)}`;
+    expect(isOutboundCall(...bash(`${large}|`))).toBe(true);
+    expect(isOutboundCall(...bash(large))).toBe(true);
     expect(fastest(large) / fastest(small)).toBeLessThan(24);
   });
 });

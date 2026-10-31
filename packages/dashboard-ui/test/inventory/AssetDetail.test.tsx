@@ -1,9 +1,7 @@
 // @vitest-environment jsdom
 //
 // trustRefusal covers AssetDetail's one live control: the MCP trust
-// RadioCardList. Every action button actionsFor(...) renders is documented
-// in this file's own top comment as a visual affordance with no operation
-// behind it, so trustRefusal must not touch any of them. Proves: (1)
+// RadioCardList. Proves: (1)
 // aria-disabled without native disabled on every trust option, (2) a
 // visible reason linked via aria-describedby, (3) onTrust never reached on
 // a real click, (4) no stray refusal markup for a non-MCP asset (no trust
@@ -303,17 +301,25 @@ describe('AssetDetail host actions', () => {
       />,
     );
     expect(mounted.host.querySelector('[data-testid="host-actions"]')).not.toBeNull();
-    expect(mounted.host.textContent).not.toContain('Re-verify');
   });
 
-  it.each([null, false])('keeps the per-type buttons when the host passes %s', (actions) => {
-    mount(<AssetDetail {...PAGE} asset={mcpAsset()} actions={actions} />);
-    expect(mounted.host.textContent).toContain('Re-verify');
-  });
+  const ASSETS: [string, Partial<AssetDetailShape>][] = [
+    ['an MCP server', {}],
+    ['an unapproved MCP server', { trust: 'unapproved' }],
+    ['a skill with an update', { type: 'skill', trust: null, tools: undefined, flags: ['update'] }],
+    [
+      'a hook of unknown origin',
+      { type: 'hook', trust: null, tools: undefined, flags: ['unknown'] },
+    ],
+    ['a changed config file', { type: 'config', trust: null, tools: undefined, flags: ['risk'] }],
+  ];
 
-  it('keeps the per-type buttons when the host passes no actions', () => {
-    mount(<AssetDetail {...PAGE} asset={mcpAsset()} onTrust={vi.fn()} />);
-    expect(mounted.host.textContent).toContain('Re-verify');
+  it.each(ASSETS)('draws no action buttons of its own for %s', (_name, overrides) => {
+    mount(<AssetDetail {...PAGE} asset={mcpAsset(overrides)} />);
+    const labels = [...mounted.host.querySelectorAll('button')].map(
+      (b) => b.getAttribute('aria-label') ?? b.textContent,
+    );
+    expect(labels).toEqual(['Back to Claude Code']);
   });
 });
 
@@ -361,16 +367,19 @@ describe('AssetDetail trust copy', () => {
     }
   });
 
-  it("does not mark an unapproved server's tools as blocked", () => {
-    const tool = { name: 'run', signature: 'run()', description: 'Runs', write: true, risk: null };
-    mount(
-      <AssetDetail
-        {...PAGE}
-        asset={mcpAsset({ trust: 'unapproved', tools: [tool] })}
-        onTrust={vi.fn()}
-      />,
-    );
+  it.each(TRUST_ORDER)(
+    'says nowhere on the page that a %s server is allowed or blocked',
+    (trust) => {
+      const tool = {
+        name: 'run',
+        signature: 'run()',
+        description: 'Runs',
+        write: true,
+        risk: null,
+      };
+      mount(<AssetDetail {...PAGE} asset={mcpAsset({ trust, tools: [tool] })} onTrust={vi.fn()} />);
 
-    expect(mounted.host.textContent).not.toContain('Calls blocked');
-  });
+      expect(mounted.host.textContent).not.toMatch(/block|allow-list|proxy|denied/i);
+    },
+  );
 });

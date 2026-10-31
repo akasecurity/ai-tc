@@ -32,6 +32,11 @@ const PERL_CLIENT = [
   'print "\\x01";',
 ].join('');
 
+// Exits 0 when something accepts a connection on the socket named by the first
+// argument. A dead server's leftover socket file refuses, so it reads as no server.
+const PERL_PROBE =
+  'use Socket;socket(S,PF_UNIX,SOCK_STREAM,0)or exit 1;connect(S,sockaddr_un($ARGV[0]))or exit 1;';
+
 /** `NAME` words for a shell `for` list; every name is a fixed upper-case identifier. */
 function words(names: readonly string[]): string {
   return names.join(' ');
@@ -95,7 +100,14 @@ export function hookClientScript(pluginVersion: string): string {
     `lock=$run/hook-${pluginVersion}.starting`,
     '(umask 077; mkdir -p "$run") 2>/dev/null',
     'if mkdir "$lock" 2>/dev/null; then',
-    '  node "$dir/hook-server.js" --daemonize </dev/null >/dev/null 2>&1 &',
+    // This call may have probed before another call's server came up and taken
+    // the lock only after that server released it: look once more, and start
+    // nothing when a server answers now.
+    `  if perl -e '${PERL_PROBE}' "$sock" 2>/dev/null; then`,
+    '    rmdir "$lock" 2>/dev/null',
+    '  else',
+    '    node "$dir/hook-server.js" --daemonize </dev/null >/dev/null 2>&1 &',
+    '  fi',
     // A lock a server never released (it was killed while starting).
     'elif [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then',
     '  rmdir "$lock" 2>/dev/null',

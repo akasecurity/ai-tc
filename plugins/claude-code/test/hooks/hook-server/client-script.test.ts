@@ -153,6 +153,69 @@ describeUnix.each(SHELLS)('the hook client under %s without a server', (shell) =
     ).toHaveLength(1);
   });
 
+  it('starts no second server when a call takes the lock after the first server released it', async () => {
+    resetNodeLog();
+    const home = newHome();
+    const run = join(home, '.aka', 'run');
+    const lock = join(run, `hook-${VERSION}.starting`);
+    const sock = join(run, `hook-${VERSION}.sock`);
+    const held = join(home, 'held');
+    const go = join(home, 'go');
+    // A node whose server start listens on the socket and releases the lock, as
+    // the real one does, and a mkdir that pauses one call between its probe and
+    // its lock attempt.
+    const fake = join(home, 'fake-bin');
+    mkdirSync(fake);
+    writeFileSync(
+      join(fake, 'node'),
+      [
+        '#!/bin/sh',
+        `printf '%s|LC_ALL=%s\\n' "$*" "\${LC_ALL-unset}" >> "$AKA_TEST_NODE_LOG"`,
+        'case $* in *hook-server.js*)',
+        `  exec perl -e 'use Socket;socket(S,PF_UNIX,SOCK_STREAM,0);bind(S,sockaddr_un($ARGV[0]));listen(S,5);rmdir $ARGV[1];$SIG{ALRM}=sub{exit 0};alarm 3;sleep 3' "$HOME/.aka/run/hook-${VERSION}.sock" "$HOME/.aka/run/hook-${VERSION}.starting" ;;`,
+        'esac',
+        'printf "NODE:"; cat',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    writeFileSync(
+      join(fake, 'mkdir'),
+      [
+        '#!/bin/sh',
+        'if [ "$1" = -p ] && [ -n "$AKA_TEST_HOLD" ]; then',
+        '  : > "$AKA_TEST_HELD"',
+        '  until [ -e "$AKA_TEST_GO" ]; do sleep 0.02; done',
+        'fi',
+        'exec /bin/mkdir "$@"',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    const path = `${fake}:/usr/bin:/bin`;
+    const slow = runClient({
+      shell,
+      home,
+      payload: '{}',
+      path,
+      env: { AKA_TEST_HOLD: '1', AKA_TEST_HELD: held, AKA_TEST_GO: go },
+    });
+    const until = async (done: () => boolean): Promise<void> => {
+      for (let i = 0; i < 500 && !done(); i++) await new Promise((r) => setTimeout(r, 20));
+    };
+    await until(() => existsSync(held));
+    await runClient({ shell, home, payload: '{}', path });
+    await until(() => existsSync(sock) && !existsSync(lock));
+    writeFileSync(go, '');
+    await slow;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(
+      readNodeLog()
+        .split('\n')
+        .filter((l) => l.includes('--daemonize')),
+    ).toHaveLength(1);
+  });
+
   it('removes a start lock a server never released, without starting one on that call', async () => {
     resetNodeLog();
     const home = newHome();

@@ -397,6 +397,7 @@ export async function runPreToolUse(
     if (toolName === 'Bash' && !scanned.some((f) => f.result.scanIncomplete !== undefined)) {
       const command = stringAtPath(effectiveInput, ['command']) ?? '';
       for (const payload of bashWrittenPayloads(command)) {
+        if (performance.now() > HOOK_SCAN_DEADLINE_MS) break;
         const result = await captureStamped(
           runtime,
           {

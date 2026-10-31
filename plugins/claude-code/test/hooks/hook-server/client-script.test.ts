@@ -7,6 +7,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   symlinkSync,
   utimesSync,
@@ -146,11 +147,13 @@ describeUnix.each(SHELLS)('the hook client under %s without a server', (shell) =
     const home = newHome();
     await Promise.all([1, 2, 3].map(() => runClient({ shell, home, payload: '{}' })));
     await new Promise((resolve) => setTimeout(resolve, 200));
-    expect(
-      readNodeLog()
-        .split('\n')
-        .filter((l) => l.includes('--daemonize')),
-    ).toHaveLength(1);
+    const starts = readNodeLog()
+      .split('\n')
+      .filter((l) => l.includes('--daemonize'));
+    // A second start names its cause: the node log and what the run folder holds.
+    const run = join(home, '.aka', 'run');
+    const held = existsSync(run) ? readdirSync(run).join(' ') : 'no run folder';
+    expect(starts, `node log:\n${readNodeLog()}\nrun folder: ${held}`).toHaveLength(1);
   });
 
   it('starts no second server when a call takes the lock after the first server released it', async () => {

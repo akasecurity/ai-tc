@@ -39,6 +39,11 @@ export interface ReplayCall {
   cwd?: string;
   /** Rules of the set's packs the call is expected to trigger. */
   rules?: readonly string[];
+  /**
+   * Rules, of any pack, that warn on a default install. Set, the call's default
+   * verdict is `warned` and these are the rules that warned; unset, it is `allowed`.
+   */
+  warnedBy?: readonly string[];
 }
 
 export interface ReplaySet {
@@ -146,15 +151,24 @@ export function packRules(set: ReplaySet, outcome: ReplayOutcome): string[] {
   ].sort();
 }
 
+/** The rules that recorded a `warn` on a call, whichever pack they belong to. */
+export function warningRules(outcome: ReplayOutcome): string[] {
+  return [
+    ...new Set(outcome.findings.filter((f) => f.action === 'warn').map((f) => f.ruleId)),
+  ].sort();
+}
+
 function cell(set: ReplaySet, outcome: ReplayOutcome): string {
   const fired = outcome.call.kind === 'lookalike' ? allRules(outcome) : packRules(set, outcome);
   const rules = fired.map((r) => `\`${r}\``);
   if (outcome.verdict === 'blocked')
     return `blocked${rules.length > 0 ? `: ${rules.join(', ')}` : ''}`;
+  const warnedBy = warningRules(outcome).map((r) => `\`${r}\``);
+  const warned = warnedBy.length > 0 ? `warned by ${warnedBy.join(', ')}` : outcome.verdict;
   if (rules.length > 0) {
-    return `${outcome.verdict}, finding logged: ${rules.join(', ')}`;
+    return `${warned}, finding logged: ${rules.join(', ')}`;
   }
-  return outcome.verdict === 'allowed' ? 'allowed, nothing flagged' : 'warned';
+  return outcome.verdict === 'allowed' ? 'allowed, nothing flagged' : warned;
 }
 
 export function renderResults(

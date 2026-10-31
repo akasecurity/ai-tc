@@ -320,5 +320,65 @@
     "label": "known false positive: prose \"where <word> between\" satisfies the WHERE..BETWEEN arm",
     "text": "msg = f\"Pick a slot where lunch between {a} and {b} works\"",
     "shouldMatch": true
+  },
+  {
+    "label": "INSERT OR REPLACE INTO with a %s placeholder",
+    "text": "q = \"INSERT OR REPLACE INTO t VALUES (%s)\" % v",
+    "shouldMatch": true
+  },
+  {
+    "label": "INSERT OR IGNORE INTO with a %s placeholder",
+    "text": "q = \"INSERT OR IGNORE INTO t VALUES (%s)\" % v",
+    "shouldMatch": true
+  },
+  {
+    "label": "INSERT OR ROLLBACK INTO with a %s placeholder",
+    "text": "q = \"INSERT OR ROLLBACK INTO t VALUES (%s)\" % v",
+    "shouldMatch": true
+  },
+  {
+    "label": "INSERT OR ABORT INTO with a %s placeholder",
+    "text": "q = \"INSERT OR ABORT INTO t VALUES (%s)\" % v",
+    "shouldMatch": true
+  },
+  {
+    "label": "INSERT OR FAIL INTO with a %s placeholder",
+    "text": "q = \"INSERT OR FAIL INTO t VALUES (%s)\" % v",
+    "shouldMatch": true
+  },
+  {
+    "label": "\"orreplace\" is one word, not the OR conflict clause",
+    "text": "msg = \"insert orreplace into t %s\" % x",
+    "shouldMatch": false
+  },
+  {
+    "label": "WHERE with an f-string placeholder as the left operand",
+    "text": "clause = f\"WHERE {col} = {val}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "WHERE with a ${} placeholder as the left operand",
+    "text": "const clause = `WHERE ${col} = ${val}`",
+    "shouldMatch": true
+  },
+  {
+    "label": "prose: a braced phrase with a space is not one operand",
+    "text": "msg = f\"Click where {the_thing} = marks the spot\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: UPDATE ONLY is not matched (the widened UPDATE arm does not fit the pattern-length cap)",
+    "text": "q = \"UPDATE ONLY users SET name = %s\" % n",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: UPDATE with an AS alias is not matched (same cap)",
+    "text": "q = \"UPDATE users AS u SET u.name = %s\" % n",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: UPDATE of two tables is not matched (same cap)",
+    "text": "q = \"UPDATE t1, t2 SET t1.a = %s\" % v",
+    "shouldMatch": false
   }
 ]

@@ -193,5 +193,80 @@
     "label": "known false positive: a literal opening \"where <word> between\" satisfies the WHERE..BETWEEN arm",
     "text": "String m = \"where lunch between \" + a;",
     "shouldMatch": true
+  },
+  {
+    "label": "INSERT OR REPLACE INTO concatenation",
+    "text": "String q = \"INSERT OR REPLACE INTO t VALUES (\" + v + \")\";",
+    "shouldMatch": true
+  },
+  {
+    "label": "INSERT OR IGNORE INTO concatenation",
+    "text": "String q = \"INSERT OR IGNORE INTO t VALUES (\" + v + \")\";",
+    "shouldMatch": true
+  },
+  {
+    "label": "INSERT OR ROLLBACK INTO concatenation",
+    "text": "String q = \"INSERT OR ROLLBACK INTO t VALUES (\" + v + \")\";",
+    "shouldMatch": true
+  },
+  {
+    "label": "INSERT OR ABORT INTO concatenation",
+    "text": "String q = \"INSERT OR ABORT INTO t VALUES (\" + v + \")\";",
+    "shouldMatch": true
+  },
+  {
+    "label": "INSERT OR FAIL INTO concatenation",
+    "text": "String q = \"INSERT OR FAIL INTO t VALUES (\" + v + \")\";",
+    "shouldMatch": true
+  },
+  {
+    "label": "\"orreplace\" is one word, not the OR conflict clause",
+    "text": "String s = \"insert orreplace into t \" + x;",
+    "shouldMatch": false
+  },
+  {
+    "label": "UPDATE ONLY (Postgres) concatenation",
+    "text": "String q = \"UPDATE ONLY users SET name = \" + n;",
+    "shouldMatch": true
+  },
+  {
+    "label": "UPDATE with an AS alias concatenation",
+    "text": "String q = \"UPDATE users AS u SET u.name = \" + n;",
+    "shouldMatch": true
+  },
+  {
+    "label": "UPDATE of two tables concatenation",
+    "text": "String q = \"UPDATE t1, t2 SET t1.a = \" + v;",
+    "shouldMatch": true
+  },
+  {
+    "label": "prose: \"update .. set by\" is not an UPDATE statement",
+    "text": "String m = \"update the value set by \" + who;",
+    "shouldMatch": false
+  },
+  {
+    "label": "prose: \"update .. set out above\" is not an UPDATE statement",
+    "text": "String m = \"please update the list set out above \" + x;",
+    "shouldMatch": false
+  },
+  {
+    "label": "prose: a comma list needs the SET <column> = clause",
+    "text": "String m = \"update name, email set aside \" + x;",
+    "shouldMatch": false
+  },
+  {
+    "label": "WHERE with a ${} placeholder as the left operand",
+    "text": "String w = \"WHERE ${col} = \" + v;",
+    "shouldMatch": true
+  },
+  {
+    "label": "WHERE with a {0} placeholder as the left operand",
+    "text": "String w = \"WHERE {0} = \" + v;",
+    "shouldMatch": true
+  },
+  {
+    "label": "prose: a braced phrase with a space is not one operand",
+    "text": "String m = \"where {the thing} = \" + x;",
+    "shouldMatch": false
   }
 ]

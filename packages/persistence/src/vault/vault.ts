@@ -96,6 +96,24 @@ export interface PointerDigest {
   ruleId: string;
 }
 
+/**
+ * What one fingerprint-key refresh pass moved, and what it could not.
+ *
+ * Both halves come from the SAME walk that does the work, rather than the count
+ * being compared against a second `listAll()` afterwards: a write landing
+ * between the two walks would put a denominator in front of an operator that
+ * never matched the numerator beside it. Same reasoning as `purgeVault`'s count.
+ */
+export interface FingerprintRefreshResult {
+  /** Rows now fingerprinted under the new epoch. */
+  refreshed: number;
+  /**
+   * Rows walked and left at their old epoch — damaged, unopenable, or colliding.
+   * `refreshed + skipped` is every row the pass saw.
+   */
+  skipped: number;
+}
+
 interface ParsedPointerToken {
   category: string;
   keyVersion: number;
@@ -570,13 +588,25 @@ export class SecretVault {
    * fingerprint collides with a row already refreshed, is skipped rather than
    * aborting the pass — one damaged entry must not strand the re-key of every
    * other. A skipped row keeps resolving under its old fingerprint epoch.
+   *
+   * Every skip is COUNTED, because best-effort and silent are different things:
+   * the loss above is invisible at the moment it happens and only shows up later
+   * as a duplicate pointer, so the pass owes its caller a denominator rather
+   * than a bare success count.
    */
-  async refreshFingerprints(next: FingerprintKey): Promise<number> {
+  async refreshFingerprints(next: FingerprintKey): Promise<FingerprintRefreshResult> {
     let refreshed = 0;
+    let skipped = 0;
     for (const row of this.#repo.listAll()) {
       try {
         const raw = await this.#openRow(row);
-        if (raw === null) continue;
+        // A row whose ciphertext will not open is a skip, not a no-op:
+        // `#openRow` turns every fault into null, so this branch and the catch
+        // below are the same failure arriving by two routes.
+        if (raw === null) {
+          skipped += 1;
+          continue;
+        }
         this.#repo.refreshFingerprint(row.pointerId, {
           valueFingerprint: exactFingerprintValue(next, raw),
           valueIdentityFingerprint: fingerprintValue(next, raw),
@@ -584,10 +614,10 @@ export class SecretVault {
         });
         refreshed += 1;
       } catch {
-        continue;
+        skipped += 1;
       }
     }
-    return refreshed;
+    return { refreshed, skipped };
   }
 
   /**

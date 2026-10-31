@@ -33,6 +33,8 @@ import {
   resolveScopeFlags,
   rotationBlockedLedgerNote,
   scopeFromAnswer,
+  VAULT_REFRESH_FAILED_NOTE,
+  vaultRefreshShortfallNote,
 } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
@@ -1029,6 +1031,12 @@ async function runRotateKey(argv: string[], io: Prompter): Promise<void> {
     // row, and mints a second pointer for the same secret. Best-effort: a
     // partial refresh degrades to skipped rows resolving under their old
     // epoch, so a fault here must not fail the rotation that already happened.
+    //
+    // Best-effort is not the same as silent, and the success line alone cannot
+    // carry the difference: printed only when something moved, it leaves "the
+    // vault was empty" and "every row failed" looking identical — both print
+    // nothing. So the shortfall is read off the pass's own denominator and
+    // stated separately, on top of whatever moved.
     try {
       const base = homeBase(values.home);
       const vault = new SecretVault({
@@ -1036,16 +1044,16 @@ async function runRotateKey(argv: string[], io: Prompter): Promise<void> {
         keys: createKeyProvider(readWorkspaceSettings(base).vaultKeyCustody, keysDir(base)),
         isConsented: () => isVaultConsentValid(readWorkspaceSettings(base).vaultConsent),
       });
-      const refreshed = await vault.refreshFingerprints(next);
+      const { refreshed, skipped } = await vault.refreshFingerprints(next);
       if (refreshed > 0) {
         io.out(
-          `Vault re-keyed — ${String(refreshed)} stored ${refreshed === 1 ? 'value' : 'values'} follow the new key; pointers are unchanged.\n`,
+          `Vault re-keyed — ${String(refreshed)} stored ${refreshed === 1 ? 'value follows' : 'values follow'} the new key; pointers are unchanged.\n`,
         );
       }
+      const shortfall = vaultRefreshShortfallNote(refreshed, skipped);
+      if (shortfall !== null) io.out(`Warning: ${shortfall}\n`);
     } catch {
-      io.out(
-        'Warning: the vault could not be re-keyed under the new fingerprint key.\nStored values still resolve, but re-detections may mint new pointers until it succeeds.\n',
-      );
+      io.out(`Warning: ${VAULT_REFRESH_FAILED_NOTE}\n`);
     }
   } finally {
     db.close();

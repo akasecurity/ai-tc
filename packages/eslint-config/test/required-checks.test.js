@@ -21,7 +21,7 @@ import {
   workspaceLintScripts,
   workspacePackageDirs,
 } from './helpers/lint-invocations.js';
-import { dropComments, jobBlock } from './helpers/workflow.js';
+import { dropComments, expectMainTier, jobBlock } from './helpers/workflow.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const WORKFLOWS = join(REPO_ROOT, '.github', 'workflows');
@@ -788,18 +788,11 @@ describe('the macOS leg', () => {
     expect(block).toMatch(/path: \.turbo\/cache$/m);
   });
 
-  // A job-level `if:` is the obvious lever for anyone trimming macOS runner
-  // minutes — draft PRs, a label gate, push-only. It is also the one lever that
-  // cannot be applied here, and not merely because it would narrow the promise:
-  // GitHub reports a skipped job as PENDING for a required check, so a condition
-  // that makes this leg skip does not save a PR the wait, it blocks the merge
-  // outright and with nothing red to point at. Narrow the work inside the job
-  // instead, never whether the job runs.
-  //
-  // Absence-only, so its positive control is jobBlock's own structural pair —
-  // without those this passes on a body cut short above its steps.
-  it('carries no condition that could skip it on a PR', () => {
-    expect(jobBlock(ci, 'macos')).not.toMatch(/^ {4}if:/m);
+  // The leg runs for every pull request into `main` and is skipped elsewhere by
+  // the one main-tier condition. Any other job-level `if:` (draft PRs, a label
+  // gate, push-only) would narrow which `main` pull requests it covers.
+  it('runs for every pull request into main, and is narrowed by nothing else', () => {
+    expectMainTier(jobBlock(ci, 'macos'), 'macos');
   });
 });
 
@@ -1053,10 +1046,9 @@ describe('the Windows legs', () => {
     expect(Number(bound[1])).toBeLessThanOrEqual(4);
   });
 
-  // Same reasoning as the macOS leg: a job-level `if:` does not save a PR the
-  // wait, because GitHub reports a skipped job as PENDING for a required check.
-  it.each(['windows', 'windows-lint'])('%s carries no condition that could skip it', (job) => {
-    expect(jobBlock(ci, job)).not.toMatch(/^ {4}if:/m);
+  // Same rule as the macOS leg: the main-tier condition and nothing else.
+  it.each(['windows', 'windows-lint'])('%s runs for every pull request into main', (job) => {
+    expectMainTier(jobBlock(ci, job), job);
   });
 
   // The windows-lint job's whole justification is that a `lint` script carries a

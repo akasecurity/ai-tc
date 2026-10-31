@@ -1,0 +1,111 @@
+name: Sync release branches
+
+# Keeps every release/** branch rebased onto dev. Runs after each push to dev and on demand.
+#
+# For each release branch that does not already contain dev's tip: rebase it onto dev and
+# force-push it, leased on the commit this run read, so a push that lands mid-run is never
+# overwritten. A rebase that conflicts is aborted and reported in an issue titled
+# "release/<name> needs a manual rebase onto dev", and the run stays green so dev's own
+# status is not red for a conflict its pushes did not cause. The next clean sync closes the
+# issue, including one left open by a run cancelled between its push and the close.
+#
+# A branch named for a version (release/<digit>…) is a stable cut, not future work, and is
+# left alone: rebasing it would pull unreleased dev work into a stable release.
+#
+# Pushes made with GITHUB_TOKEN start no workflow runs, so a sync costs this job only. Anyone
+# with a local copy of a release branch updates it with `git pull --rebase`.
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: sync-release-branches
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    name: Rebase release branches onto dev
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - name: Rebase and push
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          dev=$(git rev-parse origin/dev)
+
+          issue_for() {
+            gh issue list --state open --search "in:title \"$1 needs a manual rebase onto dev\"" --json number --jq '.[0].number // empty'
+          }
+
+          for remote in $(git for-each-ref --format='%(refname:short)' 'refs/remotes/origin/release/'); do
+            branch=${remote#origin/}
+            case "$branch" in
+              release/[0-9]*)
+                echo "$branch: named for a version, so not synced"
+                continue
+                ;;
+            esac
+            old=$(git rev-parse "$remote")
+            title="$branch needs a manual rebase onto dev"
+
+            if git merge-base --is-ancestor "$dev" "$old"; then
+              echo "$branch: already contains dev ($dev)"
+              continue
+            fi
+
+            git checkout --quiet -B sync-work "$old"
+            if git rebase --quiet "$dev"; then
+              if git push --force-with-lease="refs/heads/$branch:$old" origin "HEAD:refs/heads/$branch"; then
+                echo "$branch: rebased onto dev ($old -> $(git rev-parse HEAD))"
+                number=$(issue_for "$branch")
+                if [ -n "$number" ]; then
+                  gh issue close "$number" --comment "Rebased cleanly onto dev at $dev."
+                fi
+              else
+                echo "::warning title=$branch was not pushed::$branch moved during this run; the next sync retries it."
+              fi
+              continue
+            fi
+
+            conflicts=$(git diff --name-only --diff-filter=U)
+            git rebase --abort
+            echo "::warning title=$title::Rebasing $branch onto dev $dev conflicts in: $conflicts"
+            body=$(cat <<EOF_BODY
+          Rebasing \`$branch\` ($old) onto \`dev\` ($dev) conflicts in:
+
+          \`\`\`
+          $conflicts
+          \`\`\`
+
+          Rebase it by hand and force-push:
+
+          \`\`\`bash
+          git fetch origin
+          git switch $branch
+          git rebase origin/dev
+          git push --force-with-lease
+          \`\`\`
+          EOF_BODY
+            )
+            number=$(issue_for "$branch")
+            if [ -n "$number" ]; then
+              gh issue comment "$number" --body "$body"
+            else
+              gh issue create --title "$title" --body "$body"
+            fi
+          done

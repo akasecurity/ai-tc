@@ -7,6 +7,7 @@ export {
   writesSettingsFirst,
 } from './attach-mode.ts';
 export {
+  ATTACHED_CAPTURE_SETTINGS_FILENAME,
   ATTACHED_CONFIG_INVENTORY_FILENAME,
   ATTACHED_CONFIG_INVENTORY_STATE_FILENAME,
   ATTACHED_DERIVED_FILENAMES,
@@ -107,6 +108,7 @@ export {
   namesARemoteAddress,
   respelledRepoKey,
   scopeKeyOfProjectKey,
+  supersededProjectKeys,
   toEgressIngestRequest,
 } from './egress-wire.ts';
 export type { EnrolmentRespellOutcome } from './enrolment-respell.ts';

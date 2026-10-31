@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AssetDetail } from '../../src/inventory/AssetDetail.tsx';
 import { TrustChoice } from '../../src/inventory/chips.tsx';
+import { TRUST, TRUST_ORDER } from '../../src/inventory/data.ts';
 import {
   type MountedRoot,
   mountRoot,
@@ -350,5 +351,26 @@ describe('TrustChoice', () => {
       option.click();
     });
     expect(onChange).not.toHaveBeenCalled();
+  });
+});
+
+describe('AssetDetail trust copy', () => {
+  it('describes each trust level as a review label, never as allowing or blocking calls', () => {
+    for (const level of TRUST_ORDER) {
+      expect(TRUST[level].desc).not.toMatch(/block|allow|freely|proxy/i);
+    }
+  });
+
+  it("does not mark an unapproved server's tools as blocked", () => {
+    const tool = { name: 'run', signature: 'run()', description: 'Runs', write: true, risk: null };
+    mount(
+      <AssetDetail
+        {...PAGE}
+        asset={mcpAsset({ trust: 'unapproved', tools: [tool] })}
+        onTrust={vi.fn()}
+      />,
+    );
+
+    expect(mounted.host.textContent).not.toContain('Calls blocked');
   });
 });

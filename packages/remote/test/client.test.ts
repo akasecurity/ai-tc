@@ -728,7 +728,7 @@ describe('the shares-ingest submission', () => {
 describe('routes', () => {
   const server = useLoopbackServer();
 
-  it('addresses each of the fourteen, and tolerates trailing slashes on the endpoint', async () => {
+  it('addresses each of the fifteen, and tolerates trailing slashes on the endpoint', async () => {
     // SEVERAL slashes, not one. The normalization is a scan rather than a
     // `replace(/\/+$/, '')` — that regex is quadratic on an all-slash string,
     // since the engine retries from every position and each attempt walks to the
@@ -758,7 +758,9 @@ describe('routes', () => {
                     ? json(sightingKeyBody)
                     : req.url === '/v1/plugin/labels'
                       ? json({ grants: 0, dismissals: 1 })
-                      : json({ accepted: 1, duplicates: 0, ok: true }),
+                      : req.url === '/v1/plugin/sessions/s-1/hold'
+                        ? json({ held: false })
+                        : json({ accepted: 1, duplicates: 0, ok: true }),
       );
     });
 
@@ -788,6 +790,7 @@ describe('routes', () => {
     await client.getSightingKey();
     await client.recordCredentialSightings(sightingsRequest);
     await client.reportLabels(labelsRequest);
+    await client.getSessionHold('s-1');
 
     expect(server.received.map((r) => `${r.method ?? ''} ${r.url ?? ''}`)).toEqual([
       'POST /v1/events',
@@ -804,6 +807,7 @@ describe('routes', () => {
       'GET /v1/sighting-key',
       'POST /v1/credential-sightings',
       'POST /v1/plugin/labels',
+      'GET /v1/plugin/sessions/s-1/hold',
     ]);
   });
 
@@ -1298,6 +1302,62 @@ describe('the labels route', () => {
     });
 
     await expect(client.reportLabels(labelsRequest)).rejects.toBeInstanceOf(RemoteRouteAbsent);
+  });
+});
+
+describe('the session hold route', () => {
+  const server = useLoopbackServer();
+
+  it('issues exactly GET /v1/plugin/sessions/:id/hold with the credential and no body', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(json({ held: true, reason: 'Paused by your organization.' }));
+    });
+
+    const hold = await client.getSessionHold('session-1');
+
+    const seen = server.received.at(-1);
+    expect(`${seen?.method ?? ''} ${seen?.url ?? ''}`).toBe(
+      'GET /v1/plugin/sessions/session-1/hold',
+    );
+    expect(seen?.headers['x-api-key']).toBe(API_KEY);
+    expect(seen?.body ?? '').toBe('');
+    expect(hold).toEqual({ held: true, reason: 'Paused by your organization.' });
+  });
+
+  it('encodes the session id, so it cannot walk onto another route', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(json({ held: false }));
+    });
+
+    await client.getSessionHold('../../commands');
+
+    expect(server.received.at(-1)?.url).toBe('/v1/plugin/sessions/..%2F..%2Fcommands/hold');
+  });
+
+  it('reads a deployment that predates the route as not held', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((_req, res) => {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(json({ error: { code: 'NOT_FOUND' } }));
+    });
+
+    await expect(client.getSessionHold('session-1')).resolves.toEqual({ held: false });
+  });
+
+  it('refuses an answer it cannot read', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(json({ held: 'yes' }));
+    });
+
+    await expect(client.getSessionHold('session-1')).rejects.toMatchObject({
+      name: 'RemoteResponseInvalid',
+    });
   });
 });
 

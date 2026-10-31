@@ -897,15 +897,37 @@ describe('advisoryIdsFromReport against the human side of the comparison', () =>
 // public commenter controls: unbounded, it measured 66x for 8x input (1116 ms
 // at 16k repetitions) inside a job with a ten-minute budget.
 describe('advisoryIdsFromReport is linear in its input', () => {
-  const witness = (reps: number): string => '| [9](' + '| [GHSA--]('.repeat(reps);
-  const fastest = (input: string): number =>
-    Math.min(
-      ...Array.from({ length: 5 }, () => {
-        const started = process.hrtime.bigint();
-        advisoryIdsFromReport(input);
-        return Number(process.hrtime.bigint() - started) / 1e6;
-      }),
-    );
+  // The heading comes first: the function only scans cells inside the blocking
+  // section, so without it the pattern never runs and the case times one failed
+  // `indexOf`.
+  const witness = (reps: number): string =>
+    '## Blocking advisories\n' + '| [9](' + '| [GHSA--]('.repeat(reps);
+  const run = (input: string): void => {
+    advisoryIdsFromReport(input);
+  };
+  // CPU time rather than wall time, so a loaded machine that pauses the process
+  // does not count. Each sample repeats the call until it has used 100 ms of CPU,
+  // so a clock that advances in coarse steps (about 15.6 ms on Windows) still
+  // reads it well, and the sample is the mean per call. The result is the fastest
+  // of a few samples, so a cold cache does not count either.
+  const cpuMs = (): number => {
+    const { user, system } = process.cpuUsage();
+    return (user + system) / 1000;
+  };
+  const fastest = (input: string): number => {
+    run(input); // untimed warm-up
+    let best = Infinity;
+    for (let sample = 0; sample < 7; sample += 1) {
+      const start = cpuMs();
+      let calls = 0;
+      do {
+        run(input);
+        calls += 1;
+      } while (cpuMs() - start < 100);
+      best = Math.min(best, (cpuMs() - start) / calls);
+    }
+    return best;
+  };
 
   it('grows about 8x for 8x input, not about 64x', () => {
     const ratio = fastest(witness(16_000)) / fastest(witness(2_000));
@@ -913,7 +935,7 @@ describe('advisoryIdsFromReport is linear in its input', () => {
     // room for both a slow runner and an honest constant-factor change; what it
     // separates is the SHAPE, which is the only thing that matters.
     expect(ratio).toBeLessThan(25);
-  });
+  }, 60_000);
 
   // The structural half, which no timing can drift out of: every quantifier in
   // the pattern is bounded. Without this the case above could be satisfied by a

@@ -39,7 +39,7 @@ export const TRUST: Record<TrustLevel, TrustMeta> = {
     fg: 'text-ok-ink',
     bg: 'bg-ok-fill',
     iconBg: 'bg-ok-ink',
-    desc: 'Reviewed & allow-listed. Agents may call it freely.',
+    desc: 'Reviewed and approved. Off the list to review.',
   },
   risky: {
     label: 'Risky',
@@ -48,7 +48,7 @@ export const TRUST: Record<TrustLevel, TrustMeta> = {
     fg: 'text-sev-high-ink',
     bg: 'bg-sev-high-fill',
     iconBg: 'bg-sev-high-ink',
-    desc: 'Allowed, but reaches sensitive systems or external hosts. Use with care.',
+    desc: 'Reviewed; reaches sensitive systems or external hosts. Stays on the list to review.',
   },
   unapproved: {
     label: 'Unapproved',
@@ -57,7 +57,7 @@ export const TRUST: Record<TrustLevel, TrustMeta> = {
     fg: 'text-sev-critical-ink',
     bg: 'bg-sev-critical-fill',
     iconBg: 'bg-sev-critical-ink',
-    desc: 'Not reviewed or explicitly denied — calls are blocked at the proxy.',
+    desc: 'Not reviewed yet, or not approved. Stays on the list to review.',
   },
 };
 export const TRUST_ORDER: TrustLevel[] = ['known-good', 'risky', 'unapproved'];

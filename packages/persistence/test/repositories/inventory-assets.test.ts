@@ -86,7 +86,7 @@ describe('SqliteInventoryAssetsRepository over the sample dataset', () => {
     expect(mcp?.trustRollup).toEqual({ 'known-good': 1, risky: 1, unapproved: 1 });
   });
 
-  it('asset detail annotates unapproved MCP tools with a blocked risk', async () => {
+  it('asset detail returns an MCP server with its trust and tools', async () => {
     const detail = await inv.getAsset('sample:asset:shell-runner-mcp');
     expect(detail?.type).toBe('mcp');
     expect(detail?.trust).toBe('unapproved');
@@ -132,6 +132,15 @@ describe('SqliteInventoryAssetsRepository over the sample dataset', () => {
     expect(file?.isCustom).toBe(false);
 
     expect(inv.setFileAccess(PAYMENTS, 'no/such/file', 'blocked')).toBe(false);
+  });
+
+  it("returns an unapproved MCP server's tools as stored", async () => {
+    const before = (await inv.getAsset('sample:asset:github-mcp'))?.tools;
+    expect(before?.some((t) => t.risk === null)).toBe(true);
+
+    inv.setMcpTrust('sample:asset:github-mcp', 'unapproved');
+    expect((await inv.getAsset('sample:asset:github-mcp'))?.tools).toEqual(before);
+    inv.setMcpTrust('sample:asset:github-mcp', 'known-good');
   });
 
   it('setMcpTrust writes/clears on mcp assets and rejects non-mcp', async () => {

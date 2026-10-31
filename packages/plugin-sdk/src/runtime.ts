@@ -26,6 +26,7 @@ import { createFindingLocator, evidenceLookup } from './finding-context.ts';
 import { computeFindingKey } from './finding-key.ts';
 import type { FingerprintKey } from './fingerprint.ts';
 import { fingerprintValue, loadOrCreateFingerprintKey, readFingerprintKey } from './fingerprint.ts';
+import { cutForForward, reviewCandidatesOf } from './forward-cut.ts';
 import type { GuardedScanner } from './guarded-scan.ts';
 import { createGuardedScanner } from './guarded-scan.ts';
 import type { IsolatedScanner, IsolatedScanOptions } from './isolated-scan.ts';
@@ -955,11 +956,10 @@ export function createPluginRuntime(
     if (opts.persist === 'never') return;
     // A refused field has no findings either, and is not clean: 'with-findings'
     // records it anyway, so a refusal leaves the same trace a block does.
-    if (
-      opts.persist === 'with-findings' &&
-      decision.findings.length === 0 &&
-      decision.scanIncomplete === undefined
-    ) {
+    // A capture marked for forwarding is recorded clean too, its text cut to
+    // the mark's cap.
+    const clean = decision.findings.length === 0 && decision.scanIncomplete === undefined;
+    if (opts.persist === 'with-findings' && clean && opts.forward === undefined) {
       return;
     }
     try {
@@ -1013,10 +1013,18 @@ export function createPluginRuntime(
               sighting: { location: filePath, kind: 'file' },
             })
           : new Map<MatchResult, string>();
+      const cut =
+        clean && opts.forward !== undefined
+          ? cutForForward(input.text, opts.forward.maxChars)
+          : undefined;
       const storedContent =
         decision.scanIncomplete !== undefined
           ? ''
-          : composeAtRestContent(input.text, maskedFindings, vaulted);
+          : cut !== undefined
+            ? cut.content
+            : composeAtRestContent(input.text, maskedFindings, vaulted);
+      const contentTruncatedFrom =
+        cut === undefined ? undefined : (cut.truncatedFrom ?? opts.forward?.truncatedFrom);
       // Stamp the applied exception ids onto the persisted event so the trail
       // shows WHY an enforced category passed (a declared EventMetadata field).
       // The measurement is read HERE, immediately before the event is built,
@@ -1039,13 +1047,15 @@ export function createPluginRuntime(
         exceptionIds.length > 0 ||
         inspectionMs !== undefined ||
         redactDegradedTo !== undefined ||
-        scanIncomplete !== undefined
+        scanIncomplete !== undefined ||
+        contentTruncatedFrom !== undefined
           ? {
               ...input.metadata,
               ...(exceptionIds.length > 0 ? { exceptionIds } : {}),
               ...(inspectionMs !== undefined ? { inspectionMs } : {}),
               ...(redactDegradedTo !== undefined ? { redactDegradedTo } : {}),
               ...(scanIncomplete !== undefined ? { scanIncomplete } : {}),
+              ...(contentTruncatedFrom !== undefined ? { contentTruncatedFrom } : {}),
             }
           : input.metadata;
       const event = buildIngestEvent({
@@ -1124,7 +1134,9 @@ export function createPluginRuntime(
       // forwarding gateway sends it as built), so a key on its metadata would
       // leave the machine with every capture. On the record, only a gateway
       // that reads it sees it. Spread only when present, so a keyless record
-      // is the record every caller built before the key existed.
+      // is the record every caller built before the key existed. The review
+      // candidates ride the same way.
+      const reviewCandidates = reviewCandidatesOf(decision.findings);
       await gateway.recordCapture({
         event,
         findings,
@@ -1135,6 +1147,7 @@ export function createPluginRuntime(
               vaulted: [...vaulted].map(([match, pointer]) => ({ raw: match.rawMatch, pointer })),
             }
           : {}),
+        ...(reviewCandidates.length > 0 ? { reviewCandidates } : {}),
       });
       // Thread the produced at-rest finding_keys back onto the decision (the
       // scanner's re-scan resolver diffs these against a path's previously-open
@@ -1317,6 +1330,12 @@ export interface CaptureOptions extends DecisionOptions {
   // `input.kind`, and the text is still scanned once, in the same scan call
   // (in process or in the worker) as any other capture.
   kindScopedRules?: boolean;
+  // Records a clean capture that 'with-findings' would skip, so an attached
+  // machine forwards it, with its content cut to `maxChars` (`cutForForward`).
+  // A capture with findings, or a refused one, is recorded as it would be
+  // without the mark. `truncatedFrom` is the length of the text a caller cut
+  // `text` from before handing it here.
+  forward?: { maxChars: number; truncatedFrom?: number };
 }
 
 // What `captureDeferred` hands back: the decision, and the write held back.

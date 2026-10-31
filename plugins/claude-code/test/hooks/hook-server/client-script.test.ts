@@ -39,22 +39,25 @@ let root: string;
 let scripts: string;
 let bin: string;
 let nodeLog: string;
+let nodeLogCount = 0;
 
 beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), 'aka-hc-'));
   scripts = join(root, 'scripts');
   bin = join(root, 'bin');
-  nodeLog = join(root, 'node.log');
+  nodeLog = join(root, 'node-0.log');
   mkdirSync(scripts);
   mkdirSync(bin);
   writeFileSync(join(scripts, 'hook-client.sh'), hookClientScript(VERSION), { mode: 0o755 });
   // A node that logs its arguments and the locale it was given, and echoes stdin.
+  // It appends to the log named by the environment it was started with, so a
+  // server start that outlives its test lands in that test's log.
   const fakeNode = join(bin, 'node');
   writeFileSync(
     fakeNode,
     [
       '#!/bin/sh',
-      `printf '%s|LC_ALL=%s\\n' "$*" "\${LC_ALL-unset}" >> "${nodeLog}"`,
+      `printf '%s|LC_ALL=%s\\n' "$*" "\${LC_ALL-unset}" >> "$AKA_TEST_NODE_LOG"`,
       'case $* in *hook-server.js*) exit 0 ;; esac',
       'printf "NODE:"; cat',
       '',
@@ -84,6 +87,7 @@ function runClient(options: {
     const env: Record<string, string> = {
       PATH: options.path ?? `${bin}:/usr/bin:/bin`,
       HOME: options.home,
+      AKA_TEST_NODE_LOG: nodeLog,
     };
     for (const [key, value] of Object.entries(options.env ?? {})) {
       if (value !== undefined) env[key] = value;
@@ -108,6 +112,8 @@ function runClient(options: {
 
 const readNodeLog = (): string => (existsSync(nodeLog) ? readFileSync(nodeLog, 'utf8') : '');
 const resetNodeLog = (): void => {
+  nodeLogCount += 1;
+  nodeLog = join(root, `node-${String(nodeLogCount)}.log`);
   writeFileSync(nodeLog, '');
 };
 
@@ -202,7 +208,7 @@ describeUnix.each(SHELLS)('the hook client under %s without a server', (shell) =
     resetNodeLog();
     const out = await new Promise<Outcome>((resolve) => {
       const child = spawn(shell, [join(scripts, 'hook-client.sh'), 'pre-tool-use'], {
-        env: { PATH: `${bin}:/usr/bin:/bin` },
+        env: { PATH: `${bin}:/usr/bin:/bin`, AKA_TEST_NODE_LOG: nodeLog },
         stdio: ['pipe', 'pipe', 'ignore'],
       });
       let stdout = '';

@@ -649,6 +649,84 @@ describe('capture', () => {
     await rt.close();
   });
 
+  it('records a clean capture marked for forwarding, cut to the cap', async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    const text = `${'a'.repeat(9)}\u{1F600}tail`;
+    await rt.capture(
+      { kind: 'response', sourceTool: 'claude-code', text },
+      { persist: 'with-findings', forward: { maxChars: 10 } },
+    );
+    await rt.close();
+    expect(gw.records).toHaveLength(1);
+    const event = gw.records[0]?.event;
+    // The cut would split the emoji's surrogate pair, so it stops one short.
+    expect(event?.content).toBe('a'.repeat(9));
+    expect(event?.metadata?.contentTruncatedFrom).toBe(text.length);
+    expect(event?.contentHash).toBe(contentHashOf(text));
+    expect(gw.records[0]?.reviewCandidates).toBeUndefined();
+  });
+
+  it('records a short clean capture marked for forwarding whole, with no truncation marker', async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    await rt.capture(
+      { kind: 'response', sourceTool: 'claude-code', text: 'nothing here' },
+      { persist: 'with-findings', forward: { maxChars: 100 } },
+    );
+    await rt.close();
+    expect(gw.records[0]?.event.content).toBe('nothing here');
+    expect(gw.records[0]?.event.metadata?.contentTruncatedFrom).toBeUndefined();
+  });
+
+  it('names the length a caller cut the text from', async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    await rt.capture(
+      { kind: 'response', sourceTool: 'claude-code', text: 'already cut' },
+      { persist: 'with-findings', forward: { maxChars: 11, truncatedFrom: 500 } },
+    );
+    await rt.close();
+    expect(gw.records[0]?.event.content).toBe('already cut');
+    expect(gw.records[0]?.event.metadata?.contentTruncatedFrom).toBe(500);
+  });
+
+  it('records a marked capture with findings exactly as an unmarked one, uncut', async () => {
+    const text = `SECRET_MARKER ${'x'.repeat(50)}`;
+    const marked = fakeGateway(bundle());
+    const plain = fakeGateway(bundle());
+    for (const [gw, forward] of [
+      [marked, { maxChars: 5 }],
+      [plain, undefined],
+    ] as const) {
+      const rt = createPluginRuntime(gw, settings());
+      await rt.capture(
+        { kind: 'response', sourceTool: 'claude-code', text },
+        { persist: 'with-findings', ...(forward ? { forward } : {}) },
+      );
+      await rt.close();
+    }
+    expect(marked.records[0]?.event.content).toBe(plain.records[0]?.event.content);
+    expect(marked.records[0]?.event.metadata?.contentTruncatedFrom).toBeUndefined();
+  });
+
+  it("hands each finding's raw value to the gateway beside the event, never on it", async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    await rt.capture({
+      kind: 'prompt',
+      sourceTool: 'claude-code',
+      text: 'SECRET_MARKER and PII_MARKER and SECRET_MARKER',
+    });
+    await rt.close();
+    const record = gw.records[0];
+    expect(record?.reviewCandidates).toEqual([
+      { ruleId: 'test/secret-marker', value: 'SECRET_MARKER' },
+      { ruleId: 'test/pii-marker', value: 'PII_MARKER' },
+    ]);
+    expect(JSON.stringify(record?.event)).not.toContain('reviewValues');
+  });
+
   it("persist 'never' records nothing, found or not, and enforces as the default does", async () => {
     const gw = fakeGateway(bundle());
     const rt = createPluginRuntime(gw, settings());

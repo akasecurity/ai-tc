@@ -6,7 +6,7 @@
   "severity": "high",
   "matcher": {
     "type": "regex",
-    "pattern": "([\"'`])\\s*\\b(?:select|insert|update|delete|where)\\b(?:(?!\\1)[^\\n])*?(?:#\\{|\\$[a-z_])|(?<=^|\\n)[ \\t]*(?:select|insert|update|delete|where)\\s[^\\n]*?(?:#\\{|\\$[a-z_])",
+    "pattern": "([\"'`])\\s*(?=(?:select\\b(?:(?!\\1)[^\\n])*?\\bfrom\\b|insert\\s+(?:(?:ignore|low_priority|delayed|high_priority|or\\s+\\w+)\\s+){0,2}into\\b|update\\s+(?:(?:low_priority|ignore|or\\s+\\w+)\\s+){0,2}(?:only\\s+)?[\\w.`\\\"$]+(?:\\s+(?:as\\s+)?[\\w.`\\\"$]+)?(?:\\s*,\\s*[\\w.`\\\"$]+(?:\\s+(?:as\\s+)?[\\w.`\\\"$]+)?){0,7}\\s+set\\b|delete\\s+(?:(?:low_priority|quick|ignore)\\s+){0,3}(?:from\\b|[\\w.`]+(?:\\s*,\\s*[\\w.`]+)*\\s+from\\s+[\\w.`]+(?:\\s+(?:as\\s+)?\\w+)?\\s+(?:(?:inner|left|right|cross)\\s+)?(?:join|using|where)\\b)|where\\s+[\\w.`$]+\\s*(?:=|<>|!=|<|>|\\blike\\b|\\bin\\b|\\bbetween\\b)))\\b(?:select|insert|update|delete|where)\\b(?:(?!\\1)[^\\n])*?(?:#\\{|\\$[a-z_])|(?<=^|\\n)[ \\t]*(?=(?:select\\b[^\\n]*?\\bfrom\\b|insert\\s+(?:(?:ignore|low_priority|delayed|high_priority|or\\s+\\w+)\\s+){0,2}into\\b|update\\s+(?:(?:low_priority|ignore|or\\s+\\w+)\\s+){0,2}(?:only\\s+)?[\\w.`\\\"$]+(?:\\s+(?:as\\s+)?[\\w.`\\\"$]+)?(?:\\s*,\\s*[\\w.`\\\"$]+(?:\\s+(?:as\\s+)?[\\w.`\\\"$]+)?){0,7}\\s+set\\b|delete\\s+(?:(?:low_priority|quick|ignore)\\s+){0,3}(?:from\\b|[\\w.`]+(?:\\s*,\\s*[\\w.`]+)*\\s+from\\s+[\\w.`]+(?:\\s+(?:as\\s+)?\\w+)?\\s+(?:(?:inner|left|right|cross)\\s+)?(?:join|using|where)\\b)|where\\s+[\\w.`$]+\\s*(?:=|<>|!=|<|>|\\blike\\b|\\bin\\b|\\bbetween\\b)))(?:select|insert|update|delete|where)\\s[^\\n]*?(?:#\\{|\\$[a-z_])",
     "flags": "gi"
   },
   "examples": [

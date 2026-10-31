@@ -34,9 +34,16 @@ const PERL_CLIENT = [
 
 // Exits 0 when something accepts a connection on the socket named by the first
 // argument. A dead server's leftover socket file refuses, so it reads as no server.
-// A connect that blocks past 1 s (wedged server) counts as something there.
+// Exits 2 when the connect blocks past 1 s (a wedged server or a starved
+// probe): that answers nothing, so the caller neither starts a server nor
+// releases the lock.
 const PERL_PROBE =
-  'use Socket;$SIG{ALRM}=sub{exit 0};alarm 1;socket(S,PF_UNIX,SOCK_STREAM,0)or exit 1;connect(S,sockaddr_un($ARGV[0]))or exit 1;';
+  'use Socket;$SIG{ALRM}=sub{exit 2};alarm 1;socket(S,PF_UNIX,SOCK_STREAM,0)or exit 1;connect(S,sockaddr_un($ARGV[0]))or exit 1;';
+
+// Takes the start lock: exits 0 for the one caller that makes the folder. The
+// system mkdir is not safe here: uutils coreutils (the default on Ubuntu 26.04)
+// reports success to several callers that race on one path.
+const PERL_LOCK = 'mkdir($ARGV[0],0700)or exit 1;';
 
 /** `NAME` words for a shell `for` list; every name is a fixed upper-case identifier. */
 function words(names: readonly string[]): string {
@@ -100,15 +107,16 @@ export function hookClientScript(pluginVersion: string): string {
     // once, and run this one the old way.
     `lock=$run/hook-${pluginVersion}.starting`,
     '(umask 077; mkdir -p "$run") 2>/dev/null',
-    'if mkdir "$lock" 2>/dev/null; then',
+    `if perl -e '${PERL_LOCK}' "$lock" 2>/dev/null; then`,
     // This call may have probed before another call's server came up and taken
     // the lock only after that server released it: look once more, and start
     // nothing when a server answers now.
-    `  if perl -e '${PERL_PROBE}' "$sock" 2>/dev/null; then`,
-    '    rmdir "$lock" 2>/dev/null',
-    '  else',
-    '    node "$dir/hook-server.js" --daemonize </dev/null >/dev/null 2>&1 &',
-    '  fi',
+    `  perl -e '${PERL_PROBE}' "$sock" 2>/dev/null`,
+    '  case $? in',
+    '    0) rmdir "$lock" 2>/dev/null ;;',
+    '    2) ;;',
+    '    *) node "$dir/hook-server.js" --daemonize </dev/null >/dev/null 2>&1 & ;;',
+    '  esac',
     // A lock a server never released (it was killed while starting).
     'elif [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then',
     '  rmdir "$lock" 2>/dev/null',

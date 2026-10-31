@@ -156,6 +156,26 @@ describeUnix.each(SHELLS)('the hook client under %s without a server', (shell) =
     expect(starts, `node log:\n${readNodeLog()}\nrun folder: ${held}`).toHaveLength(1);
   });
 
+  it('starts one server for a burst even when the system mkdir reports success to every caller', async () => {
+    resetNodeLog();
+    const home = newHome();
+    // uutils mkdir (the default on Ubuntu 26.04) does this when calls race.
+    const fake = join(home, 'fake-bin');
+    mkdirSync(fake);
+    writeFileSync(
+      join(fake, 'mkdir'),
+      ['#!/bin/sh', 'for a; do d=$a; done', '/bin/mkdir -p "$d"', ''].join('\n'),
+      { mode: 0o755 },
+    );
+    const path = `${fake}:${bin}:/usr/bin:/bin`;
+    await Promise.all([1, 2, 3].map(() => runClient({ shell, home, payload: '{}', path })));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const starts = readNodeLog()
+      .split('\n')
+      .filter((l) => l.includes('--daemonize'));
+    expect(starts).toHaveLength(1);
+  });
+
   it('starts no second server when a call takes the lock after the first server released it', async () => {
     resetNodeLog();
     const home = newHome();

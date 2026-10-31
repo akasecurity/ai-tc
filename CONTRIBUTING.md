@@ -469,7 +469,7 @@ nowhere.
 - A promotion from `dev` into `main` merges with a merge commit, not a squash, so the two
   branches keep one history. A hotfix merged into `main` is merged back into `dev`.
 - `sync-release-branches.yml` rebases every `release/**` branch onto `dev` after each push to
-  `dev`. A rebase that conflicts is left for a person, in an issue titled
+  `dev`, except one named for a version (`release/<digit>…`), which it leaves alone. A rebase that conflicts is left for a person, in an issue titled
   `release/<name> needs a manual rebase onto dev`. Update a local copy of a release branch with
   `git pull --rebase`.
 - Pull requests into `dev` and `release/**` run the `Lint · Typecheck · Test · Build` job.

@@ -9,6 +9,9 @@ name: Sync release branches
 # status is not red for a conflict its pushes did not cause. The next clean sync closes the
 # issue, including one left open by a run cancelled between its push and the close.
 #
+# A branch named for a version (release/<digit>…) is a stable cut, not future work, and is
+# left alone: rebasing it would pull unreleased dev work into a stable release.
+#
 # Pushes made with GITHUB_TOKEN start no workflow runs, so a sync costs this job only. Anyone
 # with a local copy of a release branch updates it with `git pull --rebase`.
 
@@ -51,6 +54,12 @@ jobs:
 
           for remote in $(git for-each-ref --format='%(refname:short)' 'refs/remotes/origin/release/'); do
             branch=${remote#origin/}
+            case "$branch" in
+              release/[0-9]*)
+                echo "$branch: named for a version, so not synced"
+                continue
+                ;;
+            esac
             old=$(git rev-parse "$remote")
             title="$branch needs a manual rebase onto dev"
 

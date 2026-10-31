@@ -188,7 +188,8 @@ rules as a workflow filter — `*` stops at a `/` — so `release/*` covers `rel
 matches is `release/**/*`. A branch named bare `release` matches neither list and gets no CI at
 all, so release branches are named `release/<something>`. On the push side, the dependency audit,
 CodeQL and the internal-path guard still run post-merge for `main` only.
-`sync-release-branches.yml` rebases every `release/**` branch onto `dev` after each push to `dev`,
+`sync-release-branches.yml` rebases every `release/**` branch not named for a version
+(`release/<digit>…`) onto `dev` after each push to `dev`,
 and opens an issue for a rebase that conflicts.
 
 **Where a stable plugin tag goes.** A bare `plugin-<name>-v<X.Y.Z>` (Claude Code, Codex,

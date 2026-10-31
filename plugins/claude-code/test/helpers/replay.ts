@@ -25,6 +25,9 @@ import { runHookAsync, tempHomeEnv } from './run-hook.ts';
 // Per spawn, so a loaded box does not trip run-hook's 15 s default across the 24 parallel hooks.
 const HOOK_TIMEOUT_MS = 90_000;
 
+// Calls replayed at once; keeps the hook processes in flight near the 12 the sibling set runs.
+const REPLAY_CONCURRENCY = 12;
+
 export type ReplayMode = 'default' | 'strict';
 export type Verdict = 'blocked' | 'warned' | 'allowed';
 
@@ -33,7 +36,12 @@ export interface ReplayCall {
   label: string;
   /** `attack` calls must be caught; `lookalike` calls must stay silent. */
   kind: 'attack' | 'lookalike';
-  tool: 'Bash' | 'Write' | 'Edit';
+  tool: 'Bash' | 'Write' | 'Edit' | 'WebFetch' | `mcp__${string}`;
+  /**
+   * Text an earlier tool returned into the session, replayed through the
+   * PostToolUse hook in the same home before this call runs.
+   */
+  decoded?: { tool: string; input?: Record<string, unknown>; text: string };
   /** The tool input; `{home}` in a string stands for the call's own empty home. */
   input: Record<string, unknown>;
   cwd?: string;
@@ -57,6 +65,8 @@ export interface ReplaySet {
 export interface ReplayOutcome {
   call: ReplayCall;
   verdict: Verdict;
+  /** What PostToolUse did with the `decoded` text, when the call has one. */
+  decodeVerdict?: Verdict | undefined;
   /** Every finding recorded for the call: rule id and the action taken. */
   findings: { ruleId: string; action: string }[];
 }
@@ -98,6 +108,24 @@ async function replayCall(
 ): Promise<ReplayOutcome> {
   const home = seededHome(set, mode);
   try {
+    let decodeVerdict: Verdict | undefined;
+    if (call.decoded !== undefined) {
+      const post = await runHookAsync(
+        'post-tool-use',
+        JSON.stringify({
+          session_id: `replay-${set.id}-${mode}`,
+          cwd: call.cwd ?? home,
+          hook_event_name: 'PostToolUse',
+          tool_name: call.decoded.tool,
+          tool_input: call.decoded.input ?? {},
+          tool_response: [{ type: 'text', text: call.decoded.text }],
+        }),
+        { env: tempHomeEnv(home), timeoutMs: HOOK_TIMEOUT_MS },
+      );
+      if (post.status !== 0)
+        throw new Error(`post-tool-use exited ${String(post.status)} for ${call.label}`);
+      decodeVerdict = post.stdout === '' ? 'allowed' : 'warned';
+    }
     const run = await runHookAsync(
       'pre-tool-use',
       JSON.stringify({
@@ -122,7 +150,7 @@ async function replayCall(
     try {
       const views = await db.findings.recentFindings({ limit: 100 });
       const findings = views.map((v) => ({ ruleId: v.ruleId, action: v.actionTaken }));
-      return { call, verdict, findings };
+      return { call, verdict, decodeVerdict, findings };
     } finally {
       db.close();
     }
@@ -132,7 +160,22 @@ async function replayCall(
 }
 
 export async function replaySet(set: ReplaySet, mode: ReplayMode): Promise<ReplayOutcome[]> {
-  return Promise.all(set.calls.map((call) => replayCall(set, call, mode)));
+  // A bounded pool: each call spawns hook processes, and starting every call at
+  // once loads a small runner enough to trip the per-spawn timeout.
+  const outcomes: (ReplayOutcome | undefined)[] = set.calls.map(() => undefined);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < set.calls.length) {
+      const i = next++;
+      const call = set.calls[i];
+      if (call !== undefined) outcomes[i] = await replayCall(set, call, mode);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(REPLAY_CONCURRENCY, set.calls.length) }, worker));
+  return outcomes.map((o) => {
+    if (o === undefined) throw new Error('missing outcome');
+    return o;
+  });
 }
 
 /** Every rule that fired on a call, whichever pack it belongs to. */
@@ -159,7 +202,7 @@ export function warningRules(outcome: ReplayOutcome): string[] {
 }
 
 function cell(set: ReplaySet, outcome: ReplayOutcome): string {
-  const fired = outcome.call.kind === 'lookalike' ? allRules(outcome) : packRules(set, outcome);
+  const fired = packRules(set, outcome);
   const rules = fired.map((r) => `\`${r}\``);
   if (outcome.verdict === 'blocked')
     return `blocked${rules.length > 0 ? `: ${rules.join(', ')}` : ''}`;
@@ -185,9 +228,7 @@ export function renderResults(
   return [
     `# ${set.title}`,
     '',
-    `Plugin build: ${pluginVersion}. Policies: **default** is a fresh install; **strict** sets ${set.packs
-      .map((p) => `\`${p}\``)
-      .join(', ')} to block.`,
+    `Plugin build: ${pluginVersion}. Policies: **default** is a fresh install; **strict** sets ${set.packs.map((p) => `\`${p}\``).join(', ')} to block.`,
     '',
     '| kind | call | default | strict |',
     '| --- | --- | --- | --- |',

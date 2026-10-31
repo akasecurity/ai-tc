@@ -32,14 +32,14 @@ import { isAuthorizedValue, takeToolHandoff } from '../mod/handoff.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote, userDisclosure } from '../protocol/notes.ts';
 import { resolveHookAccount, stampFor } from './account-stamp.ts';
+import { bashWrittenPayloads } from './bash-payloads.ts';
 import { sessionHoldDenial } from './capture-forward.ts';
 import {
   isOutboundCall,
   MCP_OUTPUT_SESSION_MARKER,
   mcpOutputSessionField,
 } from './decoded-content.ts';
-import { bashWrittenPayloads } from './bash-payloads.ts';
-import { HOOK_SCAN_DEADLINE_MS, callScanBudgetSpent, largeInputBound } from './large-input.ts';
+import { callScanBudgetSpent, HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
 import { handleSubagentSpawn } from './model-guard.ts';
 import { replaceAtPath, stringAtPath } from './paths.ts';
 import type { PointerDenyField, PointerField } from './pointer-substitution.ts';

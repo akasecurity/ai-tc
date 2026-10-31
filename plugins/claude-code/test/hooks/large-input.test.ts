@@ -6,8 +6,8 @@ import {
 import { describe, expect, it } from 'vitest';
 
 import {
-  HOOK_SCAN_DEADLINE_MS,
   callScanBudgetSpent,
+  HOOK_SCAN_DEADLINE_MS,
   largeInputBound,
 } from '../../src/hooks/large-input.ts';
 import { RESPONSE_SCAN_DEADLINE_MS } from '../../src/hooks/scan-response.ts';

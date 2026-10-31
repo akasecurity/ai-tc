@@ -68,6 +68,8 @@ import { runInNewContext } from 'node:vm';
 
 import { afterAll, describe, expect, it } from 'vitest';
 
+import { expectSupportedRunnerImages } from './helpers/runner-images.js';
+
 // This file asks structural questions of structure: which jobs there are, which
 // steps a job has, and what a step's `if:`, `with:`, `env:` and `run:` hold.
 // Comments are not part of that structure — a `#` line inside a `run:` body is part
@@ -257,6 +259,15 @@ const attestedGlobs = () => inputLines(attestStep(), 'subject-path');
 const publishedGlobs = () => [
   ...new Set(releasePublishSteps().flatMap((step) => inputLines(step, 'files'))),
 ];
+
+describe('the binary fan-out runs on supported runner images', () => {
+  // Resolved inside the `it` for the reason given at the top of this file's
+  // sibling readers: an assertion raised from a `describe` body is a collection
+  // error, which reports the file as `(0 test)` and unruns every other suite in it.
+  it('builds every target on an image GitHub still serves', () => {
+    expectSupportedRunnerImages(workflow(), 'build');
+  });
+});
 
 describe('the release job attests the assets it publishes', () => {
   it('carries a step named for the attestation, which every case below reads inside', () => {

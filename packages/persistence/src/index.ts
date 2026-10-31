@@ -359,6 +359,7 @@ export { SIGHTING_DOMAIN, sightingToken, sightingTokens } from './vault/sighting
 export type {
   DetokenizeOptions,
   DetokenizeResult,
+  FingerprintRefreshResult,
   PointerDigest,
   SecretVaultDeps,
   TokenizeMeta,

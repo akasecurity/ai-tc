@@ -77,6 +77,31 @@ export default async function ExceptionsPage({
   // under an older key (or under a key that is now missing) is unapprovable
   // already, so counting it would overstate the loss.
   const approvableBlocked = retained.filter((b) => isBlockedRowApprovable(b, keyState)).length;
+
+  // Vault entries left off the current fingerprint key — a rotation whose
+  // per-row re-key did not reach them. Read from the store rather than taken
+  // from what `rotateKey` returned, because the rows stay stale long after that
+  // call: a reload, a trip into a grant detail route, or a rotation run from
+  // `aka exception rotate-key` all leave a returned count with nowhere to live,
+  // while the condition itself persists until some later rotation clears it.
+  //
+  // Only meaningful against a key that is actually present. With the key absent
+  // or unreadable there is no current version to compare rows to, and every
+  // surface on this page already says so for its own rows — claiming a vault
+  // shortfall as well would be a second, worse account of the same one fault.
+  //
+  // Unguarded on purpose: every other store read on this route is too, so a
+  // `secret_vault` that cannot be read fails the page the same way an
+  // `exceptions` table that cannot be read already does. Swallowing it to 0
+  // would be the silent zero this disclosure exists to abolish.
+  //
+  // One repository call, not a stale count beside a total: the pair has to be
+  // consistent for the fraction built from it to mean anything, and a purge
+  // running between two reads is enough to break that.
+  const vaultFingerprints =
+    keyState.status === 'present'
+      ? db().secretVault.countFingerprintEpochs(keyState.version)
+      : { stale: 0, total: 0 };
   // A relative label must be calculated against the exact same instant during
   // SSR and hydration; otherwise crossing a minute boundary can change its text.
   // One instant for the whole route, so both child views measure against it.
@@ -91,6 +116,7 @@ export default async function ExceptionsPage({
       keyState={keyState}
       activePermanent={activePermanent}
       approvableBlocked={approvableBlocked}
+      vaultFingerprints={vaultFingerprints}
       renderedAt={renderedAt}
     />
   );

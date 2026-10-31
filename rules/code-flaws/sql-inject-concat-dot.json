@@ -6,7 +6,7 @@
   "severity": "high",
   "matcher": {
     "type": "regex",
-    "pattern": "[\"'](?=([^\"'\\n]*?(?:select|insert|update|delete|drop|where)))\\1(?:(?![\"'][^\"'\\n]*?(?:select|insert|update|delete|drop|where))[^\\n])*?[\"']\\s*\\.",
+    "pattern": "([\"'])(?=((?:(?!\\1)[^\\n])*?\\b(?:select\\b(?:(?!\\1|\\bselect\\b)[^\\n])*?\\bfrom\\b|insert\\s+(?:(?:ignore|low_priority|delayed|high_priority|or\\s+(?:replace|ignore|rollback|abort|fail))\\s+){0,2}into\\b|update\\s+(?:only\\s+)?\\S+(?:(?:\\s+as\\s+[\\w`\\[\\]]+)?\\s+set\\b|(?:\\s*,\\s*[\\w.`\\[\\]$]+)+\\s+set\\s+[\\w.`\\[\\]$]+\\s*=)|delete\\s+from\\b|drop\\s+(?:table|database|index|view)\\b|where\\s+[\\w.`\\[\\]${}]+(?:\\s*(?:!=|[=<>])|\\s+(?:in\\s*\\(|like\\s*(?!\\1)['\"%]|between\\b)))))\\2(?:(?!\\1(?:(?!\\1)[^\\n])*?\\b(?:select\\b|insert\\s+(?:(?:ignore|low_priority|delayed|high_priority|or\\s+(?:replace|ignore|rollback|abort|fail))\\s+){0,2}into\\b|update\\s+(?:only\\s+)?\\S+(?:(?:\\s+as\\s+[\\w`\\[\\]]+)?\\s+set\\b|(?:\\s*,\\s*[\\w.`\\[\\]$]+)+\\s+set\\s+[\\w.`\\[\\]$]+\\s*=)|delete\\s+from\\b|drop\\s+(?:table|database|index|view)\\b|where\\b))[^\\n])*?[\"']\\s*\\.",
     "flags": "gi"
   },
   "appliesTo": {

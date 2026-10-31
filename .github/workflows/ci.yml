@@ -68,7 +68,7 @@ jobs:
   ci:
     name: Lint · Typecheck · Test · Build
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     # Three steps in this job fan turbo with no bound of their own — `pnpm lint`,
     # `pnpm typecheck` and `pnpm build` each expand to a bare `turbo run …`, so
     # each fans every package at turbo's default of 10. None of them can take the

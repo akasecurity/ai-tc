@@ -163,7 +163,7 @@ describe('vault identity fingerprint', () => {
     await tokenize(PADDED);
     await tokenize(CLEAN);
     const next = rotateFingerprintKey(store.dataDir);
-    await expect(vault.refreshFingerprints(next)).resolves.toBe(2);
+    await expect(vault.refreshFingerprints(next)).resolves.toEqual({ refreshed: 2, skipped: 0 });
     const padded = must(
       db.secretVault.byValueFingerprint(exactFingerprintValue(next, PADDED)),
       'padded row',

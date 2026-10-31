@@ -17,7 +17,15 @@ import type { Choice } from '../shared/ChoiceGroup.tsx';
 // package both may import, beside the `isMatchableUnder` predicate its count is
 // taken with. Re-exported rather than restated: a copy here is how the CLI and
 // the dashboard come to disclose different costs for the same one-way action.
-export { LEDGER_WINDOW_HOURS, rotationBlockedLedgerNote } from '@akasecurity/schema';
+// `vaultRefreshShortfallNote` joins them for the same reason, and is stated by a
+// third surface besides those two: the Exceptions route renders it as a standing
+// notice, off a count taken from the store, because the rows it names outlive the
+// rotation that left them behind.
+export {
+  LEDGER_WINDOW_HOURS,
+  rotationBlockedLedgerNote,
+  vaultRefreshShortfallNote,
+} from '@akasecurity/schema';
 
 export type Tone = NonNullable<BadgeProps['variant']>;
 

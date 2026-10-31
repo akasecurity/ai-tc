@@ -8,6 +8,8 @@ import {
   ExceptionScope,
   toBlockedDetectionDescriptor,
   toExceptionDescriptor,
+  VAULT_REFRESH_FAILED_NOTE,
+  vaultRefreshShortfallNote,
 } from '../../src/zod/exception.ts';
 import { PolicyBundle } from '../../src/zod/policy.ts';
 import { DismissMethod } from '../../src/zod/recommendation-action.ts';
@@ -262,5 +264,128 @@ describe('PolicyBundle.exceptions', () => {
     if (result.success) {
       expect(result.data.exceptions).toHaveLength(1);
     }
+  });
+});
+
+// The AFTER-the-fact half of the rotate disclosure. The vault is the one store a
+// rotation re-keys rather than invalidates, so a complete pass has nothing to
+// say — which is exactly why an incomplete one must say something, and why the
+// note is shaped around a denominator rather than a success count.
+describe('vaultRefreshShortfallNote', () => {
+  it('says nothing for a pass that reached every row', () => {
+    expect(vaultRefreshShortfallNote(3, 0)).toBeNull();
+  });
+
+  // The case the bare count could not tell from the one above. Both report zero
+  // refreshes; only one of them has lost anything.
+  it('distinguishes an empty vault from a vault where every row failed', () => {
+    expect(vaultRefreshShortfallNote(0, 0)).toBeNull();
+    expect(vaultRefreshShortfallNote(0, 2)).not.toBeNull();
+  });
+
+  it('states the shortfall against the rows the pass actually walked', () => {
+    const note = vaultRefreshShortfallNote(7, 3);
+    expect(note).toContain('3 of 10');
+    // Both numbers and nothing else: a third figure in a line about a count the
+    // reader is being asked to trust is a figure they cannot reconcile.
+    expect(note?.match(/\d+/g)).toEqual(['3', '10']);
+  });
+
+  it('keeps the noun in step with the number of rows walked', () => {
+    expect(vaultRefreshShortfallNote(0, 1)).toContain('1 of 1 stored value could');
+    expect(vaultRefreshShortfallNote(1, 1)).toContain('1 of 2 stored values could');
+  });
+
+  // Why it matters, in the note itself: a reader who takes "could not be
+  // re-keyed" for "the values are gone" deletes a vault that is intact.
+  it('names the consequence and rules out the wrong one', () => {
+    const note = vaultRefreshShortfallNote(0, 1) ?? '';
+    expect(note).toContain('second pointer');
+    expect(note).toContain('Nothing stored is lost');
+  });
+
+  // The remedy has exactly one lever — another rotation — and that lever is
+  // itself destructive, because rotateFingerprintKey always mints a HIGHER
+  // version. A note that said "re-run the rotation" without this would have the
+  // reader destroy the grants they re-approved after the first rotation.
+  it('states what the only remedy costs, not just that there is one', () => {
+    const note = vaultRefreshShortfallNote(0, 1) ?? '';
+    expect(note).toContain('Only another rotation re-keys them');
+    expect(note).toContain('invalidates every exception grant a second time');
+  });
+
+  // A skipped row covers two unlike causes the pass cannot tell apart: a key
+  // directory that cannot be read right now, which a later rotation does fix,
+  // and a damaged entry, which nothing fixes — so the note must not promise the
+  // retry works, and must name the answer for the half that never will.
+  it('does not promise a retry will work, and names pruning for the half that will not', () => {
+    const note = vaultRefreshShortfallNote(0, 1) ?? '';
+    expect(note).toContain('find out why the rows will not open');
+    expect(note).toContain('never open again');
+    expect(note).toContain('pruned');
+    // The claim that was there before, and was true for only one of the two
+    // causes. Its absence is the fix, so it is asserted rather than assumed.
+    expect(note).not.toContain('Re-run the rotation once the vault is readable');
+  });
+
+  // The same two numbers describe the standing condition as describe one pass,
+  // so the route's store-derived notice reads through this helper rather than a
+  // second sentence of its own — which is why the wording cannot say "the
+  // previous key": after two rotations a row left behind is two epochs back.
+  it('reads for a standing count as well as for one pass', () => {
+    expect(vaultRefreshShortfallNote(10 - 3, 3)).toBe(vaultRefreshShortfallNote(7, 3));
+    expect(vaultRefreshShortfallNote(7, 3)).toContain('an older fingerprint key');
+    expect(vaultRefreshShortfallNote(7, 3)).not.toContain('the previous fingerprint key');
+  });
+
+  it('treats a negative skip as nothing to disclose rather than a shortfall', () => {
+    expect(vaultRefreshShortfallNote(1, -1)).toBeNull();
+  });
+
+  // The standing count reaches this helper as `(total - stale, stale)`. A caller
+  // that reads those two halves separately can have a purge land between them
+  // and subtract its way to a negative fresh count, and the sentence would then
+  // state a fraction no state of the vault ever held. The digits are asserted
+  // rather than the absence of a minus sign: the note is full of hyphens
+  // ("re-keyed", "off-key"), so only the numbers can carry this.
+  it('floors the fresh half at zero, so a torn pair cannot state a denominator below the shortfall', () => {
+    expect(vaultRefreshShortfallNote(-1, 1)?.match(/\d+/g)).toEqual(['1', '1']);
+    expect(vaultRefreshShortfallNote(-3, 5)?.match(/\d+/g)).toEqual(['5', '5']);
+    // And the clamp changes nothing for a pair that is already consistent.
+    expect(vaultRefreshShortfallNote(7, 3)?.match(/\d+/g)).toEqual(['3', '10']);
+  });
+});
+
+describe('VAULT_REFRESH_FAILED_NOTE', () => {
+  // The whole-pass variant exists because a throw can land before the first row,
+  // so there is no denominator to state. Any digit in it would be invented.
+  // One wording for one fact, across both notes. Two whole-pass failures running
+  // leave a row two epochs back, so "the previous one" would overstate how
+  // fresh the stored values are — in the one note whose job is the conservative
+  // account. The reader's question is the same either way: is anything still
+  // under a key I have replaced?
+  it('says the values are under an older key, not the previous one', () => {
+    expect(VAULT_REFRESH_FAILED_NOTE).toContain('still carries an older one');
+    expect(VAULT_REFRESH_FAILED_NOTE).not.toContain('the previous one');
+    expect(vaultRefreshShortfallNote(0, 1)).toContain('an older fingerprint key');
+  });
+
+  it('claims no count, because a pass that threw does not have one', () => {
+    expect(VAULT_REFRESH_FAILED_NOTE).not.toMatch(/\d/);
+  });
+
+  it('still names the loss and rules out the wrong conclusion', () => {
+    expect(VAULT_REFRESH_FAILED_NOTE).toContain('second pointer');
+    expect(VAULT_REFRESH_FAILED_NOTE).toContain('still resolve');
+  });
+
+  // Same remedy, same cost, same refusal to promise it works. A whole-pass
+  // fault is likelier to be the store or the key custody than any one row, so
+  // this variant points at the read and leaves pruning to the per-row note —
+  // the only one that can be about a specific unrecoverable entry.
+  it('carries the remedy cost without prescribing a blind retry', () => {
+    expect(VAULT_REFRESH_FAILED_NOTE).toContain('invalidates every exception grant a second time');
+    expect(VAULT_REFRESH_FAILED_NOTE).toContain('check why the vault could not be read');
+    expect(VAULT_REFRESH_FAILED_NOTE).not.toContain('until a rotation re-keys them');
   });
 });

@@ -36,8 +36,10 @@ function repoSlug(): string {
   return slug === undefined || slug === '' ? 'akasecurity/ai-tc' : slug;
 }
 
+// Named explicitly: without `ref` the API answers for the default branch, and
+// the analysis this gate counts is the one on main.
 const alertsEndpoint = (): string =>
-  `repos/${repoSlug()}/code-scanning/alerts?state=open&per_page=100`;
+  `repos/${repoSlug()}/code-scanning/alerts?state=open&per_page=100&ref=refs/heads/main`;
 
 // The step-summary path is a runner variable, absent when run locally — where
 // stdout is the whole output and appending nowhere is correct.

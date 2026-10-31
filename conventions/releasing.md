@@ -97,8 +97,8 @@ published artifacts on one version and each plugin's identity suite pins it to t
 extension is private, so it is outside that audit's set and is pinned to `cli/package.json` by
 its own `test/manifest.test.ts`. So `0.10.0-beta.1` is a `chore(release):` commit
 moving all five published manifests, the four host manifests and the extension together. Cut
-that commit on a release branch: on `main` it would sit in front of the next stable cut until the
-matching stable shipped.
+that commit on `dev` or a release branch, never on `main`: there it would sit in front of the next
+stable cut until the matching stable shipped.
 
 **A machine's channel is DERIVED, never stored.** `channelOfVersion` (`@akasecurity/local-ops`,
 `src/release-channel.ts` — pure, no I/O) reads it off the first pre-release identifier of the
@@ -170,11 +170,15 @@ channel: `--channel rc` is refused and a machine running an `rc` build reads as 
 
 ### Release branches
 
-`ci.yml` triggers for `main` AND every `release/**` branch on both `push` and `pull_request`, so
-a pull request based on a release branch runs the same jobs and reports the same check NAMES as
-one based on `main`. There is deliberately **no lighter gate** for a promotion: the jobs have no
-`needs:` edges and run in parallel, so dropping legs saves no wall clock; and "this code already
-passed on `main`" is true of each commit but not of the merged tree, which no run has seen.
+`ci.yml` triggers for `main`, `dev` and every `release/**` branch on both `push` and
+`pull_request`, so a pull request on any of those bases reports the same check NAMES. Only the
+`Lint · Typecheck · Test · Build` job runs for every base. The other jobs carry one job-level
+condition that runs them for a pull request into `main`, a push to `main` and its merge queue, and
+skips them elsewhere; a skipped job reports as passing, so the full set is what a promotion into
+`main` has to pass, and a `dev` or release-branch pull request pays for the quick job alone.
+`required-checks.test.js` and `packaged-cli-egress.test.js` pin that condition through
+`expectMainTier` in `test/helpers/workflow.js`, so a narrower one fails CI. CodeQL carries the
+same condition plus its schedule; `build-binaries.yml` filters its pull requests to `main`.
 
 Two things are outside the tree and stay human steps. Branch protection for release branches is
 a repository setting — until it names the same required checks, a release-base pull request
@@ -184,6 +188,8 @@ rules as a workflow filter — `*` stops at a `/` — so `release/*` covers `rel
 matches is `release/**/*`. A branch named bare `release` matches neither list and gets no CI at
 all, so release branches are named `release/<something>`. On the push side, the dependency audit,
 CodeQL and the internal-path guard still run post-merge for `main` only.
+`sync-release-branches.yml` rebases every `release/**` branch onto `dev` after each push to `dev`,
+and opens an issue for a rebase that conflicts.
 
 **Where a stable plugin tag goes.** A bare `plugin-<name>-v<X.Y.Z>` (Claude Code, Codex,
 Antigravity or Copilot) is cut only after its release pull request merges, on the commit that
@@ -191,7 +197,7 @@ merge put on `main` (the merge commit, or the squash or rebase commit when the p
 one), never on the release branch before the merge. The commit a stable version's npm provenance
 names is then one `main` holds, which is what verifying a release against reviewed code needs; a
 tag cut before a squash or rebase merge would name a commit `main` never holds. A pre-release is
-the exception above: it is cut on its release branch. Each `release-plugin-*.yml` release job
+the exception above: it is cut on `dev` or its release branch. Each `release-plugin-*.yml` release job, and `release-cli.yml`'s,
 refuses a stable version whose commit `main` does not contain, before anything publishes: the
 check comes before the npm publish and the GitHub Release in that job, it runs on every run that
 can publish (the tag push, and in the Codex and Antigravity workflows a dispatch with `publish`

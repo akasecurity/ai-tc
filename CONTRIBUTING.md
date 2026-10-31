@@ -222,8 +222,8 @@ a planted file when nothing tracked sits where the entry points.
 
 ## Pull requests
 
-1. Fork and branch from `main`. For a non-trivial change, link the issue it resolves
-   (`Closes #123`).
+1. Fork and branch from `dev`, and open the pull request against `dev`. For a
+   non-trivial change, link the issue it resolves (`Closes #123`).
 2. Keep PRs focused; write a clear description.
 3. Ensure `pnpm typecheck`, `pnpm lint`, `pnpm test`, and `pnpm format:check` pass.
 4. Be responsive to review feedback.
@@ -255,7 +255,7 @@ set stops matching this column.
 | `CodeQL (javascript-typescript)`          | `codeql.yml` | ⛔       |
 | `CodeQL (actions)`                        | `codeql.yml` | ⛔       |
 
-**Two of the nine block a merge. The other seven run on every PR and block nothing.** Two
+**Two of the nine block a merge. The other seven run on every PR into `main` and block nothing.** Two
 of those seven are asserted as enforced elsewhere in this repository: CLAUDE.md presents
 `No-network · Full suite, egress blocked` as one of the four gates behind the no-local-only
 guarantee — and as the one that covers the whole suite's child processes — and describes `Dependency
@@ -458,11 +458,30 @@ Installing one:
 Which channel a machine is on is read from the version it is running each time, and is stored
 nowhere.
 
+### Branches
+
+| Branch           | Takes changes from                                                | Publishes               |
+| ---------------- | ----------------------------------------------------------------- | ----------------------- |
+| `dev` (default)  | every feature pull request, Dependabot, a `release/**` branch     | pre-releases (beta, rc) |
+| `release/<name>` | pull requests for work that stays out of `dev` until it is due    | pre-releases (beta, rc) |
+| `main`           | a promotion pull request from `dev`, or a `hotfix/*` pull request | stable `X.Y.Z` only     |
+
+- A promotion from `dev` into `main` merges with a merge commit, not a squash, so the two
+  branches keep one history. A hotfix merged into `main` is merged back into `dev`.
+- `sync-release-branches.yml` rebases every `release/**` branch onto `dev` after each push to
+  `dev`. A rebase that conflicts is left for a person, in an issue titled
+  `release/<name> needs a manual rebase onto dev`. Update a local copy of a release branch with
+  `git pull --rebase`.
+- Pull requests into `dev` and `release/**` run the `Lint · Typecheck · Test · Build` job.
+  The other `ci.yml` jobs, CodeQL and the binary builds run for pull requests into `main`, for
+  pushes to `main` and for its merge queue; elsewhere the `ci.yml` and CodeQL jobs report as
+  skipped, which counts as passing, so `main` can require a check that `dev` does not run.
+
 ### Release branches
 
-A pull request whose base is a `release/<name>` branch runs the same checks, under the same
-names, as one into `main`. The branch must be named with the slash: a branch called just
-`release` matches nothing and gets no CI.
+A pull request whose base is a `release/<name>` branch reports the same check names as one
+into `main`. The branch must be named with the slash: a branch called just `release` matches
+nothing and gets no CI.
 
 Branch protection is a repository setting and cannot be seen or changed from a pull request. It
 has to name the same required checks for release branches as for `main`; until it does, those

@@ -7,7 +7,10 @@ name: Build binaries
 
 on:
   workflow_dispatch:
+  # PRs into main only. A PR into dev or a release branch builds no binary; the
+  # PR that brings those changes into main does.
   pull_request:
+    branches: [main]
     paths:
       - 'cli/**'
       - 'web-ui/**'

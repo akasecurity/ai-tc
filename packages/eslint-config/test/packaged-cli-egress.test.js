@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 
 import { afterAll, describe, expect, it } from 'vitest';
 
-import { jobBlock } from './helpers/workflow.js';
+import { expectMainTier, jobBlock } from './helpers/workflow.js';
 
 // The PACKAGED-ARTIFACT half of the no-network guarantee.
 //
@@ -125,11 +125,11 @@ describe('the packaged-artifact leg in ci.yml', () => {
     expect(block).toContain(`${WRAPPER_REL} ${SCRIPT_REL} "$${exported[1]}"`);
   });
 
-  it('runs on every pull request, not only at release', () => {
+  it('runs on every pull request into main, not only at release', () => {
     // A privacy gate that fires after the artifact is published is weaker than
-    // one that fires before merge. ci.yml triggers on pull_request; a condition
-    // here could still take this job out of a PR run.
-    expect(packagedJob()).not.toMatch(/^ {4}if:/m);
+    // one that fires before merge. The main-tier condition is the only one this
+    // job carries, so every pull request into main runs it.
+    expectMainTier(packagedJob(), 'packaged-artifact');
   });
 
   it('is uncached, so the artifact is built from this commit', () => {

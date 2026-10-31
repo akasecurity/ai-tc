@@ -350,5 +350,77 @@
     "text": "$m = \"I know where you like \" . $a . \" really\" . $b;",
     "shouldMatch": false,
     "filePath": "src/ui.php"
+  },
+  {
+    "label": "a PHP variable as the WHERE left operand",
+    "text": "$q = \" WHERE $col = \" . $x;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "a braced PHP variable as the WHERE left operand",
+    "text": "$q = \" WHERE {$col} = \" . $x;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "the ${name} spelling as the WHERE left operand",
+    "text": "$q = \" WHERE ${col} = \" . $x;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "UPDATE ONLY, with the keyword before the table",
+    "text": "$q = \" UPDATE ONLY users SET a = \" . $x;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "UPDATE with an AS alias on the target",
+    "text": "$q = \"UPDATE users AS u SET a = \" . $x;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "a multi-table UPDATE listing its targets",
+    "text": "$q = \"UPDATE t1, t2 SET a = \" . $x;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "UPDATE whose SET clause is entirely concatenated",
+    "text": "$q = \"UPDATE t SET \" . $assignments;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "INSERT OR REPLACE INTO concatenated with the dot operator",
+    "text": "$q = \"INSERT OR REPLACE INTO t VALUES (\" . $v;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "INSERT OR IGNORE INTO concatenated with the dot operator",
+    "text": "$q = \"INSERT OR IGNORE INTO t VALUES (\" . $v;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "prose: a comma list before \"set\" with no assignment is not an UPDATE",
+    "text": "$m = \"update name, email set aside \" . $x;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "prose: \"insert or replace\" with no INTO is not an INSERT",
+    "text": "$m = \"insert or replace the card \" . $id;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "prose: a braced placeholder after \"where\" is not a column",
+    "text": "$m = \"I wonder where {the answer} is \" . $x;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
   }
 ]

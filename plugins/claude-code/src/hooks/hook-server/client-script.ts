@@ -34,8 +34,9 @@ const PERL_CLIENT = [
 
 // Exits 0 when something accepts a connection on the socket named by the first
 // argument. A dead server's leftover socket file refuses, so it reads as no server.
+// A connect that blocks past 1 s (wedged server) counts as something there.
 const PERL_PROBE =
-  'use Socket;socket(S,PF_UNIX,SOCK_STREAM,0)or exit 1;connect(S,sockaddr_un($ARGV[0]))or exit 1;';
+  'use Socket;$SIG{ALRM}=sub{exit 0};alarm 1;socket(S,PF_UNIX,SOCK_STREAM,0)or exit 1;connect(S,sockaddr_un($ARGV[0]))or exit 1;';
 
 /** `NAME` words for a shell `for` list; every name is a fixed upper-case identifier. */
 function words(names: readonly string[]): string {

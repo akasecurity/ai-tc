@@ -39,7 +39,7 @@ import {
   mcpOutputSessionField,
 } from './decoded-content.ts';
 import { bashWrittenPayloads } from './bash-payloads.ts';
-import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
+import { HOOK_SCAN_DEADLINE_MS, callScanBudgetSpent, largeInputBound } from './large-input.ts';
 import { handleSubagentSpawn } from './model-guard.ts';
 import { replaceAtPath, stringAtPath } from './paths.ts';
 import type { PointerDenyField, PointerField } from './pointer-substitution.ts';
@@ -101,6 +101,7 @@ export async function runPreToolUse(
   emit: (output: HookOutput) => Promise<void>,
   options: PreToolUseRunOptions,
 ): Promise<PreToolUseRun> {
+  const callStartedAt = performance.now();
   const toolName = getString(input, 'tool_name') ?? '';
   const sessionId = getString(input, 'session_id');
 
@@ -397,7 +398,7 @@ export async function runPreToolUse(
     if (toolName === 'Bash' && !scanned.some((f) => f.result.scanIncomplete !== undefined)) {
       const command = stringAtPath(effectiveInput, ['command']) ?? '';
       for (const payload of bashWrittenPayloads(command)) {
-        if (performance.now() > HOOK_SCAN_DEADLINE_MS) break;
+        if (callScanBudgetSpent(callStartedAt)) break;
         const result = await captureStamped(
           runtime,
           {

@@ -5,7 +5,11 @@ import {
 } from '@akasecurity/plugin-sdk';
 import { describe, expect, it } from 'vitest';
 
-import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from '../../src/hooks/large-input.ts';
+import {
+  HOOK_SCAN_DEADLINE_MS,
+  callScanBudgetSpent,
+  largeInputBound,
+} from '../../src/hooks/large-input.ts';
 import { RESPONSE_SCAN_DEADLINE_MS } from '../../src/hooks/scan-response.ts';
 
 describe('largeInputBound', () => {
@@ -37,5 +41,15 @@ describe('largeInputBound', () => {
   ])('%s deadline fits one bounded scan inside the host timeout', (_label, deadline) => {
     expect(deadline).toBeLessThan(10_000);
     expect(deadline).toBeGreaterThan(LARGE_INPUT_START_BUDGET_MS + LARGE_INPUT_SCAN_BUDGET_MS);
+  });
+});
+
+describe('callScanBudgetSpent', () => {
+  it('counts from the call start, so a long-lived server still scans', () => {
+    const serverUptime = 10 * 60_000;
+    expect(callScanBudgetSpent(serverUptime, () => serverUptime + 5)).toBe(false);
+    expect(callScanBudgetSpent(serverUptime, () => serverUptime + HOOK_SCAN_DEADLINE_MS + 1)).toBe(
+      true,
+    );
   });
 });

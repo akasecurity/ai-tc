@@ -647,6 +647,28 @@ export class AttachedDataGateway
     return out;
   }
 
+  /**
+   * `event` carrying the record's review candidates, when the organization's
+   * capture settings name the capture's repository; otherwise `event` itself.
+   * Each is a finding's raw value whatever its policy, redact and block
+   * included, so for a named repository a value the encoder masked in `content`
+   * still crosses here (SECURITY.md, "Data in transit"). Only this live send
+   * can carry them: the stored row never holds them, so a drained resend never
+   * does. TOTAL: a fault sends the event without them.
+   */
+  private async withReviewValues(event: IngestEvent, record: CaptureRecord): Promise<IngestEvent> {
+    try {
+      const candidates = record.reviewCandidates;
+      const key = record.scopeKey;
+      if (candidates === undefined || candidates.length === 0 || key === undefined) return event;
+      const repos = (await this.deps.readCachedBundle())?.capture?.reviewValueRepos;
+      if (repos?.includes(key) !== true) return event;
+      return { ...event, metadata: { ...event.metadata, reviewValues: [...candidates] } };
+    } catch {
+      return event;
+    }
+  }
+
   /** TOTAL, like `verdictFor`: a record it cannot read stays local. */
   private staysLocal(record: CaptureRecord): boolean {
     try {
@@ -682,13 +704,15 @@ export class AttachedDataGateway
     // never the slug.
     const wireEvent = this.captureForWire(record);
     if (wireEvent === undefined) return;
-    // Secrets leave only as sighting tokens. A capture that cannot be encoded
+    // Secrets in the content leave only as sighting tokens; review values below
+    // are the one field that carries them raw. A capture that cannot be encoded
     // is held owed rather than sent, without touching the forward breaker.
-    const encoded = await this.encodeForWire(wireEvent);
-    if (encoded === undefined) {
+    const encodedEvent = await this.encodeForWire(wireEvent);
+    if (encodedEvent === undefined) {
       this.deps.local.markCaptureOwed(record.event);
       return;
     }
+    const encoded = await this.withReviewValues(encodedEvent, record);
     // ONLY the event crosses; `record.findings` stays on this machine. There is
     // no field on `IngestBatch`/`Event` that could carry them, and that is the
     // contract rather than an oversight: the plane re-derives its own findings
@@ -1473,6 +1497,10 @@ export class AttachedDataGateway
       // scope at this seam. The runtime does that merge, raise-only, where both
       // values are in hand (createPluginRuntime's ensureInitialized).
       redactFallback: cached.redactFallback,
+      // What this machine sends beyond its findings-bearing captures. Only the
+      // organization sets it, and it widens nothing but what reaches the
+      // deployment this machine is attached to.
+      capture: cached.capture,
       // ALSO HONOURED FROM THE CACHE, and not a bundle field at all: each
       // merged policy's own `provenance`. `mergeRaiseOnly` spreads the policies
       // it emits, so an 'authored' policy arriving from the control plane

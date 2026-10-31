@@ -12,6 +12,7 @@ import type { PluginConfig, VaultGlue } from '@akasecurity/plugin-sdk';
 import {
   createPluginRuntime,
   createVaultGlue,
+  dataDir,
   LARGE_INPUT_THRESHOLD_CHARS,
   loadConfig,
   realpathBestEffort,
@@ -31,6 +32,12 @@ import { isAuthorizedValue, takeToolHandoff } from '../mod/handoff.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote, userDisclosure } from '../protocol/notes.ts';
 import { resolveHookAccount, stampFor } from './account-stamp.ts';
+import { sessionHoldDenial } from './capture-forward.ts';
+import {
+  isOutboundCall,
+  MCP_OUTPUT_SESSION_MARKER,
+  mcpOutputSessionField,
+} from './decoded-content.ts';
 import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
 import { handleSubagentSpawn } from './model-guard.ts';
 import { replaceAtPath } from './paths.ts';
@@ -62,6 +69,7 @@ import { baseMetadata, captureScopeKey, getString } from './shared.ts';
 import { captureStamped } from './stamped-capture.ts';
 import {
   claimStoreUnavailableWarning,
+  isSessionMarked,
   openGateway,
   openGatewayOrNull,
   storeDegradedMessage,
@@ -93,11 +101,22 @@ export async function runPreToolUse(
   options: PreToolUseRunOptions,
 ): Promise<PreToolUseRun> {
   const toolName = getString(input, 'tool_name') ?? '';
+  const sessionId = getString(input, 'session_id');
+
+  // A session the deployment holds refuses every tool call, whatever its input.
+  // The mod's helper leaves it to the hook, which runs after it.
+  if (options.mode === 'hook') {
+    const held = await sessionHoldDenial(dataDir(), sessionId);
+    if (held !== null) {
+      await emit(held);
+      return 'finished';
+    }
+  }
+
   const rawToolInput = input.tool_input;
   if (typeof rawToolInput !== 'object' || rawToolInput === null) return 'nothing-to-scan';
 
   const toolInput = rawToolInput as Record<string, unknown>;
-  const sessionId = getString(input, 'session_id');
   // Read at most once per hook, and only if something below actually needs it —
   // the matcher is broad enough to spawn this hook for tool calls that reach
   // neither the spawn seam nor the scan, and those must still cost nothing.
@@ -153,6 +172,10 @@ export async function runPreToolUse(
   const fields = [
     ...scannableInputFields(toolName, toolInput),
     ...protectedFieldsOf(toolName, toolInput, getString(input, 'cwd'), loadConfigOnce),
+    ...(isOutboundCall(toolName, toolInput) &&
+    isSessionMarked(loadConfigOnce().dataDir, MCP_OUTPUT_SESSION_MARKER, sessionId)
+      ? [mcpOutputSessionField(toolName, toolInput)]
+      : []),
   ];
   if (fields.length === 0) return 'nothing-to-scan';
 

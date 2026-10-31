@@ -25,7 +25,7 @@ import {
 } from '@akasecurity/schema';
 
 import { readControlPlaneCredential } from './control-plane-credential.ts';
-import { hashProjectKey, scopeKeyOfProjectKey } from './egress-wire.ts';
+import { hashProjectKey, scopeKeyOfProjectKey, supersededProjectKeys } from './egress-wire.ts';
 import { createTrackedFileLookup } from './git-index.ts';
 import { settingsDir } from './local-layout.ts';
 import { readWorkspaceSettings } from './settings.ts';
@@ -252,6 +252,7 @@ export async function forwardCredentialSightings(
     });
     const { project } = input;
     const wireProject = { projectKey: hashProjectKey(project.projectKey), name: project.name };
+    const superseded = supersededProjectKeys(project.projectKey);
     const home = deps.home ?? homedir();
     const seenAt = (deps.now ?? (() => new Date()))().toISOString();
     const isTracked = createTrackedFileLookup();
@@ -294,7 +295,11 @@ export async function forwardCredentialSightings(
     const target = { endpoint: connection.endpoint, apiKey: credential.apiKey };
     for (let start = 0; start < wire.length; start += CREDENTIAL_SIGHTINGS_BATCH_MAX) {
       const batch = wire.slice(start, start + CREDENTIAL_SIGHTINGS_BATCH_MAX);
-      const result = await sendBatch(deps.send, target, { sightings: batch, scanId });
+      const result = await sendBatch(deps.send, target, {
+        sightings: batch,
+        scanId,
+        supersededProjectKeys: superseded,
+      });
       if (!result.ok) {
         return { status: 'sent', shared, keptLocal, unsent: pending, failure: result.kind };
       }

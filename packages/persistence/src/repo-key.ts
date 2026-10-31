@@ -19,7 +19,11 @@
 // test suite stayed green. Nothing here may read a file.
 import { createHash } from 'node:crypto';
 
-import { ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH, printable } from '@akasecurity/schema';
+import {
+  ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH,
+  printable,
+  SUPERSEDED_PROJECT_KEYS_MAX,
+} from '@akasecurity/schema';
 
 /**
  * The shape of the string that is digested, stamped into the digest itself.
@@ -39,6 +43,22 @@ import { ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH, printable } from '@akasecurity/sc
  * refuses to leave unversioned.
  */
 export const PROJECT_KEY_DIGEST_VERSION = 'v3';
+
+/**
+ * Every digest a project key was sent under before `PROJECT_KEY_DIGEST_VERSION`,
+ * newest first:
+ *
+ *   - `v2`, sent by 0.9.12 to 0.9.20. Its canonical form did not fold a path's
+ *     case on a host in `CASE_INSENSITIVE_FORGES`, and was otherwise the same.
+ *   - the unversioned form, sent by 0.9.10 and 0.9.11: SHA-256 of the key
+ *     exactly as written, with no canonicalization and no version prefix.
+ *
+ * No earlier release sent a project digest on the wire.
+ */
+const EARLIER_PROJECT_KEY_DIGESTS: readonly ((projectKey: string) => string)[] = [
+  (projectKey) => digestUnder('v2', projectKey, false),
+  (projectKey) => createHash('sha256').update(projectKey, 'utf8').digest('hex'),
+];
 
 // A `git:` URL in scp form — `[user@]host:path`, which has no `://` and whose
 // first colon separates host from path. Anchored on a host that cannot contain
@@ -121,6 +141,13 @@ function trimSlashes(path: string): string {
 export function parseGitRemote(
   url: string,
 ): { readonly host: string; readonly path: string } | undefined {
+  return parseRemote(url, true);
+}
+
+function parseRemote(
+  url: string,
+  foldsForgePathCase: boolean,
+): { readonly host: string; readonly path: string } | undefined {
   const trimmed = url.trim();
   if (DOS_DRIVE.test(trimmed) || FILE_URL.test(trimmed)) return undefined;
   const scheme = SCHEME_FORM.exec(trimmed);
@@ -129,7 +156,8 @@ export function parseGitRemote(
   if (host === undefined) return undefined;
   const bare = trimSlashes((scheme === null ? scp?.[2] : scheme[2]) ?? '');
   const path = bare.endsWith(GIT_SUFFIX) ? bare.slice(0, -GIT_SUFFIX.length) : bare;
-  return { host, path: CASE_INSENSITIVE_FORGES.has(host) ? path.toLowerCase() : path };
+  const folds = foldsForgePathCase && CASE_INSENSITIVE_FORGES.has(host);
+  return { host, path: folds ? path.toLowerCase() : path };
 }
 
 /**
@@ -209,9 +237,20 @@ export function namesARemoteAddress(url: string): boolean {
  * one machine rather than a remote every clone shares.
  */
 export function canonicalGitUrl(url: string): string {
-  const remote = parseGitRemote(url);
+  return canonicalUnder(url, true);
+}
+
+function canonicalUnder(url: string, foldsForgePathCase: boolean): string {
+  const remote = parseRemote(url, foldsForgePathCase);
   if (remote === undefined) return url.trim();
   return remote.path === '' ? remote.host : `${remote.host}/${remote.path}`;
+}
+
+function digestUnder(version: string, projectKey: string, foldsForgePathCase: boolean): string {
+  const canonical = projectKey.startsWith('git:')
+    ? `git:${canonicalUnder(projectKey.slice('git:'.length), foldsForgePathCase)}`
+    : projectKey;
+  return createHash('sha256').update(`${version}:${canonical}`, 'utf8').digest('hex');
 }
 
 /**
@@ -243,12 +282,27 @@ export function canonicalGitUrl(url: string): string {
  * contract change, not a one-line swap here.
  */
 export function hashProjectKey(projectKey: string): string {
-  const canonical = projectKey.startsWith('git:')
-    ? `git:${canonicalGitUrl(projectKey.slice('git:'.length))}`
-    : projectKey;
-  return createHash('sha256')
-    .update(`${PROJECT_KEY_DIGEST_VERSION}:${canonical}`, 'utf8')
-    .digest('hex');
+  return digestUnder(PROJECT_KEY_DIGEST_VERSION, projectKey, true);
+}
+
+/**
+ * The digests `projectKey` was sent under before, one per form in
+ * `EARLIER_PROJECT_KEY_DIGESTS`, newest first, each computed with that form's
+ * own construction, and never the current digest. A receiver that stored rows under one of them
+ * files those rows under `hashProjectKey(projectKey)`.
+ *
+ * Every key has one per earlier form: the version, or its absence, is part of
+ * the digested string, so even a key whose canonical form did not change
+ * digests differently under each.
+ */
+export function supersededProjectKeys(projectKey: string): string[] {
+  const current = hashProjectKey(projectKey);
+  const digests: string[] = [];
+  for (const digestOf of EARLIER_PROJECT_KEY_DIGESTS) {
+    const digest = digestOf(projectKey);
+    if (digest !== current && !digests.includes(digest)) digests.push(digest);
+  }
+  return digests.slice(0, SUPERSEDED_PROJECT_KEYS_MAX);
 }
 
 /**

@@ -67,7 +67,23 @@ beforeAll(() => {
   );
   chmodSync(fakeNode, 0o755);
 });
+// Every client is started as the leader of its own process group, so a shell
+// helper it left running (a paused stand-in, a background server start) can be
+// killed with it once the case is over.
+const groups = new Set<number>();
+function reapGroups(): void {
+  for (const pgid of groups) {
+    try {
+      process.kill(-pgid, 'SIGKILL');
+    } catch {
+      // Already gone.
+    }
+  }
+  groups.clear();
+}
+afterEach(reapGroups);
 afterAll(() => {
+  reapGroups();
   removeTree(root);
 });
 
@@ -97,7 +113,9 @@ function runClient(options: {
       env,
       cwd: options.cwd ?? tmpdir(),
       stdio: ['pipe', 'pipe', 'ignore'],
+      detached: true,
     });
+    if (child.pid !== undefined) groups.add(child.pid);
     let stdout = '';
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
@@ -208,7 +226,8 @@ describeUnix.each(SHELLS)('the hook client under %s without a server', (shell) =
         '#!/bin/sh',
         'if [ "$1" = -p ] && [ -n "$AKA_TEST_HOLD" ]; then',
         '  : > "$AKA_TEST_HELD"',
-        '  until [ -e "$AKA_TEST_GO" ]; do sleep 0.02; done',
+        '  n=0',
+        '  until [ -e "$AKA_TEST_GO" ] || [ "$n" -ge 250 ]; do sleep 0.02; n=$((n + 1)); done',
         'fi',
         'exec /bin/mkdir "$@"',
         '',

@@ -14,9 +14,6 @@
     "\"SELECT * FROM users WHERE id = $userId\""
   ],
   "appliesTo": {
-    "extensions": [
-      ".rb",
-      ".php"
-    ]
+    "extensions": [".rb", ".php"]
   }
 }

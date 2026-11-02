@@ -183,7 +183,7 @@
     "shouldMatch": true
   },
   {
-    "label": "jq select on a field named from stays clean",
+    "label": "jq select on a field named from stays clean (regression guard; the base pattern did not match it either)",
     "text": "jq '.[] | select(.from == $h)' file.json",
     "shouldMatch": false
   },
@@ -209,7 +209,7 @@
   },
   {
     "label": "UPDATE ONLY",
-    "text": "\"UPDATE ONLY users SET a = #{a}\"",
+    "text": "\"UPDATE ONLY users u SET a = #{a}\"",
     "shouldMatch": true
   },
   {
@@ -219,7 +219,7 @@
   },
   {
     "label": "UPDATE LOW_PRIORITY modifier",
-    "text": "\"UPDATE LOW_PRIORITY users SET a = #{a}\"",
+    "text": "\"UPDATE LOW_PRIORITY users u SET a = #{a}\"",
     "shouldMatch": true
   },
   {
@@ -337,5 +337,80 @@
     "label": "known gap: jq select on a field named from, directly after the quote, still matches",
     "text": "jq 'select(.from == $h)' file.json",
     "shouldMatch": true
+  },
+  {
+    "label": "leading WHERE with a whole interpolated condition (Ruby)",
+    "text": "\"WHERE #{conds}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "leading WHERE with a whole interpolated condition (PHP)",
+    "text": "\"WHERE $cond\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "leading WHERE with a whole brace-interpolated condition (PHP)",
+    "text": "\"WHERE {$cond}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "WHERE with a function call as the first operand",
+    "text": "\"WHERE lower(name) = #{n}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "WHERE NOT IN",
+    "text": "\"WHERE id NOT IN (#{ids})\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "WHERE REGEXP",
+    "text": "\"WHERE x REGEXP #{r}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "WHERE EXISTS subquery",
+    "text": "\"WHERE EXISTS (SELECT 1 FROM t WHERE a = #{a})\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "brace-interpolated identifier as the WHERE column",
+    "text": "\"WHERE {$c} = 1\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "known gap: SELECT with no FROM is not matched",
+    "text": "\"SELECT #{cols}\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: DELETE with an interpolated target before FROM is not matched",
+    "text": "\"DELETE #{t} FROM x WHERE y = 1\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: comma-joined multi-table DELETE is not matched",
+    "text": "\"DELETE t1 FROM t1, t2 WHERE x = #{y}\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: DELETE with STRAIGHT_JOIN is not matched",
+    "text": "\"DELETE t1 FROM t1 STRAIGHT_JOIN t2 WHERE x = #{y}\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: UPDATE with INNER JOIN before SET is not matched",
+    "text": "\"UPDATE t1 INNER JOIN t2 ON t1.id = t2.id SET t1.a = #{x}\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: UPDATE with LEFT JOIN before SET is not matched",
+    "text": "\"UPDATE t1 LEFT JOIN t2 ON t1.id = t2.id SET t1.a = #{x}\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: a literal backslash-n between the table and SET is not matched",
+    "text": "\"UPDATE t\\nSET a = #{x}\"",
+    "shouldMatch": false
   }
 ]

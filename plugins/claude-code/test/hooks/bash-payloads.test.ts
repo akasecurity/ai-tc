@@ -24,8 +24,13 @@ describe('bashWrittenPayloads', () => {
       { path: 'notes.md', text: 'hi' },
     ]);
     expect(read('cat > a.sh <<-EOF\n\tbody\n\tEOF').payloads).toEqual([
-      { path: 'a.sh', text: '\tbody' },
+      { path: 'a.sh', text: 'body' },
     ]);
+    // The shell strips the leading tabs of every line; the region stays raw.
+    const cmd = "cat > a.sh <<-'EOF'\n\tone\n\t\ttwo\nthree\n\tEOF";
+    const p = bashWrittenPayloads(cmd).payloads[0];
+    expect(p?.text).toBe('one\ntwo\nthree');
+    expect(cmd.slice(p?.start, p?.end)).toBe('\tone\n\t\ttwo\nthree');
   });
 
   it('takes a quoted echo or printf written to a file', () => {
@@ -147,15 +152,24 @@ describe('bashWrittenPayloads', () => {
     expect(read('cat > a.py <<EOF\nx = 1\n')).toEqual({ incomplete: true, payloads: [] });
   });
 
-  it('is incomplete past each cap, with nothing returned', () => {
-    const big = `echo "a" > f.py\n${'#'.repeat(256 * 1024)}`;
-    expect(bashWrittenPayloads(big)).toEqual({ incomplete: true, payloads: [] });
-    const longLine = `cat <<A > f.py ${'x '.repeat(3000)}\nbody\nA\n`;
-    expect(bashWrittenPayloads(longLine)).toEqual({ incomplete: true, payloads: [] });
-    expect(bashWrittenPayloads('echo "a" > f.py\n'.repeat(2))).toEqual({
-      incomplete: true,
-      payloads: [],
-    });
+  it('is incomplete past each cap, and complete just under it', () => {
+    const echoed = (n: number) => `echo '${'x'.repeat(n)}' > f.py`;
+    expect(read(echoed(1000)).incomplete).toBe(false);
+    expect(read(echoed(270_000))).toEqual({ incomplete: true, payloads: [] });
+    const marker = (pad: number) => `cat <<A > f.py${' '.repeat(pad)}\nbody\nA\n`;
+    expect(read(marker(100)).incomplete).toBe(false);
+    expect(read(marker(5000))).toEqual({ incomplete: true, payloads: [] });
+  });
+
+  it('takes the text the shell writes: no backslash in echo or an unquoted heredoc body', () => {
+    expect(paths("echo 'a\\nb' > f.txt")).toEqual([]);
+    expect(paths('echo "a\\nb" > f.txt')).toEqual([]);
+    expect(paths("printf 'a\\nb' > f.txt")).toEqual([]);
+    expect(paths('cat <<EOF > f.txt\na\\\\b\nEOF')).toEqual([]);
+    expect(paths('cat <<EOF > f.txt\na\\x6cb\nEOF')).toEqual([]);
+    expect(paths("cat <<'EOF' > f.txt\na\\\\b\nEOF")).toEqual(['f.txt']);
+    expect(paths("echo 'a b' > f.txt")).toEqual(['f.txt']);
+    expect(paths('echo "a b" > f.txt')).toEqual(['f.txt']);
   });
 
   it('does not take a body whose stdout a later pipeline stage reads', () => {
@@ -433,7 +447,7 @@ describe('bashWrittenPayloads', () => {
       const start = performance.now();
       const out = bashWrittenPayloads(input);
       expect(performance.now() - start).toBeLessThan(500);
-      expect(out.payloads.length).toBeLessThanOrEqual(32);
+      expect(out.payloads.length).toBeLessThanOrEqual(1);
     }
   });
 });

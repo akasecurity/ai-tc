@@ -341,6 +341,48 @@ describe('createIsolatedScanner.scan', () => {
     }
   });
 
+  it('ignores written regions that are not a sorted list of in-range integer spans', async () => {
+    const flaw: Rule = { ...regexRule('pulled/flaw', 'pickle\\.loads\\('), category: 'code_flaw' };
+    const scanner = isolated({ verified: [], unverified: [flaw] });
+    try {
+      const text = 'x pickle.loads(b) y';
+      const bad: unknown[] = [
+        [{ start: 0, end: 100 }],
+        [{ start: -1, end: 10 }],
+        [{ start: 5, end: 5 }],
+        [{ start: 0.5, end: 10 }],
+        [
+          { start: 0, end: 10 },
+          { start: 5, end: 19 },
+        ],
+        [
+          { start: 10, end: 19 },
+          { start: 0, end: 5 },
+        ],
+        [{ start: '0', end: 19 }],
+        [null],
+        'all',
+        Array.from({ length: 65 }, (_, i) => ({ start: i, end: i + 1 })),
+      ];
+      for (const writtenRegions of bad) {
+        const outcome = await scanner.scan(text, {
+          eventKind: 'tool_use',
+          writtenRegions: writtenRegions as { start: number; end: number }[],
+        });
+        expect(outcome.status).toBe('ok');
+        if (outcome.status !== 'ok') return;
+        expect(outcome.findings).toHaveLength(1);
+      }
+      const good = await scanner.scan(text, {
+        eventKind: 'tool_use',
+        writtenRegions: [{ start: 0, end: text.length }],
+      });
+      expect(good.status === 'ok' && good.findings.length).toBe(0);
+    } finally {
+      await scanner.close();
+    }
+  });
+
   it('refuses a job whose eventKind is not an EventKind', async () => {
     const scanner = isolated({ verified: [BENIGN], unverified: [] });
     try {

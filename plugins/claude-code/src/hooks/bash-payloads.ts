@@ -197,8 +197,10 @@ function quotedWrite(m: RegExpExecArray | null): BashPayload | undefined {
   if (text === undefined || text === '' || path === undefined) return undefined;
   // A flag (`echo -e`, `-n`, `printf -v`) changes what is written.
   if (/^(?:echo|printf)[ \t]+-/.test(m[0])) return undefined;
-  // printf reads escapes and conversions in its format.
-  if (m[1] === 'printf' && /[\\%]/.test(text)) return undefined;
+  // printf reads escapes and conversions in its format, and some shells' echo
+  // (zsh, dash, bash with xpg_echo) reads escapes too: no backslash in either.
+  if (text.includes('\\')) return undefined;
+  if (m[1] === 'printf' && text.includes('%')) return undefined;
   // A double-quoted string is expanded: a `$` or backtick in it, or a backslash
   // escape, makes the file hold something other than the literal read here.
   if (m[3] !== undefined && /[$`\\]/.test(m[3])) return undefined;
@@ -355,11 +357,14 @@ function heredocStatement(rest: string, base: number): BashExtraction | undefine
     words = words.slice(0, a) + ' '.repeat(b - a) + words.slice(b);
   }
   if (TRANSFORMED.test(words)) return none();
-  const text = body.bodyStart >= body.bodyEnd ? '' : rest.slice(body.bodyStart, body.bodyEnd);
-  // An unquoted body is expanded by the shell: a `$` or a backtick, or a
-  // backslash-newline joining lines, means the file holds something other than
-  // the text read here.
-  if (!literal && (/[$`]/.test(text) || /\\\r?\n/.test(rest.slice(body.bodyStart)))) {
+  const raw = body.bodyStart >= body.bodyEnd ? '' : rest.slice(body.bodyStart, body.bodyEnd);
+  // `<<-` strips the leading tabs of every body line: the payload is what the
+  // shell writes, the region stays the raw span.
+  const text = om[1] === '-' ? raw.replace(/^\t+/gm, '') : raw;
+  // An unquoted body is expanded by the shell: a `$`, a backtick or a backslash
+  // (`\\\\` becomes `\\`, backslash-newline joins lines) means the file holds
+  // something other than the text read here.
+  if (!literal && (/[$`\\]/.test(text) || /\\\r?\n/.test(rest.slice(body.bodyStart)))) {
     return none();
   }
   if (text.includes('\r')) return none();

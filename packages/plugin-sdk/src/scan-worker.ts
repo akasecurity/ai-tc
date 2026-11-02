@@ -65,6 +65,27 @@ function post(message: ScanWorkerMessage): void {
   port.postMessage(message);
 }
 
+// The regions a job may carry, or undefined: a list of at most MAX_REGIONS
+// integer spans inside the text, each non-empty, sorted and not overlapping. A
+// list that is anything else is ignored whole, so the scan keeps every rule.
+const MAX_REGIONS = 64;
+function validRegions(
+  value: unknown,
+  length: number,
+): { start: number; end: number }[] | undefined {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_REGIONS) return undefined;
+  let previousEnd = 0;
+  for (const region of value as unknown[]) {
+    if (typeof region !== 'object' || region === null) return undefined;
+    const { start, end } = region as { start?: unknown; end?: unknown };
+    if (typeof start !== 'number' || typeof end !== 'number') return undefined;
+    if (!Number.isInteger(start) || !Number.isInteger(end)) return undefined;
+    if (start < previousEnd || start >= end || end > length) return undefined;
+    previousEnd = end;
+  }
+  return value as { start: number; end: number }[];
+}
+
 port.on('message', (job: ScanWorkerJob) => {
   try {
     if (job.kind === 'probe') {
@@ -89,16 +110,11 @@ port.on('message', (job: ScanWorkerJob) => {
       });
       return;
     }
+    const writtenRegions = validRegions(job.writtenRegions, job.text.length);
     const context: ScanContext | undefined =
-      job.filePath === undefined &&
-      job.eventKind === undefined &&
-      (job.writtenRegions?.length ?? 0) === 0
+      job.filePath === undefined && job.eventKind === undefined && writtenRegions === undefined
         ? undefined
-        : {
-            filePath: job.filePath,
-            eventKind: job.eventKind,
-            writtenRegions: job.writtenRegions,
-          };
+        : { filePath: job.filePath, eventKind: job.eventKind, writtenRegions };
     if (job.attribute) {
       for (const [index, rule] of unverified.entries()) {
         post({ kind: 'progress', index });

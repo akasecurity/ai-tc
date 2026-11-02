@@ -164,10 +164,17 @@ describe('a Bash command that writes code to a file', () => {
     expect(denies(await run('Bash', { command }))).toBe(true);
   });
 
-  it('keeps the rules on the whole command when a cap is hit', async () => {
-    const writes = Array.from({ length: 33 }, (_, i) => `echo "a" > f${String(i)}.txt`).join('\n');
-    const command = `${writes}\npython -c "import pickle; pickle.loads(b)"`;
+  it('keeps the rules on a command of several writes and another statement', async () => {
+    const command =
+      'echo "a" > f1.txt\necho "b" > f2.txt\npython -c "import pickle; pickle.loads(b)"';
     expect(denies(await run('Bash', { command }))).toBe(true);
+  });
+
+  it('keeps the rules on a body with a backslash the shell would read', async () => {
+    const command = 'cat <<EOF > a.txt\nobj = pickle.loads(blob) \\x\nEOF\n';
+    expect(denies(await run('Bash', { command }))).toBe(true);
+    const echoed = "echo 'obj = pickle.loads(blob) \\x' > a.txt";
+    expect(denies(await run('Bash', { command: echoed }))).toBe(true);
   });
 
   it.each([

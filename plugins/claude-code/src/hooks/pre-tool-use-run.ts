@@ -345,12 +345,15 @@ export async function runPreToolUse(
   });
   const scopeKey = stampFor(gateway, account, captureScopeKey(input, filePath));
 
-  // What a Bash command writes to a file, read before the fields are scanned:
-  // a command with an extracted payload is judged on that payload as code, so
-  // its own capture drops the code_flaw rules (see ScanContext). A command with
-  // none keeps them.
-  const bashPayloads =
-    toolName === 'Bash' ? bashWrittenPayloads(stringAtPath(effectiveInput, ['command']) ?? '') : [];
+  // What a Bash command writes to a file, read before the fields are scanned.
+  // The command's own capture drops code_flaw findings only inside the regions
+  // those payloads came from (see ScanContext.writtenRegions); the payloads are
+  // judged as code below. Incomplete extraction gives none, so the whole command
+  // keeps its rules.
+  const commandText = toolName === 'Bash' ? (stringAtPath(effectiveInput, ['command']) ?? '') : '';
+  const extraction = toolName === 'Bash' ? bashWrittenPayloads(commandText) : undefined;
+  const bashPayloads = extraction?.incomplete === false ? extraction.payloads : [];
+  const writtenRegions = bashPayloads.map((p) => ({ start: p.start, end: p.end }));
   const scanned: ScannedField[] = [];
   const vaulted: PointersByText = new Map();
   try {
@@ -392,7 +395,9 @@ export async function runPreToolUse(
           // decision, the recorded action and the ledger all read.
           rewritable: !spec.executable,
           // Only the command itself: a data field of the call keeps its rules.
-          ...(spec.executable && bashPayloads.length > 0 ? { commandWritesScanned: true } : {}),
+          ...(spec.executable && bashPayloads.length > 0 && text === commandText
+            ? { writtenRegions }
+            : {}),
         },
       );
       scanned.push({ spec, text, result });
@@ -401,8 +406,10 @@ export async function runPreToolUse(
       if (result.scanIncomplete !== undefined) break;
     }
     // What a Bash command writes to a file is code: scan it as a code_change
-    // under that file, where code_flaw rules apply (they skip the command line
-    // itself, see ruleApplies). Not rewritable: it sits inside the command.
+    // under that file, where code_flaw rules apply (the command's own capture
+    // dropped them inside these regions). Not rewritable: it sits inside the
+    // command.
+    let payloadsScanned = 0;
     if (!scanned.some((f) => f.result.scanIncomplete !== undefined)) {
       for (const payload of bashPayloads) {
         if (callScanBudgetSpent(callStartedAt)) break;
@@ -412,7 +419,10 @@ export async function runPreToolUse(
             kind: 'code_change',
             sourceTool: SOURCE_TOOL.ClaudeCode,
             text: payload.text,
-            metadata: { ...metadata, filePath: payload.path },
+            metadata: {
+              ...metadata,
+              ...(payload.path === undefined ? {} : { filePath: payload.path }),
+            },
             lineBasis: 'file',
           },
           scopeKey,
@@ -425,7 +435,38 @@ export async function runPreToolUse(
           text: payload.text,
           result,
         });
+        payloadsScanned++;
         if (result.scanIncomplete !== undefined) break;
+      }
+    }
+    // A payload left unscanned (the call's scan budget is spent) was dropped
+    // from the command's rules on the strength of a scan that never ran: scan
+    // the command again with every rule on, and let the scanner's own deadline
+    // refuse it if there is no time left. Never allowed silently.
+    if (
+      payloadsScanned < bashPayloads.length &&
+      !scanned.some((f) => f.result.scanIncomplete !== undefined)
+    ) {
+      const at = scanned.findIndex((f) => f.spec.executable && f.text === commandText);
+      const prior = scanned[at];
+      if (prior !== undefined) {
+        const result = await captureStamped(
+          runtime,
+          {
+            kind,
+            sourceTool: SOURCE_TOOL.ClaudeCode,
+            text: prior.text,
+            metadata,
+            lineBasis: inputLineBasis(toolName),
+          },
+          scopeKey,
+          {
+            persist: 'with-findings',
+            ...(spentGrantIds.length > 0 ? { preAuthorizedGrantIds: spentGrantIds } : {}),
+            rewritable: false,
+          },
+        );
+        scanned[at] = { ...prior, result };
       }
     }
   } finally {

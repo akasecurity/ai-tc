@@ -114,4 +114,51 @@ describe('a Bash command that writes code to a file', () => {
     expect(denies(out)).toBe(true);
     expect((await findings()).map((f) => f.ruleId)).toContain('code-flaws/deser-pickle');
   });
+
+  it('drops code_flaw rules only inside the written payload, not on the rest of the command', async () => {
+    // The echo into a .txt is a payload (judged as .txt, so no .py rule); the
+    // python -c after it is code on the command line and keeps its rules.
+    const mixed = 'echo "x" > a.txt; python -c "import pickle; pickle.loads(b)"';
+    expect(denies(await run('Bash', { command: mixed }))).toBe(true);
+    expect((await findings()).map((f) => f.ruleId)).toContain('code-flaws/deser-pickle');
+  });
+
+  it('control: a pure file write whose text only looks like code on the command line passes', async () => {
+    const command = 'echo "obj = pickle.loads(blob)" > notes.txt';
+    expect(denies(await run('Bash', { command }))).toBe(false);
+    expect(await findings()).toEqual([]);
+  });
+
+  it('extracts both heredocs opened on one marker line', async () => {
+    const command = 'cat <<A > a.txt; cat <<B > b.py\nx = 1\nA\nobj = pickle.loads(blob)\nB\n';
+    expect(denies(await run('Bash', { command }))).toBe(true);
+    expect(await files()).toEqual(['b.py']);
+  });
+
+  it('names the file past a stderr or /dev/null redirect on the marker line', async () => {
+    const command = 'cat <<EOF 2>/dev/null > app.py\nobj = pickle.loads(blob)\nEOF\n';
+    expect(denies(await run('Bash', { command }))).toBe(true);
+    expect(await files()).toEqual(['app.py']);
+  });
+
+  it('scans a heredoc fed to an interpreter as the command, not as the file its stdout goes to', async () => {
+    const command = 'python - <<EOF > out.txt\nimport pickle\npickle.loads(b)\nEOF\n';
+    expect(denies(await run('Bash', { command }))).toBe(true);
+  });
+
+  it('scans a body written to a name it cannot resolve as code with no extension scope', async () => {
+    const command = 'cat > "$F" <<EOF\nobj = pickle.loads(blob)\nEOF\n';
+    expect(denies(await run('Bash', { command }))).toBe(true);
+  });
+
+  it('keeps the rules on the whole command when a cap is hit', async () => {
+    const writes = Array.from({ length: 33 }, (_, i) => `echo "a" > f${String(i)}.txt`).join('\n');
+    const command = `${writes}\npython -c "import pickle; pickle.loads(b)"`;
+    expect(denies(await run('Bash', { command }))).toBe(true);
+  });
+
+  it('keeps the rules on a command whose heredoc it cannot follow', async () => {
+    const command = 'cat <<$D > a.txt\nx\n$D\npython -c "pickle.loads(b)"';
+    expect(denies(await run('Bash', { command }))).toBe(true);
+  });
 });

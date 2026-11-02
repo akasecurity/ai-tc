@@ -424,7 +424,7 @@
     "shouldMatch": true
   },
   {
-    "label": "WHERE with a :: cast",
+    "label": "WHERE with a :: cast (matched through the operator class)",
     "text": "\"WHERE x::text = '$v'\"",
     "shouldMatch": true
   },
@@ -486,6 +486,46 @@
   {
     "label": "known gap: two bare PHP variables after WHERE are not matched",
     "text": "\"WHERE $a $b\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "whole SET clause interpolated (Ruby)",
+    "text": "\"UPDATE users SET #{set_clause} WHERE id = #{id}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "whole SET clause from a method call (Ruby)",
+    "text": "\"UPDATE users SET #{fields.join(', ')} WHERE id = 1\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "whole SET clause interpolated (PHP)",
+    "text": "$q = \"UPDATE users SET $sets WHERE id = $id\";",
+    "shouldMatch": true
+  },
+  {
+    "label": "MSSQL bracket identifiers in UPDATE",
+    "text": "\"UPDATE [users] SET [name] = '$n'\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "MSSQL bracket identifier in WHERE",
+    "text": "\"WHERE [name] = '$n'\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "bare PHP variable with an index after WHERE",
+    "text": "\"WHERE $conds[0]\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "quoted literal as the first WHERE operand",
+    "text": "\"WHERE '#{user}' = ANY(admins)\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "prose with update ... set and a bare variable followed by more words is not a statement",
+    "text": "msg = \"update the record set $x and more\"",
     "shouldMatch": false
   }
 ]

@@ -90,12 +90,14 @@ port.on('message', (job: ScanWorkerJob) => {
       return;
     }
     const context: ScanContext | undefined =
-      job.filePath === undefined && job.eventKind === undefined && job.commandWritesScanned !== true
+      job.filePath === undefined &&
+      job.eventKind === undefined &&
+      (job.writtenRegions?.length ?? 0) === 0
         ? undefined
         : {
             filePath: job.filePath,
             eventKind: job.eventKind,
-            commandWritesScanned: job.commandWritesScanned,
+            writtenRegions: job.writtenRegions,
           };
     if (job.attribute) {
       for (const [index, rule] of unverified.entries()) {

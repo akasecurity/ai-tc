@@ -107,6 +107,22 @@ interface Candidate {
   normSpan: Span;
 }
 
+// Drops a code_flaw candidate (original coordinates) lying wholly inside a
+// region the command writes to a file, on a tool_use capture. Applied after the
+// normalized pass is mapped back, so both passes see the same regions.
+function outsideWrittenRegions(
+  candidates: Candidate[],
+  context: ScanContext | undefined,
+): Candidate[] {
+  const regions = context?.writtenRegions;
+  if (!regions || regions.length === 0 || context.eventKind !== 'tool_use') return candidates;
+  return candidates.filter((c) => {
+    if (c.rule.category !== 'code_flaw') return true;
+    const { start, end } = c.match.span;
+    return !regions.some((r) => r.start <= start && end <= r.end);
+  });
+}
+
 function spansOverlap(a: Span, b: Span): boolean {
   return a.start < b.end && a.end > b.start;
 }
@@ -264,13 +280,13 @@ function isCorroborated(
 export interface ScanContext {
   filePath?: string | undefined;
   eventKind?: EventKind | undefined;
-  // Set on a command capture whose written files (a heredoc or a quoted echo
-  // into a file) were extracted and are scanned on their own as code. Only then
-  // do code_flaw rules skip the command line: the command's quoting is not
-  // source, and its payload is judged where the code is. Any other capture
-  // (an MCP argument, another harness's shell, a command with no extracted
-  // payload) keeps the rule family.
-  commandWritesScanned?: boolean | undefined;
+  // Regions of a command capture (in `text` coordinates) that hold files the
+  // command writes, extracted and scanned on their own as code. Only there do
+  // code_flaw findings of a tool_use capture drop: the command's quoting is not
+  // source, and the payload is judged where the code is. The rest of the
+  // command, any other capture (an MCP argument, another harness's shell) and
+  // a command with no extracted payload keep the rule family.
+  writtenRegions?: readonly Span[] | undefined;
 }
 
 // Pass 1: runs the primitive matchers for every applicable rule against
@@ -283,11 +299,10 @@ function buildCandidates(
   ruleset: Rule[],
   extension: string | undefined,
   eventKind: EventKind | undefined,
-  commandWritesScanned: boolean | undefined,
 ): Candidate[] {
   const candidates: Candidate[] = [];
   for (const rule of ruleset) {
-    if (!ruleApplies(rule, extension, eventKind, commandWritesScanned)) continue;
+    if (!ruleApplies(rule, extension, eventKind)) continue;
     const spans = MATCHERS[rule.matcher.type](matchText, rule);
 
     for (const span of spans) {
@@ -505,17 +520,7 @@ function ruleApplies(
   rule: Rule,
   extension: string | undefined,
   eventKind: EventKind | undefined,
-  commandWritesScanned: boolean | undefined,
 ): boolean {
-  // A command whose written files are scanned separately is not source: its
-  // code_flaw findings are the command's own quoting (SQL keywords in a psql
-  // argument, a password flag), never a flaw in code. What it writes to a file
-  // is captured as a code_change and judged there. A tool_use capture that
-  // carries no such flag (an MCP argument, a shell from another harness) is
-  // not known to be a command, so the rule family still runs on it.
-  if (commandWritesScanned === true && eventKind === 'tool_use' && rule.category === 'code_flaw') {
-    return false;
-  }
   const scope = rule.appliesTo;
   if (!scope) return true;
   if (
@@ -628,25 +633,21 @@ function scanText(text: string, ruleset: Rule[], context: ScanContext | undefine
   // still finds a match whose boundary is a format character" suite in
   // test/security/unicode.test.ts.
   const normalization = normalizeFormatChars(text);
-  const originalCandidates = buildCandidates(
-    text,
-    ruleset,
-    extension,
-    context?.eventKind,
-    context?.commandWritesScanned,
+  const originalCandidates = outsideWrittenRegions(
+    buildCandidates(text, ruleset, extension, context?.eventKind),
+    context,
   );
   if (!normalization) return gate(originalCandidates, text, undefined);
   const pooledOriginal = originalCandidates.map((candidate) =>
     withNormalizedSpan(candidate, normalization),
   );
 
-  const normalizedCandidates = buildCandidates(
-    normalization.normalized,
-    ruleset,
-    extension,
-    context?.eventKind,
-    context?.commandWritesScanned,
-  ).map((candidate) => mapCandidateToOriginal(candidate, normalization, text));
+  const normalizedCandidates = outsideWrittenRegions(
+    buildCandidates(normalization.normalized, ruleset, extension, context?.eventKind).map(
+      (candidate) => mapCandidateToOriginal(candidate, normalization, text),
+    ),
+    context,
+  );
   const findings = gate([...pooledOriginal, ...normalizedCandidates], text, normalization);
   // The two passes can each independently find the same secret occurrence —
   // sometimes at a slightly different span, since a pattern with no upper

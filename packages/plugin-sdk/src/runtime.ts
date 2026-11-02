@@ -9,6 +9,7 @@ import type {
   ExceptionBundleEntry,
   Rule,
   SourceTool,
+  Span,
   WorkspaceSettings,
 } from '@akasecurity/schema';
 import {
@@ -929,7 +930,7 @@ export function createPluginRuntime(
       {
         filePath: input.metadata?.filePath,
         eventKind: opts.kindScopedRules === false ? undefined : input.kind,
-        commandWritesScanned: opts.commandWritesScanned,
+        writtenRegions: opts.writtenRegions,
       },
       {
         sourceTool: input.sourceTool,
@@ -1332,8 +1333,8 @@ export interface CaptureOptions extends DecisionOptions {
   // (in process or in the worker) as any other capture.
   kindScopedRules?: boolean;
   // A command capture whose written files the caller extracted and scans as
-  // their own captures: code_flaw rules skip this text (see ScanContext).
-  commandWritesScanned?: boolean;
+  // their own captures: code_flaw findings inside these regions are dropped (see ScanContext).
+  writtenRegions?: readonly Span[];
   // Records a clean capture that 'with-findings' would skip, so an attached
   // machine forwards it, with its content cut to `maxChars` (`cutForForward`).
   // A capture with findings, or a refused one, is recorded as it would be

@@ -317,6 +317,30 @@ describe('createIsolatedScanner.scan', () => {
     }
   });
 
+  it('carries the written regions across the worker boundary', async () => {
+    // A code_flaw match inside a region of a tool_use job drops only when the
+    // regions reach the worker's scan() call; outside them it stays.
+    const flaw: Rule = { ...regexRule('pulled/flaw', 'pickle\\.loads\\('), category: 'code_flaw' };
+    const scanner = isolated({ verified: [], unverified: [flaw] });
+    try {
+      const text = 'x pickle.loads(b) y; pickle.loads(c)';
+      const inside = [{ start: 0, end: 20 }];
+      const withRegions = await scanner.scan(text, {
+        eventKind: 'tool_use',
+        writtenRegions: inside,
+      });
+      expect(withRegions.status).toBe('ok');
+      if (withRegions.status !== 'ok') return;
+      expect(withRegions.findings.map((f) => f.span.start)).toEqual([21]);
+      const without = await scanner.scan(text, { eventKind: 'tool_use' });
+      expect(without.status).toBe('ok');
+      if (without.status !== 'ok') return;
+      expect(without.findings).toHaveLength(2);
+    } finally {
+      await scanner.close();
+    }
+  });
+
   it('refuses a job whose eventKind is not an EventKind', async () => {
     const scanner = isolated({ verified: [BENIGN], unverified: [] });
     try {

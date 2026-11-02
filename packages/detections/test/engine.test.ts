@@ -593,39 +593,77 @@ describe('appliesTo extension gating', () => {
   });
 });
 
-describe('code_flaw rules and tool_use captures', () => {
-  const flaw = RuleSchema.parse({
+describe('code_flaw findings inside regions a command writes to files', () => {
+  const pickle = RuleSchema.parse({
     specVersion: 1,
-    id: 'test/flaw',
-    name: 'code flaw test rule',
+    id: 'test/pickle',
+    name: 'pickle test rule',
     category: 'code_flaw',
     severity: 'high',
-    matcher: { type: 'regex', pattern: 'password=\\w+', flags: 'g' },
+    matcher: { type: 'regex', pattern: 'pickle\\.loads\\(', flags: 'g' },
   });
-  const text = 'psql -c "alter role x password=abc"';
-
-  it('skips a code_flaw rule on a command whose written files are scanned, runs it on code and on unknown kinds', () => {
-    expect(scan(text, [flaw], { eventKind: 'tool_use', commandWritesScanned: true })).toHaveLength(
-      0,
-    );
-    expect(scan(text, [flaw], { eventKind: 'code_change', filePath: 'a.py' })).toHaveLength(1);
-    expect(scan(text, [flaw], { eventKind: 'response' })).toHaveLength(1);
-    expect(scan(text, [flaw])).toHaveLength(1);
+  const secret = RuleSchema.parse({
+    specVersion: 1,
+    id: 'test/token',
+    name: 'token test rule',
+    category: 'secret',
+    severity: 'high',
+    matcher: { type: 'regex', pattern: 'tok_[a-z]{8}', flags: 'g' },
   });
+  const inner = 'obj = pickle.loads(blob)';
+  const command = `echo '${inner}' > a.py; python -c "import pickle; pickle.loads(b)"`;
+  const start = command.indexOf(inner);
+  const regions = [{ start, end: start + inner.length }];
 
-  it('keeps a code_flaw rule on any tool_use capture not marked as a command with extracted writes', () => {
-    const body = 'data = pickle.loads(blob)';
-    const pickle = RuleSchema.parse({
-      specVersion: 1,
-      id: 'test/pickle',
-      name: 'pickle test rule',
-      category: 'code_flaw',
-      severity: 'high',
-      matcher: { type: 'regex', pattern: 'pickle\\.loads\\(', flags: 'g' },
-    });
-    expect(scan(body, [pickle], { eventKind: 'tool_use' })).toHaveLength(1);
+  it('drops a code_flaw match inside a region of a tool_use capture only', () => {
     expect(
-      scan(body, [pickle], { eventKind: 'tool_use', commandWritesScanned: false }),
+      scan(inner, [pickle], { eventKind: 'tool_use', writtenRegions: [{ start: 0, end: 24 }] }),
+    ).toHaveLength(0);
+    expect(
+      scan(inner, [pickle], {
+        eventKind: 'code_change',
+        filePath: 'a.py',
+        writtenRegions: regions,
+      }),
+    ).toHaveLength(1);
+    expect(scan(inner, [pickle], { eventKind: 'response', writtenRegions: regions })).toHaveLength(
+      1,
+    );
+    expect(scan(inner, [pickle], { eventKind: 'tool_use' })).toHaveLength(1);
+    expect(scan(inner, [pickle], { eventKind: 'tool_use', writtenRegions: [] })).toHaveLength(1);
+  });
+
+  it('keeps a code_flaw match outside every region, in the same command', () => {
+    const found = scan(command, [pickle], { eventKind: 'tool_use', writtenRegions: regions });
+    expect(found).toHaveLength(1);
+    expect(found[0]?.span.start).toBeGreaterThan(start + inner.length);
+  });
+
+  it('keeps a match that only straddles a region edge, and other categories inside one', () => {
+    const edge = [{ start: start + 5, end: start + inner.length }];
+    expect(scan(inner, [pickle], { eventKind: 'tool_use', writtenRegions: edge })).toHaveLength(1);
+    expect(
+      scan('x tok_abcdefgh y', [secret], {
+        eventKind: 'tool_use',
+        writtenRegions: [{ start: 0, end: 16 }],
+      }),
+    ).toHaveLength(1);
+  });
+
+  it('applies the regions in original coordinates to a match found only after normalization', () => {
+    const padded = 'pickle.l\u200Boads(blob) # x';
+    expect(scan(padded, [pickle], { eventKind: 'tool_use' })).toHaveLength(1);
+    expect(
+      scan(padded, [pickle], {
+        eventKind: 'tool_use',
+        writtenRegions: [{ start: 0, end: padded.length }],
+      }),
+    ).toHaveLength(0);
+    expect(
+      scan(padded, [pickle], {
+        eventKind: 'tool_use',
+        writtenRegions: [{ start: 0, end: 4 }],
+      }),
     ).toHaveLength(1);
   });
 });

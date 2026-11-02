@@ -527,5 +527,40 @@
     "label": "prose with update ... set and a bare variable followed by more words is not a statement",
     "text": "msg = \"update the record set $x and more\"",
     "shouldMatch": false
+  },
+  {
+    "label": "UPDATE with a PHP object-property table (wpdb)",
+    "text": "\"UPDATE $wpdb->posts SET post_status = '$s'\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "UPDATE with a PHP object-property table (this)",
+    "text": "\"UPDATE $this->table SET name = '$name'\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "UPDATE with an object-property table and an unquoted value",
+    "text": "\"UPDATE $wpdb->posts SET menu_order = $i WHERE ID = $id\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "UPDATE with an object-property table and a brace-interpolated id",
+    "text": "\"UPDATE $this->table SET a = 1 WHERE id = {$id}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "UPDATE with a chained object-property table",
+    "text": "\"UPDATE $this->db->table SET a = 1 WHERE id = $id\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "UPDATE with an object-property column after SET",
+    "text": "\"UPDATE users SET $this->col = 1 WHERE id = $id\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "UPDATE with a ${prefix} table name",
+    "text": "\"UPDATE ${prefix}users SET a = 1 WHERE id = $id\"",
+    "shouldMatch": true
   }
 ]

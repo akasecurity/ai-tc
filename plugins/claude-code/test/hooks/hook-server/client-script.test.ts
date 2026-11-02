@@ -270,6 +270,50 @@ describeUnix.each(SHELLS)('the hook client under %s without a server', (shell) =
     expect(readNodeLog()).not.toContain('--daemonize');
   });
 
+  it('starts nothing when the second probe times out, keeps the lock until it ages out, then starts one', async () => {
+    resetNodeLog();
+    const home = newHome();
+    const lock = join(home, '.aka', 'run', `hook-${VERSION}.starting`);
+    // A perl whose 1 s probe alarm fires (exit 2), as a probe starved of CPU
+    // would; every other perl call, the lock included, runs the real one.
+    const fake = join(home, 'fake-bin');
+    mkdirSync(fake);
+    writeFileSync(
+      join(fake, 'perl'),
+      ['#!/bin/sh', 'case $2 in *"alarm 1;"*) exit 2 ;; esac', 'exec /usr/bin/perl "$@"', ''].join(
+        '\n',
+      ),
+      { mode: 0o755 },
+    );
+    const slowPath = `${fake}:${bin}:/usr/bin:/bin`;
+    const daemonizes = (): number =>
+      readNodeLog()
+        .split('\n')
+        .filter((l) => l.includes('--daemonize')).length;
+
+    // The timed-out probe is no answer: no server starts, and the lock stays held.
+    await runClient({ shell, home, payload: '{}', path: slowPath });
+    expect(daemonizes()).toBe(0);
+    expect(existsSync(lock)).toBe(true);
+
+    // A fresh lock suppresses every start, however many calls come.
+    await runClient({ shell, home, payload: '{}', path: slowPath });
+    expect(daemonizes()).toBe(0);
+    expect(existsSync(lock)).toBe(true);
+
+    // Once it is over a minute old the next call reclaims it, still starting nothing...
+    const old = new Date(Date.now() - 5 * 60_000);
+    utimesSync(lock, old, old);
+    await runClient({ shell, home, payload: '{}', path: slowPath });
+    expect(existsSync(lock)).toBe(false);
+    expect(daemonizes()).toBe(0);
+
+    // ...and the call after that starts the one server.
+    await runClient({ shell, home, payload: '{}' });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(daemonizes()).toBe(1);
+  });
+
   it('puts the caller locale back before node starts', async () => {
     resetNodeLog();
     const home = newHome();

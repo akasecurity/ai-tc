@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { REPO_ROOT } from './helpers/lint-invocations.js';
-import { isMapping, jobsOf, parseWorkflow, usesOf } from './helpers/workflow-yaml.js';
+import { isMapping, jobsOf, parseWorkflow, usesOf, usesStyleOf } from './helpers/workflow-yaml.js';
 
 const WORKFLOWS = join(REPO_ROOT, '.github', 'workflows');
 
@@ -20,8 +20,8 @@ const PINNED = /^[\w.-]+\/[\w./-]+@[0-9a-f]{40} # v\d+\.\d+\.\d+$/;
 
 /**
  * Every `uses` in a workflow's text as parsed YAML: each step's and each
- * reusable-workflow job's, however it is spelled (block, flow-style, value on the
- * next line, block scalar). The trailing comment is kept with the value.
+ * reusable-workflow job's, however it is spelled. The trailing comment is kept
+ * with a plain value; a quoted or block value is returned marked, as unpinned.
  * @param {string} source
  * @returns {string[]}
  */
@@ -30,22 +30,20 @@ export function usesIn(source) {
   return Object.values(jobsOf(workflow)).flatMap((job) => {
     if (!isMapping(job)) return [];
     const holders = [job, ...(Array.isArray(job.steps) ? job.steps : [])];
-    return holders.filter((h) => isMapping(h) && Object.hasOwn(h, 'uses')).map(usesOf);
+    return holders
+      .filter((h) => isMapping(h) && Object.hasOwn(h, 'uses'))
+      .map((h) => {
+        // Only a plain scalar has a real trailing comment (the version a pin
+        // records); in a quoted or block scalar a `#` is text. Anything else is
+        // reported in a form that cannot pass as a pin.
+        const style = usesStyleOf(h);
+        return style === 'PLAIN' ? usesOf(h) : `(${style} scalar) ${usesOf(h)}`;
+      });
   });
 }
 
 /** A pin is local (`./path`), or an action pinned as PINNED says. */
 export const isPinned = (value) => value.startsWith('./') || PINNED.test(value);
-
-/**
- * The lines that open a `uses:` as a block scalar (`uses: |`, `>`, `|-`, `>+`).
- * The parsed value of a stripped one (`|-`) is a plain string, so the form is read
- * from the text; a block scalar is refused whatever it holds.
- * @param {string} source
- * @returns {string[]}
- */
-export const blockScalarUses = (source) =>
-  source.split('\n').filter((line) => /\buses:\s*[|>][+-]?\d*\s*(?:#.*)?$/.test(line));
 
 describe('the pin check', () => {
   it.each([
@@ -87,15 +85,30 @@ describe('the pin check', () => {
     ).toEqual(['o/r/.github/workflows/w.yml@v1']);
   });
 
-  it('refuses a SHA-pinned block scalar for its form, not only for the version', () => {
+  it('refuses a SHA-pinned uses that is not a plain scalar, whatever its spelling', () => {
     const sha = '55cc8345863c7cc4c66a329aec7e433d2d1c52a9';
+    const ref = `actions/cache@${sha} # v6.1.0`;
     const wf = (...lines) => ['jobs:', '  j:', '    runs-on: x', '    steps:', ...lines].join('\n');
-    for (const style of ['|', '>', '|-', '>-', '|+']) {
-      const text = wf(`      - uses: ${style}`, `          actions/cache@${sha} # v6.1.0`);
-      expect(usesIn(text)[0]).toContain(sha);
-      expect(blockScalarUses(text), style).toHaveLength(1);
+    const block = (head) => wf(`      - ${head}`, `          ${ref}`);
+    const heads = [
+      'uses: |',
+      'uses: >-',
+      'uses: |2-',
+      'uses: >2+',
+      'uses: !!str |',
+      'uses: &a |',
+      '"uses": |',
+    ];
+    for (const head of heads) {
+      const [value] = usesIn(block(head));
+      expect(value, head).toContain('scalar)');
+      expect(isPinned(value), head).toBe(false);
     }
-    expect(blockScalarUses(wf(`      - uses: actions/cache@${sha} # v6.1.0`))).toEqual([]);
+    for (const quoted of [`"${ref}"`, `'${ref}'`]) {
+      const [value] = usesIn(wf(`      - uses: ${quoted}`));
+      expect(isPinned(value), quoted).toBe(false);
+    }
+    expect(usesIn(wf(`      - uses: ${ref}`)).map(isPinned)).toEqual([true]);
   });
 
   it('accepts a SHA-pinned reusable-workflow job with its version comment', () => {
@@ -122,8 +135,7 @@ describe('the workflows', () => {
   });
 
   it.each(files)('%s pins every uses: to a SHA with the full version', (file) => {
-    const source = readFileSync(join(WORKFLOWS, file), 'utf8');
-    expect(blockScalarUses(source)).toEqual([]);
-    expect(usesIn(source).filter((v) => !isPinned(v))).toEqual([]);
+    const bad = usesIn(readFileSync(join(WORKFLOWS, file), 'utf8')).filter((v) => !isPinned(v));
+    expect(bad).toEqual([]);
   });
 });

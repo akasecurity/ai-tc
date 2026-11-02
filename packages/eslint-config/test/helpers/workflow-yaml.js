@@ -42,6 +42,16 @@ import { isAlias, isMap, isScalar, isSeq, parseAllDocuments, visit as visitDocum
 const TRAILING_COMMENTS = new WeakMap();
 
 /**
+ * The scalar style of each scalar value in a decoded mapping, by key: `PLAIN`,
+ * `QUOTE_DOUBLE`, `QUOTE_SINGLE`, `BLOCK_LITERAL` or `BLOCK_FOLDED`. Read from the
+ * parsed node, so every spelling of a block scalar (`|2-`, `!!str |`, `&a >`, a
+ * quoted key) reports the same style. Only a plain scalar can carry a real
+ * trailing comment; a `#` inside a quoted or block scalar is part of the text.
+ * @type {WeakMap<object, Record<string, string>>}
+ */
+const SCALAR_STYLES = new WeakMap();
+
+/**
  * More nodes than any real workflow expands to; a chain of aliases can multiply.
  * The largest workflow in this repository decodes to under 300, so this is about
  * seventy times that, and a chain that reaches it is refused in milliseconds.
@@ -139,6 +149,8 @@ function decode(node, state) {
       const entries = [];
       /** @type {Record<string, string>} */
       const comments = {};
+      /** @type {Record<string, string>} */
+      const styles = {};
       const seen = new Set();
       for (const pair of node.items) {
         const key = isAlias(pair.key) ? targetOf(pair.key, state) : pair.key;
@@ -154,11 +166,15 @@ function decode(node, state) {
         if (isScalar(pair.value) && typeof pair.value.comment === 'string') {
           comments[name] = pair.value.comment;
         }
+        const valueNode = isAlias(pair.value) ? targetOf(pair.value, state) : pair.value;
+        if (isScalar(valueNode) && typeof valueNode.type === 'string')
+          styles[name] = valueNode.type;
       }
       // fromEntries defines own data properties, so a key spelled `__proto__`
       // is a key and not a prototype.
       const mapping = Object.fromEntries(entries);
       TRAILING_COMMENTS.set(mapping, comments);
+      SCALAR_STYLES.set(mapping, styles);
       return mapping;
     } finally {
       state.open.delete(node);
@@ -468,6 +484,14 @@ export function usesOf(step) {
   const note = TRAILING_COMMENTS.get(step)?.uses;
   return note === undefined ? /** @type {string} */ (step.uses) : `${step.uses} #${note}`;
 }
+
+/**
+ * The scalar style of a step's (or job's) `uses:` value as parsed: `PLAIN`,
+ * `QUOTE_DOUBLE`, `QUOTE_SINGLE`, `BLOCK_LITERAL` or `BLOCK_FOLDED`.
+ * @param {Mapping} step
+ * @returns {string | undefined}
+ */
+export const usesStyleOf = (step) => SCALAR_STYLES.get(step)?.uses;
 
 /**
  * Every mapping key at any depth, in file order.

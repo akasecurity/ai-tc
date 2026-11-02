@@ -208,6 +208,28 @@ describe('bashWrittenPayloads', () => {
     expect(paths(`ls\necho "a" > f.txt`)).toEqual(['f.txt']);
   });
 
+  it('does not take a heredoc whose command word follows the operator', () => {
+    expect(paths("> o.txt <<'EOF' python3\nx\nEOF")).toEqual([]);
+    expect(paths("2>/dev/null <<'EOF' python3 > o.txt\nx\nEOF")).toEqual([]);
+    expect(paths("<<'EOF' python3 > o.txt\nx\nEOF")).toEqual([]);
+    expect(paths("> o.txt <<'EOF'\nx\nEOF")).toEqual([]);
+    expect(paths("cat <<'EOF' python3 > o.txt\nx\nEOF")).toEqual([]);
+    expect(paths("cat <<<'x' python3 > o.txt")).toEqual([]);
+    expect(paths("cat <<'EOF' > o.txt 2>&1\nx\nEOF")).toEqual(['o.txt']);
+    expect(paths("cat <<'EOF' >o.txt 1>&2\nx\nEOF")).toEqual(['o.txt']);
+  });
+
+  it('does not take a quoted write that a later redirect or process substitution overrides', () => {
+    expect(paths("echo '<code>' > o.txt &> >(python3)")).toEqual([]);
+    expect(paths("echo '<code>' > o.txt &>>(python3)")).toEqual([]);
+    expect(paths("echo '<code>' > o.txt &> p.txt")).toEqual([]);
+    expect(paths("echo '<code>' > o.txt 1>&2")).toEqual([]);
+    expect(paths("echo '<code>' >| o.txt")).toEqual([]);
+    expect(paths("echo '<code>' > o.txt <<<x")).toEqual([]);
+    expect(paths("echo '<code>' > o.txt & ls")).toEqual(['o.txt']);
+    expect(paths("echo '<code>' > o.txt && ls")).toEqual(['o.txt']);
+  });
+
   it('stays linear and bounded on hostile whitespace and repetition, for every pattern', () => {
     const inputs = [
       'cat <<EOF >f\n'.repeat(20_000),

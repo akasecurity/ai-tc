@@ -165,6 +165,10 @@ describe('a Bash command that writes code to a file', () => {
     ['echo "$(python3 -c "import pickle; pickle.loads(b)")" > f.txt'],
     [`sh -c "echo 'obj = pickle.loads(blob)' > f.txt"`],
     [`eval "echo 'obj = pickle.loads(blob)' > f.txt"`],
+    ["> o.txt <<'EOF' python3\nobj = pickle.loads(blob)\nEOF\n"],
+    ["2>/dev/null <<'EOF' python3 > o.txt\nobj = pickle.loads(blob)\nEOF\n"],
+    ["echo 'obj = pickle.loads(blob)' > o.txt &> >(python3)"],
+    ["echo 'obj = pickle.loads(blob)' > o.txt &>>(python3)"],
   ])('keeps the rules on a span the shell runs rather than writes: %s', async (command) => {
     expect(denies(await run('Bash', { command }))).toBe(true);
   });

@@ -81,6 +81,9 @@ const WRITERS = new Set(['cat', 'tee', 'sponge', ':', 'true']);
 const SKIPPED_WORDS = new Set(['sudo', 'env', 'command', 'exec', 'nohup', 'time']);
 const SUDO_ARG_FLAGS = new Set(['-u', '-g', '-h', '-p', '-C', '-D', '-R', '-T', '-U']);
 
+// A redirect (with its target, or an fd dup) that may follow a heredoc operator.
+const AFTER_REDIRECT = /(?:\d*|&)>>?\|?[ \t]*(?:'[^']*'|"[^"]*"|[^\s'"|;&<>()]+)|\d*>&\d*-?/g;
+
 // What the command at the end of `before` (the text of one pipeline stage up
 // to the heredoc operator) is: 'tee', another plain writer ('other', which
 // includes no command word at all after a redirect, `> f <<EOF`), or undefined
@@ -93,7 +96,6 @@ function writerOf(before: string): 'tee' | 'other' | undefined {
     .filter(Boolean);
   let skipArg = false;
   let afterSudo = false;
-  let redirected = false;
   for (const w of words) {
     if (skipArg) {
       skipArg = false;
@@ -110,14 +112,13 @@ function writerOf(before: string): 'tee' | 'other' | undefined {
     }
     // A redirect before the command word (`> f cat <<EOF`, `>f <<EOF`).
     if (/^\d*>/.test(w) || w.startsWith('&>')) {
-      redirected = true;
       skipArg = /^(?:\d*|&)>>?$/.test(w);
       continue;
     }
     if (w === 'tee') return 'tee';
     return WRITERS.has(w) ? 'other' : undefined;
   }
-  return redirected ? 'other' : undefined;
+  return undefined;
 }
 
 interface Target {
@@ -187,7 +188,7 @@ const OPERATOR = /<<(-?)[ \t]*(?:'([^'\n]+)'|"([^"\n]+)"|\\?([A-Za-z0-9_][\w.-]*
 // and nothing after it but the end of the command. A printf whose string holds
 // a conversion is a format, not the text written, and is not read.
 const QUOTED_WRITE =
-  /(echo|printf)[ \t]+(?:-[A-Za-z]+[ \t]+)*(?:'([^']*)'|"((?:[^"\\]|\\.)*)")[ \t]*>>?[ \t]*(?:'([^']+)'|"([^"]+)"|([^\s'"|;&<>()]+))(?=[ \t]*(?:$|[;&|\n#]))/y;
+  /(echo|printf)[ \t]+(?:-[A-Za-z]+[ \t]+)*(?:'([^']*)'|"((?:[^"\\]|\\.)*)")[ \t]*>>?[ \t]*(?:'([^']+)'|"([^"]+)"|([^\s'"|;&<>()]+))(?=[ \t]*(?:$|[;|\n#]|&(?!>)))/y;
 
 // A QUOTED_WRITE match read as a payload, or undefined when it is not one.
 function quotedWrite(m: RegExpExecArray | null): BashPayload | undefined {
@@ -219,6 +220,7 @@ const MAX_MARKER_LINE_CHARS = 4096;
 
 interface Pending {
   opAt: number;
+  opEnd: number;
   delimiter: string;
   stripTabs: boolean;
   /** Quoted or backslash-escaped delimiter: the body is not expanded. */
@@ -327,6 +329,7 @@ export function bashWrittenPayloads(command: string): BashExtraction {
       if (++seen > MAX_HEREDOCS) return none;
       pending.push({
         opAt: i,
+        opEnd: i + m[0].length,
         delimiter,
         stripTabs: m[1] === '-',
         literal: m[2] !== undefined || m[3] !== undefined || m[0].includes('\\'),
@@ -370,6 +373,10 @@ export function bashWrittenPayloads(command: string): BashExtraction {
     if (own === undefined) continue;
     const kind = writerOf(blank.slice(own.start, rel - start));
     if (kind === undefined) continue;
+    // After the operator and its delimiter only redirects may follow: a word
+    // there (`<<EOF python3`) is the command that runs the body.
+    const after = blank.slice(b.pending.opEnd - b.lineStart - start, own.end);
+    if (after.replace(AFTER_REDIRECT, ' ').trim() !== '') continue;
     let tstage = own;
     let useTee = kind === 'tee';
     if (k === stages.length - 2) {

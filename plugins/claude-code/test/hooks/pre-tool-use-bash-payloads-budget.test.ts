@@ -120,6 +120,8 @@ describe('a Bash command whose payload scan runs out of budget', () => {
   it('scans the command with every rule on, and records its findings once, when the payloads were not scanned', async () => {
     spent.value = true;
     expect(await denied(command)).toBe(true);
+    // The payload went unscanned, so the deny comes from the command fallback.
+    expect(captured.kinds).not.toContain('code_change');
     const db = openLocalDatabase(join(home, '.aka', 'data'), {
       shippedRegexMatchers: shippedRegexMatchers(),
     });

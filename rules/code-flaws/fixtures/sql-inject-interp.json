@@ -220,9 +220,9 @@
     "shouldMatch": true
   },
   {
-    "label": "known gap: MySQL multi-table UPDATE with JOIN ... ON before SET is not matched",
+    "label": "MySQL multi-table UPDATE with JOIN ... ON before SET",
     "text": "\"UPDATE t1 JOIN t2 ON t1.id = t2.id SET t1.a = #{x}\"",
-    "shouldMatch": false
+    "shouldMatch": true
   },
   {
     "label": "DELETE t1 FROM t1 USING (only the USING branch reaches this statement)",
@@ -345,14 +345,14 @@
     "shouldMatch": false
   },
   {
-    "label": "known gap: UPDATE with INNER JOIN before SET is not matched",
+    "label": "UPDATE with INNER JOIN before SET",
     "text": "\"UPDATE t1 INNER JOIN t2 ON t1.id = t2.id SET t1.a = #{x}\"",
-    "shouldMatch": false
+    "shouldMatch": true
   },
   {
-    "label": "known gap: UPDATE with LEFT JOIN before SET is not matched",
+    "label": "UPDATE with LEFT JOIN before SET",
     "text": "\"UPDATE t1 LEFT JOIN t2 ON t1.id = t2.id SET t1.a = #{x}\"",
-    "shouldMatch": false
+    "shouldMatch": true
   },
   {
     "label": "known gap: a literal backslash-n between the table and SET is not matched",
@@ -420,9 +420,9 @@
     "shouldMatch": true
   },
   {
-    "label": "known gap: INSERT without INTO is not matched",
+    "label": "INSERT without INTO",
     "text": "\"INSERT t (a) VALUES (#{x})\"",
-    "shouldMatch": false
+    "shouldMatch": true
   },
   {
     "label": "known gap: two bare PHP variables after WHERE are not matched",
@@ -633,5 +633,10 @@
     "label": "known gap: a SELECT column list longer than 1000 characters before FROM is not matched",
     "text": "\"SELECT #{a}, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, c, d FROM t\"",
     "shouldMatch": false
+  },
+  {
+    "label": "UPDATE with LEFT OUTER JOIN and an alias before SET",
+    "text": "\"UPDATE t1 a LEFT OUTER JOIN t2 AS b ON a.id = b.id SET a.x = #{y}\"",
+    "shouldMatch": true
   }
 ]

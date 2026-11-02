@@ -115,12 +115,21 @@ describe('a Bash command that writes code to a file', () => {
     expect((await findings()).map((f) => f.ruleId)).toContain('code-flaws/deser-pickle');
   });
 
-  it('drops code_flaw rules only inside the written payload, not on the rest of the command', async () => {
-    // The echo into a .txt is a payload (judged as .txt, so no .py rule); the
-    // python -c after it is code on the command line and keeps its rules.
+  it('keeps every rule on a command that mixes a write with another statement', async () => {
+    // Not a flat sequence of writers and inert statements, so no region at all:
+    // the python -c after the write is code on the command line.
     const mixed = 'echo "x" > a.txt; python -c "import pickle; pickle.loads(b)"';
     expect(denies(await run('Bash', { command: mixed }))).toBe(true);
     expect((await findings()).map((f) => f.ruleId)).toContain('code-flaws/deser-pickle');
+  });
+
+  it('drops code_flaw rules only inside the written body, keeping them on the rest of a flat command', async () => {
+    // A flat command: its one heredoc body is a region, and the delimiter
+    // spelled like a flaw sits outside it, on the command line.
+    const outside = "cat <<'pickle.loads(' > notes.txt\nx = 1\npickle.loads(\n";
+    expect(denies(await run('Bash', { command: outside }))).toBe(true);
+    const inside = "cat <<'EOF' > notes.txt\nobj = pickle.loads(blob)\nEOF\n";
+    expect(denies(await run('Bash', { command: inside }))).toBe(false);
   });
 
   it('control: a pure file write whose text only looks like code on the command line passes', async () => {

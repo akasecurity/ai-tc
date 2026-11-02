@@ -83,7 +83,7 @@ const TRANSFORMED = /(?<![\w./-])(?:base64|xxd|openssl)(?![\w./])|\bb64decode\b/
 
 // The commands whose heredoc input goes to the file a redirect or `tee` names.
 // Any other command word (`python`, `psql`, `ssh`) takes the body as its input.
-const WRITERS = new Set(['cat', 'tee', 'sponge', ':', 'true']);
+const WRITERS = new Set(['cat', 'tee', ':', 'true']);
 
 // The statements besides a writer that leave a command flat: they run nothing
 // the command wrote and change nothing a writer relies on. Words are plain, or
@@ -94,32 +94,39 @@ const INERT = new RegExp(`^(?:(?:cd|mkdir|touch|true|:)(?:[ \\t]+${WORD})*)$`);
 // A redirect (with its target, or an fd dup) that may follow a heredoc operator.
 const AFTER_REDIRECT = /(?:\d*|&)>>?\|?[ \t]*(?:'[^']*'|"[^"]*"|[^\s'"|;&<>()]+)|\d*>&\d*-?/g;
 
-// What the command at the end of `before` (the text of one pipeline stage up
-// to the heredoc operator) is: 'tee', another plain writer ('other', which
-// includes no command word at all after a redirect, `> f <<EOF`), or undefined
-// for anything else (an interpreter, an empty or unparsed stage). Only a
-// positively recognized writer counts.
+// What the stage `before` (its words up to the heredoc operator, or the whole
+// stage) is: 'tee', another plain writer ('other'), or undefined for anything
+// else (an interpreter, an empty or unparsed stage, a writer with arguments
+// beyond the few it is read with). Every word is checked, not only the first:
+// `cat` takes no argument but `-`, `tee` an optional `-a` and exactly one file,
+// `:` and `true` none. Redirects are skipped here and counted by the caller.
 function writerOf(before: string): 'tee' | 'other' | undefined {
   const words = before
     .trim()
     .split(/[ \t]+/)
     .filter(Boolean);
   let skipArg = false;
+  let command: string | undefined;
+  const args: string[] = [];
   for (const w of words) {
     if (skipArg) {
       skipArg = false;
       continue;
     }
-    // A redirect before the command word (`> f cat <<EOF`).
     if (/^\d*>/.test(w) || w.startsWith('&>')) {
-      skipArg = /^(?:\d*|&)>>?$/.test(w);
+      skipArg = /^(?:\d*|&)>>?\|?$/.test(w);
       continue;
     }
-    // The first command word, as written: no assignment, wrapper or path.
-    if (w === 'tee') return 'tee';
-    return WRITERS.has(w) ? 'other' : undefined;
+    if (command === undefined) command = w;
+    else args.push(w);
   }
-  return undefined;
+  if (command === undefined || !WRITERS.has(command)) return undefined;
+  if (command === 'tee') {
+    const files = args.filter((w) => w !== '-a');
+    return files.length === 1 && !files.some((w) => w.startsWith('-')) ? 'tee' : undefined;
+  }
+  if (command === 'cat') return args.every((w) => w === '-') ? 'other' : undefined;
+  return args.length === 0 ? 'other' : undefined;
 }
 
 interface Target {
@@ -441,6 +448,15 @@ export function bashWrittenPayloads(command: string): BashExtraction {
     } else if (k !== stages.length - 1) {
       continue;
     }
+    // Exactly one file is written in the whole segment: a second redirect (any
+    // fd), or a tee file besides a redirect, would give the body a name the
+    // path attribution does not carry.
+    let targets = useTee ? 1 : 0;
+    for (const m of blank.matchAll(REDIRECT)) {
+      const at = m.indices?.[3] ?? m.indices?.[4] ?? m.indices?.[5];
+      if (at !== undefined && !seg.slice(at[0], at[1]).startsWith('/dev/')) targets++;
+    }
+    if (targets !== 1) continue;
     const found = segmentTarget(
       seg.slice(tstage.start, tstage.end),
       blank.slice(tstage.start, tstage.end),

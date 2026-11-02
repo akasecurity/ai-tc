@@ -95,7 +95,7 @@ describe('bashWrittenPayloads', () => {
 
   it('skips stderr, fd and /dev/null redirects when naming the file', () => {
     expect(paths('cat <<EOF 2>/dev/null > app.py\nx = 1\nEOF')).toEqual(['app.py']);
-    expect(paths('cat <<EOF 2>err.log >out.py\nx = 1\nEOF')).toEqual(['out.py']);
+    expect(paths('cat <<EOF 2>err.log >out.py\nx = 1\nEOF')).toEqual([]);
     expect(paths('cat <<EOF >&2\nx = 1\nEOF')).toEqual([]);
     expect(paths('cat <<EOF > /dev/null\nx = 1\nEOF')).toEqual([]);
     expect(paths('cat <<EOF &> both.py\nx = 1\nEOF')).toEqual(['both.py']);
@@ -283,6 +283,32 @@ describe('bashWrittenPayloads', () => {
     expect(paths("cat <<'EOF' > a.txt\nline \\\nmore\nEOF\n")).toEqual(['a.txt']);
     expect(paths('cat <<EOF > a.txt\nplain\nEOF\ntrue # note; python3 a.txt\n')).toEqual(['a.txt']);
     expect(paths("cat <<'EOF' | tee a.txt\nx\nEOF")).toEqual(['a.txt']);
+  });
+
+  it.each([
+    ["tee a.txt a.py <<'EOF'\nx\nEOF"],
+    ["tee a.py > a.txt <<'EOF'\nx\nEOF"],
+    ["tee a.py <<'EOF' > a.txt\nx\nEOF"],
+    ["cat <<'EOF' | tee a.py > a.txt\nx\nEOF"],
+    ["cat <<'EOF' > a.py > a.txt\nx\nEOF"],
+    ["cat <<'EOF' > a.txt 2>a.py\nx\nEOF"],
+    ["cat <<'EOF' > a.py | tee a.txt\nx\nEOF"],
+    ["cat f.py - <<'EOF' > a.txt\nx\nEOF"],
+    ["cat -n <<'EOF' > a.txt\nx\nEOF"],
+    ["tee -p a.txt <<'EOF'\nx\nEOF"],
+    ["tee <<'EOF'\nx\nEOF"],
+    ["true x <<'EOF' > a.txt\nx\nEOF"],
+    ["sponge a.txt <<'EOF'\nx\nEOF"],
+  ])('takes no path from a writer with more than one file or unread arguments: %j', (command) => {
+    expect(paths(command)).toEqual([]);
+  });
+
+  it('still takes the one file of a plain cat, tee or true', () => {
+    expect(paths("cat - <<'EOF' > a.txt\nx\nEOF")).toEqual(['a.txt']);
+    expect(paths("tee -a a.txt <<'EOF'\nx\nEOF")).toEqual(['a.txt']);
+    expect(paths("tee a.txt <<'EOF' >/dev/null\nx\nEOF")).toEqual(['a.txt']);
+    expect(paths("true <<'EOF' > a.txt\nx\nEOF")).toEqual(['a.txt']);
+    expect(paths("cat <<'EOF' | tee -a a.txt 2>/dev/null\nx\nEOF")).toEqual(['a.txt']);
   });
 
   it('does not take a writer behind an assignment or wrapper word', () => {

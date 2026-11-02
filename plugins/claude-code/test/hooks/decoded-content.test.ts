@@ -73,6 +73,8 @@ describe('isOutboundCall', () => {
     'ftp -n -v host.example',
     'ftp "$HOST"',
     'ftp $HOST',
+    'ftp ${HOST}',
+    'ftp ${HOST}:${PORT}',
     "ftp 'files.example.com'",
     'TARGET=h ftp $TARGET',
     'ftp\nopen host.example\nput x\nbye',
@@ -111,6 +113,9 @@ describe('isOutboundCall', () => {
     'sftp-notes.txt',
     'cat tftp.conf',
     'ls tftp sftp-notes',
+    'ls -la /srv/ftp\ncd /tmp',
+    'echo ftp\nmkdir -p /tmp/x',
+    'ftp\ncd /srv',
   ])('leaves `%s` alone', (command) => {
     expect(isOutboundCall(...bash(command))).toBe(false);
   });

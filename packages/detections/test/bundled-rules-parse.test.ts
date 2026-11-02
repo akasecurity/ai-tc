@@ -35,6 +35,66 @@ function describeIssues(issues: { path: PropertyKey[]; message: string }[]): str
   return issues.map((i) => `${i.path.map(String).join('.') || '<root>'}: ${i.message}`).join('; ');
 }
 
+// A fixture label opening with one of these marks a DOCUMENTED RESIDUAL: a case
+// the rule is known to get wrong, carried as a fixture so the behaviour is on
+// the record instead of being rediscovered. Matched case-insensitively — the
+// capitalization is the label author's, and a contract that a different
+// spelling walks out of is not one.
+const RESIDUAL_PREFIXES = ['known false positive:', 'known gap:'] as const;
+
+/**
+ * Every documented residual the shipped tree carries, keyed `<pack>/<rule>`.
+ *
+ * Exact label sets, not per-rule counts: a count cannot tell a deleted residual
+ * from one swapped for another, and both change what the tree claims about
+ * itself. A rule absent from this table must carry none, so a new residual gets
+ * declared here or the walk names it.
+ *
+ * This is not the fixture bar in `test/helpers/fixture-bar.ts` and does not
+ * duplicate it. That bar is a minimum each rule must clear and says nothing
+ * about WHICH cases clear it, so deleting a residual leaves it satisfied while
+ * the documented behaviour quietly stops being pinned.
+ */
+const DOCUMENTED_RESIDUALS: Record<string, readonly string[]> = {
+  'code-flaws/sql-inject-concat': [
+    'known false positive: a literal opening "where <word> between" satisfies the WHERE..BETWEEN arm',
+    'known false positive: a literal opening "where <word> in (" satisfies the WHERE..IN arm',
+    'known false positive: a literal opening "where <word> LIKE \'" satisfies the WHERE..LIKE arm',
+  ],
+  'code-flaws/sql-inject-format': [
+    'known false positive: prose "where <word> < {n}" satisfies the WHERE..compare arm',
+    'known false positive: prose "where <word> <> {n}" satisfies the WHERE..compare arm',
+    'known false positive: prose "where <word> > {n}" satisfies the WHERE..compare arm',
+    'known false positive: prose "where <word> between" satisfies the WHERE..BETWEEN arm',
+    'known false positive: prose "where <word> in (" satisfies the WHERE..IN arm',
+    'known false positive: prose "where <word> LIKE \'<quoted>\'" satisfies the WHERE..LIKE arm',
+    'known false positive: the same prose compare shape in the % spelling',
+    'known false positive: the same prose shape in the % spelling',
+    'known gap: a prose line after the first that starts with a sql phrase and carries ${} still matches',
+    'known gap: heredoc statement split across lines with a #{} placeholder is not matched by this rule (sql-inject-interp covers it)',
+    'known gap: heredoc statement split across lines with a %s placeholder is not matched',
+    'known gap: interpolation-first statement is not matched',
+    'known gap: unquoted parenthesized statement is not matched',
+    'known gap: UPDATE of two tables is not matched (same cap)',
+    'known gap: UPDATE ONLY is not matched (the widened UPDATE arm does not fit the pattern-length cap)',
+    'known gap: UPDATE with an AS alias is not matched (same cap)',
+  ],
+  'code-flaws/sql-inject-interp': [
+    'known gap: a prose line after the first that starts with a sql word and carries interpolation still matches',
+    'known gap: interpolation-first statement is not matched',
+    'known gap: unquoted parenthesized statement is not matched',
+  ],
+  'secrets-infra/env-key-value': [
+    'KNOWN GAP: bare code identifier on the right still matches; the pattern cannot tell it from a short literal',
+    'KNOWN GAP: dot-separated id/secret pair (Twilio-style) — same, stays undetected by design',
+    'KNOWN GAP: dotted sk.live key — same property-chain indistinguishability, stays undetected by design',
+    'KNOWN GAP: pure dotted literal — the pattern cannot tell it from a property chain, so it stays undetected by design',
+  ],
+  'secrets/vault-token': [
+    'known gap: a 24-character member access with a digit and a capital still matches',
+  ],
+};
+
 describe('bundled rule tree parses under the strict schema', () => {
   it('parses every bundled rule', () => {
     const failures: string[] = [];
@@ -88,5 +148,40 @@ describe('bundled rule tree parses under the strict schema', () => {
     // Every rule carries fixtures, so the count must exceed the rule count —
     // which also catches a walk that quietly found nothing.
     expect(fixtureCount).toBeGreaterThan(ON_DISK_RULE_COUNT);
+  });
+  it('pins every documented residual', () => {
+    const failures: string[] = [];
+    let residualCount = 0;
+    for (const { packDir, packDirAbs, ruleFile } of RULE_FILES) {
+      const path = fixturePath(packDirAbs, ruleFile);
+      // A missing fixture file is the previous test's finding, not this one's.
+      if (!existsSync(path)) continue;
+      const raw = JSON.parse(readFileSync(path, 'utf-8')) as { label?: unknown }[];
+      const found = raw
+        .map((entry) => (typeof entry.label === 'string' ? entry.label : ''))
+        .filter((label) =>
+          RESIDUAL_PREFIXES.some((prefix) => label.toLowerCase().startsWith(prefix)),
+        )
+        .sort();
+      residualCount += found.length;
+      // Both sides sorted by the same comparator here, so the table above may
+      // be written in any order.
+      const declared = [...(DOCUMENTED_RESIDUALS[`${packDir}/${ruleFile}`] ?? [])].sort();
+      if (found.length !== declared.length || found.some((label, i) => label !== declared[i])) {
+        failures.push(
+          `rules/${packDir}/fixtures/${ruleFile}.json — documented residuals differ from the ` +
+            `DOCUMENTED_RESIDUALS inventory in this file.\n` +
+            `  on disk:  ${JSON.stringify(found)}\n` +
+            `  declared: ${JSON.stringify(declared)}`,
+        );
+      }
+    }
+    expect(failures).toEqual([]);
+    // Non-vacuous: an empty walk, or a table nobody filled in, satisfies the
+    // line above exactly as well as an inventory that matches.
+    expect(residualCount).toBe(
+      Object.values(DOCUMENTED_RESIDUALS).reduce((n, labels) => n + labels.length, 0),
+    );
+    expect(residualCount).toBeGreaterThan(0);
   });
 });

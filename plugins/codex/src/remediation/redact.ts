@@ -24,6 +24,7 @@
  * one bad file cannot abort the sweep of the rest.
  */
 import {
+  chmodSync,
   lstatSync,
   readdirSync,
   readFileSync,
@@ -141,11 +142,12 @@ function isProcessAlive(pid: number): boolean {
  *
  * Deliberately the narrowest sweep that can do that, because it deletes: only
  * siblings of THIS artifact, only names this module itself mints (the exact
- * `<basename>.<digits>.aka-redact.tmp` shape — the trailing dot on the prefix
- * keeps the artifact itself from ever matching), only regular files, and only
- * when the pid in the name names no living process. A concurrent run's temp is
- * therefore left alone; our own pid needs no liveness check, since the process
- * asking is the one that would be using it.
+ * `<basename>.<digits>.aka-redact.tmp` shape, plus the pid-free
+ * `<basename>.aka-redact.tmp` a published build left behind — the trailing dot on
+ * the prefix keeps the artifact itself from ever matching), only regular files,
+ * and only when the pid in the name names no living process. A concurrent run's
+ * temp is therefore left alone; our own pid needs no liveness check, since the
+ * process asking is the one that would be using it.
  */
 function sweepStrandedTemps(realPath: string): void {
   const dir = dirname(realPath);
@@ -159,9 +161,17 @@ function sweepStrandedTemps(realPath: string): void {
   for (const name of names) {
     if (!name.startsWith(prefix) || !name.endsWith(TMP_SUFFIX)) continue;
     const pidPart = name.slice(prefix.length, name.length - TMP_SUFFIX.length);
-    if (!/^\d+$/.test(pidPart)) continue;
-    const pid = Number(pidPart);
-    if (pid !== process.pid && isProcessAlive(pid)) continue;
+    // An empty pid part is the LEGACY shape — `<basename>.aka-redact.tmp`, the name
+    // a published build wrote before the pid went into it. It names no owner to
+    // ask about, so it is always swept: leaving it keeps a whole plaintext copy
+    // of the artifact on disk for good, where the worst case of removing it is an
+    // older build's rename failing, which that build already treats as having
+    // done nothing.
+    if (pidPart !== '') {
+      if (!/^\d+$/.test(pidPart)) continue;
+      const pid = Number(pidPart);
+      if (pid !== process.pid && isProcessAlive(pid)) continue;
+    }
     try {
       const stranded = join(dir, name);
       // lstat, and regular files only: a symlink or a directory wearing this
@@ -248,6 +258,12 @@ export function redactLeakedKeysDetailed(
       // already sitting there — a directory, a leftover the sweep would not
       // touch — is doubt, and doubt leaves the artifact untouched.
       writeFileSync(tmpPath, content, { mode, flag: 'wx' });
+      // The `mode` option passes through the process umask, which can only
+      // clear bits: a 0660 artifact would be created 0640 under the usual 0022,
+      // so the write alone RE-APPLIES the bits rather than preserving them. The
+      // chmod is what makes it exact, and it is safe for the same reason `wx`
+      // is: the exclusive create means this path is an inode this call made.
+      chmodSync(tmpPath, mode);
       renameSync(tmpPath, filePath);
     } catch {
       try {

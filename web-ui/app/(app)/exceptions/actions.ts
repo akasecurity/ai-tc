@@ -553,6 +553,16 @@ export async function rotateKey(confirmation: string): Promise<ActionResult> {
   // row, and mints a second pointer for the same secret. Best-effort: a fault
   // here leaves skipped rows resolving under their old epoch and must not fail
   // the rotation that already happened.
+  //
+  // What it must NOT do is stay quiet about it. The pass's counts are NOT the
+  // disclosure here, though — they are discarded deliberately, and the route
+  // re-derives the same shortfall from `secret_vault.fingerprint_key_version`
+  // on the render this revalidate triggers. The store is the better source for
+  // two reasons: a skipped row stays stale long after this call returns, so a
+  // count carried back in the result would describe a condition the reader can
+  // no longer see by the time it bites; and a rotation run from
+  // `aka exception rotate-key` leaves rows the dashboard never got a result
+  // for at all, which a returned count can never cover.
   try {
     const vault = new SecretVault({
       repo: db().secretVault,
@@ -561,7 +571,8 @@ export async function rotateKey(confirmation: string): Promise<ActionResult> {
     });
     await vault.refreshFingerprints(next);
   } catch {
-    // The rotation itself succeeded; a skipped refresh only degrades dedup.
+    // Nothing to record: whatever the fault was, it left rows at their old
+    // epoch, and the count behind the route's own notice already reflects that.
   }
   revalidatePath('/exceptions');
   return { ok: true };

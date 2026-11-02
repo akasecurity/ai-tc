@@ -78,5 +78,195 @@
     "label": "JSON array of quoted SQL words with no + operator",
     "text": "[\"select 1\",\"insert 2\",\"update 3\",\"delete 4\",\"drop 5\",\"where 6\"]",
     "shouldMatch": false
+  },
+  {
+    "label": "a WHERE clause compared with \"!=\"",
+    "text": "String w = \" WHERE status != \" + status;",
+    "shouldMatch": true
+  },
+  {
+    "label": "a WHERE clause compared with \"<>\"",
+    "text": "String w = \" WHERE status <> \" + status;",
+    "shouldMatch": true
+  },
+  {
+    "label": "a WHERE clause compared with \">\"",
+    "text": "String w = \" WHERE created > \" + date;",
+    "shouldMatch": true
+  },
+  {
+    "label": "a WHERE clause compared with \"<\"",
+    "text": "String w = \" WHERE score < \" + max;",
+    "shouldMatch": true
+  },
+  {
+    "label": "a WHERE clause compared with \">=\"",
+    "text": "String w = \" WHERE qty >= \" + min;",
+    "shouldMatch": true
+  },
+  {
+    "label": "a WHERE clause compared with \"<=\"",
+    "text": "String w = \" WHERE qty <= \" + max;",
+    "shouldMatch": true
+  },
+  {
+    "label": "a WHERE .. IN list",
+    "text": "String w = \" WHERE t.id IN (\" + ids + \")\";",
+    "shouldMatch": true
+  },
+  {
+    "label": "a WHERE .. LIKE pattern",
+    "text": "String w = \" WHERE name LIKE '\" + name;",
+    "shouldMatch": true
+  },
+  {
+    "label": "a WHERE .. BETWEEN range",
+    "text": "String w = \" WHERE age BETWEEN \" + lo;",
+    "shouldMatch": true
+  },
+  {
+    "label": "INSERT IGNORE INTO concatenation",
+    "text": "String q = \"INSERT IGNORE INTO t VALUES (\" + v + \")\";",
+    "shouldMatch": true
+  },
+  {
+    "label": "INSERT with two modifiers before INTO",
+    "text": "String q = \"INSERT LOW_PRIORITY IGNORE INTO t VALUES (\" + v + \")\";",
+    "shouldMatch": true
+  },
+  {
+    "label": "INSERT DELAYED INTO concatenation",
+    "text": "String q = \"INSERT DELAYED INTO t VALUES (\" + v + \")\";",
+    "shouldMatch": true
+  },
+  {
+    "label": "INSERT HIGH_PRIORITY INTO concatenation",
+    "text": "String q = \"INSERT HIGH_PRIORITY INTO t VALUES (\" + v + \")\";",
+    "shouldMatch": true
+  },
+  {
+    "label": "DROP INDEX concatenation",
+    "text": "String q = \"DROP INDEX \" + idx;",
+    "shouldMatch": true
+  },
+  {
+    "label": "DROP VIEW concatenation",
+    "text": "String q = \"DROP VIEW \" + v;",
+    "shouldMatch": true
+  },
+  {
+    "label": "prose: several words between \"where\" and the \"=\" is not a WHERE clause",
+    "text": "String m = \"where the value = \" + v;",
+    "shouldMatch": false
+  },
+  {
+    "label": "prose: \"where you like\" has no quoted LIKE pattern",
+    "text": "String m = \"where you like \" + place;",
+    "shouldMatch": false
+  },
+  {
+    "label": "prose: \"where x in\" has no parenthesised IN list",
+    "text": "String m = \"where x in \" + list;",
+    "shouldMatch": false
+  },
+  {
+    "label": "\"dropindex\" is one word, not the DROP keyword",
+    "text": "String s = \"dropindex \" + idx;",
+    "shouldMatch": false
+  },
+  {
+    "label": "\"into_the_void\" is one word, not the INTO keyword",
+    "text": "String s = \"insert into_the_void \" + x;",
+    "shouldMatch": false
+  },
+  {
+    "label": "known false positive: a literal opening \"where <word> LIKE '\" satisfies the WHERE..LIKE arm",
+    "text": "String m = \"where you like '\" + food;",
+    "shouldMatch": true
+  },
+  {
+    "label": "known false positive: a literal opening \"where <word> in (\" satisfies the WHERE..IN arm",
+    "text": "String m = \"where items in (\" + list;",
+    "shouldMatch": true
+  },
+  {
+    "label": "known false positive: a literal opening \"where <word> between\" satisfies the WHERE..BETWEEN arm",
+    "text": "String m = \"where lunch between \" + a;",
+    "shouldMatch": true
+  },
+  {
+    "label": "INSERT OR REPLACE INTO concatenation",
+    "text": "String q = \"INSERT OR REPLACE INTO t VALUES (\" + v + \")\";",
+    "shouldMatch": true
+  },
+  {
+    "label": "INSERT OR IGNORE INTO concatenation",
+    "text": "String q = \"INSERT OR IGNORE INTO t VALUES (\" + v + \")\";",
+    "shouldMatch": true
+  },
+  {
+    "label": "INSERT OR ROLLBACK INTO concatenation",
+    "text": "String q = \"INSERT OR ROLLBACK INTO t VALUES (\" + v + \")\";",
+    "shouldMatch": true
+  },
+  {
+    "label": "INSERT OR ABORT INTO concatenation",
+    "text": "String q = \"INSERT OR ABORT INTO t VALUES (\" + v + \")\";",
+    "shouldMatch": true
+  },
+  {
+    "label": "INSERT OR FAIL INTO concatenation",
+    "text": "String q = \"INSERT OR FAIL INTO t VALUES (\" + v + \")\";",
+    "shouldMatch": true
+  },
+  {
+    "label": "\"orreplace\" is one word, not the OR conflict clause",
+    "text": "String s = \"insert orreplace into t \" + x;",
+    "shouldMatch": false
+  },
+  {
+    "label": "UPDATE ONLY (Postgres) concatenation",
+    "text": "String q = \"UPDATE ONLY users SET name = \" + n;",
+    "shouldMatch": true
+  },
+  {
+    "label": "UPDATE with an AS alias concatenation",
+    "text": "String q = \"UPDATE users AS u SET u.name = \" + n;",
+    "shouldMatch": true
+  },
+  {
+    "label": "UPDATE of two tables concatenation",
+    "text": "String q = \"UPDATE t1, t2 SET t1.a = \" + v;",
+    "shouldMatch": true
+  },
+  {
+    "label": "prose: \"update .. set by\" is not an UPDATE statement",
+    "text": "String m = \"update the value set by \" + who;",
+    "shouldMatch": false
+  },
+  {
+    "label": "prose: \"update .. set out above\" is not an UPDATE statement",
+    "text": "String m = \"please update the list set out above \" + x;",
+    "shouldMatch": false
+  },
+  {
+    "label": "prose: a comma list needs the SET <column> = clause",
+    "text": "String m = \"update name, email set aside \" + x;",
+    "shouldMatch": false
+  },
+  {
+    "label": "WHERE with a ${} placeholder as the left operand",
+    "text": "String w = \"WHERE ${col} = \" + v;",
+    "shouldMatch": true
+  },
+  {
+    "label": "WHERE with a {0} placeholder as the left operand",
+    "text": "String w = \"WHERE {0} = \" + v;",
+    "shouldMatch": true
+  },
+  {
+    "label": "prose: a braced phrase with a space is not one operand",
+    "text": "String m = \"where {the thing} = \" + x;",
+    "shouldMatch": false
   }
 ]

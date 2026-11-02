@@ -26,7 +26,17 @@
  * two counts would abort the whole file on every line a Redact (non-vault)
  * detection legitimately rewrote.
  */
-import { readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 
 import { type platformRedactionScope, resolveRedactableArtifact } from '../remediation/redact.ts';
 
@@ -35,6 +45,91 @@ import { type platformRedactionScope, resolveRedactableArtifact } from '../remed
 // worker, off the hot hook path — but a pathological transcript must not
 // balloon the worker, so the read is capped.
 const DEFAULT_MAX_SCRUB_BYTES = 32 * 1024 * 1024;
+
+// The sibling this module writes before it renames, named
+// `<transcript>.<pid>.aka-scrub.tmp`.
+//
+// The pid is what makes the name per-process: two runs never share an inode, so
+// neither can publish the other's half-written bytes, and neither can inherit a
+// leftover's permission bits (`writeFileSync` applies `mode` only when it
+// CREATES). It is also the only thing that lets a later run tell a crashed run's
+// leftover from a live run's work in progress.
+//
+// PER-PROCESS, not per-call: the pid is all the name carries, and this rewrite
+// awaits between the sweep and the write, so a caller must not drive two
+// overlapping passes over one transcript. The callers drive it one file at a time.
+// Were two to overlap, the second's exclusive create would fail EEXIST and its
+// cleanup would remove the first's in-flight temp, so the first would abort at
+// the rename and report having done nothing — nothing corrupted, and the next
+// pass retries, but `wx` on its own does not hand two concurrent calls separate
+// temps. A nonce in the name would.
+const TMP_SUFFIX = '.aka-scrub.tmp';
+
+function tempPathFor(realPath: string): string {
+  return `${realPath}.${String(process.pid)}${TMP_SUFFIX}`;
+}
+
+// True unless the OS says no such process. EPERM means a process that exists and
+// is not ours — a live run, so its temp is not ours to sweep.
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+/**
+ * Delete temp files an earlier, killed run stranded beside this transcript.
+ *
+ * A process killed between the write and the rename leaves a file holding a
+ * whole copy of the transcript — the scrubbed lines, but also every other line
+ * around them — and nothing else would ever remove it.
+ *
+ * Deliberately the narrowest sweep that can do that, because it deletes: only
+ * siblings of THIS transcript, only names this module itself mints (the exact
+ * `<basename>.<digits>.aka-scrub.tmp` shape, plus the pid-free
+ * `<basename>.aka-scrub.tmp` a published build left behind — the trailing dot on
+ * the prefix keeps the transcript itself from ever matching), only regular files,
+ * and only when the pid in the name names no living process. A concurrent run's
+ * temp is therefore left alone; our own pid needs no liveness check, since the
+ * process asking is the one that would be using it.
+ */
+function sweepStrandedTemps(realPath: string): void {
+  const dir = dirname(realPath);
+  const prefix = `${basename(realPath)}.`;
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return; // best-effort: a directory we cannot list sweeps nothing
+  }
+  for (const name of names) {
+    if (!name.startsWith(prefix) || !name.endsWith(TMP_SUFFIX)) continue;
+    const pidPart = name.slice(prefix.length, name.length - TMP_SUFFIX.length);
+    // An empty pid part is the LEGACY shape — `<basename>.aka-scrub.tmp`, the name
+    // a published build wrote before the pid went into it. It names no owner to
+    // ask about, so it is always swept: leaving it keeps a whole plaintext copy
+    // of the transcript on disk for good, where the worst case of removing it is an
+    // older build's rename failing, which that build already treats as having
+    // done nothing.
+    if (pidPart !== '') {
+      if (!/^\d+$/.test(pidPart)) continue;
+      const pid = Number(pidPart);
+      if (pid !== process.pid && isProcessAlive(pid)) continue;
+    }
+    try {
+      const stranded = join(dir, name);
+      // lstat, and regular files only: a symlink or a directory wearing this
+      // name is not something this module wrote, so it is not ours to remove.
+      if (!lstatSync(stranded).isFile()) continue;
+      rmSync(stranded, { force: true });
+    } catch {
+      // best-effort — a sweep that cannot run must not stop the scrub.
+    }
+  }
+}
 
 export interface TailScrubDeps {
   // The vault-glue text tokenizer: self-scans, shields existing pointers so a
@@ -76,6 +171,13 @@ export async function scrubTranscriptTail(
     // Containment first: out of scope → never opened for writing.
     const realPath = resolveRedactableArtifact(filePath, deps.scope);
     if (realPath === null) return null;
+    // Ahead of every return below, because a stranded copy has to be cleared
+    // even on a pass that scrubs nothing: a transcript over the byte cap is
+    // skipped whole, and it only ever grows, so a pass that skips it once skips
+    // it forever and the copy would never be reached again. Runs only after the
+    // scope check, so an out-of-scope path is still never touched. It never
+    // touches the transcript itself, which stays byte-identical.
+    sweepStrandedTemps(realPath);
     // Snapshot the stat up front: the size gates the whole-file read, the mode
     // is re-applied to the rewrite, and size+mtime detect concurrent appends
     // just before the rename below.
@@ -108,14 +210,31 @@ export async function scrubTranscriptTail(
     }
     if (rewritten === 0) return { rewritten: 0 };
 
-    // Atomic rewrite: full write to a sibling temp file, then rename over the
-    // original — a crash mid-write leaves the transcript intact.
-    const tmpPath = `${realPath}.aka-scrub.tmp`;
+    // Atomic rewrite: full write to a per-process sibling temp file, then rename
+    // over the original — a crash mid-write leaves the transcript intact.
+    const tmpPath = tempPathFor(realPath);
     try {
       // Preserve the transcript's permission bits: without an explicit mode
       // the temp file is created at the umask default, and the rename would
       // widen a 0600 transcript to world-readable.
-      writeFileSync(tmpPath, lines.join('\n'), { mode: statBefore.mode & 0o777 });
+      //
+      // `wx` (O_EXCL) is what makes that mode binding: it creates the temp or
+      // fails, so the bytes can never land in an inode someone else's mode
+      // already decided, and it refuses to follow a symlink planted at the path
+      // — which would otherwise send this transcript's whole contents wherever
+      // the link pointed and then rename the link itself over the transcript.
+      // Anything already sitting there — a directory, a leftover the sweep would
+      // not touch — is doubt, and doubt leaves the transcript untouched.
+      writeFileSync(tmpPath, lines.join('\n'), {
+        mode: statBefore.mode & 0o777,
+        flag: 'wx',
+      });
+      // The `mode` option passes through the process umask, which can only
+      // clear bits: a 0660 transcript would be created 0640 under the usual 0022,
+      // so the write alone RE-APPLIES the bits rather than preserving them. The
+      // chmod is what makes it exact, and it is safe for the same reason `wx`
+      // is: the exclusive create means this path is an inode this call made.
+      chmodSync(tmpPath, statBefore.mode & 0o777);
       // The transcript is LIVE — Claude Code may have appended lines while the
       // scrub tokenized its in-memory snapshot. Renaming the snapshot over a
       // file that changed underneath would silently destroy those lines, so

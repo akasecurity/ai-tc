@@ -494,6 +494,213 @@ function derivedCorpora(rule: Rule): GrowthCorpus[] {
   }));
 }
 
+// The literal WORDS a pattern contains, in order of first appearance: maximal
+// runs of MIN_LITERAL_TOKEN_CHARS or more letters that sit in the pattern as
+// LITERAL TEXT, outside any character class and never an escape's letter (`\b`,
+// `\s`, `\n` and `\w` name no literal). Deduplicated, and capped at
+// MAX_LITERAL_TOKENS.
+//
+// A single left-to-right walk, like `literalPrefix`, deliberately: this reads
+// the same hostile `pattern` string that `fuelChars`' quadratic class scan does,
+// and a second regex over it would owe the same input-bound argument. A walk
+// owes none, because it is linear.
+const MIN_LITERAL_TOKEN_CHARS = 3;
+const MAX_LITERAL_TOKENS = 8;
+
+function literalTokens(pattern: string): string[] {
+  const tokens: string[] = [];
+  const seen = new Set<string>();
+  let token = '';
+  let inClass = false;
+  const flush = (): void => {
+    if (token.length >= MIN_LITERAL_TOKEN_CHARS && !seen.has(token)) {
+      seen.add(token);
+      tokens.push(token);
+    }
+    token = '';
+  };
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i];
+    // An escape's letter is a class or an anchor, never text the pattern
+    // matches, so it ends a token rather than extending one. Checked before the
+    // class state, so `\]` inside a class does not close it.
+    if (c === '\\') {
+      flush();
+      i++;
+      continue;
+    }
+    if (inClass) {
+      if (c === ']') inClass = false;
+      continue;
+    }
+    if (c === '[') {
+      flush();
+      inClass = true;
+      continue;
+    }
+    if (c !== undefined && /[A-Za-z]/.test(c)) {
+      token += c;
+      continue;
+    }
+    flush();
+  }
+  flush();
+  return tokens.slice(0, MAX_LITERAL_TOKENS);
+}
+
+// Structural characters the pattern's character classes ADMIT: one that is
+// neither alphanumeric nor whitespace, written as a literal inside a class that
+// is not negated. A token run is itself letters and spaces, so an alphanumeric
+// or whitespace character adds nothing a bare run does not already have; a
+// quote, bracket or operator is the gate a bare run cannot pass.
+//
+// A scan of its own rather than `fuelChars`, which answers a different question
+// and gets this one wrong in both directions. `fuelChars` keeps ONE
+// representative per class, read as `body.replace(/\\/g, '')[0]`, and that
+// representative is taken before the class's sense is considered:
+//
+//   - `[^"\n]` yields `"`, the first character the class REFUSES. Used as a
+//     gate it builds a corpus the pattern cannot enter, and — because a
+//     non-empty gate list suppresses the bare-prefix fallback below — it
+//     displaces the un-gated run that would have worked.
+//   - `[\w"]` yields `w`, which is filtered out as alphanumeric, and the `"`
+//     the class does admit is never offered at all. Filtering `fuelChars` by
+//     admission fixes the first shape and cannot reach this one.
+//
+// Widening `fuelChars` is not the answer: its single-representative design is
+// what bounds the derived probe count for every other tier, and its quadratic
+// class scan rests on an input bound that more matches would stress. This walk
+// is linear and local to the gate.
+//
+// `["']...` is the case that decides that a gate is needed at all. Its literal
+// prefix is empty, so an ungated run of its own `select` never enters the
+// pattern and costs nothing — measured 0.0ms at 64,000 chars against 596ms for
+// the same run behind one `"`.
+//
+// `-` is skipped deliberately. Inside a class it is a literal at the edges and
+// a range operator in the middle, and reading it wrong puts back exactly the
+// bug above: a gate the class does not admit.
+const MAX_TOKEN_GATES = 2;
+
+function gateChars(pattern: string): string[] {
+  const chars: string[] = [];
+  const seen = new Set<string>();
+  let inClass = false;
+  let negated = false;
+  const offer = (c: string | undefined): void => {
+    if (c === undefined || negated || seen.has(c)) return;
+    if (c === '-' || /[A-Za-z0-9\s]/.test(c)) return;
+    seen.add(c);
+    chars.push(c);
+  };
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i];
+    if (c === '\\') {
+      // A shorthand's letter names a class (`\w`, `\s`, `\d`); escaped
+      // punctuation is a literal the class admits (`\.`, `\[`, `\$`).
+      if (inClass) offer(pattern[i + 1]);
+      i++;
+      continue;
+    }
+    if (!inClass) {
+      if (c === '[') {
+        inClass = true;
+        negated = pattern[i + 1] === '^';
+        if (negated) i++;
+      }
+      continue;
+    }
+    if (c === ']') {
+      inClass = false;
+      negated = false;
+      continue;
+    }
+    offer(c);
+  }
+  return chars;
+}
+
+// What a token run has to carry before the pattern will look at it at all: the
+// pattern's literal prefix, and — appended to it — a structural character its
+// classes admit. Capped at MAX_TOKEN_GATES, and the prefix alone when the
+// pattern admits no structural character — which is the empty gate when it
+// names no prefix either, and that is correct for a pattern whose tokens need
+// nothing in front of them.
+//
+// Only one gate's worth of runs is built per character, and the bare run is not
+// added beside them. For an unanchored pattern it is not missing: a gated
+// corpus is the bare run with one character in front, so a match that starts
+// at position 1 sees the bare run itself.
+function tokenGates(pattern: string): string[] {
+  const prefix = literalPrefix(pattern);
+  const gates = gateChars(pattern)
+    .slice(0, MAX_TOKEN_GATES)
+    .map((c) => prefix + c);
+  return gates.length > 0 ? gates : [prefix];
+}
+
+/**
+ * Corpora built from the pattern's own literal words, repeated behind its gate.
+ *
+ * This is the one shape neither of the other two corpus families reaches.
+ * `GROWTH_CORPORA` is a fixed alphabet plus one hard-coded SQL vocabulary, so it
+ * carries a pattern's literal only by coincidence; `derivedCorpora` reaches the
+ * pattern's own text only through an example that MATCHES, and repeats that
+ * match or the match short of its last character — a unit the length of a whole
+ * finding, where what costs is one WORD of it repeated. What costs is a walk
+ * that has entered the pattern, is looking for a literal that never arrives,
+ * and restarts at the next occurrence of the literal that let it in.
+ *
+ * Two families, because two different things are being gated past:
+ *
+ *   - a run of ONE token, every other literal absent. This is the input for an
+ *     inner walk that a single literal opens — `select\b…\bfrom\b` entered at
+ *     every `select` in a run that holds no `from`, each entry rescanning the
+ *     rest of the run.
+ *   - a run of an ADJACENT PAIR of the pattern's tokens, the pair present and
+ *     every later literal absent. A walk whose opener is two words (`insert`
+ *     `into`, `drop` `table`) is not entered by either word alone, so the pair
+ *     is what a single-token run cannot reach.
+ *
+ * Each `build` fills to exactly `length`, as every corpus does; the growth tier
+ * never asks past `GROWTH_MAX_CHARS * 2`, well inside the `MAX_REGEX_INPUT_LENGTH`
+ * the matcher truncates at.
+ */
+export function literalTokenCorpora(rule: Rule): GrowthCorpus[] {
+  if (rule.matcher.type !== 'regex') return [];
+  const tokens = literalTokens(rule.matcher.pattern);
+  const corpora: GrowthCorpus[] = [];
+  for (const rawGate of tokenGates(rule.matcher.pattern)) {
+    // A gate that ends ALPHANUMERIC would run into the token behind it and
+    // spell a third word (`AKIA` before a run of `AKIA ` reads `AKIAAKIA`), so
+    // it takes a separator. One that ends in anything else must not — `_`, `-`
+    // and a quote are the gates whose whole point is to sit flush against what
+    // follows, as `ghp_` does, and a space after them is a gate the pattern no
+    // longer recognises.
+    const gate = /[A-Za-z0-9]$/.test(rawGate) ? `${rawGate} ` : rawGate;
+    const fill = (unit: string) => (length: number) =>
+      gate + repeatTo(unit, Math.max(length - gate.length, 0));
+    for (const [i, token] of tokens.entries()) {
+      corpora.push({
+        name: `literal token run ${JSON.stringify(gate + token + ' ')}`,
+        build: fill(`${token} `),
+      });
+      const partner = tokens[i + 1];
+      if (partner === undefined) continue;
+      corpora.push({
+        name: `literal token pair run ${JSON.stringify(`${gate}${token} ${partner} `)}`,
+        build: fill(`${token} ${partner} `),
+      });
+    }
+  }
+  return corpora;
+}
+
+/** Every corpus the growth tier measures `rule` on, cheapest family first. */
+export function growthCorporaFor(rule: Rule): GrowthCorpus[] {
+  return [...GROWTH_CORPORA, ...derivedCorpora(rule), ...literalTokenCorpora(rule)];
+}
+
 // A rule scoped to capture kinds does not run on a scan that names none, so
 // the growth tier scans as the first kind the rule names.
 function scanContextFor(rule: Rule): { eventKind: EventKind | undefined } {
@@ -768,7 +975,7 @@ export function superlinearGrowth(
   stepMs = 0,
 ): GrowthBreach | undefined {
   const context = scanContextFor(rule);
-  for (const corpus of [...GROWTH_CORPORA, ...derivedCorpora(rule)]) {
+  for (const corpus of growthCorporaFor(rule)) {
     let measuredMs: number | undefined;
     for (let small = GROWTH_START_CHARS; small * 2 <= GROWTH_MAX_CHARS; small *= 2) {
       const large = small * 2;

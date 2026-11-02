@@ -9,6 +9,7 @@ import {
   PageHead,
   RotateKeyDialog,
   useRenderClock,
+  vaultRefreshShortfallNote,
 } from '@akasecurity/dashboard-ui';
 import type {
   BlockedDetectionDescriptor,
@@ -30,6 +31,7 @@ export function ExceptionsClient({
   keyState,
   activePermanent,
   approvableBlocked,
+  vaultFingerprints,
   renderedAt,
 }: {
   items: ExceptionDescriptor[];
@@ -39,6 +41,12 @@ export function ExceptionsClient({
   keyState: FingerprintKeyState;
   activePermanent: ExceptionDescriptor[];
   approvableBlocked: number;
+  /**
+   * Vault entries off the current fingerprint key, and the total held. Counted
+   * in the store, so it reports the standing condition rather than whatever the
+   * last rotation on this tab happened to return.
+   */
+  vaultFingerprints: { stale: number; total: number };
   /** The instant the server rendered against. */
   renderedAt: number;
 }) {
@@ -70,6 +78,19 @@ export function ExceptionsClient({
   const [rotating, setRotating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, startTransition] = useTransition();
+
+  // A disclosure about a write that SUCCEEDED, derived from the store rather
+  // than held in state. It cannot ride on `error`: that prop feeds the two
+  // dialogs, and a rotation that worked closes its dialog, so a message put
+  // there would be mounted inside a subtree on its way out. Nor can it be
+  // `useState` set from the action's result — this route unmounts on the way to
+  // any grant detail page, and the stale rows outlive the component by days.
+  // Coming off a prop, it appears the moment rotateKey's revalidate lands and
+  // survives every reload until a rotation actually clears the rows.
+  const staleVaultNote = vaultRefreshShortfallNote(
+    vaultFingerprints.total - vaultFingerprints.stale,
+    vaultFingerprints.stale,
+  );
 
   // The rotate button and dialog only label WHICH version is being replaced, so
   // "absent" and "unreadable" both correctly read as unknown there. The strip
@@ -160,6 +181,21 @@ export function ExceptionsClient({
           </>
         }
       />
+
+      {/* A state that COST something while nothing failed — sev-high rather than
+          sev-critical, and never in place of the dialogs' error: offering the
+          rotation again is the one thing this must not read as, since rotating
+          again is what the note itself warns about. `role="alert"` so a reader
+          who arrives here after a rotation's revalidate is told, rather than
+          having to notice. */}
+      {staleVaultNote !== null && (
+        <div
+          role="alert"
+          className="mb-4 rounded-lg border border-border bg-sev-high-fill px-4 py-2.5 text-sm text-sev-high-ink"
+        >
+          {staleVaultNote}
+        </div>
+      )}
 
       {/* `?window=` re-queries recentBlocked, which is this region's data. */}
       <div aria-busy={navPending} className={pendingRegion}>

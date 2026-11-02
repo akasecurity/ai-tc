@@ -35,13 +35,17 @@
   // with. Outside the hash, every package would go on replaying a cached green
   // taken under the STRICTER rule, which is a false green for the one thing a
   // floor exists to prevent.
+  //
+  // eval/** is the fifth: plugins/claude-code's `test` task reads
+  // eval/*/cases.json, so editing a case alone would replay a cached green.
   "globalDependencies": [
     "tsconfig.base.json",
     "rules/**",
     "test/setup/**",
     "test/helpers/**",
     "test/fixtures/**",
-    "test/vitest/**"
+    "test/vitest/**",
+    "eval/**"
   ],
   "tasks": {
     // `native-host/**` is plugins/browser-extension's tsup outDir. An output a

@@ -962,3 +962,88 @@ describe('SqliteSecretVaultRepository.listDerefs', () => {
     });
   });
 });
+
+// The durable counterpart to what `SecretVault.refreshFingerprints` reports once.
+// That count is an event and is gone the moment it is printed; this is the
+// standing condition, and it is what lets a surface answer "is a rotation's
+// shortfall still outstanding?" on any later render — including after a rotation
+// run from the CLI, which no dashboard render ever saw a result for.
+//
+// It answers with a PAIR, and the last case here is why: a caller that asked for
+// the stale rows and then for the total could have a purge land between the two
+// reads and build a fraction out of numbers that were never true together.
+describe('SqliteSecretVaultRepository.countFingerprintEpochs', () => {
+  it('counts nothing stale when every row sits on the current version', () => {
+    vault.upsert(entry({ fingerprintKeyVersion: 2 }), NOW);
+    vault.upsert(
+      entry({ pointerId: 'pointer-b', valueFingerprint: FINGERPRINT_B, fingerprintKeyVersion: 2 }),
+      NOW,
+    );
+
+    expect(vault.countFingerprintEpochs(2)).toEqual({ stale: 0, total: 2 });
+  });
+
+  it('counts only the rows left behind, so the fresh ones are a real denominator', () => {
+    vault.upsert(entry({ fingerprintKeyVersion: 3 }), NOW);
+    vault.upsert(
+      entry({ pointerId: 'pointer-b', valueFingerprint: FINGERPRINT_B, fingerprintKeyVersion: 1 }),
+      NOW,
+    );
+
+    expect(vault.countFingerprintEpochs(3)).toEqual({ stale: 1, total: 2 });
+    // Read from the other side: with the key at v1 it is the OTHER row that is
+    // off-key. A count that ignored its argument would answer 1 to both.
+    expect(vault.countFingerprintEpochs(1)).toEqual({ stale: 1, total: 2 });
+    expect(vault.countFingerprintEpochs(9)).toEqual({ stale: 2, total: 2 });
+  });
+
+  // `<>` rather than `<`. A row stamped HIGHER than the key is equally
+  // unmatchable, and it is reachable: a key file restored from a backup, or
+  // replaced after being lost, leaves rows ahead of the version on disk.
+  it('counts a row stamped ahead of the current version, not just behind it', () => {
+    vault.upsert(entry({ fingerprintKeyVersion: 7 }), NOW);
+
+    expect(vault.countFingerprintEpochs(4)).toEqual({ stale: 1, total: 1 });
+  });
+
+  // SUM over no rows is NULL in SQLite, so the empty vault is the shape case as
+  // much as the semantic one: without the COALESCE this answers `stale: null`.
+  it('counts nothing in an empty vault, which is not a shortfall', () => {
+    expect(vault.countEntries()).toBe(0);
+    expect(vault.countFingerprintEpochs(1)).toEqual({ stale: 0, total: 0 });
+  });
+
+  // The torn-read property, pinned at the only place it can be: how many times
+  // the pass goes to the store. Two statements leave a window in which a purge
+  // commits, and the caller then reports a stale count taken over rows the
+  // total no longer includes — "1 of 0 stored values", or a negative remainder
+  // once the host subtracts. One statement closes it by construction.
+  it('reads the store once, so the two halves cannot disagree', () => {
+    vault.upsert(entry({ fingerprintKeyVersion: 1 }), NOW);
+    vault.upsert(
+      entry({ pointerId: 'pointer-b', valueFingerprint: FINGERPRINT_B, fingerprintKeyVersion: 5 }),
+      NOW,
+    );
+
+    const prepared: string[] = [];
+    const counting = new Proxy(raw, {
+      get(target, prop): unknown {
+        if (prop === 'prepare') {
+          return (sql: string) => {
+            prepared.push(sql);
+            return target.prepare(sql);
+          };
+        }
+        const value: unknown = Reflect.get(target, prop);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const counted = new SqliteSecretVaultRepository(counting);
+    // The constructor prepares its own statements eagerly; only the read below
+    // is under test.
+    prepared.length = 0;
+
+    expect(counted.countFingerprintEpochs(1)).toEqual({ stale: 1, total: 2 });
+    expect(prepared).toHaveLength(1);
+  });
+});

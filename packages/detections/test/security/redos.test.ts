@@ -19,6 +19,8 @@ import {
   GROWTH_START_CHARS,
   GROWTH_WINDOW_DEADLINE_MS,
   GROWTH_WINDOW_STEPS,
+  growthCorporaFor,
+  literalTokenCorpora,
   MAX_GROWTH_RATIO,
   OVER_BUDGET_READINGS,
   POLYNOMIAL_PROBES,
@@ -174,12 +176,34 @@ function describeProbeBreach(
 // lowercase-and-digit alphabet with per-rule DERIVED probes built from each
 // pattern's own literal prefix and character classes, so a rule gated behind a
 // literal like `ghp_(...)+$` is actually exercised past its prefix on its own
-// alphabet. Residual gaps, all documented rather than silently covered:
-// backtracking that needs a literal (non-class) character the pattern
-// repeats; polynomial blowup reachable only on a non-lowercase alphabet (the
-// fixed polynomial tier is lowercase-and-digit); and any rule that arrives at
-// runtime from a pulled or custom pack, which this suite never sees — that
-// path has its own runtime gate, built on this same battery.
+// alphabet; and at growth sizes it adds corpora built by repeating the
+// pattern's own literal WORDS behind the gate its classes admit
+// (`literalTokenCorpora`), which is what reaches an inner walk re-entered at
+// every occurrence of the literal that opens it.
+//
+// Residual gaps, all documented rather than silently covered:
+//
+//   - The literal-token corpora are a GROWTH tier only. The short exponential
+//     probes still repeat a single character, never a word, so a pattern that
+//     backtracks exponentially on a repeated literal is caught by its cost at
+//     2,000 chars or not at all.
+//   - A repeated literal that is under MIN_LITERAL_TOKEN_CHARS, is not
+//     alphabetic (`=>`, `--`, `::`), sits past the first MAX_LITERAL_TOKENS of
+//     its pattern, or needs more than two of the pattern's words adjacent to
+//     open the walk — the pair family reaches two.
+//   - A gate character a class admits in a form `gateChars` does not model: a
+//     range (`[!-/]`), a `-` at a class edge, or an escape that spells a
+//     character rather than naming a class (`\x22`, `\u0022`, `\p{Ps}`). It
+//     reads plain literals and escaped punctuation only. Every one of these
+//     costs coverage in the SAFE direction — a corpus the pattern cannot enter
+//     is linear, so an unreachable gate can never manufacture a breach — which
+//     is also why nothing but an exact assertion on the corpus built would
+//     notice, and why the two cases beside `gateChars` are written that way.
+//   - Polynomial blowup reachable only on a non-lowercase alphabet (the fixed
+//     polynomial tier is lowercase-and-digit).
+//   - Any rule that arrives at runtime from a pulled or custom pack, which this
+//     suite never sees — that path has its own runtime gate, built on this same
+//     battery, and the growth tier is not part of it.
 
 const bundled = discoverBundledRuleFiles().map(({ packDirAbs, ruleFile }) =>
   loadRule(packDirAbs, ruleFile),
@@ -766,6 +790,35 @@ describe('the probe battery itself', () => {
       });
     }
 
+    // The shape that closed the `literalTokenCorpora` gap, as a controlled pair:
+    // one pattern per inner walk, identical in every other character, so the
+    // guard below is the only thing the two cases differ by.
+    //
+    // The rule finds SQL built by string concatenation — a quoted literal
+    // holding a SQL statement, followed by `.`. The cost sits in the `select…
+    // from` arm's inner walk, which is reachable from any position inside a
+    // string literal: unguarded, it is re-entered at every `select` in the
+    // literal and rescans the rest of it from each one, so a run of the word
+    // `select` behind one quote with no `from` to end any walk is quadratic.
+    // Guarding the walk against its own opener makes each `select` consume the
+    // run once.
+    //
+    // Only a timing gate can hold that guard. It changes no match outcome, so
+    // no fixture pins it: the guard excludes `select` from text the walk may
+    // cross, and any input where that matters already contains a second
+    // `select` that the unguarded walk's own `from` search reaches first.
+    const UNGUARDED_INNER_WALK = 'select\\b(?:(?!\\1)[^\\n])*?\\bfrom\\b';
+    const GUARDED_INNER_WALK = 'select\\b(?:(?!\\1|\\bselect\\b)[^\\n])*?\\bfrom\\b';
+
+    const quotedSqlConcat = (innerWalk: string): string =>
+      '(["\'])(?=((?:(?!\\1)[^\\n])*?\\b(?:' +
+      innerWalk +
+      '|insert\\s+into\\b|update\\s+\\S+\\s+set\\b|delete\\s+from\\b|' +
+      'drop\\s+(?:table|database)\\b|where\\s+[\\w.`\\[\\]]+\\s*=)))\\2' +
+      '(?:(?!\\1(?:(?!\\1)[^\\n])*?\\b(?:select\\b|insert\\s+into\\b|' +
+      'update\\s+\\S+\\s+set\\b|delete\\s+from\\b|drop\\s+(?:table|database)\\b|' +
+      'where\\b))[^\\n])*?["\']\\s*\\.';
+
     const superlinear: [string, Rule][] = [
       [
         'lazy scans from every quote to a trailing operator',
@@ -791,6 +844,21 @@ describe('the probe battery itself', () => {
         regexRule('\\byaml\\.load\\s*\\((?![^)]*SafeLoader|[^)]*safe_load)', 'gi', [
           'data = yaml.load(user_input)',
         ]),
+      ],
+      [
+        'an inner walk re-entered at every occurrence of the literal that opens it',
+        regexRule(quotedSqlConcat(UNGUARDED_INNER_WALK), 'gi'),
+      ],
+      [
+        'an inner walk whose opener is two of the pattern words',
+        // The same cost, behind a gate no single word opens. Repeating either
+        // `insert` or `into` alone leaves the opener unmatched and the walk
+        // never entered — measured 0.1ms at 64,000 chars against 341ms for the
+        // two adjacent, which is the pair family's whole reason to exist.
+        regexRule(
+          '(["\'])(?:(?!\\1)[^\\n])*?\\binsert\\s+into\\b(?:(?!\\1)[^\\n])*?\\bvalues\\b',
+          'gi',
+        ),
       ],
     ];
 
@@ -866,19 +934,112 @@ describe('the probe battery itself', () => {
         'a call opener with no lookahead',
         regexRule('\\byaml\\.load\\(', 'g', ['data = yaml.load(user_input)']),
       ],
+      [
+        'the same inner walk, guarded against its own opener',
+        regexRule(quotedSqlConcat(GUARDED_INNER_WALK), 'gi'),
+      ],
     ])('passes a linear pattern: %s', (_label, rule) => {
       const native = measuredGrowth(rule);
       expect(native && describeBreach(native), 'thread CPU time').toBeUndefined();
       const stepped = measuredGrowthOn16msSteps(rule);
       expect(stepped && describeBreach(stepped), 'a 16ms-step CPU clock').toBeUndefined();
     });
+
+    // What the literal-token family is FOR, asserted on the one case that
+    // needed it. `catches` above would also pass if some fixed corpus happened
+    // to carry the word `select` densely enough, and then deleting the whole
+    // family would leave the table green. This reads the ATTRIBUTION instead:
+    // the breach has to come from a corpus the family built.
+    //
+    // The fixed corpora do carry quoted SQL keywords — the `JSON array of
+    // quoted SQL keywords` and `single-quoted keyword run` ones — and they are
+    // not enough: each closes its quote, and the pattern's inner walk is
+    // bounded by `(?!\1)`, so a closed literal ends the walk before it can
+    // rescan anything. What costs is one OPEN quote followed by a long run of
+    // the pattern's own `select`, which is the shape only this family builds.
+    it("attributes the breach to a corpus built from the pattern's own literals", () => {
+      const rule = regexRule(quotedSqlConcat(UNGUARDED_INNER_WALK), 'gi');
+      const breach = firstBreach(measuredGrowth, rule);
+      expect(breach, 'the growth tier passed a pattern that is quadratic at scale').toBeDefined();
+      if (!breach) return;
+      expect(
+        breach.corpus,
+        `the breach came from the ${breach.corpus} corpus (${describeBreach(breach)}). This case ` +
+          `exists to prove the literal-token family is what sees this pattern: if a corpus ` +
+          `outside that family now catches it, the family is no longer load-bearing here and ` +
+          `this case has stopped testing what it says it does — do not just widen the matcher.`,
+      ).toMatch(/^literal token /);
+    });
+
+    // And the family's own non-vacuity from the other side: the corpora it
+    // builds for this pattern must actually contain the pattern's literal
+    // behind its quote. A family that returned an empty list, or dropped the
+    // gate, would leave every assertion above resting on some other corpus.
+    it("builds a run of the pattern's own literal behind the quote its class admits", () => {
+      const rule = regexRule(quotedSqlConcat(UNGUARDED_INNER_WALK), 'gi');
+      const corpora = literalTokenCorpora(rule);
+      const run = corpora.find(
+        (c) => c.name.includes('literal token run') && c.name.includes('select'),
+      );
+      expect(run, `built ${String(corpora.length)} corpora, none a run of 'select'`).toBeDefined();
+      if (!run) return;
+      const text = run.build(GROWTH_START_CHARS);
+      expect(text).toHaveLength(GROWTH_START_CHARS);
+      expect(
+        text.startsWith('"') || text.startsWith("'"),
+        `built ${JSON.stringify(text.slice(0, 24))}`,
+      ).toBe(true);
+      expect(text.slice(1)).toMatch(/^(?:select )+/);
+      expect(text, 'a run holding `from` ends every walk at once and costs nothing').not.toContain(
+        'from',
+      );
+    });
+
+    // A gate has to be a character the pattern's classes ADMIT, and both ways
+    // of getting that wrong are COVERAGE ONLY — a corpus the pattern cannot
+    // enter is linear, so it can never manufacture a false breach, and nothing
+    // else in this file would notice. Hence an exact assertion on which run was
+    // built rather than a timing one.
+    //
+    // `gateChars` exists instead of reading `fuelChars` because that keeps one
+    // representative per class, `body.replace(/\\/g, '')[0]`, chosen before the
+    // class's sense is considered: `[^"\n]` offers the `"` it REFUSES, and
+    // `[\w"]` offers the `w` that is filtered out as alphanumeric while never
+    // offering the `"` it admits. Filtering `fuelChars` by admission reaches
+    // the first of those and cannot reach the second.
+    it.each([
+      [
+        'a negated class supplies no gate, so the run is built bare',
+        '([^"\\n]*)(?:select\\s+)+from',
+        'select ',
+      ],
+      [
+        'a quote past the first character of a positive class still gates the run',
+        '([\\w"]*)(?:select\\s+)+from',
+        '"select ',
+      ],
+    ])('%s', (_label, pattern, expected) => {
+      const runs = literalTokenCorpora(regexRule(pattern, 'gi'))
+        .map((c) => c.name)
+        .filter((name) => name.startsWith('literal token run') && name.includes('select'));
+      // Exact, so each case rejects the other's gate as well as asserting its
+      // own: a family that built both would pass a `toContain` either way.
+      expect(runs).toEqual([`literal token run ${JSON.stringify(expected)}`]);
+    });
   });
 
   // The growth tier's verdicts made deterministic. The scans run for real and
   // are ignored: a scripted clock supplies every reading, so each case states
   // exactly what was read at each size. The rule is a fixed-length key with no
-  // examples, so it is measured on the fixed corpora only and every corpus
-  // reads the clock the same number of times.
+  // examples, so every corpus it is measured on reads the clock the same number
+  // of times.
+  //
+  // How MANY corpora that is comes from `growthCorporaFor`, never from
+  // `GROWTH_CORPORA`: a rule is measured on the fixed corpora plus whatever the
+  // derived and literal-token families build for it, so a script sized to the
+  // fixed list alone runs out partway through the last corpus and every case
+  // here fails as `scan N is past the M scripted` — a corpus-family change
+  // reading as a scripted-clock bug.
   const scriptedRule = Rule.parse({
     specVersion: 1,
     id: 'test-pack/scripted',
@@ -953,7 +1114,7 @@ describe('the probe battery itself', () => {
   // `perCorpus` is what one corpus reads. A rule that is cleared reads it once
   // per corpus; a breach is returned on the first corpus and reads it once.
   function runCleared(perCorpus: readonly number[]): void {
-    const { clock, unread } = scripted(GROWTH_CORPORA.flatMap(() => perCorpus));
+    const { clock, unread } = scripted(growthCorporaFor(scriptedRule).flatMap(() => perCorpus));
     const breach = superlinearGrowth(scriptedRule, clock);
     expect(breach && describeBreach(breach)).toBeUndefined();
     expect(unread(), 'scripted scans the tier did not make').toBe(0);

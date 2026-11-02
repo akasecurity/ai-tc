@@ -328,6 +328,26 @@ describe('redactLeakedKeys', () => {
       expect(existsSync(stranded)).toBe(false);
     });
 
+    it('sweeps the pid-free copy an older build stranded', () => {
+      const artifact = join(rolloutRoot, 'legacy.jsonl');
+      writeFileSync(artifact, `leaked ${ROLLOUT_KEY} here`);
+      // The name this module wrote before the pid went into it. No pid means no
+      // owner to ask about, so it is swept unconditionally — otherwise the one
+      // leftover shape already sitting on real disks is the one shape the sweep
+      // cannot see, and a whole plaintext copy stays there for good.
+      const legacy = `${artifact}.aka-redact.tmp`;
+      writeFileSync(legacy, `stranded copy ${ROLLOUT_KEY} here`);
+
+      const count = redactLeakedKeys(
+        [{ where: { filePath: artifact }, rawValue: ROLLOUT_KEY }],
+        scope,
+      );
+
+      expect(count).toBe(1);
+      expect(existsSync(legacy)).toBe(false);
+      expect(orphanedTmpEntries(rolloutRoot)).toEqual([]);
+    });
+
     it('sweeps a stranded copy even when this pass strikes nothing', () => {
       const file = join(rolloutRoot, 'nostrike.jsonl');
       const original = 'nothing leaked here';
@@ -367,8 +387,6 @@ describe('redactLeakedKeys', () => {
       // the sweep would widen to any `*.aka-redact.tmp` in the directory and
       // take a neighbour's bytes with it.
       const bystanders = [
-        // The pid-free shape: nothing this module mints.
-        `${file}.aka-redact.tmp`,
         `${file}.notapid.aka-redact.tmp`,
         `${file}. 7.aka-redact.tmp`,
         // A temp belonging to a DIFFERENT artifact in the same directory.
@@ -421,6 +439,29 @@ describe('redactLeakedKeys', () => {
       // remediation that exists BECAUSE the file held a secret must not make it
       // more readable than it was.
       expect(statSync(file).mode & 0o777).toBe(0o600);
+    });
+
+    it('publishes a group-writable artifact at its exact mode', (ctx) => {
+      if (process.platform === 'win32') ctx.skip('POSIX permission bits');
+      // 0660 carries bits the usual 0022 umask CLEARS on create, so the write's
+      // `mode` option alone narrows it to 0640 — re-applying the bits rather
+      // than preserving them. The chmod after the exclusive create is what
+      // makes it exact. The probe measures what this process's umask would have
+      // left behind, so a umask that narrows nothing in 0660 says so instead of
+      // passing blind.
+      const probe = join(rolloutRoot, 'umask-probe');
+      writeFileSync(probe, '', { mode: 0o660 });
+      if ((statSync(probe).mode & 0o777) === 0o660) {
+        ctx.skip('this process umask narrows nothing in 0660');
+      }
+
+      const file = join(rolloutRoot, 'exact-mode.jsonl');
+      writeFileSync(file, `leaked ${ROLLOUT_KEY} here`);
+      chmodSync(file, 0o660);
+
+      redactLeakedKeys([{ where: { filePath: file }, rawValue: ROLLOUT_KEY }], scope);
+
+      expect(statSync(file).mode & 0o777).toBe(0o660);
     });
 
     it('clears a leftover carrying its own pid rather than writing through it', (ctx) => {

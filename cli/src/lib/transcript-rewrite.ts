@@ -21,6 +21,7 @@
  * asked only to tell a crashed run's temp file from a live run's.
  */
 import {
+  chmodSync,
   lstatSync,
   readdirSync,
   readFileSync,
@@ -105,6 +106,15 @@ export function containedRealPath(filePath: string, roots: readonly string[]): s
 // permission bits (`writeFileSync` applies `mode` only when it CREATES). It is
 // also the only thing that lets a later run tell a crashed run's leftover from
 // a live run's work in progress.
+//
+// PER-PROCESS, not per-call: the pid is all the name carries, and this rewrite
+// awaits between the sweep and the write, so a caller must not drive two
+// overlapping passes over one transcript. The callers drive it one file at a time.
+// Were two to overlap, the second's exclusive create would fail EEXIST and its
+// cleanup would remove the first's in-flight temp, so the first would abort at
+// the rename and report having done nothing — nothing corrupted, and the next
+// pass retries, but `wx` on its own does not hand two concurrent calls separate
+// temps. A nonce in the name would.
 const TMP_SUFFIX = '.aka-prune.tmp';
 
 function tempPathFor(realPath: string): string {
@@ -137,6 +147,10 @@ function isProcessAlive(pid: number): boolean {
  * when the pid in the name names no living process. A concurrent run's temp is
  * therefore left alone; our own pid needs no liveness check, since the process
  * asking is the one that would be using it.
+ *
+ * Unlike the plugins' sweeps, this one accepts no pid-free legacy name: this
+ * suffix never reached a published build without the pid in it, so there is no
+ * shape of it stranded on any disk to clear.
  */
 function sweepStrandedTemps(realPath: string): void {
   const dir = dirname(realPath);
@@ -230,6 +244,12 @@ export async function rewriteContainedFile(
     // Anything already sitting there — a directory, a leftover the sweep would
     // not touch — is doubt, and doubt aborts with the transcript untouched.
     writeFileSync(tmpPath, result.text, { mode: before.mode & 0o777, flag: 'wx' });
+    // The `mode` option passes through the process umask, which can only
+    // clear bits: a 0660 transcript would be created 0640 under the usual 0022,
+    // so the write alone RE-APPLIES the bits rather than preserving them. The
+    // chmod is what makes it exact, and it is safe for the same reason `wx`
+    // is: the exclusive create means this path is an inode this call made.
+    chmodSync(tmpPath, before.mode & 0o777);
     // The transcript may be live. Renaming a snapshot over a file that changed
     // underneath would silently destroy the appended lines, so ANY difference
     // since the first stat aborts: a skipped restore can be re-run, lost

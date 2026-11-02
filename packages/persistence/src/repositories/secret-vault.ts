@@ -801,4 +801,49 @@ export class SqliteSecretVaultRepository {
       `SELECT COUNT(*) AS n FROM secret_vault v WHERE ${REUSED_PREDICATE}`,
     );
   }
+
+  /**
+   * Every entry held, and how many of them are NOT under `currentVersion` — the
+   * standing record of a fingerprint-key rotation whose re-key did not reach
+   * every row.
+   *
+   * This is the durable form of what `SecretVault.refreshFingerprints` reports
+   * once. That count is an event, gone the moment it is printed; this is the
+   * condition, and it stays true until some later rotation re-keys the rows. It
+   * is therefore the one that can answer "is a shortfall still outstanding?" —
+   * including for a rotation run from the CLI, which no dashboard render saw.
+   *
+   * `<>` rather than `<`: a row ahead of the current version is equally
+   * unmatchable, and that is reachable — a key file restored from a backup, or
+   * replaced after being lost, leaves rows stamped higher than the key is.
+   *
+   * Both numbers come from ONE statement, which is why this returns a pair
+   * instead of offering two counts to call. Read separately, a purge landing
+   * between them hands back a `stale` counted over rows the later `total` no
+   * longer includes, and a disclosure built from that pair states a fraction
+   * true of no state of the table — "1 of 0 stored values", or a negative
+   * remainder. Same reasoning as `purgeVault`'s count, which comes from the
+   * delete rather than from a `countEntries` standing beside it.
+   */
+  countFingerprintEpochs(currentVersion: number): { stale: number; total: number } {
+    // Two different absences, guarded once each. COALESCE is the SQL's: SUM over
+    // no rows is NULL in SQLite, so an empty vault would answer `stale: null`
+    // and the row type would be a lie. The `??` below is the reader's: an
+    // aggregate with no GROUP BY always yields a row, so it stands for a
+    // statement that returned none at all. Folding the second over the first —
+    // `row?.stale ?? 0` — would leave the COALESCE guarding nothing a test can
+    // see, which is how a redundant layer survives a change that breaks it.
+    const row = getRow<{ stale: number; total: number }>(
+      this.db.prepare(
+        `SELECT COUNT(*) AS total,
+                COALESCE(
+                  SUM(CASE WHEN fingerprint_key_version <> :currentVersion THEN 1 ELSE 0 END),
+                  0
+                ) AS stale
+           FROM secret_vault`,
+      ),
+      { currentVersion },
+    ) ?? { stale: 0, total: 0 };
+    return { stale: row.stale, total: row.total };
+  }
 }

@@ -568,5 +568,50 @@
     "label": "known gap: FROM more than three lines after SELECT is not matched",
     "text": "sql = <<~SQL\n  SELECT #{cols}\n  a\n  b\n  c\n  FROM users\nSQL",
     "shouldMatch": false
+  },
+  {
+    "label": "bare boolean column then AND (quoted)",
+    "text": "\" WHERE active AND id = #{id}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "NOT boolean column then AND (quoted)",
+    "text": "\" WHERE NOT deleted AND id = #{id}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "bare boolean column then OR (quoted)",
+    "text": "\" WHERE active OR id = #{id}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "double-quoted heredoc tag matches only the multiline rule (the other rule must stay silent: one finding per statement)",
+    "text": "sql = <<~\"SQL\"\n  SELECT * FROM t WHERE id = #{id}\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "single-quoted heredoc tag matches only the multiline rule (the other rule must stay silent: one finding per statement)",
+    "text": "sql = <<~'SQL'\n  SELECT * FROM t WHERE id = #{id}\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "PHP double-quoted heredoc tag matches only the multiline rule (the other rule must stay silent: one finding per statement)",
+    "text": "$sql = <<<\"SQL\"\nSELECT * FROM t WHERE id = $id\nSQL;",
+    "shouldMatch": false
+  },
+  {
+    "label": "WHERE on the line after a closing quote matches only the multiline rule (the other rule must stay silent: one finding per statement)",
+    "text": "sql = \"UPDATE t SET name = 'x'\n  WHERE id = #{id}\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "quote closing inside a heredoc statement line matches only the multiline rule (the other rule must stay silent: one finding per statement)",
+    "text": "<<~SQL\n  UPDATE t SET a = 'q' WHERE b = #{x}\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "single-line quoted statement matches only the quoted rule",
+    "text": "sql = \"UPDATE t SET a = 'q' WHERE b = #{x}\"",
+    "shouldMatch": true
   }
 ]

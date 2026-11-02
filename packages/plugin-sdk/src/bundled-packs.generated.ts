@@ -10,7 +10,7 @@
 // Regenerate after adding/removing a rule or pack under rules/:
 //   pnpm --filter @akasecurity/plugin-sdk gen:bundled-packs
 //
-// 10 packs / 127 rules.
+// 10 packs / 128 rules.
 /* eslint-disable simple-import-sort/imports */
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import agentEgressAgentProbeHost from '../../../rules/agent-egress/agent-probe-host.json';
@@ -195,7 +195,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'code-flaws',
     name: 'Code Security Flaws',
-    version: '0.1.5',
+    version: '0.1.6',
     rawRules: [
       codeFlawsSqlInjectConcat,
       codeFlawsSqlInjectConcatDot,

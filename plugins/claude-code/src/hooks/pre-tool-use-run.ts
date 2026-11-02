@@ -345,6 +345,12 @@ export async function runPreToolUse(
   });
   const scopeKey = stampFor(gateway, account, captureScopeKey(input, filePath));
 
+  // What a Bash command writes to a file, read before the fields are scanned:
+  // a command with an extracted payload is judged on that payload as code, so
+  // its own capture drops the code_flaw rules (see ScanContext). A command with
+  // none keeps them.
+  const bashPayloads =
+    toolName === 'Bash' ? bashWrittenPayloads(stringAtPath(effectiveInput, ['command']) ?? '') : [];
   const scanned: ScannedField[] = [];
   const vaulted: PointersByText = new Map();
   try {
@@ -385,6 +391,8 @@ export async function runPreToolUse(
           // `redactFallback` inside the runtime, the one place the emitted
           // decision, the recorded action and the ledger all read.
           rewritable: !spec.executable,
+          // Only the command itself: a data field of the call keeps its rules.
+          ...(spec.executable && bashPayloads.length > 0 ? { commandWritesScanned: true } : {}),
         },
       );
       scanned.push({ spec, text, result });
@@ -395,9 +403,8 @@ export async function runPreToolUse(
     // What a Bash command writes to a file is code: scan it as a code_change
     // under that file, where code_flaw rules apply (they skip the command line
     // itself, see ruleApplies). Not rewritable: it sits inside the command.
-    if (toolName === 'Bash' && !scanned.some((f) => f.result.scanIncomplete !== undefined)) {
-      const command = stringAtPath(effectiveInput, ['command']) ?? '';
-      for (const payload of bashWrittenPayloads(command)) {
+    if (!scanned.some((f) => f.result.scanIncomplete !== undefined)) {
+      for (const payload of bashPayloads) {
         if (callScanBudgetSpent(callStartedAt)) break;
         const result = await captureStamped(
           runtime,
@@ -411,7 +418,13 @@ export async function runPreToolUse(
           scopeKey,
           { persist: 'with-findings', kindScopedRules: false, rewritable: false },
         );
-        scanned.push({ spec: { path: ['command'], executable: true }, text: payload.text, result });
+        // Synthetic: the text is a part of the command, not the value at any
+        // path in the input, so nothing is ever written back through `path`.
+        scanned.push({
+          spec: { path: ['command'], executable: true, text: payload.text },
+          text: payload.text,
+          result,
+        });
         if (result.scanIncomplete !== undefined) break;
       }
     }

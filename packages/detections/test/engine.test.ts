@@ -604,11 +604,29 @@ describe('code_flaw rules and tool_use captures', () => {
   });
   const text = 'psql -c "alter role x password=abc"';
 
-  it('skips a code_flaw rule on a command, runs it on code and on unknown kinds', () => {
-    expect(scan(text, [flaw], { eventKind: 'tool_use' })).toHaveLength(0);
+  it('skips a code_flaw rule on a command whose written files are scanned, runs it on code and on unknown kinds', () => {
+    expect(scan(text, [flaw], { eventKind: 'tool_use', commandWritesScanned: true })).toHaveLength(
+      0,
+    );
     expect(scan(text, [flaw], { eventKind: 'code_change', filePath: 'a.py' })).toHaveLength(1);
     expect(scan(text, [flaw], { eventKind: 'response' })).toHaveLength(1);
     expect(scan(text, [flaw])).toHaveLength(1);
+  });
+
+  it('keeps a code_flaw rule on any tool_use capture not marked as a command with extracted writes', () => {
+    const body = 'data = pickle.loads(blob)';
+    const pickle = RuleSchema.parse({
+      specVersion: 1,
+      id: 'test/pickle',
+      name: 'pickle test rule',
+      category: 'code_flaw',
+      severity: 'high',
+      matcher: { type: 'regex', pattern: 'pickle\\.loads\\(', flags: 'g' },
+    });
+    expect(scan(body, [pickle], { eventKind: 'tool_use' })).toHaveLength(1);
+    expect(
+      scan(body, [pickle], { eventKind: 'tool_use', commandWritesScanned: false }),
+    ).toHaveLength(1);
   });
 });
 

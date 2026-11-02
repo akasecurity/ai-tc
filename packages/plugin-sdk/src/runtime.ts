@@ -929,6 +929,7 @@ export function createPluginRuntime(
       {
         filePath: input.metadata?.filePath,
         eventKind: opts.kindScopedRules === false ? undefined : input.kind,
+        commandWritesScanned: opts.commandWritesScanned,
       },
       {
         sourceTool: input.sourceTool,
@@ -1330,6 +1331,9 @@ export interface CaptureOptions extends DecisionOptions {
   // `input.kind`, and the text is still scanned once, in the same scan call
   // (in process or in the worker) as any other capture.
   kindScopedRules?: boolean;
+  // A command capture whose written files the caller extracted and scans as
+  // their own captures: code_flaw rules skip this text (see ScanContext).
+  commandWritesScanned?: boolean;
   // Records a clean capture that 'with-findings' would skip, so an attached
   // machine forwards it, with its content cut to `maxChars` (`cutForForward`).
   // A capture with findings, or a refused one, is recorded as it would be

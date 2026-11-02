@@ -264,6 +264,13 @@ function isCorroborated(
 export interface ScanContext {
   filePath?: string | undefined;
   eventKind?: EventKind | undefined;
+  // Set on a command capture whose written files (a heredoc or a quoted echo
+  // into a file) were extracted and are scanned on their own as code. Only then
+  // do code_flaw rules skip the command line: the command's quoting is not
+  // source, and its payload is judged where the code is. Any other capture
+  // (an MCP argument, another harness's shell, a command with no extracted
+  // payload) keeps the rule family.
+  commandWritesScanned?: boolean | undefined;
 }
 
 // Pass 1: runs the primitive matchers for every applicable rule against
@@ -276,10 +283,11 @@ function buildCandidates(
   ruleset: Rule[],
   extension: string | undefined,
   eventKind: EventKind | undefined,
+  commandWritesScanned: boolean | undefined,
 ): Candidate[] {
   const candidates: Candidate[] = [];
   for (const rule of ruleset) {
-    if (!ruleApplies(rule, extension, eventKind)) continue;
+    if (!ruleApplies(rule, extension, eventKind, commandWritesScanned)) continue;
     const spans = MATCHERS[rule.matcher.type](matchText, rule);
 
     for (const span of spans) {
@@ -497,12 +505,17 @@ function ruleApplies(
   rule: Rule,
   extension: string | undefined,
   eventKind: EventKind | undefined,
+  commandWritesScanned: boolean | undefined,
 ): boolean {
-  // A tool_use capture is a command about to run, not source: its code_flaw
-  // findings are the command's own quoting (SQL keywords in a psql argument, a
-  // password flag), never a flaw in code. What a command writes to a file is
-  // captured separately as a code_change and judged there.
-  if (eventKind === 'tool_use' && rule.category === 'code_flaw') return false;
+  // A command whose written files are scanned separately is not source: its
+  // code_flaw findings are the command's own quoting (SQL keywords in a psql
+  // argument, a password flag), never a flaw in code. What it writes to a file
+  // is captured as a code_change and judged there. A tool_use capture that
+  // carries no such flag (an MCP argument, a shell from another harness) is
+  // not known to be a command, so the rule family still runs on it.
+  if (commandWritesScanned === true && eventKind === 'tool_use' && rule.category === 'code_flaw') {
+    return false;
+  }
   const scope = rule.appliesTo;
   if (!scope) return true;
   if (
@@ -615,7 +628,13 @@ function scanText(text: string, ruleset: Rule[], context: ScanContext | undefine
   // still finds a match whose boundary is a format character" suite in
   // test/security/unicode.test.ts.
   const normalization = normalizeFormatChars(text);
-  const originalCandidates = buildCandidates(text, ruleset, extension, context?.eventKind);
+  const originalCandidates = buildCandidates(
+    text,
+    ruleset,
+    extension,
+    context?.eventKind,
+    context?.commandWritesScanned,
+  );
   if (!normalization) return gate(originalCandidates, text, undefined);
   const pooledOriginal = originalCandidates.map((candidate) =>
     withNormalizedSpan(candidate, normalization),
@@ -626,6 +645,7 @@ function scanText(text: string, ruleset: Rule[], context: ScanContext | undefine
     ruleset,
     extension,
     context?.eventKind,
+    context?.commandWritesScanned,
   ).map((candidate) => mapCandidateToOriginal(candidate, normalization, text));
   const findings = gate([...pooledOriginal, ...normalizedCandidates], text, normalization);
   // The two passes can each independently find the same secret occurrence —

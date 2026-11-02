@@ -123,13 +123,17 @@ describe('a Bash command that writes code to a file', () => {
     expect((await findings()).map((f) => f.ruleId)).toContain('code-flaws/deser-pickle');
   });
 
-  it('drops code_flaw rules only inside the written body, keeping them on the rest of a flat command', async () => {
-    // A flat command: its one heredoc body is a region, and the delimiter
-    // spelled like a flaw sits outside it, on the command line.
-    const outside = "cat <<'pickle.loads(' > notes.txt\nx = 1\npickle.loads(\n";
-    expect(denies(await run('Bash', { command: outside }))).toBe(true);
+  it('drops code_flaw rules only inside the written text, keeping them on the rest of the command', async () => {
+    // The flaw-looking name (`debug:true` is a dev-debug match, on any file) is
+    // on the marker line or in the echo target, outside the region: it is denied.
+    const heredocName = 'cat <<EOF > debug:true\nx = 1\nEOF\n';
+    expect(denies(await run('Bash', { command: heredocName }))).toBe(true);
+    const echoName = "echo 'x = 1' > debug:true";
+    expect(denies(await run('Bash', { command: echoName }))).toBe(true);
     const inside = "cat <<'EOF' > notes.txt\nobj = pickle.loads(blob)\nEOF\n";
     expect(denies(await run('Bash', { command: inside }))).toBe(false);
+    const echoInside = "echo 'obj = pickle.loads(blob)' > notes.txt";
+    expect(denies(await run('Bash', { command: echoInside }))).toBe(false);
   });
 
   it('control: a pure file write whose text only looks like code on the command line passes', async () => {

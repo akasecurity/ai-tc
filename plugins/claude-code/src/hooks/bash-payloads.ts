@@ -82,9 +82,9 @@ const REDIRECT =
 // Any other command word (`python`, `psql`, `ssh`) takes the body as its input.
 const WRITERS = new Set(['cat', 'tee']);
 
-// A redirect (with its target, or an fd dup) that may follow a heredoc operator.
-const AFTER_REDIRECT =
-  /(?<![\w&])(?:\d*|&)>>?\|?[ \t]*(?:'[^']*'|"[^"]*"|[^\s'"|;&<>()]+)|(?<![\w&])\d*>&\d*-?/g;
+// A redirect with its target that may follow a heredoc operator (an fd dup was
+// rejected before this is read).
+const AFTER_REDIRECT = /(?<![\w&])(?:\d*|&)>>?\|?[ \t]*(?:'[^']*'|"[^"]*"|[^\s'"|;&<>()]+)/g;
 
 // What the stage `before` (its words up to the heredoc operator, or the whole
 // stage) is: 'tee' with the span of its one file word, another plain writer
@@ -184,7 +184,7 @@ const OPERATOR = /<<(-?)[ \t]*(?:'([^'\n]+)'|"([^"\n]+)"|\\?([A-Za-z0-9_][\w.-]*
 // and nothing after it but the end of the command. A printf whose string holds
 // a conversion is a format, not the text written, and is not read.
 const QUOTED_WRITE =
-  /(echo|printf)[ \t]+(?:-[A-Za-z]+[ \t]+)*(?:'([^']*)'|"((?:[^"\\]|\\.)*)")[ \t]*>>?[ \t]*(?:'([^']+)'|"([^"]+)"|([^\s'"|;&<>()]+))(?=[ \t]*$)/y;
+  /(echo|printf)[ \t]+(?:-[A-Za-z]+[ \t]+)*(?:'([^']*)'|"((?:[^"\\]|\\.)*)")[ \t]*>>?[ \t]*(?:'([^']+)'|"([^"]+)"|([^\s'"|;&<>()]+))(?=[ \t]*$)/dy;
 
 // A QUOTED_WRITE match read as a payload, or undefined when it is not one.
 function quotedWrite(m: RegExpExecArray | null): BashPayload | undefined {
@@ -204,11 +204,16 @@ function quotedWrite(m: RegExpExecArray | null): BashPayload | undefined {
   if (isDevice(path) || path.startsWith('&') || hasDotDot(path)) return undefined;
   // Plain path characters only: no expansion, glob or brace decides the name.
   if (!/^[\w./@%+,:-]+$/.test(path)) return undefined;
+  // The region is the text inside the quotes, the same span that is scanned as
+  // the payload: a match touching the echo word, the quotes, the redirect or
+  // the target stays on the command scan.
+  const inside = m.indices?.[2] ?? m.indices?.[3];
+  if (inside === undefined) return undefined;
   return {
     path,
     text,
-    start: m.index,
-    end: m.index + m[0].length,
+    start: inside[0],
+    end: inside[1],
   };
 }
 
@@ -264,14 +269,11 @@ export function bashWrittenPayloads(command: string): BashExtraction {
   const text = command.endsWith('\n') ? command.slice(0, -1) : command;
   const base = PREFIX.exec(text)?.[0].length ?? 0;
   const rest = text.slice(base);
-  if (base > 0 && !plainAscii(text.slice(0, base))) return none();
   return quotedStatement(rest, base) ?? heredocStatement(rest, base) ?? none();
 }
 
-// `echo '...' > file` and nothing else. The region is the whole statement, not
-// just the text: the statement is fully accounted for (a plain echo or printf
-// word, one quoted string scanned as the payload, one plain path, nothing after
-// it), so a code_flaw match anywhere in it is the payload's own.
+// `echo '...' > file` and nothing else. The region is the quoted text only (see
+// quotedWrite), like a heredoc body: the rest of the statement keeps its rules.
 function quotedStatement(rest: string, base: number): BashExtraction | undefined {
   if (!/^(?:echo|printf)[ \t]/.test(rest)) return undefined;
   QUOTED_WRITE.lastIndex = 0;
@@ -327,6 +329,8 @@ function heredocStatement(rest: string, base: number): BashExtraction | undefine
   // after it reads its stdout except one last `tee`.
   const stages: Target[] = [];
   let from = 0;
+  // `>|` is split here too: its target lands in a second stage that is not a tee,
+  // so a clobbering redirect is never extracted (safe, and never reaches REDIRECT).
   for (const m of blank.matchAll(/\|/g)) {
     stages.push({ start: from, end: m.index });
     from = m.index + 1;
@@ -378,9 +382,7 @@ function heredocStatement(rest: string, base: number): BashExtraction | undefine
   // An unquoted body is expanded by the shell: a `$`, a backtick or a backslash
   // (`\\\\` becomes `\\`, backslash-newline joins lines) means the file holds
   // something other than the text read here.
-  if (!literal && (/[$`\\]/.test(text) || /\\\r?\n/.test(rest.slice(body.bodyStart)))) {
-    return none();
-  }
+  if (!literal && /[$`\\]/.test(text)) return none();
   if (text.includes('\r')) return none();
   // An empty body writes an empty file: a plain writer with nothing to scan.
   if (text === '') return { payloads: [], incomplete: false };

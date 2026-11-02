@@ -39,7 +39,10 @@ describe('bashWrittenPayloads', () => {
     expect(read(`printf 'a = 1' > conf.py`).payloads).toEqual([{ path: 'conf.py', text: 'a = 1' }]);
     const cmd = `cd d && echo "a = 1" > conf.py\n`;
     const p = bashWrittenPayloads(cmd).payloads[0];
-    expect(cmd.slice(p?.start, p?.end)).toBe(`echo "a = 1" > conf.py`);
+    expect(cmd.slice(p?.start, p?.end)).toBe('a = 1');
+    const single = "printf 'x = 2' > debug:true";
+    const q = bashWrittenPayloads(single).payloads[0];
+    expect(single.slice(q?.start, q?.end)).toBe('x = 2');
   });
 
   it('does not read a printf format as the text written', () => {
@@ -517,6 +520,15 @@ describe('bashWrittenPayloads', () => {
       `${' '.repeat(100_000)}<<${' '.repeat(100_000)}EOF`,
       `cat <<EOF >f\n${'\t'.repeat(100_000)}x\nEOF`,
       `cat <<A > f.txt ${'1'.repeat(4000)}\nx\nA\n`.repeat(60),
+      `cat <<A > f.txt ${'> | '.repeat(1000)}\nx\nA\n`,
+      `cat <<A ${'| '.repeat(1900)}> f\nx\nA\n`,
+      `cat <<A > f ${'1 '.repeat(1900)}\nx\nA\n`.repeat(60),
+      `cat <<A > f ${'&>x '.repeat(900)}\nx\nA\n`.repeat(60),
+      `cat <<A ${'>a'.repeat(1900)}\nx\nA\n`.repeat(60),
+      `echo '${'x'.repeat(250_000)}' > f.txt`,
+      `echo "${'a '.repeat(120_000)}" > f.txt`,
+      `echo ${'-a '.repeat(80_000)}'x' > f.txt`,
+      `echo 'x' >${' '.repeat(200_000)}f.txt`,
     ];
     for (const input of inputs) {
       const start = performance.now();

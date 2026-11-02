@@ -387,6 +387,10 @@ export async function runPreToolUse(
       );
       // Synthetic: the text is a part of the command, not the value at any
       // path in the input, so nothing is ever written back through `path`.
+      // Its path ['command'] is shared with the real command entry on purpose:
+      // the decision treats each entry on its own result, a rewrite is never
+      // attempted (executable), and the mod notes key on the text. The deny
+      // cases in pre-tool-use-bash-payloads.test.ts run both entries through it.
       payloadScans.push({
         spec: { path: ['command'], executable: true, text: payload.text },
         text: payload.text,

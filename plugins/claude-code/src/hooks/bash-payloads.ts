@@ -216,9 +216,13 @@ function quotedWrite(m: RegExpExecArray | null): BashPayload | undefined {
   const text = m[2] ?? m[3];
   const path = m[4] ?? m[5] ?? m[6];
   if (text === undefined || text === '' || path === undefined) return undefined;
-  if (m[1] === 'printf' && text.replace(/%%/g, '').includes('%')) return undefined;
-  // A double-quoted string is expanded: `$(...)` or a backtick in it runs code.
-  if (m[3] !== undefined && /\$\(|`/.test(m[3])) return undefined;
+  // A flag (`echo -e`, `-n`, `printf -v`) changes what is written.
+  if (/^(?:echo|printf)[ \t]+-/.test(m[0])) return undefined;
+  // printf reads escapes and conversions in its format.
+  if (m[1] === 'printf' && /[\\%]/.test(text)) return undefined;
+  // A double-quoted string is expanded: a `$` or backtick in it, or a backslash
+  // escape, makes the file hold something other than the literal read here.
+  if (m[3] !== undefined && /[$`\\]/.test(m[3])) return undefined;
   if (isDevice(path) || path.startsWith('&') || hasDotDot(path)) return undefined;
   // Plain path characters only: no expansion, glob or brace decides the name.
   if (!/^[\w./~@%+,:-]+$/.test(path)) return undefined;
@@ -429,6 +433,8 @@ export function bashWrittenPayloads(command: string): BashExtraction {
     const blank = blankLine.slice(start, end);
     // A substitution or subshell on the command runs code of its own.
     if (/[(`]/.test(blank)) continue;
+    // A duplicated fd (`>&2`, `1>&2`, `<&3`) sends the output somewhere else.
+    if (/[<>]&/.test(blank)) continue;
     // The pipeline: the heredoc's stage is the writer, and nothing after it
     // reads its stdout except one last `tee`.
     const stages: Target[] = [];
@@ -491,10 +497,11 @@ export function bashWrittenPayloads(command: string): BashExtraction {
       /\r$/,
       '',
     );
-    // An unquoted body is expanded by the shell: `$(...)` or a backtick in it
-    // runs code the file never holds, so the body is not the file's text, and
+    // An unquoted body is expanded by the shell: a `$` (parameter, arithmetic or
+    // command substitution) or a backtick in it means the file holds something
+    // other than the text read here, so the body is not the file's text, and
     // the heredoc is not a plain writer (the whole command then has no regions).
-    if (!b.pending.literal && /\$\(|`/.test(text)) continue;
+    if (!b.pending.literal && /[$`]/.test(text)) continue;
     writerOps.add(b.pending.opAt);
     if (text === '') continue;
     payloads.push({

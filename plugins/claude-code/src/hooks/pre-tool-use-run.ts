@@ -356,8 +356,49 @@ export async function runPreToolUse(
   const writtenRegions = bashPayloads.map((p) => ({ start: p.start, end: p.end }));
   const scanned: ScannedField[] = [];
   const vaulted: PointersByText = new Map();
+  const payloadScans: ScannedField[] = [];
   try {
-    for (const spec of fields) {
+    // What a Bash command writes to a file is code: scan it as a code_change
+    // under that file, where code_flaw rules apply. Not rewritable: it sits
+    // inside the command. These run FIRST, so the command's own capture is made
+    // once, and with regions only when every payload was scanned: a payload left
+    // unscanned (the call's scan budget is spent) must not drop the command's
+    // rules, and a payload scan that did not finish refuses the call.
+    let regionsOk = bashPayloads.length > 0;
+    for (const payload of bashPayloads) {
+      if (callScanBudgetSpent(callStartedAt)) {
+        regionsOk = false;
+        break;
+      }
+      const result = await captureStamped(
+        runtime,
+        {
+          kind: 'code_change',
+          sourceTool: SOURCE_TOOL.ClaudeCode,
+          text: payload.text,
+          metadata: {
+            ...metadata,
+            ...(payload.path === undefined ? {} : { filePath: payload.path }),
+          },
+          lineBasis: 'file',
+        },
+        scopeKey,
+        { persist: 'with-findings', kindScopedRules: false, rewritable: false },
+      );
+      // Synthetic: the text is a part of the command, not the value at any
+      // path in the input, so nothing is ever written back through `path`.
+      payloadScans.push({
+        spec: { path: ['command'], executable: true, text: payload.text },
+        text: payload.text,
+        result,
+      });
+      if (result.scanIncomplete !== undefined) {
+        regionsOk = false;
+        break;
+      }
+    }
+    const refused = payloadScans.some((f) => f.result.scanIncomplete !== undefined);
+    for (const spec of refused ? [] : fields) {
       // A joined-keys chunk (see pre-tool-use-fields.ts) carries its own
       // text, computed during the walk rather than addressable at spec.path
       // in the tool input — never a deref target, so effectiveInput (which
@@ -395,9 +436,7 @@ export async function runPreToolUse(
           // decision, the recorded action and the ledger all read.
           rewritable: !spec.executable,
           // Only the command itself: a data field of the call keeps its rules.
-          ...(spec.executable && bashPayloads.length > 0 && text === commandText
-            ? { writtenRegions }
-            : {}),
+          ...(regionsOk && spec.executable && text === commandText ? { writtenRegions } : {}),
         },
       );
       scanned.push({ spec, text, result });
@@ -405,70 +444,7 @@ export async function runPreToolUse(
       // the rest would only spend the time the deadline is there to protect.
       if (result.scanIncomplete !== undefined) break;
     }
-    // What a Bash command writes to a file is code: scan it as a code_change
-    // under that file, where code_flaw rules apply (the command's own capture
-    // dropped them inside these regions). Not rewritable: it sits inside the
-    // command.
-    let payloadsScanned = 0;
-    if (!scanned.some((f) => f.result.scanIncomplete !== undefined)) {
-      for (const payload of bashPayloads) {
-        if (callScanBudgetSpent(callStartedAt)) break;
-        const result = await captureStamped(
-          runtime,
-          {
-            kind: 'code_change',
-            sourceTool: SOURCE_TOOL.ClaudeCode,
-            text: payload.text,
-            metadata: {
-              ...metadata,
-              ...(payload.path === undefined ? {} : { filePath: payload.path }),
-            },
-            lineBasis: 'file',
-          },
-          scopeKey,
-          { persist: 'with-findings', kindScopedRules: false, rewritable: false },
-        );
-        // Synthetic: the text is a part of the command, not the value at any
-        // path in the input, so nothing is ever written back through `path`.
-        scanned.push({
-          spec: { path: ['command'], executable: true, text: payload.text },
-          text: payload.text,
-          result,
-        });
-        payloadsScanned++;
-        if (result.scanIncomplete !== undefined) break;
-      }
-    }
-    // A payload left unscanned (the call's scan budget is spent) was dropped
-    // from the command's rules on the strength of a scan that never ran: scan
-    // the command again with every rule on, and let the scanner's own deadline
-    // refuse it if there is no time left. Never allowed silently.
-    if (
-      payloadsScanned < bashPayloads.length &&
-      !scanned.some((f) => f.result.scanIncomplete !== undefined)
-    ) {
-      const at = scanned.findIndex((f) => f.spec.executable && f.text === commandText);
-      const prior = scanned[at];
-      if (prior !== undefined) {
-        const result = await captureStamped(
-          runtime,
-          {
-            kind,
-            sourceTool: SOURCE_TOOL.ClaudeCode,
-            text: prior.text,
-            metadata,
-            lineBasis: inputLineBasis(toolName),
-          },
-          scopeKey,
-          {
-            persist: 'with-findings',
-            ...(spentGrantIds.length > 0 ? { preAuthorizedGrantIds: spentGrantIds } : {}),
-            rewritable: false,
-          },
-        );
-        scanned[at] = { ...prior, result };
-      }
-    }
+    scanned.push(...payloadScans);
   } finally {
     await runtime.close();
   }

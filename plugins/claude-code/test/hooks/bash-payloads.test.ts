@@ -31,9 +31,7 @@ describe('bashWrittenPayloads', () => {
   it('takes a quoted echo or printf written to a file', () => {
     expect(read(`echo 'select * from t where a = ' + x > q.py`).payloads).toEqual([]);
     expect(read(`echo "a = 1" > conf.py`).payloads).toEqual([{ path: 'conf.py', text: 'a = 1' }]);
-    expect(read(`printf 'a = 1\\n' > conf.py`).payloads).toEqual([
-      { path: 'conf.py', text: 'a = 1\\n' },
-    ]);
+    expect(read(`printf 'a = 1' > conf.py`).payloads).toEqual([{ path: 'conf.py', text: 'a = 1' }]);
     const cmd = `cd d; echo "a = 1" > conf.py`;
     const p = bashWrittenPayloads(cmd).payloads[0];
     expect(cmd.slice(p?.start, p?.end)).toBe(`echo "a = 1" > conf.py`);
@@ -42,9 +40,7 @@ describe('bashWrittenPayloads', () => {
   it('does not read a printf format as the text written', () => {
     expect(read(`printf '%s\\n' > x.txt`).payloads).toEqual([]);
     expect(read(`printf '%s\\n' 'eval(request.body)' > f.py`).payloads).toEqual([]);
-    expect(read(`printf '100%%\\n' > pct.txt`).payloads).toEqual([
-      { path: 'pct.txt', text: '100%%\\n' },
-    ]);
+    expect(read(`printf '100%%' > pct.txt`).payloads).toEqual([]);
   });
 
   it('reads the redirect outside quotes, never from inside a quoted string', () => {
@@ -209,8 +205,9 @@ describe('bashWrittenPayloads', () => {
     expect(paths("> o.txt <<'EOF'\nx\nEOF")).toEqual([]);
     expect(paths("cat <<'EOF' python3 > o.txt\nx\nEOF")).toEqual([]);
     expect(paths("cat <<<'x' python3 > o.txt")).toEqual([]);
-    expect(paths("cat <<'EOF' > o.txt 2>&1\nx\nEOF")).toEqual(['o.txt']);
-    expect(paths("cat <<'EOF' >o.txt 1>&2\nx\nEOF")).toEqual(['o.txt']);
+    expect(paths("cat <<'EOF' > o.txt 2>&1\nx\nEOF")).toEqual([]);
+    expect(paths("cat <<'EOF' > o.txt 2>/dev/null\nx\nEOF")).toEqual(['o.txt']);
+    expect(paths("cat <<'EOF' >o.txt 1>&2\nx\nEOF")).toEqual([]);
   });
 
   it('does not take a quoted write that a later redirect or process substitution overrides', () => {
@@ -334,6 +331,55 @@ describe('bashWrittenPayloads', () => {
     expect(paths("echo 'a' > notes.txt # .py")).toEqual(['notes.txt']);
     expect(paths("cat <<'EOF' > /dev/null\nx\nEOF")).toEqual([]);
     expect(paths("cat <<'EOF' | tee n.txt >/dev/stderr\nx\nEOF")).toEqual(['n.txt']);
+  });
+
+  it.each([
+    ['cat <<EOF > a.txt\nobj = pickle.${x:-loads}(blob)\nEOF'],
+    ['cat <<EOF > a.txt\nv=$HOME\nEOF'],
+    ['cat <<EOF > a.txt\nv=$((1+2))\nEOF'],
+    ['echo "pickle.${x:-loads}(blob)" > a.txt'],
+    ['echo "v=$HOME" > a.txt'],
+    ['echo "v=\\x" > a.txt'],
+    ["printf 'a\\x6cb' > a.txt"],
+    ["printf '100%d' > a.txt"],
+    ["echo -e 'a\\x6cb' > a.txt"],
+    ["echo -n 'a' > a.txt"],
+    ["echo -E 'a' > a.txt"],
+    ["cat <<'EOF' > a.txt >&2\nx\nEOF"],
+    ["cat <<'EOF' > a.txt 1>&2\nx\nEOF"],
+    ["cat <<'EOF' > a.txt 2>&1\nx\nEOF"],
+    ["cat <<'EOF' <&3 > a.txt\nx\nEOF"],
+  ])(
+    'takes no payload from text the shell would change, or output sent elsewhere: %j',
+    (command) => {
+      expect(bashWrittenPayloads(command).payloads).toEqual([]);
+    },
+  );
+
+  it('takes the literal forms: single-quoted echo and printf, quoted-delimiter bodies', () => {
+    expect(paths("echo 'v=$HOME' > a.txt")).toEqual(['a.txt']);
+    expect(paths("printf 'v=$HOME' > a.txt")).toEqual(['a.txt']);
+    expect(paths("cat <<'EOF' > a.txt\nv=$HOME ${x:-y}\nEOF")).toEqual(['a.txt']);
+    expect(paths('cat <<EOF > a.txt\nplain\nEOF')).toEqual(['a.txt']);
+  });
+
+  it('counts an empty-body heredoc as a plain writer only when it is one', () => {
+    expect(read("cat <<'EOF' > e.txt\nEOF\n")).toEqual({ incomplete: false, payloads: [] });
+    expect(read("cat <<'EOF' > e.txt\nEOF\ncat <<'EOF' > f.txt\nx\nEOF\n").payloads).toEqual([
+      { path: 'f.txt', text: 'x' },
+    ]);
+    expect(read("cat <<'EOF' > e.txt\nEOF\ncat <<'EOF' > f.txt\nx\nEOF\nsh f.txt\n")).toEqual({
+      incomplete: true,
+      payloads: [],
+    });
+    expect(read("python3 <<'EOF' > e.txt\nEOF\ncat <<'EOF' > f.txt\nx\nEOF\n")).toEqual({
+      incomplete: true,
+      payloads: [],
+    });
+    expect(read("cat <<'EOF' > e.txt 1>&2\nEOF\ncat <<'EOF' > f.txt\nx\nEOF\n")).toEqual({
+      incomplete: true,
+      payloads: [],
+    });
   });
 
   it('still takes the one file of a plain cat, tee or true', () => {

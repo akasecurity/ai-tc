@@ -102,6 +102,20 @@ describe('a Bash command whose payload scan runs out of budget', () => {
     expect(await denied(command)).toBe(true);
   });
 
+  it('records the command findings once when the payloads were not scanned', async () => {
+    spent.value = true;
+    expect(await denied(command)).toBe(true);
+    const db = openLocalDatabase(join(home, '.aka', 'data'), {
+      shippedRegexMatchers: shippedRegexMatchers(),
+    });
+    try {
+      const recent = await db.findings.recentFindings({ limit: 50 });
+      expect(recent.filter((f) => f.ruleId === 'code-flaws/deser-pickle')).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+
   it('control: with budget left the .txt payload passes', async () => {
     expect(await denied(command)).toBe(false);
   });

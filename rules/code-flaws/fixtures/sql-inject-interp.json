@@ -242,5 +242,45 @@
     "label": "BETWEEN as the leading WHERE comparison",
     "text": "sql = \"WHERE created BETWEEN '#{from}' AND '#{to}'\"",
     "shouldMatch": true
+  },
+  {
+    "label": "Ruby-interpolated table name in UPDATE",
+    "text": "\"UPDATE #{table} SET a = #{a}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "Ruby-interpolated schema and table in UPDATE",
+    "text": "\"UPDATE #{schema}.#{table} SET a = #{a}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "UPDATE with eight comma-listed tables (the cap)",
+    "text": "\"UPDATE a,b,c,d,e,f,g,h SET x = #{v}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "known gap by design: nine or more comma-listed tables exceed the cap (uncapped, the alternation costs about 32 s against a 100 ms budget)",
+    "text": "\"UPDATE a,b,c,d,e,f,g,h,i SET x = #{v}\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "prose with the word set is not an UPDATE: no assignment follows SET",
+    "text": "\"update the record set to #{value}\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "UPDATE with a table alias and a qualified assignment",
+    "text": "\"UPDATE users u SET u.name = #{n}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "known gap: MySQL multi-table UPDATE with JOIN ... ON before SET is not matched",
+    "text": "\"UPDATE t1 JOIN t2 ON t1.id = t2.id SET t1.a = #{x}\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "DELETE ... USING with a JOIN and an interpolated WHERE value",
+    "text": "\"DELETE FROM t1 USING t1 JOIN t2 WHERE x = #{y}\"",
+    "shouldMatch": true
   }
 ]

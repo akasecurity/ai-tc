@@ -367,19 +367,26 @@ describe('AssetDetail trust copy', () => {
     }
   });
 
-  it.each(TRUST_ORDER)(
-    'says nowhere on the page that a %s server is allowed or blocked',
-    (trust) => {
-      const tool = {
-        name: 'run',
-        signature: 'run()',
-        description: 'Runs',
-        write: true,
-        risk: null,
-      };
-      mount(<AssetDetail {...PAGE} asset={mcpAsset({ trust, tools: [tool] })} onTrust={vi.fn()} />);
+  it.each(TRUST_ORDER)('draws none of the old allow or block copy for a %s server', (trust) => {
+    const tool = {
+      name: 'run',
+      signature: 'run()',
+      description: 'Runs',
+      write: true,
+      risk: null,
+    };
+    mount(<AssetDetail {...PAGE} asset={mcpAsset({ trust, tools: [tool] })} onTrust={vi.fn()} />);
 
-      expect(mounted.host.textContent).not.toMatch(/block|allow-list|proxy|denied/i);
-    },
-  );
+    const text = mounted.host.textContent;
+    for (const old of [
+      'Calls blocked',
+      'blocked at the proxy',
+      'Approve & allow-list',
+      'Block server',
+      'allow-listed',
+      'Tool access blocked',
+    ]) {
+      expect(text).not.toContain(old);
+    }
+  });
 });

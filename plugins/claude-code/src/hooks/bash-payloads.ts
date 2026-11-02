@@ -73,9 +73,10 @@ function blankQuoted(line: string): string {
 
 // A stdout redirect: `>`, `>>`, `>|`, `1>`, `&>`; not `2>`, `>&2`. The target
 // is quoted or bare.
-const REDIRECT = /(?<![\w&])(\d*|&)(>>?\|?)(?!&)[ \t]*(?:'([^']+)'|"([^"]+)"|([^\s'"|;&<>()]+))/dg;
+const REDIRECT =
+  /(?<![\w&])(\d*|&)(>>?\|?)(?!&)[ \t]*(?:'([^']+)'|"([^"]+)"|([^\s'"|;&<>()]+))(?=[\s;&|<>]|$)/dg;
 const TEE =
-  /\btee[ \t]+(?:-[A-Za-z]+[ \t]+)*(?:'([^']+)'|"([^"]+)"|([^\s'"|;&<>()-][^\s'"|;&<>()]*))/d;
+  /\btee[ \t]+(?:-[A-Za-z]+[ \t]+)*(?:'([^']+)'|"([^"]+)"|([^\s'"|;&<>()-][^\s'"|;&<>()]*))(?=[\s;&|<>]|$)/d;
 
 // A decoder or encoder on the marker line means the body is not the file's
 // text as written, so it is not scanned as code.
@@ -92,7 +93,8 @@ const WORD = `(?:[\\w./~@%+,:-]+|'[^']*'|"[^"$\`\\\\]*")`;
 const INERT = new RegExp(`^(?:(?:cd|mkdir|touch|true|:)(?:[ \\t]+${WORD})*)$`);
 
 // A redirect (with its target, or an fd dup) that may follow a heredoc operator.
-const AFTER_REDIRECT = /(?:\d*|&)>>?\|?[ \t]*(?:'[^']*'|"[^"]*"|[^\s'"|;&<>()]+)|\d*>&\d*-?/g;
+const AFTER_REDIRECT =
+  /(?<![\w&])(?:\d*|&)>>?\|?[ \t]*(?:'[^']*'|"[^"]*"|[^\s'"|;&<>()]+)|(?<![\w&])\d*>&\d*-?/g;
 
 // What the stage `before` (its words up to the heredoc operator, or the whole
 // stage) is: 'tee', another plain writer ('other'), or undefined for anything
@@ -151,14 +153,14 @@ function segmentTarget(
     spans.push({ start: span[0], end: span[1] });
     if (prefix !== '' && prefix !== '1' && prefix !== '&') continue;
     const value = seg.slice(span[0], span[1]);
-    if (value.startsWith('/dev/')) continue;
+    if (isDevice(value)) continue;
     found.push({ at: m.index, span: { start: span[0], end: span[1] } });
   }
   const tee = useTee ? TEE.exec(blank) : null;
   const teeSpan = tee?.indices?.[1] ?? tee?.indices?.[2] ?? tee?.indices?.[3];
   if (teeSpan !== undefined) {
     spans.push({ start: teeSpan[0], end: teeSpan[1] });
-    if (!seg.slice(teeSpan[0], teeSpan[1]).startsWith('/dev/')) {
+    if (!isDevice(seg.slice(teeSpan[0], teeSpan[1]))) {
       found.push({ at: tee?.index ?? 0, span: { start: teeSpan[0], end: teeSpan[1] } });
     }
   }
@@ -168,9 +170,19 @@ function segmentTarget(
   return { path: nameable(value) ? value : undefined, seen: true, spans };
 }
 
+// The device names that are not a file written. Any other /dev path, or a path
+// with a `..` segment, counts as a file.
+function isDevice(path: string): boolean {
+  return /^\/dev\/(?:null|stdout|stderr|stdin|tty|fd\/\d+)$/.test(path);
+}
+
+function hasDotDot(path: string): boolean {
+  return path.split('/').includes('..');
+}
+
 // A file name read from the text itself: no expansion decides it at run time.
 function nameable(path: string): boolean {
-  return !/[$`*?[{]/.test(path) && !path.startsWith('&') && !path.startsWith('/dev/');
+  return !/[$`*?[{\\]/.test(path) && !path.startsWith('&') && !isDevice(path);
 }
 
 // The part of the marker line holding one command, between `;`, `&&`, `||` and
@@ -196,7 +208,7 @@ const OPERATOR = /<<(-?)[ \t]*(?:'([^'\n]+)'|"([^"\n]+)"|\\?([A-Za-z0-9_][\w.-]*
 // and nothing after it but the end of the command. A printf whose string holds
 // a conversion is a format, not the text written, and is not read.
 const QUOTED_WRITE =
-  /(echo|printf)[ \t]+(?:-[A-Za-z]+[ \t]+)*(?:'([^']*)'|"((?:[^"\\]|\\.)*)")[ \t]*>>?[ \t]*(?:'([^']+)'|"([^"]+)"|([^\s'"|;&<>()]+))(?=[ \t]*(?:$|[;\n#]|&&))/y;
+  /(echo|printf)[ \t]+(?:-[A-Za-z]+[ \t]+)*(?:'([^']*)'|"((?:[^"\\]|\\.)*)")[ \t]*>>?[ \t]*(?:'([^']+)'|"([^"]+)"|([^\s'"|;&<>()]+))(?=[ \t]*(?:$|[;\n]|&&)|[ \t]+#)/y;
 
 // A QUOTED_WRITE match read as a payload, or undefined when it is not one.
 function quotedWrite(m: RegExpExecArray | null): BashPayload | undefined {
@@ -207,7 +219,7 @@ function quotedWrite(m: RegExpExecArray | null): BashPayload | undefined {
   if (m[1] === 'printf' && text.replace(/%%/g, '').includes('%')) return undefined;
   // A double-quoted string is expanded: `$(...)` or a backtick in it runs code.
   if (m[3] !== undefined && /\$\(|`/.test(m[3])) return undefined;
-  if (path.startsWith('/dev/') || path.startsWith('&')) return undefined;
+  if (isDevice(path) || path.startsWith('&') || hasDotDot(path)) return undefined;
   // Plain path characters only: no expansion, glob or brace decides the name.
   if (!/^[\w./~@%+,:-]+$/.test(path)) return undefined;
   return {
@@ -455,7 +467,7 @@ export function bashWrittenPayloads(command: string): BashExtraction {
     let targets = useTee ? 1 : 0;
     for (const m of blank.matchAll(REDIRECT)) {
       const at = m.indices?.[3] ?? m.indices?.[4] ?? m.indices?.[5];
-      if (at !== undefined && !seg.slice(at[0], at[1]).startsWith('/dev/')) targets++;
+      if (at !== undefined && !isDevice(seg.slice(at[0], at[1]))) targets++;
     }
     if (targets !== 1) continue;
     const found = segmentTarget(
@@ -463,6 +475,7 @@ export function bashWrittenPayloads(command: string): BashExtraction {
       blank.slice(tstage.start, tstage.end),
       useTee,
     );
+    if (found.path !== undefined && hasDotDot(found.path)) return none;
     const target = {
       ...found,
       spans: found.spans.map((t) => ({ start: t.start + tstage.start, end: t.end + tstage.start })),

@@ -49,7 +49,8 @@ describe('bashWrittenPayloads', () => {
 
   it('reads the redirect outside quotes, never from inside a quoted string', () => {
     expect(paths("cat <<EOF > 'my file.py'\nx = 1\nEOF")).toEqual(['my file.py']);
-    expect(paths("echo 'a > b' <<EOF\nx = 1\nEOF")).toEqual([]);
+    expect(paths("cat <<EOF > 'a > b.py'\nx = 1\nEOF")).toEqual(['a > b.py']);
+    expect(paths("tee 'x > y.py' <<EOF\nx = 1\nEOF")).toEqual(['x > y.py']);
     expect(paths('cat <<EOF # > c.py\nx = 1\nEOF')).toEqual([]);
   });
 
@@ -312,6 +313,29 @@ describe('bashWrittenPayloads', () => {
     expect(paths(command)).toEqual([]);
   });
 
+  it.each([
+    ["tee notes.txt <<'EOF' > /dev/../tmp/e.py\nx\nEOF"],
+    ["cat <<'EOF' | tee notes.txt > /dev/../x/e.py\nx\nEOF"],
+    ["cat <<'EOF' > /dev/shm/e.py > notes.txt\nx\nEOF"],
+    ["cat <<'EOF' > ../e.py\nx\nEOF"],
+    ["cat <<'EOF' > a/../e.py\nx\nEOF"],
+    ['cat > "notes.txt".py <<\'EOF\'\nx\nEOF'],
+    ['tee "notes.txt".py <<\'EOF\'\nx\nEOF'],
+    ["cat > 'notes.txt'.py <<'EOF'\nx\nEOF"],
+    ["cat <<'EOF' > a.py>b.txt\nx\nEOF"],
+    ["echo 'a' > 'notes.txt'#.py"],
+    ["echo 'a' > notes.txt#.py"],
+  ])('takes no path from a target that is not exactly one word: %j', (command) => {
+    expect(paths(command)).toEqual([]);
+  });
+
+  it('takes a path it cannot spell plainly with no name, and a comment after a space', () => {
+    expect(bashWrittenPayloads("cat > a.p\\y <<'EOF'\nx\nEOF").payloads[0]?.path).toBeUndefined();
+    expect(paths("echo 'a' > notes.txt # .py")).toEqual(['notes.txt']);
+    expect(paths("cat <<'EOF' > /dev/null\nx\nEOF")).toEqual([]);
+    expect(paths("cat <<'EOF' | tee n.txt >/dev/stderr\nx\nEOF")).toEqual(['n.txt']);
+  });
+
   it('still takes the one file of a plain cat, tee or true', () => {
     expect(paths("cat - <<'EOF' > a.txt\nx\nEOF")).toEqual(['a.txt']);
     expect(paths("tee -a a.txt <<'EOF'\nx\nEOF")).toEqual(['a.txt']);
@@ -344,6 +368,7 @@ describe('bashWrittenPayloads', () => {
       `cat <<EOF ${'|'.repeat(100_000)}\nx\nEOF`,
       `${' '.repeat(100_000)}<<${' '.repeat(100_000)}EOF`,
       `cat <<EOF >f\n${'\t'.repeat(100_000)}x\nEOF`,
+      `cat <<A > f.txt ${'1'.repeat(4000)}\nx\nA\n`.repeat(60),
     ];
     for (const input of inputs) {
       const start = performance.now();

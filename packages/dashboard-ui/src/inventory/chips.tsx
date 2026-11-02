@@ -252,7 +252,10 @@ export function DetailFallback({
       <div
         key={tone}
         role={tone === 'alert' ? 'alert' : undefined}
-        className="grid min-h-0 flex-1 place-items-center p-8 text-center text-sm text-text-3"
+        className={cn(
+          'grid min-h-0 flex-1 place-items-center p-8 text-center text-sm',
+          tone === 'alert' ? 'text-sev-critical-ink' : 'text-text-3',
+        )}
       >
         {message}
       </div>

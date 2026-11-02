@@ -497,7 +497,7 @@ export function CredentialDetailView({
         <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-sev-high-fill text-sev-high-ink">
           <Ico name="key" className="size-5" />
         </span>
-        <div className="min-w-40 flex-1">
+        <div className="min-w-0 flex-1">
           <h2
             className={cn(
               'truncate text-base font-semibold text-text',

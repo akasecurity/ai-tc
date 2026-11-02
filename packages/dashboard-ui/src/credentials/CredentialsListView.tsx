@@ -85,7 +85,7 @@ const COLUMNS = [
 ] as const;
 const NUMERIC = new Set<string>(['Projects', 'Teams', 'Endpoints']);
 /** The filter row's chip, matching the pills the inventory table filters with. */
-const CHIP = (on: boolean) =>
+const chipClass = (on: boolean) =>
   cn(
     'inline-flex cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-full border px-3 py-1 text-xs font-semibold transition-colors',
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
@@ -94,7 +94,10 @@ const CHIP = (on: boolean) =>
       : 'border-border bg-surface text-text-2 hover:text-text',
   );
 /** The first and last cell line up with the header and filter rows above them. */
-const EDGE = (index: number) => (index === 0 ? 'pl-5' : index === COLUMNS.length - 1 ? 'pr-5' : '');
+// Keyed by position, not by name like `NUMERIC`: a gutter belongs to whichever
+// column sits at the row's edge, while alignment belongs to the column itself.
+const edgeClass = (index: number) =>
+  index === 0 ? 'pl-5' : index === COLUMNS.length - 1 ? 'pr-5' : '';
 
 /** The credential ledger: one row per detected value, newest first. */
 export function CredentialsListView({
@@ -172,7 +175,7 @@ export function CredentialsListView({
             <button
               type="button"
               aria-pressed={dismissed}
-              className={CHIP(dismissed)}
+              className={chipClass(dismissed)}
               onClick={() => {
                 onDismissedChange(!dismissed);
               }}
@@ -216,7 +219,7 @@ export function CredentialsListView({
                 {COLUMNS.map((column, index) => (
                   <TableHead
                     key={column}
-                    className={cn('pt-3', NUMERIC.has(column) && 'text-right', EDGE(index))}
+                    className={cn('pt-3', NUMERIC.has(column) && 'text-right', edgeClass(index))}
                   >
                     {column}
                   </TableHead>
@@ -233,7 +236,7 @@ export function CredentialsListView({
                     onSelect(item.id);
                   }}
                 >
-                  <TableCell className="pl-5">
+                  <TableCell className={edgeClass(0)}>
                     <div
                       className={cn(
                         'max-w-64 truncate text-xs font-semibold text-text',
@@ -270,7 +273,7 @@ export function CredentialsListView({
                   <TableCell className="text-xs text-text-2">
                     {item.lastRotated === null ? '—' : relativeTime(item.lastRotated, renderedAt)}
                   </TableCell>
-                  <TableCell className="pr-5">
+                  <TableCell className={edgeClass(COLUMNS.length - 1)}>
                     <span className="inline-flex flex-wrap gap-1.5">
                       {item.statuses.map((s) => (
                         <CredentialStatusBadge key={s} status={s} />
@@ -332,7 +335,7 @@ function StatusChips({
             onClick={() => {
               onStatus(chip.key);
             }}
-            className={CHIP(on)}
+            className={chipClass(on)}
           >
             {chip.label}
             {chip.count !== undefined && (

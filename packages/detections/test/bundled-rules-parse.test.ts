@@ -89,6 +89,7 @@ const DOCUMENTED_RESIDUALS: Record<string, readonly string[]> = {
     'known gap: SELECT with no FROM is not matched',
     'known gap: UPDATE with INNER JOIN before SET is not matched',
     'known gap: UPDATE with LEFT JOIN before SET is not matched',
+    'known gap: a SELECT column list longer than 1000 characters before FROM is not matched',
     'known gap: a literal backslash-n between the table and SET is not matched',
     'known gap: comma-joined multi-table DELETE is not matched',
     'known gap: interpolation on a later line than SELECT in a heredoc is not matched',

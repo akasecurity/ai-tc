@@ -77,10 +77,6 @@ function blankQuoted(line: string): string {
 const REDIRECT =
   /(?<![\w&])(\d*|&)(>>?\|?)(?!&)[ \t]*(?:'([^']+)'|"([^"]+)"|([^\s'"|;&<>()]+))(?=[\s;&|<>]|$)/dg;
 
-// A decoder or encoder on the marker line means the body is not the file's
-// text as written, so it is not scanned as code.
-const TRANSFORMED = /(?<![\w./-])(?:base64|xxd|openssl)(?![\w./])|\bb64decode\b/;
-
 // The commands whose heredoc input goes to the file a redirect or `tee` names
 // (`:` and `true` discard it, so they are not writers).
 // Any other command word (`python`, `psql`, `ssh`) takes the body as its input.
@@ -122,9 +118,11 @@ function writerOf(
   }
   if (command === undefined || !WRITERS.has(command)) return undefined;
   if (command === 'tee') {
-    const files = args.filter((a) => a.w !== '-a');
-    const file = files[0];
-    if (files.length !== 1 || file === undefined || file.w.startsWith('-')) return undefined;
+    // `-a` only before the file word: BSD tee stops reading options at the first
+    // word, so a later `-a` is a second file.
+    let file = args.length === 1 ? args[0] : undefined;
+    if (args.length === 2 && args[0]?.w === '-a') file = args[1];
+    if (file === undefined || file.w.startsWith('-')) return undefined;
     return { kind: 'tee', file: { start: file.start, end: file.end } };
   }
   if (command === 'cat') return args.every((a) => a.w === '-') ? { kind: 'other' } : undefined;
@@ -143,28 +141,25 @@ function segmentTarget(
   seg: string,
   blank: string,
   teeFile: Target | undefined,
-): { path: string | undefined; seen: boolean; spans: Target[] } {
+): { path: string | undefined; seen: boolean } {
   const found: { at: number; span: Target }[] = [];
-  const spans: Target[] = [];
   for (const m of blank.matchAll(REDIRECT)) {
     const prefix = m[1] ?? '';
     const span = m.indices?.[3] ?? m.indices?.[4] ?? m.indices?.[5];
     if (span === undefined) continue;
-    spans.push({ start: span[0], end: span[1] });
     if (prefix !== '' && prefix !== '1' && prefix !== '&') continue;
     const value = seg.slice(span[0], span[1]);
     if (isDevice(value)) continue;
     found.push({ at: m.index, span: { start: span[0], end: span[1] } });
   }
   if (teeFile !== undefined) {
-    spans.push(teeFile);
     if (!isDevice(seg.slice(teeFile.start, teeFile.end)))
       found.push({ at: teeFile.start, span: teeFile });
   }
   const last = found.sort((a, b) => a.at - b.at).at(-1);
-  if (last === undefined) return { path: undefined, seen: false, spans };
+  if (last === undefined) return { path: undefined, seen: false };
   const value = seg.slice(last.span.start, last.span.end);
-  return { path: nameable(value) ? value : undefined, seen: true, spans };
+  return { path: nameable(value) ? value : undefined, seen: true };
 }
 
 // The device names that are not a file written. Any other /dev path, or a path
@@ -306,6 +301,10 @@ function heredocStatement(rest: string, base: number): BashExtraction | undefine
   const om = OPERATOR.exec(line);
   const delimiter = om?.[2] ?? om?.[3] ?? om?.[4];
   if (om === null || delimiter === undefined) return none();
+  // Bash unquotes the delimiter word (`"A\\$"` is `A$`), so a quoted delimiter is
+  // read only when it is plain characters: any `\\`, `$` or backtick in it, and
+  // the body could end where this reader does not see it.
+  if (!/^[A-Za-z0-9_.-]+$/.test(delimiter)) return none();
   const escaped = om[0].includes('\\');
   const literal = om[2] !== undefined || om[3] !== undefined || escaped;
   if ((line.match(/\\/g) ?? []).length !== (escaped ? 1 : 0)) return none();
@@ -372,14 +371,6 @@ function heredocStatement(rest: string, base: number): BashExtraction | undefine
     teeFile,
   );
   if (!found.seen || (found.path !== undefined && hasDotDot(found.path))) return none();
-  // A target's own name (`base64.py`) is not a transform of the body.
-  let words = blank;
-  for (const t of found.spans) {
-    const a = t.start + tstage.start;
-    const b = t.end + tstage.start;
-    words = words.slice(0, a) + ' '.repeat(b - a) + words.slice(b);
-  }
-  if (TRANSFORMED.test(words)) return none();
   const raw = body.bodyStart >= body.bodyEnd ? '' : rest.slice(body.bodyStart, body.bodyEnd);
   // `<<-` strips the leading tabs of every body line: the payload is what the
   // shell writes, the region stays the raw span.

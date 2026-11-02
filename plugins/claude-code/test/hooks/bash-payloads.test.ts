@@ -452,6 +452,30 @@ describe('bashWrittenPayloads', () => {
     expect(paths("cd - && cat <<'EOF' > a.txt\nx\nEOF")).toEqual([]);
   });
 
+  it.each([
+    ['cat <<"A\\$" > notes.txt\nharmless\nA$\npython3 -c "import pickle; pickle.loads(b)"\nA\\$\n'],
+    ['cat <<"A\\`" > notes.txt\nharmless\nA`\npython3 -c "x"\nA\\`\n'],
+    ["cat <<'A$' > notes.txt\nx\nA$\n"],
+    ['cat <<"A$B" > notes.txt\nx\nA$B\n'],
+    ['cat <<"A B" > notes.txt\nx\nA B\n'],
+  ])('takes nothing when a quoted delimiter is not plain characters: %j', (command) => {
+    expect(read(command)).toEqual({ incomplete: true, payloads: [] });
+  });
+
+  it('still takes quoted and bare plain delimiters', () => {
+    expect(paths('cat <<"A-1.b" > notes.txt\nx\nA-1.b\n')).toEqual(['notes.txt']);
+    expect(paths("cat <<'A_1' > notes.txt\nx\nA_1\n")).toEqual(['notes.txt']);
+    expect(paths('cat <<\\A > notes.txt\nx\nA\n')).toEqual(['notes.txt']);
+  });
+
+  it('reads tee -a only before the file word', () => {
+    expect(paths("tee -a f.py <<'EOF'\nx\nEOF")).toEqual(['f.py']);
+    expect(paths("tee f.py -a <<'EOF'\nx\nEOF")).toEqual([]);
+    expect(paths("tee -a -a f.py <<'EOF'\nx\nEOF")).toEqual([]);
+    expect(paths("cat <<'EOF' | tee f.py -a\nx\nEOF")).toEqual([]);
+    expect(paths("cat <<'EOF' | tee -a f.py\nx\nEOF")).toEqual(['f.py']);
+  });
+
   it('still reads a leading redirect before the operator, and a spaced one', () => {
     expect(paths("cat > a.txt <<'EOF'\nx\nEOF")).toEqual(['a.txt']);
     expect(paths("> a.txt cat <<'EOF'\nx\nEOF")).toEqual(['a.txt']);

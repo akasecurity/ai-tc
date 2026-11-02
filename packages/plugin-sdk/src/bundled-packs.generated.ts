@@ -10,7 +10,7 @@
 // Regenerate after adding/removing a rule or pack under rules/:
 //   pnpm --filter @akasecurity/plugin-sdk gen:bundled-packs
 //
-// 10 packs / 126 rules.
+// 10 packs / 127 rules.
 /* eslint-disable simple-import-sort/imports */
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import agentEgressAgentProbeHost from '../../../rules/agent-egress/agent-probe-host.json';
@@ -46,6 +46,7 @@ import codeFlawsRegexRedosBacktrack from '../../../rules/code-flaws/regex-redos-
 import codeFlawsSqlInjectConcatDot from '../../../rules/code-flaws/sql-inject-concat-dot.json';
 import codeFlawsSqlInjectConcat from '../../../rules/code-flaws/sql-inject-concat.json';
 import codeFlawsSqlInjectFormat from '../../../rules/code-flaws/sql-inject-format.json';
+import codeFlawsSqlInjectInterpMultiline from '../../../rules/code-flaws/sql-inject-interp-multiline.json';
 import codeFlawsSqlInjectInterp from '../../../rules/code-flaws/sql-inject-interp.json';
 import codeFlawsSsrfUserUrl from '../../../rules/code-flaws/ssrf-user-url.json';
 import codeFlawsXssDangerouslySet from '../../../rules/code-flaws/xss-dangerously-set.json';
@@ -197,6 +198,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       codeFlawsSqlInjectConcatDot,
       codeFlawsSqlInjectFormat,
       codeFlawsSqlInjectInterp,
+      codeFlawsSqlInjectInterpMultiline,
       codeFlawsCmdInjectShell,
       codeFlawsCmdInjectExec,
       codeFlawsCmdInjectNodeExec,
@@ -228,6 +230,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       'code-flaws/sql-inject-concat-dot': 'SQL injection (PHP)',
       'code-flaws/sql-inject-format': 'SQL injection (format string)',
       'code-flaws/sql-inject-interp': 'SQL injection (interpolation)',
+      'code-flaws/sql-inject-interp-multiline': 'SQL injection (interpolation)',
       'code-flaws/cmd-inject-shell': 'Command injection (shell)',
       'code-flaws/cmd-inject-exec': 'Command injection (Java exec)',
       'code-flaws/cmd-inject-node-exec': 'Command injection (Node exec)',

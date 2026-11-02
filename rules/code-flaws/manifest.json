@@ -9,6 +9,7 @@
     "sql-inject-concat-dot",
     "sql-inject-format",
     "sql-inject-interp",
+    "sql-inject-interp-multiline",
     "cmd-inject-shell",
     "cmd-inject-exec",
     "cmd-inject-node-exec",

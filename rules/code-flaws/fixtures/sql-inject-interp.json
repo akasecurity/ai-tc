@@ -10,28 +10,6 @@
     "shouldMatch": true
   },
   {
-    "label": "single-line statement at offset 0 of the text",
-    "text": "SELECT * FROM t WHERE id = #{id}",
-    "shouldMatch": true,
-    "expectedSpans": [
-      {
-        "start": 0,
-        "end": 29
-      }
-    ]
-  },
-  {
-    "label": "known gap: a prose line after the first that starts with a sql word and carries interpolation still matches",
-    "text": "Example:\nselect #{name} from the menu",
-    "shouldMatch": true,
-    "expectedSpans": [
-      {
-        "start": 9,
-        "end": 18
-      }
-    ]
-  },
-  {
     "label": "Ruby safe parameterized query",
     "text": "User.where('id = ?', params[:id])",
     "shouldMatch": false
@@ -75,16 +53,6 @@
     "shouldMatch": true
   },
   {
-    "label": "Ruby heredoc with interpolation in a SELECT",
-    "text": "sql = <<~SQL\n  SELECT * FROM t WHERE id = #{id}\nSQL",
-    "shouldMatch": true
-  },
-  {
-    "label": "PHP heredoc with a variable in a SELECT",
-    "text": "$sql = <<<SQL\n  SELECT * FROM t WHERE id = $id\nSQL;",
-    "shouldMatch": true
-  },
-  {
     "label": "Ruby heredoc without interpolation",
     "text": "sql = <<~SQL\n  SELECT * FROM t WHERE id = 1\nSQL",
     "shouldMatch": false
@@ -94,28 +62,6 @@
     "text": "update-oidc is $STATE",
     "shouldMatch": false,
     "filePath": "src/run.php"
-  },
-  {
-    "label": "Ruby heredoc with a blank line after the opener: span starts on the SQL line",
-    "text": "q = <<~SQL\n\n  SELECT * FROM t WHERE id = #{id}\nSQL",
-    "shouldMatch": true,
-    "expectedSpans": [
-      {
-        "start": 12,
-        "end": 43
-      }
-    ]
-  },
-  {
-    "label": "where on its own heredoc line with interpolation",
-    "text": "sql = <<~SQL\n  SELECT *\n  FROM t\n  WHERE id = #{id}\nSQL",
-    "shouldMatch": true,
-    "expectedSpans": [
-      {
-        "start": 33,
-        "end": 48
-      }
-    ]
   },
   {
     "label": "dbt/Jinja model line",
@@ -454,11 +400,6 @@
     "shouldMatch": true
   },
   {
-    "label": "WHERE with a double-quoted identifier",
-    "text": "WHERE \"id\" = $id",
-    "shouldMatch": true
-  },
-  {
     "label": "WHERE with a tuple on the left",
     "text": "\"WHERE (a, b) IN (($x, $y))\"",
     "shouldMatch": true
@@ -611,6 +552,21 @@
   {
     "label": "known gap: @variable as the WHERE operand is not matched",
     "text": "\"WHERE @x = #{x}\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "multi-line SELECT inside one quoted string",
+    "text": "\"SELECT #{cols}\n  FROM users\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "known gap: interpolation on a later line than SELECT in a heredoc is not matched",
+    "text": "sql = <<~SQL\n  SELECT id,\n  #{expr}\n  FROM users\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: FROM more than three lines after SELECT is not matched",
+    "text": "sql = <<~SQL\n  SELECT #{cols}\n  a\n  b\n  c\n  FROM users\nSQL",
     "shouldMatch": false
   }
 ]

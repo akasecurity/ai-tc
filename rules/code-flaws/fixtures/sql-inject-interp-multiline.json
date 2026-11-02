@@ -1,0 +1,261 @@
+[
+  {
+    "label": "single-line statement at offset 0 of the text",
+    "text": "SELECT * FROM t WHERE id = #{id}",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 0,
+        "end": 29
+      }
+    ]
+  },
+  {
+    "label": "known gap: a prose line after the first that starts with a sql word and carries interpolation still matches",
+    "text": "Example:\nselect #{name} from the menu",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 9,
+        "end": 18
+      }
+    ]
+  },
+  {
+    "label": "Ruby safe parameterized query",
+    "text": "User.where('id = ?', params[:id])",
+    "shouldMatch": false
+  },
+  {
+    "label": "PHP PDO prepared statement",
+    "text": "$stmt = $pdo->prepare('SELECT * FROM users WHERE id = :id');",
+    "shouldMatch": false
+  },
+  {
+    "label": "same code in an out-of-scope file (.go) is gated by appliesTo",
+    "text": "query = \"SELECT * FROM users WHERE id = #{params[:id]}\"",
+    "shouldMatch": false,
+    "filePath": "src/example.go"
+  },
+  {
+    "label": "JSON array of quoted SQL words with no interpolation",
+    "text": "[\"select 1\",\"insert 2\",\"update 3\",\"delete 4\",\"where 5\"]",
+    "shouldMatch": false
+  },
+  {
+    "label": "shell command with a SQL word in an argument and a shell variable",
+    "text": "tool jobs update-oidc $P",
+    "shouldMatch": false,
+    "filePath": "src/run.php"
+  },
+  {
+    "label": "shell echo with a hyphenated SQL word and a shell variable",
+    "text": "echo \"auto-update is $STATE\"",
+    "shouldMatch": false,
+    "filePath": "src/run.php"
+  },
+  {
+    "label": "Ruby heredoc with interpolation in a SELECT",
+    "text": "sql = <<~SQL\n  SELECT * FROM t WHERE id = #{id}\nSQL",
+    "shouldMatch": true
+  },
+  {
+    "label": "PHP heredoc with a variable in a SELECT",
+    "text": "$sql = <<<SQL\n  SELECT * FROM t WHERE id = $id\nSQL;",
+    "shouldMatch": true
+  },
+  {
+    "label": "Ruby heredoc without interpolation",
+    "text": "sql = <<~SQL\n  SELECT * FROM t WHERE id = 1\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "prose line opening with a hyphenated SQL word and a variable",
+    "text": "update-oidc is $STATE",
+    "shouldMatch": false,
+    "filePath": "src/run.php"
+  },
+  {
+    "label": "Ruby heredoc with a blank line after the opener: span starts on the SQL line",
+    "text": "q = <<~SQL\n\n  SELECT * FROM t WHERE id = #{id}\nSQL",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 12,
+        "end": 43
+      }
+    ]
+  },
+  {
+    "label": "where on its own heredoc line with interpolation",
+    "text": "sql = <<~SQL\n  SELECT *\n  FROM t\n  WHERE id = #{id}\nSQL",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 33,
+        "end": 48
+      }
+    ]
+  },
+  {
+    "label": "dbt/Jinja model line",
+    "text": "select * from {{ ref('orders') }}",
+    "shouldMatch": false
+  },
+  {
+    "label": "prose line with a sql word and no placeholder",
+    "text": "Select the id from the list of users",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: unquoted parenthesized statement is not matched",
+    "text": "(SELECT * FROM t WHERE id = #{x})",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: interpolation-first statement is not matched",
+    "text": "#{prefix} UPDATE t SET a = #{x}",
+    "shouldMatch": false
+  },
+  {
+    "label": "jq filter with select( directly after the quote and a shell variable is not sql",
+    "text": "jq 'select(.id == $h)' file.json",
+    "shouldMatch": false
+  },
+  {
+    "label": "shell command opening with where after the quote and a shell variable is not sql",
+    "text": "echo \"where $dir lives\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "jq select on a field named from stays clean (regression guard; the base pattern did not match it either)",
+    "text": "jq '.[] | select(.from == $h)' file.json",
+    "shouldMatch": false
+  },
+  {
+    "label": "prose with delete ... from is not a multi-table DELETE",
+    "text": "echo \"delete follows from this. revert.sh and the record sit in the same $B\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "prose with update ... set is not a statement",
+    "text": "msg = \"update the readme and then set #{name} aside\"",
+    "shouldMatch": false,
+    "filePath": "x.rb"
+  },
+  {
+    "label": "known gap by design: nine or more comma-listed tables exceed the cap (uncapped, the alternation costs about 32 s against a 100 ms budget)",
+    "text": "\"UPDATE a,b,c,d,e,f,g,h,i SET x = #{v}\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "prose with the word set is not an UPDATE: no assignment follows SET",
+    "text": "\"update the record set to #{value}\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: MySQL multi-table UPDATE with JOIN ... ON before SET is not matched",
+    "text": "\"UPDATE t1 JOIN t2 ON t1.id = t2.id SET t1.a = #{x}\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: tuple SET is not matched",
+    "text": "\"UPDATE t SET (a, b) = (#{x}, #{y})\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: SELECT with no FROM is not matched",
+    "text": "\"SELECT #{cols}\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: DELETE with an interpolated target before FROM is not matched",
+    "text": "\"DELETE #{t} FROM x WHERE y = 1\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: comma-joined multi-table DELETE is not matched",
+    "text": "\"DELETE t1 FROM t1, t2 WHERE x = #{y}\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: DELETE with STRAIGHT_JOIN is not matched",
+    "text": "\"DELETE t1 FROM t1 STRAIGHT_JOIN t2 WHERE x = #{y}\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: UPDATE with INNER JOIN before SET is not matched",
+    "text": "\"UPDATE t1 INNER JOIN t2 ON t1.id = t2.id SET t1.a = #{x}\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: UPDATE with LEFT JOIN before SET is not matched",
+    "text": "\"UPDATE t1 LEFT JOIN t2 ON t1.id = t2.id SET t1.a = #{x}\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: a literal backslash-n between the table and SET is not matched",
+    "text": "\"UPDATE t\\nSET a = #{x}\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "WHERE with a double-quoted identifier",
+    "text": "WHERE \"id\" = $id",
+    "shouldMatch": true
+  },
+  {
+    "label": "known gap: INSERT without INTO is not matched",
+    "text": "\"INSERT t (a) VALUES (#{x})\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: two bare PHP variables after WHERE are not matched",
+    "text": "\"WHERE $a $b\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "prose with update ... set and a bare variable followed by more words is not a statement",
+    "text": "msg = \"update the record set $x and more\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: positional placeholder as the WHERE operand is not matched",
+    "text": "\"WHERE ? = #{x}\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: named placeholder as the WHERE operand is not matched",
+    "text": "\"WHERE :id = #{x}\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: @variable as the WHERE operand is not matched",
+    "text": "\"WHERE @x = #{x}\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "multi-line SELECT in a Ruby heredoc: FROM on a following line",
+    "text": "sql = <<~SQL\n  SELECT #{cols}\n  FROM users\nSQL",
+    "shouldMatch": true
+  },
+  {
+    "label": "multi-line SELECT with a computed column: FROM on the next line",
+    "text": "SELECT id, #{score_expr} AS score\n  FROM users",
+    "shouldMatch": true
+  },
+  {
+    "label": "multi-line SELECT in a PHP heredoc",
+    "text": "sql = <<<SQL\nSELECT $cols\nFROM users\nSQL;",
+    "shouldMatch": true
+  },
+  {
+    "label": "known gap: interpolation on a later line than SELECT in a heredoc is not matched",
+    "text": "sql = <<~SQL\n  SELECT id,\n  #{expr}\n  FROM users\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: FROM more than three lines after SELECT is not matched",
+    "text": "sql = <<~SQL\n  SELECT #{cols}\n  a\n  b\n  c\n  FROM users\nSQL",
+    "shouldMatch": false
+  }
+]

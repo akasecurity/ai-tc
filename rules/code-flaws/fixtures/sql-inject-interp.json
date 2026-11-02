@@ -138,13 +138,13 @@
     "shouldMatch": false
   },
   {
-    "label": "jq filter with select( and a shell variable is not sql",
-    "text": "jq '.[] | select(.id == \"x\" and (.name|startswith($h+\":\")))' file.json",
+    "label": "jq filter with select( directly after the quote and a shell variable is not sql",
+    "text": "jq 'select(.id == $h)' file.json",
     "shouldMatch": false
   },
   {
-    "label": "shell command mentioning where and a shell variable is not sql",
-    "text": "echo \"find where $dir lives\"",
+    "label": "shell command opening with where after the quote and a shell variable is not sql",
+    "text": "echo \"where $dir lives\"",
     "shouldMatch": false
   },
   {
@@ -234,7 +234,7 @@
     "filePath": "x.rb"
   },
   {
-    "label": "interpolated BETWEEN range",
+    "label": "interpolated BETWEEN range (matches through the select..from branch)",
     "text": "\"SELECT * FROM t WHERE x BETWEEN #{a} AND #{b}\"",
     "shouldMatch": true
   },
@@ -279,8 +279,63 @@
     "shouldMatch": false
   },
   {
-    "label": "DELETE ... USING with a JOIN and an interpolated WHERE value",
-    "text": "\"DELETE FROM t1 USING t1 JOIN t2 WHERE x = #{y}\"",
+    "label": "DELETE t1 FROM t1 USING (only the USING branch reaches this statement)",
+    "text": "\"DELETE t1 FROM t1 USING t2 WHERE x = #{y}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "leading WHERE with a Ruby-interpolated column",
+    "text": "\"WHERE #{col} = 1\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "leading WHERE with a parenthesized condition",
+    "text": "\"WHERE (a = #{x})\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "leading WHERE NOT",
+    "text": "\"WHERE NOT a = #{x}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "WHERE with IS NULL before an interpolated condition",
+    "text": "\"WHERE id IS NULL AND x = #{x}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "leading WHERE with ILIKE",
+    "text": "\"where x ilike #{a}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "multi-table DELETE with LEFT OUTER JOIN",
+    "text": "\"DELETE t1 FROM t1 LEFT OUTER JOIN t2 WHERE x = #{y}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "PHP brace-interpolated table name in UPDATE",
+    "text": "\"UPDATE {$table} SET a = 1\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "known gap: tuple SET is not matched",
+    "text": "\"UPDATE t SET (a, b) = (#{x}, #{y})\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: prose statement shaped like DELETE FROM with interpolation still matches",
+    "text": "msg = \"delete from cache #{key}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "known gap: prose statement shaped like SELECT ... FROM with interpolation still matches",
+    "text": "msg = \"select the item from #{list}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "known gap: jq select on a field named from, directly after the quote, still matches",
+    "text": "jq 'select(.from == $h)' file.json",
     "shouldMatch": true
   }
 ]

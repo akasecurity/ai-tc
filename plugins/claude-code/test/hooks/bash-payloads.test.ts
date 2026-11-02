@@ -24,9 +24,42 @@ describe('bashWrittenPayloads', () => {
     expect(bashWrittenPayloads(`echo "a = 1" > conf.py`)).toEqual([
       { path: 'conf.py', text: 'a = 1' },
     ]);
-    expect(bashWrittenPayloads(`printf '%s\\n' > x.txt`)).toEqual([
-      { path: 'x.txt', text: '%s\\n' },
+    expect(bashWrittenPayloads(`printf 'a = 1\\n' > conf.py`)).toEqual([
+      { path: 'conf.py', text: 'a = 1\\n' },
     ]);
+  });
+
+  it('does not read a printf format as the text written', () => {
+    expect(bashWrittenPayloads(`printf '%s\\n' > x.txt`)).toEqual([]);
+    expect(bashWrittenPayloads(`printf '%s\\n' 'eval(request.body)' > f.py`)).toEqual([]);
+    expect(bashWrittenPayloads(`printf '100%%\\n' > pct.txt`)).toEqual([
+      { path: 'pct.txt', text: '100%%\\n' },
+    ]);
+  });
+
+  it('reads the redirect outside quotes, never from inside a quoted string', () => {
+    const quoted = bashWrittenPayloads("echo 'a > b' > real.py <<EOF\nx = 1\nEOF");
+    expect(quoted).toContainEqual({ path: 'real.py', text: 'x = 1' });
+    expect(quoted.every((p) => p.path === 'real.py')).toBe(true);
+    const tee = bashWrittenPayloads('echo "tee z.py" > real.py <<EOF\nx = 1\nEOF');
+    expect(tee).toContainEqual({ path: 'real.py', text: 'x = 1' });
+    expect(tee.every((p) => p.path === 'real.py')).toBe(true);
+    expect(bashWrittenPayloads("cat <<EOF > 'my file.py'\nx = 1\nEOF")).toEqual([
+      { path: 'my file.py', text: 'x = 1' },
+    ]);
+    expect(bashWrittenPayloads("echo 'a > b' <<EOF\nx = 1\nEOF")).toEqual([]);
+  });
+
+  it('ends a CRLF heredoc at its delimiter, so the next write is its own payload', () => {
+    const cmd = 'cat > f.py <<EOF\r\nEVIL1\r\nEOF\r\ncat > g.py <<EOF\r\nEVIL2\r\nEOF';
+    expect(bashWrittenPayloads(cmd)).toEqual([
+      { path: 'f.py', text: 'EVIL1' },
+      { path: 'g.py', text: 'EVIL2' },
+    ]);
+  });
+
+  it('does not take a decoded body as code', () => {
+    expect(bashWrittenPayloads('base64 -d > f.py <<EOF\nZXZhbCh4KQ==\nEOF')).toEqual([]);
   });
 
   it('ignores a heredoc fed to a command, and writes to devices or fds', () => {

@@ -1,9 +1,11 @@
 // The file contents a Bash command writes, so they can be scanned as the code
-// they are. A command line is not source: code_flaw rules skip a `tool_use`
-// capture (see ruleApplies in the detections engine), and what the command
-// writes (a heredoc into a file, a quoted echo/printf into a file) is scanned
-// separately as a `code_change` under the file it names, so extension-scoped
-// rules apply to it.
+// they are. A command line is not source: when a payload is extracted from a
+// command, that command's own capture skips code_flaw rules
+// (`commandWritesScanned`, see ruleApplies in the detections engine), and what
+// the command writes (a heredoc into a file, a quoted echo/printf into a file)
+// is scanned separately as a `code_change` under the file it names, so
+// extension-scoped rules apply to it. A command with no extracted payload keeps
+// the rule family on the command line itself.
 //
 // Only a payload with a named file target counts. A heredoc fed to an
 // interpreter or a client (`python - <<EOF`, `psql <<EOF`) is a command's
@@ -17,13 +19,55 @@ export interface BashPayload {
 }
 
 // `> f`, `>> f`, `tee f`, `tee -a f`, optionally quoted. `>&2` and `2>` stay out.
-const TARGET = /(?:(?<![0-9&>])>>?|\btee\s+(?:-a\s+)?)\s*(?:'([^']+)'|"([^"]+)"|([^\s'"|;&<>()]+))/;
+const TARGET =
+  /(?:(?<![0-9&>])>>?|\btee\s+(?:-a\s+)?)\s*(?:'([^']+)'|"([^"]+)"|([^\s'"|;&<>()]+))/d;
+
+// A decoder or encoder on the marker line means the body is not the file's
+// text as written, so it is not scanned as code.
+const TRANSFORMED = /\b(?:base64|b64decode|xxd|openssl)\b/;
+
+// `line` with the inside of every quoted span blanked to `_`, quote marks and
+// length kept, so a `>` or `tee` inside quotes is not read as a redirect and an
+// index into the result is an index into `line`.
+function blankQuoted(line: string): string {
+  let out = '';
+  let quote = '';
+  for (let i = 0; i < line.length; i++) {
+    const c = line.charAt(i);
+    if (quote === '') {
+      if (c === '\\' && i + 1 < line.length) {
+        out += '__';
+        i++;
+      } else {
+        out += c;
+        if (c === "'" || c === '"') quote = c;
+      }
+    } else if (c === quote) {
+      out += c;
+      quote = '';
+    } else if (c === '\\' && quote === '"' && i + 1 < line.length) {
+      out += '__';
+      i++;
+    } else {
+      out += '_';
+    }
+  }
+  return out;
+}
+
+// The file a marker line redirects to, read outside quotes.
+function redirectTarget(line: string): string | undefined {
+  const m = TARGET.exec(blankQuoted(line));
+  const span = m?.indices?.[1] ?? m?.indices?.[2] ?? m?.indices?.[3];
+  return span === undefined ? undefined : line.slice(span[0], span[1]);
+}
 
 const HEREDOC = /<<(-?)\s*(?:'([A-Za-z_]\w*)'|"([A-Za-z_]\w*)"|([A-Za-z_]\w*))/g;
 
-// echo/printf of one quoted string straight into a file.
+// echo/printf of one quoted string straight into a file. A printf whose string
+// holds a conversion is a format, not the text written, and is not read.
 const QUOTED_WRITE =
-  /\b(?:echo|printf)\s+(?:-[A-Za-z]+\s+)*(?:'([^']*)'|"((?:[^"\\]|\\.)*)")\s*>>?\s*(?:'([^']+)'|"([^"]+)"|([^\s'"|;&<>()]+))/g;
+  /\b(echo|printf)\s+(?:-[A-Za-z]+\s+)*(?:'([^']*)'|"((?:[^"\\]|\\.)*)")\s*>>?\s*(?:'([^']+)'|"([^"]+)"|([^\s'"|;&<>()]+))/g;
 
 function writable(path: string): boolean {
   return !path.startsWith('/dev/') && !path.startsWith('&') && !path.startsWith('$(');
@@ -59,7 +103,8 @@ export function bashWrittenPayloads(command: string): BashPayload[] {
     while (pos <= command.length) {
       let e = command.indexOf('\n', pos);
       if (e === -1) e = command.length;
-      const l = command.slice(pos, e);
+      // A CRLF body ends its delimiter line with `\r`.
+      const l = command.slice(pos, e > pos && command[e - 1] === '\r' ? e - 1 : e);
       if ((stripTabs ? l.replace(/^\t+/, '') : l) === delimiter) {
         bodyEnd = Math.max(pos - 1, bodyStart);
         next = Math.min(e + 1, command.length);
@@ -69,17 +114,19 @@ export function bashWrittenPayloads(command: string): BashPayload[] {
       pos = e + 1;
     }
     heredoc.lastIndex = Math.max(next, heredoc.lastIndex);
-    const target = TARGET.exec(command.slice(lineStart, lineEnd));
-    const path = target?.[1] ?? target?.[2] ?? target?.[3];
+    const markerLine = command.slice(lineStart, lineEnd);
+    if (TRANSFORMED.test(markerLine)) continue;
+    const path = redirectTarget(markerLine);
     if (path === undefined || !writable(path)) continue;
-    const text = bodyStart >= bodyEnd ? '' : command.slice(bodyStart, bodyEnd);
+    const text = (bodyStart >= bodyEnd ? '' : command.slice(bodyStart, bodyEnd)).replace(/\r$/, '');
     if (text !== '') out.push({ path, text });
   }
   const head = command.length > MAX_COMMAND_CHARS ? command.slice(0, MAX_COMMAND_CHARS) : command;
   for (const m of head.matchAll(QUOTED_WRITE)) {
     if (out.length >= MAX_PAYLOADS) break;
-    const text = m[1] ?? m[2];
-    const path = m[3] ?? m[4] ?? m[5];
+    const text = m[2] ?? m[3];
+    const path = m[4] ?? m[5] ?? m[6];
+    if (m[1] === 'printf' && text?.replace(/%%/g, '').includes('%')) continue;
     if (text === undefined || text === '' || path === undefined || !writable(path)) continue;
     out.push({ path, text });
   }

@@ -96,6 +96,9 @@ export function InventoryNav({
   const typeReason = (t: AssetType) => (t === 'project' ? projectsReason : assetsReason);
   // Every project and asset once, counted the way the tables count them.
   const linkAttention = links.reduce((n, link) => n + link.attention, 0);
+  // An open host link owns the highlight. `type` still names the type the host
+  // would return to, so without this both its row and the link read as current.
+  const linkOpen = links.some((link) => link.selected === true);
   const groupAttention = GROUPS.map((g) => ({
     type: g.type,
     count: typeRows(g.type, projects, assetGroups).filter(needsAttention).length,
@@ -216,7 +219,7 @@ export function InventoryNav({
                   label={g.label}
                   count={unknown ? null : rows.length}
                   attention={unknown ? 0 : rows.filter(needsAttention).length}
-                  selected={g.type === type}
+                  selected={g.type === type && !linkOpen}
                   onSelect={() => {
                     onSelectType(g.type);
                   }}

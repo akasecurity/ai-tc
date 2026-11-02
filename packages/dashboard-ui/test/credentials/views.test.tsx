@@ -592,7 +592,9 @@ describe('CredentialDetailView', () => {
     });
     expect(onOpenFinding).toHaveBeenCalledWith('finding-1');
     act(() => {
-      button('All credentials')?.click();
+      mounted.host
+        .querySelector<HTMLButtonElement>('button[aria-label="Back to Credentials"]')
+        ?.click();
     });
     expect(onBack).toHaveBeenCalledTimes(1);
   });
@@ -845,7 +847,7 @@ describe('CredentialsListView dismissed toggle', () => {
     const onDismissedChange = vi.fn();
     list({ onDismissedChange, dismissedCount: 4 });
     const toggle = button('Dismissed');
-    expect(toggle?.textContent).toBe('Dismissed · 4');
+    expect(toggle?.textContent).toBe('Dismissed4');
     expect(toggle?.getAttribute('aria-pressed')).toBe('false');
     act(() => {
       toggle?.click();

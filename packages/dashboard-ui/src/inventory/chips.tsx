@@ -234,17 +234,26 @@ export function DetailFallback({
   message,
   onBack,
   backLabel,
+  tone = 'pending',
 }: {
   message: string;
   onBack: () => void;
   backLabel: string;
+  /** `alert` announces the message; `pending` waits quietly. */
+  tone?: 'pending' | 'alert' | undefined;
 }) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center border-b border-border px-5 py-3.5">
         <BackButton onBack={onBack} backLabel={backLabel} />
       </div>
-      <div className="grid min-h-0 flex-1 place-items-center p-8 text-center text-sm text-text-3">
+      {/* Keyed by tone: an alert is read out when it is INSERTED carrying its
+          text, not when the pending node re-renders into that role. */}
+      <div
+        key={tone}
+        role={tone === 'alert' ? 'alert' : undefined}
+        className="grid min-h-0 flex-1 place-items-center p-8 text-center text-sm text-text-3"
+      >
         {message}
       </div>
     </div>

@@ -2,7 +2,6 @@
 import { CredentialStatus } from '@akasecurity/schema';
 import {
   Button,
-  Card,
   cn,
   Pagination,
   PaginationNext,
@@ -85,6 +84,17 @@ const COLUMNS = [
   'Status',
 ] as const;
 const NUMERIC = new Set<string>(['Projects', 'Teams', 'Endpoints']);
+/** The filter row's chip, matching the pills the inventory table filters with. */
+const CHIP = (on: boolean) =>
+  cn(
+    'inline-flex cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-full border px-3 py-1 text-xs font-semibold transition-colors',
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
+    on
+      ? 'border-primary bg-primary-tint text-primary'
+      : 'border-border bg-surface text-text-2 hover:text-text',
+  );
+/** The first and last cell line up with the header and filter rows above them. */
+const EDGE = (index: number) => (index === 0 ? 'pl-5' : index === COLUMNS.length - 1 ? 'pr-5' : '');
 
 /** The credential ledger: one row per detected value, newest first. */
 export function CredentialsListView({
@@ -116,15 +126,16 @@ export function CredentialsListView({
   const loadingEmpty = isLoading && items.length === 0;
   // An empty page past the first means rows moved under the cursor, not an empty ledger.
   const emptyLedger = items.length === 0 && !hasPreviousPage && !hasNextPage;
+  const filters = onStatus !== undefined || onDismissedChange !== undefined;
   return (
-    <Card className="flex flex-col gap-4 p-4 shadow-sm">
-      <div className="flex flex-wrap items-center gap-3">
-        <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-sev-high-fill text-sev-high-ink">
-          <Ico name="key" className="size-4" />
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex flex-wrap items-center gap-3.5 border-b border-border px-5 py-4">
+        <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-sev-high-fill text-sev-high-ink">
+          <Ico name="key" className="size-5" />
         </span>
-        <div className="min-w-0">
-          <div className="font-display text-sm font-semibold text-text">Credentials</div>
-          <div className="text-xs text-text-3">
+        <div className="min-w-40 flex-1">
+          <div className="font-display text-base font-semibold">Credentials</div>
+          <div className="mt-px text-xs text-text-3">
             {refused
               ? 'Not available'
               : isLoading
@@ -133,72 +144,80 @@ export function CredentialsListView({
           </div>
         </div>
         <SearchField
-          className="ml-auto w-64"
+          className="h-9 w-full max-w-80 sm:w-72"
           surface="card"
           label="Search credentials"
           placeholder="Search credentials…"
           value={search}
           onValueChange={onSearch}
         />
-        <Button variant="outline" size="sm" disabled={exporting || refused} onClick={onExport}>
+        <Button variant="outline" size="md" disabled={exporting || refused} onClick={onExport}>
           Export
         </Button>
       </div>
 
-      {onStatus !== undefined && (
-        <StatusChips
-          status={status}
-          onStatus={onStatus}
-          counts={refused || isLoading ? undefined : statusCounts}
-        />
-      )}
-      {onDismissedChange !== undefined && (
-        <div className="flex flex-wrap gap-1.5">
-          <Button
-            variant={dismissed ? 'solid' : 'outline'}
-            size="sm"
-            aria-pressed={dismissed}
-            onClick={() => {
-              onDismissedChange(!dismissed);
-            }}
-          >
-            Dismissed
-            {dismissedCount !== undefined && (
-              <span className="tabular-nums"> · {String(dismissedCount)}</span>
-            )}
-          </Button>
+      {filters && (
+        <div className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-3">
+          {onStatus !== undefined && (
+            <StatusChips
+              status={status}
+              onStatus={onStatus}
+              counts={refused || isLoading ? undefined : statusCounts}
+            />
+          )}
+          {onStatus !== undefined && onDismissedChange !== undefined && (
+            <span aria-hidden className="mx-0.5 h-5 w-px bg-border" />
+          )}
+          {onDismissedChange !== undefined && (
+            <button
+              type="button"
+              aria-pressed={dismissed}
+              className={CHIP(dismissed)}
+              onClick={() => {
+                onDismissedChange(!dismissed);
+              }}
+            >
+              Dismissed
+              {dismissedCount !== undefined && (
+                <span className="tabular-nums opacity-70">{String(dismissedCount)}</span>
+              )}
+            </button>
+          )}
         </div>
       )}
 
-      {refused ? (
-        <p role="alert" className="py-10 text-center text-sm text-text-3">
-          {error}
-        </p>
-      ) : loadingEmpty ? (
-        <div className="flex flex-col gap-2 py-2">
-          {Array.from({ length: 8 }, (_, i) => (
-            <div key={i} className="h-11 animate-pulse rounded-md bg-surface-3" />
-          ))}
-        </div>
-      ) : items.length === 0 ? (
-        <p className="py-10 text-center text-sm text-text-3">
-          {!emptyLedger
-            ? 'These rows moved while you were reading. Step back to see the rest.'
-            : status !== null
-              ? `No credentials are ${credentialStatusState(status)}${search.trim() === '' ? '.' : ' in this search.'}`
-              : search.trim() !== ''
-                ? 'Nothing matches this search.'
-                : dismissed
-                  ? 'No credentials are dismissed.'
-                  : 'No credentials have been seen yet. They appear here once an attached machine shares a sighting.'}
-        </p>
-      ) : (
-        <div className="overflow-x-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {refused ? (
+          <p role="alert" className="px-5 py-10 text-center text-sm text-text-3">
+            {error}
+          </p>
+        ) : loadingEmpty ? (
+          <div className="flex flex-col gap-2 px-5 py-4">
+            {Array.from({ length: 8 }, (_, i) => (
+              <div key={i} className="h-11 animate-pulse rounded-md bg-surface-3" />
+            ))}
+          </div>
+        ) : items.length === 0 ? (
+          <p className="px-5 py-10 text-center text-sm text-text-3">
+            {!emptyLedger
+              ? 'These rows moved while you were reading. Step back to see the rest.'
+              : status !== null
+                ? `No credentials are ${credentialStatusState(status)}${search.trim() === '' ? '.' : ' in this search.'}`
+                : search.trim() !== ''
+                  ? 'Nothing matches this search.'
+                  : dismissed
+                    ? 'No credentials are dismissed.'
+                    : 'No credentials have been seen yet. They appear here once an attached machine shares a sighting.'}
+          </p>
+        ) : (
           <Table>
             <TableHeader>
               <TableRow>
-                {COLUMNS.map((column) => (
-                  <TableHead key={column} className={cn(NUMERIC.has(column) && 'text-right')}>
+                {COLUMNS.map((column, index) => (
+                  <TableHead
+                    key={column}
+                    className={cn('pt-3', NUMERIC.has(column) && 'text-right', EDGE(index))}
+                  >
                     {column}
                   </TableHead>
                 ))}
@@ -208,22 +227,23 @@ export function CredentialsListView({
               {items.map((item) => (
                 <TableRow
                   key={item.id}
-                  className="cursor-pointer"
+                  className="cursor-pointer hover:bg-surface-2"
                   aria-label={`View credential ${credentialName(item).text}`}
                   onClick={() => {
                     onSelect(item.id);
                   }}
                 >
-                  <TableCell>
+                  <TableCell className="pl-5">
                     <div
                       className={cn(
-                        'text-xs font-semibold text-text',
+                        'max-w-64 truncate text-xs font-semibold text-text',
                         credentialName(item).isVariable && 'font-mono',
                       )}
+                      title={credentialName(item).text}
                     >
                       {credentialName(item).text}
                     </div>
-                    <div className="text-xs text-text-3">
+                    <div className="max-w-64 truncate text-xs text-text-3">
                       {item.kind}
                       {credentialLabel(item) !== null && item.variableName !== null && (
                         <span className="font-mono"> · {item.variableName}</span>
@@ -250,7 +270,7 @@ export function CredentialsListView({
                   <TableCell className="text-xs text-text-2">
                     {item.lastRotated === null ? '—' : relativeTime(item.lastRotated, renderedAt)}
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="pr-5">
                     <span className="inline-flex flex-wrap gap-1.5">
                       {item.statuses.map((s) => (
                         <CredentialStatusBadge key={s} status={s} />
@@ -261,17 +281,17 @@ export function CredentialsListView({
               ))}
             </TableBody>
           </Table>
-        </div>
-      )}
+        )}
+      </div>
 
       {!refused && !loadingEmpty && !emptyLedger && (
-        <Pagination>
-          <PaginationPrevious disabled={!hasPreviousPage || loadingPage} onClick={onPreviousPage} />
-          <PaginationStatus>
+        <Pagination className="justify-start gap-3 border-t border-border px-5 py-3">
+          <PaginationStatus className="flex-1">
             {items.length === 0
               ? `${String(total)} in all`
               : `${String(pageStart)}–${String(pageStart + items.length - 1)} of ${String(total)}`}
           </PaginationStatus>
+          <PaginationPrevious disabled={!hasPreviousPage || loadingPage} onClick={onPreviousPage} />
           <PaginationNext
             disabled={!hasNextPage || loadingPage}
             loading={loadingPage}
@@ -279,7 +299,7 @@ export function CredentialsListView({
           />
         </Pagination>
       )}
-    </Card>
+    </div>
   );
 }
 
@@ -301,7 +321,7 @@ function StatusChips({
     })),
   ];
   return (
-    <div role="group" aria-label="Filter by status" className="flex flex-wrap gap-2">
+    <div role="group" aria-label="Filter by status" className="flex flex-wrap items-center gap-1.5">
       {chips.map((chip) => {
         const on = chip.key === status;
         return (
@@ -312,16 +332,11 @@ function StatusChips({
             onClick={() => {
               onStatus(chip.key);
             }}
-            className={cn(
-              'inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-full border px-2.5 text-xs font-semibold',
-              on
-                ? 'border-primary bg-primary-tint text-primary'
-                : 'border-border bg-surface text-text-2',
-            )}
+            className={CHIP(on)}
           >
             {chip.label}
             {chip.count !== undefined && (
-              <span className="text-label font-bold opacity-70">{String(chip.count)}</span>
+              <span className="tabular-nums opacity-70">{String(chip.count)}</span>
             )}
           </button>
         );

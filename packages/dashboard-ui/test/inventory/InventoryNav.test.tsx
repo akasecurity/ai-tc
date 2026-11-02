@@ -216,6 +216,14 @@ describe('InventoryNav', () => {
     expect(withLink('type', { selected: true }).getAttribute('aria-current')).toBe('true');
   });
 
+  it('leaves the type the host would return to unmarked while a host link is shown', () => {
+    withLink('type', { selected: true });
+    const current = [...mounted.host.querySelectorAll('nav li button[aria-current]')].map(
+      (b) => b.textContent,
+    );
+    expect(current).toEqual(['Credentials7']);
+  });
+
   it('still counts the projects and host links it shows while the asset lists are refused', () => {
     withLink('type', {}, 'You need permission to view assets.');
     // The project row still needs attention, and so do the link's three.

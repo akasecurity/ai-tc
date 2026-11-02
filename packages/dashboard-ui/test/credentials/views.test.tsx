@@ -290,6 +290,10 @@ describe('CredentialsListView', () => {
     expect(mounted.host.querySelector('[role="alert"]')?.textContent).toBe(
       'You need permission to view detections.',
     );
+    // An announced failure is not the muted colour the quiet states use.
+    expect(mounted.host.querySelector('[role="alert"]')?.className).toContain(
+      'text-sev-critical-ink',
+    );
     expect(mounted.host.querySelector('table')).toBeNull();
     expect(text()).toContain('Not available');
     expect(text()).not.toContain('0 credentials');
@@ -592,7 +596,9 @@ describe('CredentialDetailView', () => {
     });
     expect(onOpenFinding).toHaveBeenCalledWith('finding-1');
     act(() => {
-      button('All credentials')?.click();
+      mounted.host
+        .querySelector<HTMLButtonElement>('button[aria-label="Back to Credentials"]')
+        ?.click();
     });
     expect(onBack).toHaveBeenCalledTimes(1);
   });
@@ -845,7 +851,10 @@ describe('CredentialsListView dismissed toggle', () => {
     const onDismissedChange = vi.fn();
     list({ onDismissedChange, dismissedCount: 4 });
     const toggle = button('Dismissed');
-    expect(toggle?.textContent).toBe('Dismissed · 4');
+    // The label and the count are separate nodes, laid out with a flex gap, so
+    // the glued `textContent` is a string nothing renders and no reader hears.
+    expect(toggle?.firstChild?.textContent).toBe('Dismissed');
+    expect(toggle?.querySelector('span')?.textContent).toBe('4');
     expect(toggle?.getAttribute('aria-pressed')).toBe('false');
     act(() => {
       toggle?.click();
@@ -1099,5 +1108,33 @@ describe('CredentialDetailView dismiss, restore and delete', () => {
       button('Delete')?.click();
     });
     expect(dialog()?.textContent).toContain('its 1 sighting and');
+  });
+});
+
+describe('CredentialsListView pane shell', () => {
+  // The host supplies the chrome and the bounded height — a Card that is
+  // `flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden`. These assertions
+  // cover the half the view owns: that the scroller is its own body and not
+  // the page. They are class-shape assertions; jsdom lays out no boxes, so
+  // they pin WHERE the scroller is, not that it scrolls.
+  it('puts the scroller on its own body, with the header and pagination outside it', () => {
+    list({ onStatus: vi.fn(), onDismissedChange: vi.fn(), total: 1 });
+
+    const pane = mounted.host.firstElementChild;
+    expect(pane?.className).toContain('min-h-0');
+    expect(pane?.className).toContain('flex-1');
+
+    const scrollers = [...mounted.host.querySelectorAll('[class*="overflow-y-auto"]')];
+    expect(scrollers).toHaveLength(1);
+    const scroller = scrollers[0] ?? null;
+    // Bounded by the host's height rather than by its own content; without
+    // both of these the body grows and the page scrolls instead.
+    expect(scroller?.className).toContain('min-h-0');
+    expect(scroller?.className).toContain('flex-1');
+
+    expect(scroller?.contains(mounted.host.querySelector('table'))).toBe(true);
+    // The search and the title sit above the scroller, so they stay put.
+    expect(scroller?.contains(mounted.host.querySelector('input'))).toBe(false);
+    expect(scroller?.contains(mounted.host.querySelector('.font-display'))).toBe(false);
   });
 });

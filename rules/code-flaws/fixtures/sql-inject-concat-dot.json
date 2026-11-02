@@ -52,7 +52,12 @@
     "label": "concatenation after quoted SQL keywords on the same line: the span starts at the SQL literal",
     "text": "$cols = [\"select\", \"where\"]; $q = \"SELECT * FROM t WHERE id = \" . $id;",
     "shouldMatch": true,
-    "expectedSpans": [{ "start": 34, "end": 65 }]
+    "expectedSpans": [
+      {
+        "start": 34,
+        "end": 65
+      }
+    ]
   },
   {
     "label": "string with no SQL keyword concatenated with the dot operator",
@@ -63,5 +68,359 @@
     "label": "long line of quoted SQL keywords with no dot operator",
     "text": "\"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\"",
     "shouldMatch": false
+  },
+  {
+    "label": "\"deleted\" in a log message is not the DELETE keyword",
+    "text": "$msg = \"Item deleted: \" . $name;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "\"dropdown\" in a CSS id is not the DROP keyword",
+    "text": "$id = \"dropdown-\" . $i;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "\"somewhere\" in a UI string is not the WHERE keyword",
+    "text": "$t = \"somewhere \" . $x;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "\"updated\" in a timestamp label is not the UPDATE keyword",
+    "text": "$s = \"Last updated \" . $date;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "\"drop-down\" in a CSS id is not the DROP keyword",
+    "text": "$id = \"drop-down-\" . $i;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "\"select-all\" in a CSS class is not the SELECT keyword",
+    "text": "$cls = \"select-all \" . $x;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "\"where-to-go\" in a UI string is not the WHERE keyword",
+    "text": "$s = \"where-to-go \" . $x;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "a hyphen before the keyword: \"last-update\" is not the UPDATE keyword",
+    "text": "$k = \"last-update \" . $t;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "a dot before the keyword: \"errors.delete\" is a message key, not the DELETE keyword",
+    "text": "$k = \"errors.delete \" . $x;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "a dot after the keyword: \"update.failed\" is a message key, not the UPDATE keyword",
+    "text": "$m = \"update.failed \" . $id;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "INSERT INTO concatenated with the dot operator",
+    "text": "$q = \"INSERT INTO t VALUES (\" . $v . \")\";",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "UPDATE .. SET concatenated with the dot operator",
+    "text": "$q = \"UPDATE users SET name = \" . $n;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "DROP TABLE concatenated with the dot operator",
+    "text": "$q = \"DROP TABLE \" . $t;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "DROP DATABASE concatenated with the dot operator",
+    "text": "$q = \"DROP DATABASE \" . $db;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "a bare WHERE .. = fragment with no SELECT on the line",
+    "text": "$sql .= \" WHERE t.id = \" . $id;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "a route path: \"admin/delete/\" has no SQL syntax",
+    "text": "$url = \"admin/delete/\" . $id;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "an event name: \"user:delete\" has no SQL syntax",
+    "text": "$evt = \"user:delete \" . $id;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "prose: a standalone \"select\" in a UI string has no SQL syntax",
+    "text": "$msg = \"Please select an option: \" . $x;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "a log message leading with \"insert\": no INTO, so no SQL syntax",
+    "text": "$msg = \"insert failed for \" . $id;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "a log message leading with \"delete\": no FROM, so no SQL syntax",
+    "text": "$msg = \"delete failed for \" . $id;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "SELECT .. FROM with no WHERE clause on the line",
+    "text": "$q = \"SELECT * FROM t ORDER BY \" . $col;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "DELETE FROM with no WHERE clause on the line",
+    "text": "$q = \"DELETE FROM \" . $table;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "a subquery: the SQL does not start the string literal",
+    "text": "$q = \"(SELECT id FROM t WHERE x=\" . $x . \")\";",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "prose: several words between \"where\" and the \"=\" is not a WHERE clause",
+    "text": "$m = \"Tell me where the value = \" . $v;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "a filename: \"where\" with no space before the \"=\" is not a WHERE clause",
+    "text": "$f = \"report.where.csv=\" . $x;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "\"somewhere\" followed by an assignment is not a WHERE clause",
+    "text": "$m = \"somewhere x = \" . $v;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "two SQL literals on one line: the span starts at the one that is concatenated",
+    "text": "$a = \"SELECT x FROM t\"; $b = \"SELECT y FROM u WHERE id=\" . $id;",
+    "shouldMatch": true,
+    "filePath": "src/db.php",
+    "expectedSpans": [
+      {
+        "start": 29,
+        "end": 58
+      }
+    ]
+  },
+  {
+    "label": "a WHERE clause compared with \"!=\"",
+    "text": "$w = \" WHERE status != \" . $s;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "a WHERE clause compared with \"<>\"",
+    "text": "$w = \" WHERE status <> \" . $s;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "a WHERE clause compared with \">\"",
+    "text": "$w = \" WHERE created > \" . $date;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "a WHERE clause compared with \"<\"",
+    "text": "$w = \" WHERE score < \" . $max;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "a WHERE clause compared with \">=\"",
+    "text": "$w = \" WHERE qty >= \" . $min;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "a WHERE clause compared with \"<=\"",
+    "text": "$w = \" WHERE qty <= \" . $max;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "a WHERE .. IN list",
+    "text": "$w = \" WHERE t.id IN (\" . $ids . \")\";",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "a WHERE .. LIKE pattern",
+    "text": "$w = \" WHERE name LIKE '\" . $n;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "a WHERE .. BETWEEN range",
+    "text": "$w = \" WHERE age BETWEEN \" . $lo;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "a WHERE clause built across lines, no other SQL on the line",
+    "text": "$sql .= \" WHERE id IN (\" . implode(',', $ids) . \")\";",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "INSERT IGNORE INTO concatenated with the dot operator",
+    "text": "$q = \"INSERT IGNORE INTO t VALUES (\" . $v . \")\";",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "INSERT with two modifiers before INTO",
+    "text": "$q = \"INSERT LOW_PRIORITY IGNORE INTO t VALUES (\" . $v . \")\";",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "DROP INDEX concatenated with the dot operator",
+    "text": "$q = \"DROP INDEX \" . $i;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "DROP VIEW concatenated with the dot operator",
+    "text": "$q = \"DROP VIEW \" . $v;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "prose: \"where you like\" has no quoted LIKE pattern",
+    "text": "$m = \"I know where you like \" . $x;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "prose: \"where x in\" has no parenthesised IN list",
+    "text": "$m = \"where x in \" . $list;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "\"dropindex\" is one word, not the DROP keyword",
+    "text": "$q = \"dropindex \" . $i;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "\"into_the_void\" is one word, not the INTO keyword",
+    "text": "$q = \"insert into_the_void \" . $x;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "prose: \"where you like\" with a later quote on the line is still not a LIKE pattern",
+    "text": "$m = \"I know where you like \" . $a . \" really\" . $b;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "a PHP variable as the WHERE left operand",
+    "text": "$q = \" WHERE $col = \" . $x;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "a braced PHP variable as the WHERE left operand",
+    "text": "$q = \" WHERE {$col} = \" . $x;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "the ${name} spelling as the WHERE left operand",
+    "text": "$q = \" WHERE ${col} = \" . $x;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "UPDATE ONLY, with the keyword before the table",
+    "text": "$q = \" UPDATE ONLY users SET a = \" . $x;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "UPDATE with an AS alias on the target",
+    "text": "$q = \"UPDATE users AS u SET a = \" . $x;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "a multi-table UPDATE listing its targets",
+    "text": "$q = \"UPDATE t1, t2 SET a = \" . $x;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "UPDATE whose SET clause is entirely concatenated",
+    "text": "$q = \"UPDATE t SET \" . $assignments;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "INSERT OR REPLACE INTO concatenated with the dot operator",
+    "text": "$q = \"INSERT OR REPLACE INTO t VALUES (\" . $v;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "INSERT OR IGNORE INTO concatenated with the dot operator",
+    "text": "$q = \"INSERT OR IGNORE INTO t VALUES (\" . $v;",
+    "shouldMatch": true,
+    "filePath": "src/db.php"
+  },
+  {
+    "label": "prose: a comma list before \"set\" with no assignment is not an UPDATE",
+    "text": "$m = \"update name, email set aside \" . $x;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "prose: \"insert or replace\" with no INTO is not an INSERT",
+    "text": "$m = \"insert or replace the card \" . $id;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
+  },
+  {
+    "label": "prose: a braced placeholder after \"where\" is not a column",
+    "text": "$m = \"I wonder where {the answer} is \" . $x;",
+    "shouldMatch": false,
+    "filePath": "src/ui.php"
   }
 ]

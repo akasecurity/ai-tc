@@ -354,6 +354,7 @@ export {
   SCOPE_LABEL,
   type ScopeAnswer,
   STATE_TONE,
+  vaultRefreshShortfallNote,
   VIA_LABEL,
 } from './exceptions/meta.ts';
 export {

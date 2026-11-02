@@ -312,14 +312,7 @@ function buildAssetDetail(row: AssetRow): AssetDetail {
   // `tools` is omitted — an empty list would render as a hollow "Exposed
   // tools 0" section (the view only checks truthiness).
   if (row.assetType === 'mcp' && row.toolsJson !== null) {
-    const rawTools = safeJson(row.toolsJson, [] as McpTool[]);
-    detail.tools =
-      row.effectiveTrust === 'unapproved'
-        ? rawTools.map((t) => ({
-            ...t,
-            risk: t.risk ?? 'Tool access blocked: MCP server trust is unapproved.',
-          }))
-        : rawTools;
+    detail.tools = safeJson(row.toolsJson, [] as McpTool[]);
   }
   return detail;
 }

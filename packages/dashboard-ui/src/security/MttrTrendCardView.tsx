@@ -25,6 +25,7 @@ import { AreaChart } from '../shared/charts.tsx';
 import { ClockIcon } from '../shared/icons.tsx';
 import { SeriesLegend, useSeriesVisibility } from '../shared/SeriesLegend.tsx';
 import { formatMttrDuration } from './format.ts';
+import { SEVERITY_DASH } from './meta.ts';
 import { WidgetEmpty, WidgetError } from './widget-shared.tsx';
 
 // One bucket's point with a presentation `label` (the raw `timestamp` resolved
@@ -42,11 +43,19 @@ export interface MttrTrendView {
 
 type MttrSeriesKey = keyof MttrTrendPoint['bySeverity'];
 
-const MTTR_SERIES: { key: MttrSeriesKey; label: string; color: string }[] = [
-  { key: 'critical', label: 'Critical', color: COLORS.sevCritical },
-  { key: 'high', label: 'High', color: COLORS.sevHigh },
-  { key: 'medium', label: 'Medium', color: COLORS.sevMedium },
-  { key: 'low', label: 'Low', color: COLORS.sevLow },
+// `dash` is not decoration: the four severity hues are mutually
+// indistinguishable by luminance, so it is what carries a line's identity for a
+// reader who cannot separate them. See SEVERITY_DASH for the measurements.
+const MTTR_SERIES: {
+  key: MttrSeriesKey;
+  label: string;
+  color: string;
+  dash: string | undefined;
+}[] = [
+  { key: 'critical', label: 'Critical', color: COLORS.sevCritical, dash: SEVERITY_DASH.critical },
+  { key: 'high', label: 'High', color: COLORS.sevHigh, dash: SEVERITY_DASH.high },
+  { key: 'medium', label: 'Medium', color: COLORS.sevMedium, dash: SEVERITY_DASH.medium },
+  { key: 'low', label: 'Low', color: COLORS.sevLow, dash: SEVERITY_DASH.low },
 ];
 
 export function MttrTrendCardView({ points, isLoading, error }: MttrTrendView) {

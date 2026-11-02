@@ -3,5 +3,6 @@
   "agent-harness-tamper/agent-endpoint-redirect": "Agent endpoint redirect",
   "agent-harness-tamper/agent-approval-bypass": "Agent approval bypass",
   "agent-harness-tamper/launchctl-submit": "launchctl submit",
-  "agent-harness-tamper/known-malicious-npm-package": "Malicious npm package"
+  "agent-harness-tamper/known-malicious-npm-package": "Malicious npm package",
+  "agent-harness-tamper/tool-output-outbound-call": "Outbound call after MCP output"
 }

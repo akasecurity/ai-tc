@@ -22,6 +22,7 @@ import agentHarnessTamperAgentEndpointRedirect from '../../../rules/agent-harnes
 import agentHarnessTamperKnownMaliciousNpmPackage from '../../../rules/agent-harness-tamper/known-malicious-npm-package.json';
 import agentHarnessTamperLaunchctlSubmit from '../../../rules/agent-harness-tamper/launchctl-submit.json';
 import agentHarnessTamperMcpServerLauncher from '../../../rules/agent-harness-tamper/mcp-server-launcher.json';
+import agentHarnessTamperToolOutputOutboundCall from '../../../rules/agent-harness-tamper/tool-output-outbound-call.json';
 import codeFlawsAuthJwtNoVerify from '../../../rules/code-flaws/auth-jwt-no-verify.json';
 import codeFlawsAuthSslVerifyFalse from '../../../rules/code-flaws/auth-ssl-verify-false.json';
 import codeFlawsCmdInjectExec from '../../../rules/code-flaws/cmd-inject-exec.json';
@@ -173,13 +174,14 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'agent-harness-tamper',
     name: 'Agent harness tampering',
-    version: '0.1.0',
+    version: '0.2.0',
     rawRules: [
       agentHarnessTamperMcpServerLauncher,
       agentHarnessTamperAgentEndpointRedirect,
       agentHarnessTamperAgentApprovalBypass,
       agentHarnessTamperLaunchctlSubmit,
       agentHarnessTamperKnownMaliciousNpmPackage,
+      agentHarnessTamperToolOutputOutboundCall,
     ],
     shortNames: {
       'agent-harness-tamper/mcp-server-launcher': 'MCP server launcher',
@@ -187,12 +189,13 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       'agent-harness-tamper/agent-approval-bypass': 'Agent approval bypass',
       'agent-harness-tamper/launchctl-submit': 'launchctl submit',
       'agent-harness-tamper/known-malicious-npm-package': 'Malicious npm package',
+      'agent-harness-tamper/tool-output-outbound-call': 'Outbound call after MCP output',
     },
   },
   {
     packId: 'code-flaws',
     name: 'Code Security Flaws',
-    version: '0.1.3',
+    version: '0.1.5',
     rawRules: [
       codeFlawsSqlInjectConcat,
       codeFlawsSqlInjectConcatDot,

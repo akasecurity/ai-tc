@@ -13,6 +13,7 @@ import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote, userDisclosure } from '../protocol/notes.ts';
 import { resolveHookAccount, stampFor } from './account-stamp.ts';
 import { postToolUseForward } from './capture-forward.ts';
+import { isMcpTool, MCP_OUTPUT_SESSION_MARKER } from './decoded-content.ts';
 import { warnIfHostBelowFloor } from './host-floor-notice.ts';
 import { largeInputBound } from './large-input.ts';
 import type { ResponseScanOutcome } from './scan-response.ts';
@@ -30,7 +31,7 @@ import {
   searchRootScopeKey,
 } from './shared.ts';
 import { captureStamped } from './stamped-capture.ts';
-import { openGateway, warnIfStoreRedirected } from './store-health.ts';
+import { markSession, openGateway, warnIfStoreRedirected } from './store-health.ts';
 import { collectResponseFields } from './tool-response.ts';
 
 export async function runPostToolUse(
@@ -50,6 +51,10 @@ export async function runPostToolUse(
     ({ fields, truncated } = collectResponseFields(toolName, response));
   }
   if (fields.length === 0) return;
+  const earlySessionId = getString(input, 'session_id');
+  if (rawToolName !== undefined && earlySessionId !== undefined && isMcpTool(rawToolName)) {
+    markSession(loadConfig().dataDir, MCP_OUTPUT_SESSION_MARKER, earlySessionId);
+  }
 
   // Per-hook metadata layering (see shared.ts): Read carries the file being
   // read on tool_input.file_path — without it, extension-scoped rules never

@@ -56,7 +56,12 @@ export interface RotateKeyDialogProps {
  * nothing:
  *   - `secret_vault` holds a third keyed fingerprint, and is the only one
  *     rotation spares: rotateKey re-keys it rather than invalidating it, so a
- *     stored value stays matchable and there is no cost to disclose.
+ *     stored value stays matchable. That is why nothing about it is disclosed
+ *     HERE and not evidence that nothing needs disclosing at all — the re-key is
+ *     per-row best-effort, and whether a row opens is unknowable before the pass
+ *     runs. A pass that falls short is disclosed afterwards instead, by the host
+ *     (`vaultRefreshShortfallNote`), which is the only point at which there is a
+ *     number to state.
  *   - `inspection_findings.finding_key` is a hash DERIVED from the same keyed
  *     fingerprint, so a rotation moves it even though the secret has not
  *     changed. Nothing in this dialog covers that, and it has a write side

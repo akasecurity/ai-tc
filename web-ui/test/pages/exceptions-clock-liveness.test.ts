@@ -67,6 +67,7 @@ function listRoute(blocked: BlockedDetectionDescriptor[]) {
       keyState: { status: 'present', version: 4 },
       activePermanent: [],
       approvableBlocked: blocked.length,
+      vaultFingerprints: { stale: 0, total: 0 },
       renderedAt: RENDERED_AT,
     }),
   );

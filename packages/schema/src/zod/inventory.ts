@@ -328,7 +328,7 @@ export const McpTool = z
     signature: z.string(),
     description: z.string(),
     write: z.boolean(),
-    /** Non-null string when tool is dangerous / blocked; null otherwise. */
+    /** What makes the tool dangerous; null when nothing does. */
     risk: z.string().nullable(),
   })
   .meta({ id: 'McpTool' });

@@ -5,7 +5,14 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { getLoadedRules, maskMatch } from '@akasecurity/detections';
 import type { LocalDatabase } from '@akasecurity/persistence';
-import { BLOCKED_DETECTIONS_RETENTION_MS, openLocalDatabase } from '@akasecurity/persistence';
+import {
+  BLOCKED_DETECTIONS_RETENTION_MS,
+  createKeyProvider,
+  keysDir,
+  openLocalDatabase,
+  readWorkspaceSettings,
+  SecretVault,
+} from '@akasecurity/persistence';
 import type { DataGateway } from '@akasecurity/plugin-sdk';
 import {
   createPluginRuntime,
@@ -21,6 +28,8 @@ import {
   defaultWorkspaceSettings,
   LEDGER_WINDOW_HOURS,
   rotationBlockedLedgerNote,
+  VAULT_REFRESH_FAILED_NOTE,
+  vaultRefreshShortfallNote,
 } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -1320,6 +1329,130 @@ describe('aka exception rotate-key — the cost it discloses before committing',
     await runException(['rotate-key', '--home', home, '--yes'], io);
 
     expect(io.output()).toContain(rotationBlockedLedgerNote(1));
+  });
+
+  // ── the vault re-key, and what a pass that falls short has to disclose ────
+  //
+  // The vault is the one store rotation spares: grants lose their values and so
+  // must be invalidated, while the vault still holds its values and is re-keyed
+  // instead. That is why nothing about it is disclosed BEFORE committing — and
+  // why it is the one that needs a disclosure afterwards. The re-key is per-row
+  // best-effort, and whether a row opens is not knowable until the pass tries.
+
+  function vaultOver(db: LocalDatabase): SecretVault {
+    const base = homeBase(home);
+    return new SecretVault({
+      repo: db.secretVault,
+      // The same custody and key directory the command's own vault resolves, so
+      // a row seeded here is one the command can genuinely open.
+      keys: createKeyProvider(readWorkspaceSettings(base).vaultKeyCustody, keysDir(base)),
+      // Seeding only — tokenize is consent-gated, the re-key pass is not.
+      isConsented: () => true,
+    });
+  }
+
+  async function seedVaulted(raw: string): Promise<void> {
+    const db = openLocalDatabase(dir);
+    try {
+      const pointer = await vaultOver(db).tokenize(
+        raw,
+        { ruleId: RULE_ID, category: 'secret', maskedMatch: maskMatch(raw) },
+        () => loadOrCreateFingerprintKey(dir),
+      );
+      if (typeof pointer !== 'string') throw new Error('seeding tokenize was refused');
+    } finally {
+      db.close();
+    }
+  }
+
+  function vaultedRows(): number {
+    const db = openLocalDatabase(dir);
+    try {
+      return db.secretVault.countEntries();
+    } finally {
+      db.close();
+    }
+  }
+
+  /**
+   * Make every stored row unopenable, so the re-key pass has to skip all of
+   * them. The AEAD tag rather than the ciphertext: it is the one field no other
+   * column has to stay consistent with, so each row then fails for exactly one
+   * reason.
+   */
+  function breakEveryVaultRow(): void {
+    const raw = new DatabaseSync(join(dir, 'aka.db'));
+    try {
+      const changes = raw
+        .prepare("UPDATE secret_vault SET auth_tag = 'bm90LWEtdGFn'")
+        .run().changes;
+      expect(changes).toBeGreaterThan(0);
+    } finally {
+      raw.close();
+    }
+  }
+
+  it('reports what the vault re-key moved when it reaches every stored value', async () => {
+    await seedVaulted(VALUE);
+    await seedVaulted(SECOND_VALUE);
+    expect(vaultedRows()).toBe(2);
+
+    const io = scriptedIo();
+    await runException(['rotate-key', '--home', home, '--yes'], io);
+
+    const out = io.output();
+    expect(out).toContain('Vault re-keyed — 2 stored values follow the new key');
+    // The positive control for both cases below: a clean pass says NOTHING about
+    // a shortfall, so "the warning is absent" there is a property of the pass
+    // rather than of a command that never warns.
+    expect(out).not.toContain(vaultRefreshShortfallNote(0, 1) ?? 'unreachable');
+    expect(out).not.toContain('could not be re-keyed');
+    expectNoEchoOf(out, VALUE);
+  });
+
+  it('agrees with itself on number for a single stored value', async () => {
+    await seedVaulted(VALUE);
+
+    const io = scriptedIo();
+    await runException(['rotate-key', '--home', home, '--yes'], io);
+
+    // The plural branch is pinned by the case above; this is the singular one,
+    // which read "1 stored value follow the new key". Worth a case rather than a
+    // glance: the count is the number a reader has to trust, and a line that
+    // cannot agree with itself on number is a poor place to ask for that.
+    expect(io.output()).toContain('1 stored value follows the new key');
+    expect(io.output()).not.toContain('value follow the');
+  });
+
+  it('discloses a partial re-key instead of reporting the rotation as clean', async () => {
+    await seedVaulted(VALUE);
+    await seedVaulted(SECOND_VALUE);
+    breakEveryVaultRow();
+
+    const io = scriptedIo();
+    await runException(['rotate-key', '--home', home, '--yes'], io);
+
+    const out = io.output();
+    // The exact sentence the dashboard shows, from the shared helper — a literal
+    // here would be the duplicate the helper exists to prevent.
+    expect(out).toContain(vaultRefreshShortfallNote(0, 2));
+    // And nothing claiming a re-key that did not happen.
+    expect(out).not.toContain('Vault re-keyed');
+    expectNoEchoOf(out, VALUE);
+  });
+
+  it('keeps an empty vault silent, which is what makes the warning above mean something', async () => {
+    expect(vaultedRows()).toBe(0);
+
+    const io = scriptedIo();
+    await runException(['rotate-key', '--home', home, '--yes'], io);
+
+    const out = io.output();
+    // Nothing moved and nothing was lost: the two cases a bare success count
+    // could not tell apart now read differently, which is the whole point.
+    expect(out).not.toContain('Vault re-keyed');
+    expect(out).not.toContain('could not be re-keyed');
+    expect(out).not.toContain(VAULT_REFRESH_FAILED_NOTE);
   });
 
   it('names a window that matches the one the count is actually taken over', () => {

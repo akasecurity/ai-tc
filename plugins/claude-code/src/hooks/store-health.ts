@@ -304,6 +304,25 @@ function hasControlChar(text: string): boolean {
   return false;
 }
 
+/**
+ * Marks a session under `marker`, and tells whether a session carries it. The
+ * same recent-sessions scheme as the store warning: best-effort, capped at the
+ * newest RECENT_SESSIONS ids, and a session id the marker cannot store faithfully
+ * is never marked.
+ */
+export function markSession(dataDir: string, marker: string, sessionId: string): void {
+  recordClaim(markerDirs(dataDir), marker, sessionId);
+}
+
+export function isSessionMarked(
+  dataDir: string,
+  marker: string,
+  sessionId: string | undefined,
+): boolean {
+  if (!sessionId) return false;
+  return alreadyClaimed(markerDirs(dataDir), marker, sessionId);
+}
+
 // Where a session marker may live, in preference order.
 //
 // data/ is its natural home, but data/ is exactly what a store path pointing at

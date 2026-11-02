@@ -412,5 +412,80 @@
     "label": "known gap: a literal backslash-n between the table and SET is not matched",
     "text": "\"UPDATE t\\nSET a = #{x}\"",
     "shouldMatch": false
+  },
+  {
+    "label": "WHERE MATCH ... AGAINST",
+    "text": "\"WHERE MATCH(title) AGAINST ('$q')\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "WHERE with nested function calls",
+    "text": "\"WHERE lower(trim(name)) = '$n'\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "WHERE with a :: cast",
+    "text": "\"WHERE x::text = '$v'\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "WHERE with a ->> accessor",
+    "text": "\"WHERE data->>'k' = '$v'\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "WHERE with the ~ regex operator",
+    "text": "\"WHERE name ~ '$re'\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "WHERE with the @> operator",
+    "text": "\"WHERE tags @> '{$t}'\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "WHERE SIMILAR TO",
+    "text": "\"WHERE x SIMILAR TO '$p'\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "WHERE GLOB",
+    "text": "\"WHERE x GLOB '$g'\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "WHERE with a double-quoted identifier",
+    "text": "WHERE \"id\" = $id",
+    "shouldMatch": true
+  },
+  {
+    "label": "WHERE with a tuple on the left",
+    "text": "\"WHERE (a, b) IN (($x, $y))\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "brace-interpolated part inside a qualified column (column path)",
+    "text": "\"WHERE t.{$c} = 1\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "Ruby-interpolated part inside a qualified column (column path)",
+    "text": "\"WHERE t.#{c} = 1\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "Ruby-interpolated table qualifier on a column",
+    "text": "\"WHERE #{t}.id = 1\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "known gap: INSERT without INTO is not matched",
+    "text": "\"INSERT t (a) VALUES (#{x})\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: two bare PHP variables after WHERE are not matched",
+    "text": "\"WHERE $a $b\"",
+    "shouldMatch": false
   }
 ]

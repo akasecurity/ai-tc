@@ -37,6 +37,16 @@ export function usesIn(source) {
 /** A pin is local (`./path`), or an action pinned as PINNED says. */
 export const isPinned = (value) => value.startsWith('./') || PINNED.test(value);
 
+/**
+ * The lines that open a `uses:` as a block scalar (`uses: |`, `>`, `|-`, `>+`).
+ * The parsed value of a stripped one (`|-`) is a plain string, so the form is read
+ * from the text; a block scalar is refused whatever it holds.
+ * @param {string} source
+ * @returns {string[]}
+ */
+export const blockScalarUses = (source) =>
+  source.split('\n').filter((line) => /\buses:\s*[|>][+-]?\d*\s*(?:#.*)?$/.test(line));
+
 describe('the pin check', () => {
   it.each([
     'actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0',
@@ -64,6 +74,10 @@ describe('the pin check', () => {
     expect(reads('      - uses:', '          owner/repo@v6')).toEqual([false]);
     expect(reads('      - uses: >', '          owner/repo@v6')).toEqual([false]);
     expect(reads('      - uses: |', '          owner/repo@v6')).toEqual([false]);
+    expect(reads('      - uses: &pin actions/cache@v6', '      - uses: *pin')).toEqual([
+      false,
+      false,
+    ]);
     expect(reads("      - run: 'echo uses: x'")).toEqual([]);
     expect(
       reads('      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0'),
@@ -71,6 +85,25 @@ describe('the pin check', () => {
     expect(
       usesIn(['jobs:', '  j:', '    uses: o/r/.github/workflows/w.yml@v1'].join('\n')),
     ).toEqual(['o/r/.github/workflows/w.yml@v1']);
+  });
+
+  it('refuses a SHA-pinned block scalar for its form, not only for the version', () => {
+    const sha = '55cc8345863c7cc4c66a329aec7e433d2d1c52a9';
+    const wf = (...lines) => ['jobs:', '  j:', '    runs-on: x', '    steps:', ...lines].join('\n');
+    for (const style of ['|', '>', '|-', '>-', '|+']) {
+      const text = wf(`      - uses: ${style}`, `          actions/cache@${sha} # v6.1.0`);
+      expect(usesIn(text)[0]).toContain(sha);
+      expect(blockScalarUses(text), style).toHaveLength(1);
+    }
+    expect(blockScalarUses(wf(`      - uses: actions/cache@${sha} # v6.1.0`))).toEqual([]);
+  });
+
+  it('accepts a SHA-pinned reusable-workflow job with its version comment', () => {
+    const sha = '55cc8345863c7cc4c66a329aec7e433d2d1c52a9';
+    const values = usesIn(
+      ['jobs:', '  j:', `    uses: o/r/.github/workflows/w.yml@${sha} # v1.2.3`].join('\n'),
+    );
+    expect(values.map(isPinned)).toEqual([true]);
   });
 });
 
@@ -81,8 +114,16 @@ describe('the workflows', () => {
     expect(files.length).toBeGreaterThan(0);
   });
 
+  it('collects uses across the workflows', () => {
+    const total = files
+      .map((f) => usesIn(readFileSync(join(WORKFLOWS, f), 'utf8')).length)
+      .reduce((a, b) => a + b, 0);
+    expect(total).toBeGreaterThan(0);
+  });
+
   it.each(files)('%s pins every uses: to a SHA with the full version', (file) => {
-    const bad = usesIn(readFileSync(join(WORKFLOWS, file), 'utf8')).filter((v) => !isPinned(v));
-    expect(bad).toEqual([]);
+    const source = readFileSync(join(WORKFLOWS, file), 'utf8');
+    expect(blockScalarUses(source)).toEqual([]);
+    expect(usesIn(source).filter((v) => !isPinned(v))).toEqual([]);
   });
 });

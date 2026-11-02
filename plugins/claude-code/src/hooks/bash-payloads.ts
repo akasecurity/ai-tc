@@ -196,7 +196,7 @@ const OPERATOR = /<<(-?)[ \t]*(?:'([^'\n]+)'|"([^"\n]+)"|\\?([A-Za-z0-9_][\w.-]*
 // and nothing after it but the end of the command. A printf whose string holds
 // a conversion is a format, not the text written, and is not read.
 const QUOTED_WRITE =
-  /(echo|printf)[ \t]+(?:-[A-Za-z]+[ \t]+)*(?:'([^']*)'|"((?:[^"\\]|\\.)*)")[ \t]*>>?[ \t]*(?:'([^']+)'|"([^"]+)"|([^\s'"|;&<>()]+))(?=[ \t]*(?:$|[;|\n#]|&(?!>)))/y;
+  /(echo|printf)[ \t]+(?:-[A-Za-z]+[ \t]+)*(?:'([^']*)'|"((?:[^"\\]|\\.)*)")[ \t]*>>?[ \t]*(?:'([^']+)'|"([^"]+)"|([^\s'"|;&<>()]+))(?=[ \t]*(?:$|[;\n#]|&&))/y;
 
 // A QUOTED_WRITE match read as a payload, or undefined when it is not one.
 function quotedWrite(m: RegExpExecArray | null): BashPayload | undefined {
@@ -208,9 +208,10 @@ function quotedWrite(m: RegExpExecArray | null): BashPayload | undefined {
   // A double-quoted string is expanded: `$(...)` or a backtick in it runs code.
   if (m[3] !== undefined && /\$\(|`/.test(m[3])) return undefined;
   if (path.startsWith('/dev/') || path.startsWith('&')) return undefined;
-  if (!/^[\x21-\x7e]+$/.test(path)) return undefined;
+  // Plain path characters only: no expansion, glob or brace decides the name.
+  if (!/^[\w./~@%+,:-]+$/.test(path)) return undefined;
   return {
-    ...(nameable(path) ? { path } : {}),
+    path,
     text,
     start: m.index,
     end: m.index + m[0].length,
@@ -473,15 +474,16 @@ export function bashWrittenPayloads(command: string): BashExtraction {
       words = words.slice(0, t.start) + ' '.repeat(t.end - t.start) + words.slice(t.end);
     }
     if (TRANSFORMED.test(words)) continue;
-    writerOps.add(b.pending.opAt);
     const text = (b.bodyStart >= b.bodyEnd ? '' : command.slice(b.bodyStart, b.bodyEnd)).replace(
       /\r$/,
       '',
     );
-    if (text === '') continue;
     // An unquoted body is expanded by the shell: `$(...)` or a backtick in it
-    // runs code the file never holds, so the body is not the file's text.
+    // runs code the file never holds, so the body is not the file's text, and
+    // the heredoc is not a plain writer (the whole command then has no regions).
     if (!b.pending.literal && /\$\(|`/.test(text)) continue;
+    writerOps.add(b.pending.opAt);
+    if (text === '') continue;
     payloads.push({
       ...(target.path === undefined ? {} : { path: target.path }),
       text,

@@ -247,6 +247,15 @@ describe('bashWrittenPayloads', () => {
     ["true || cat <<'EOF' > f.txt\nx\nEOF"],
     ["cat <<'EOF' > f.txt &\nx\nEOF"],
     ["cat <<'EOF' > f.txt\nx\nEOF\nls"],
+    ['cat <<\'EOF\' > ok.txt\nx\nEOF\necho "a" > f$IFS.txt'],
+    ['cat <<\'EOF\' > ok.txt\nx\nEOF\necho "a" > `id`.txt'],
+    ["cat <<'EOF' > ok.txt\nx\nEOF\necho 'a' > \"$(id).txt\""],
+    ["cat <<'EOF' > ok.txt\nx\nEOF\necho 'a' > \"${HOME}/f.txt\""],
+    ["cat <<'EOF' > ok.txt\nx\nEOF\necho 'a' > *.txt"],
+    ["cat <<'EOF' > ok.txt\nx\nEOF\necho 'a' > o.txt | sh"],
+    ["cat <<'EOF' > ok.txt\nx\nEOF\necho 'a' > o.txt & sh"],
+    ["echo 'a' > a.txt\ncat <<EOF > b.txt\nv=$(id)\nEOF\n"],
+    ["echo 'a' > a.txt\ncat <<EOF > b.txt\nv=`id`\nEOF\n"],
   ])('takes nothing when the command is more than writers and inert statements: %s', (command) => {
     expect(read(command)).toEqual({ incomplete: true, payloads: [] });
   });

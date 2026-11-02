@@ -409,11 +409,42 @@ describe('bashWrittenPayloads', () => {
     });
   });
 
-  it('still takes the one file of a plain cat, tee or true', () => {
+  it.each([
+    ["cat > notes.txt>e.py <<'EOF'\nx\nEOF"],
+    ["tee notes.txt>e.py <<'EOF'\nx\nEOF"],
+    ["cat <<'EOF' | tee notes.txt>e.py\nx\nEOF"],
+    ["tee notes.txt&>e.py <<'EOF'\nx\nEOF"],
+    ["cat > a.py>b.txt <<'EOF'\nx\nEOF"],
+    ["cat <<'EOF' > a.txt>b.py\nx\nEOF"],
+    ["cat <<'EOF' > a.py>>b.txt\nx\nEOF"],
+    ["cat 2>err.py>b.txt <<'EOF'\nx\nEOF"],
+    ["cat >b.txt>c.py <<'EOF'\nx\nEOF"],
+    ["echo 'x' > notes.txt>e.py"],
+    ["echo 'x' > notes.txt&>e.py"],
+    ["echo 'x' > ~/a.py"],
+  ])('takes no path when a redirect is glued to a word or the path expands: %j', (command) => {
+    expect(bashWrittenPayloads(command).payloads).toEqual([]);
+  });
+
+  it('scans a body written under a tilde path with no extension scope', () => {
+    const r = bashWrittenPayloads("cat <<'EOF' > ~/a.py\nx\nEOF");
+    expect(r.payloads).toHaveLength(1);
+    expect(r.payloads[0]?.path).toBeUndefined();
+  });
+
+  it('still reads a leading redirect before the operator, and a spaced one', () => {
+    expect(paths("cat > a.txt <<'EOF'\nx\nEOF")).toEqual(['a.txt']);
+    expect(paths("> a.txt cat <<'EOF'\nx\nEOF")).toEqual(['a.txt']);
+    expect(paths("cat 2>/dev/null > a.txt <<'EOF'\nx\nEOF")).toEqual(['a.txt']);
+    expect(paths("cat <<'EOF' >a.txt\nx\nEOF")).toEqual(['a.txt']);
+  });
+
+  it('still takes the one file of a plain cat or tee', () => {
     expect(paths("cat - <<'EOF' > a.txt\nx\nEOF")).toEqual(['a.txt']);
     expect(paths("tee -a a.txt <<'EOF'\nx\nEOF")).toEqual(['a.txt']);
     expect(paths("tee a.txt <<'EOF' >/dev/null\nx\nEOF")).toEqual(['a.txt']);
-    expect(paths("true <<'EOF' > a.txt\nx\nEOF")).toEqual(['a.txt']);
+    expect(paths("true <<'EOF' > a.txt\nx\nEOF")).toEqual([]);
+    expect(paths(": <<'EOF' > a.txt\nx\nEOF")).toEqual([]);
     expect(paths("cat <<'EOF' | tee -a a.txt 2>/dev/null\nx\nEOF")).toEqual(['a.txt']);
   });
 

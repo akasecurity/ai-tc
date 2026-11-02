@@ -18,6 +18,7 @@ import type { HookOutput } from '../../src/hooks/shared.ts';
 
 const spent = vi.hoisted(() => ({ value: false }));
 const refusePayloads = vi.hoisted(() => ({ value: false }));
+const captured = vi.hoisted(() => ({ kinds: [] as string[] }));
 
 // The runtime is the real one; a code_change capture (an extracted payload) is
 // answered as a scan that did not finish when the test asks for it.
@@ -30,15 +31,17 @@ vi.mock('@akasecurity/plugin-sdk', async (importOriginal) => {
       const runtime = real(...args);
       return {
         ...runtime,
-        capture: (input, opts) =>
-          refusePayloads.value && input.kind === 'code_change'
+        capture: (input, opts) => {
+          captured.kinds.push(input.kind);
+          return refusePayloads.value && input.kind === 'code_change'
             ? Promise.resolve({
                 action: 'block',
                 text: null,
                 findings: [],
                 scanIncomplete: 'timeout',
               } satisfies CaptureResult)
-            : runtime.capture(input, opts),
+            : runtime.capture(input, opts);
+        },
       };
     },
   };
@@ -74,6 +77,7 @@ describe('a Bash command whose payload scan runs out of budget', () => {
   afterEach(() => {
     spent.value = false;
     refusePayloads.value = false;
+    captured.kinds.length = 0;
     vi.unstubAllEnvs();
     removeTree(home);
   });
@@ -103,6 +107,14 @@ describe('a Bash command whose payload scan runs out of budget', () => {
     expect(await denied(clean)).toBe(false);
     refusePayloads.value = true;
     expect(await denied(clean)).toBe(true);
+  });
+
+  it('does not scan the command fields at all once a payload scan did not finish', async () => {
+    refusePayloads.value = true;
+    // A command that would deny on its own: the refusal skips its scan, and the
+    // call is denied for the payload alone.
+    expect(await denied(command)).toBe(true);
+    expect(captured.kinds).toEqual(['code_change']);
   });
 
   it('scans the command with every rule on, and records its findings once, when the payloads were not scanned', async () => {

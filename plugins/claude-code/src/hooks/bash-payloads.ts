@@ -83,9 +83,10 @@ const TEE =
 // text as written, so it is not scanned as code.
 const TRANSFORMED = /(?<![\w./-])(?:base64|xxd|openssl)(?![\w./])|\bb64decode\b/;
 
-// The commands whose heredoc input goes to the file a redirect or `tee` names.
+// The commands whose heredoc input goes to the file a redirect or `tee` names
+// (`:` and `true` discard it, so they are not writers).
 // Any other command word (`python`, `psql`, `ssh`) takes the body as its input.
-const WRITERS = new Set(['cat', 'tee', ':', 'true']);
+const WRITERS = new Set(['cat', 'tee']);
 
 // A redirect (with its target, or an fd dup) that may follow a heredoc operator.
 const AFTER_REDIRECT =
@@ -96,7 +97,7 @@ const AFTER_REDIRECT =
 // else (an interpreter, an empty or unparsed stage, a writer with arguments
 // beyond the few it is read with). Every word is checked, not only the first:
 // `cat` takes no argument but `-`, `tee` an optional `-a` and exactly one file,
-// `:` and `true` none. Redirects are skipped here and counted by the caller.
+// Redirects are skipped here and counted by the caller.
 function writerOf(before: string): 'tee' | 'other' | undefined {
   const words = before
     .trim()
@@ -114,6 +115,9 @@ function writerOf(before: string): 'tee' | 'other' | undefined {
       skipArg = /^(?:\d*|&)>>?\|?$/.test(w);
       continue;
     }
+    // A `>`, `<` or `&` inside a word is a redirect glued to it, which is not
+    // counted as one: the word is not read.
+    if (/[<>&]/.test(w)) return undefined;
     if (command === undefined) command = w;
     else args.push(w);
   }
@@ -123,7 +127,7 @@ function writerOf(before: string): 'tee' | 'other' | undefined {
     return files.length === 1 && !files.some((w) => w.startsWith('-')) ? 'tee' : undefined;
   }
   if (command === 'cat') return args.every((w) => w === '-') ? 'other' : undefined;
-  return args.length === 0 ? 'other' : undefined;
+  return undefined;
 }
 
 interface Target {
@@ -177,7 +181,7 @@ function hasDotDot(path: string): boolean {
 
 // A file name read from the text itself: no expansion decides it at run time.
 function nameable(path: string): boolean {
-  return !/[$`*?[{\\]/.test(path) && !path.startsWith('&') && !isDevice(path);
+  return !/[$`*?[{\\~]/.test(path) && !path.startsWith('&') && !isDevice(path);
 }
 
 // <<, not <<<; the delimiter bare (with `-` and `.`), backslash-escaped or quoted.
@@ -206,7 +210,7 @@ function quotedWrite(m: RegExpExecArray | null): BashPayload | undefined {
   if (m[3] !== undefined && /[$`\\]/.test(m[3])) return undefined;
   if (isDevice(path) || path.startsWith('&') || hasDotDot(path)) return undefined;
   // Plain path characters only: no expansion, glob or brace decides the name.
-  if (!/^[\w./~@%+,:-]+$/.test(path)) return undefined;
+  if (!/^[\w./@%+,:-]+$/.test(path)) return undefined;
   return {
     path,
     text,
@@ -232,7 +236,7 @@ const none = (): BashExtraction => ({ payloads: [], incomplete: true });
 
 // The optional leading statement: `cd <word> && ` or `mkdir [-p] <words> && `,
 // words of plain path characters, single spaces.
-const PLAIN = '[\\w./~@%+,:-]+';
+const PLAIN = '[\\w./@%+,:-]+';
 const PREFIX = new RegExp(`^(?:(?:cd ${PLAIN}|mkdir(?: -p)? ${PLAIN}(?: ${PLAIN})*) && )?`);
 
 // Whether `line` ends outside any quote, read as blankQuoted reads it.
@@ -270,7 +274,10 @@ export function bashWrittenPayloads(command: string): BashExtraction {
   return quotedStatement(rest, base) ?? heredocStatement(rest, base) ?? none();
 }
 
-// `echo '...' > file` and nothing else.
+// `echo '...' > file` and nothing else. The region is the whole statement, not
+// just the text: the statement is fully accounted for (a plain echo or printf
+// word, one quoted string scanned as the payload, one plain path, nothing after
+// it), so a code_flaw match anywhere in it is the payload's own.
 function quotedStatement(rest: string, base: number): BashExtraction | undefined {
   if (!/^(?:echo|printf)[ \t]/.test(rest)) return undefined;
   QUOTED_WRITE.lastIndex = 0;
@@ -304,6 +311,17 @@ function heredocStatement(rest: string, base: number): BashExtraction | undefine
   const literal = om[2] !== undefined || om[3] !== undefined || escaped;
   if ((line.match(/\\/g) ?? []).length !== (escaped ? 1 : 0)) return none();
   const opEnd = opAt + om[0].length;
+  // Every `>`, `<` and `&` on the line must belong to the heredoc operator or to
+  // a redirect the target count below sees: one glued to a word (`a.txt>e.py`)
+  // is a file written that nothing here would name.
+  let accounted = blank.slice(0, opAt) + ' '.repeat(opEnd - opAt) + blank.slice(opEnd);
+  for (const m of blank.matchAll(REDIRECT)) {
+    accounted =
+      accounted.slice(0, m.index) +
+      ' '.repeat(m[0].length) +
+      accounted.slice(m.index + m[0].length);
+  }
+  if (/[<>&]/.test(accounted)) return none();
   const body = readBody(rest, nl + 1, { delimiter, stripTabs: om[1] === '-' });
   if (!body.terminated || body.next < rest.length) return none();
 

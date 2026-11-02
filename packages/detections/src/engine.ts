@@ -109,7 +109,8 @@ interface Candidate {
 
 // Drops a code_flaw candidate (original coordinates) lying wholly inside a
 // region the command writes to a file, on a tool_use capture. Applied after the
-// normalized pass is mapped back, so both passes see the same regions.
+// normalized pass is mapped back, so both passes see the same regions. It runs on the candidates before `gate`, so a dropped match is never
+// pooled, corroborated or merged.
 function outsideWrittenRegions(
   candidates: Candidate[],
   context: ScanContext | undefined,

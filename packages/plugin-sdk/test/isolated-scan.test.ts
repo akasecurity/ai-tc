@@ -345,24 +345,28 @@ describe('createIsolatedScanner.scan', () => {
     const flaw: Rule = { ...regexRule('pulled/flaw', 'pickle\\.loads\\('), category: 'code_flaw' };
     const scanner = isolated({ verified: [], unverified: [flaw] });
     try {
+      // The match is at 2..15; every list below would drop it if it were
+      // accepted, so a finding that survives proves the list was ignored.
       const text = 'x pickle.loads(b) y';
       const bad: unknown[] = [
         [{ start: 0, end: 100 }],
-        [{ start: -1, end: 10 }],
-        [{ start: 5, end: 5 }],
-        [{ start: 0.5, end: 10 }],
+        [{ start: -1, end: 19 }],
         [
-          { start: 0, end: 10 },
+          { start: 0, end: 19 },
+          { start: 19, end: 19 },
+        ],
+        [{ start: 0.5, end: 19 }],
+        [
+          { start: 0, end: 19 },
           { start: 5, end: 19 },
         ],
         [
           { start: 10, end: 19 },
-          { start: 0, end: 5 },
+          { start: 0, end: 19 },
         ],
         [{ start: '0', end: 19 }],
         [null],
         'all',
-        Array.from({ length: 65 }, (_, i) => ({ start: i, end: i + 1 })),
       ];
       for (const writtenRegions of bad) {
         const outcome = await scanner.scan(text, {
@@ -373,6 +377,17 @@ describe('createIsolatedScanner.scan', () => {
         if (outcome.status !== 'ok') return;
         expect(outcome.findings).toHaveLength(1);
       }
+      const long = `pickle.loads(b)${' '.repeat(100)}`;
+      const tooMany = [{ start: 0, end: 15 }];
+      for (let i = 20; i < 84; i++) tooMany.push({ start: i, end: i + 1 });
+      expect(tooMany).toHaveLength(65);
+      const capped = await scanner.scan(long, { eventKind: 'tool_use', writtenRegions: tooMany });
+      expect(capped.status === 'ok' && capped.findings.length).toBe(1);
+      const sixtyFour = await scanner.scan(long, {
+        eventKind: 'tool_use',
+        writtenRegions: tooMany.slice(0, 64),
+      });
+      expect(sixtyFour.status === 'ok' && sixtyFour.findings.length).toBe(0);
       const good = await scanner.scan(text, {
         eventKind: 'tool_use',
         writtenRegions: [{ start: 0, end: text.length }],

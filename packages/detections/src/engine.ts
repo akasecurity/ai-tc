@@ -108,7 +108,7 @@ interface Candidate {
 }
 
 // Drops a code_flaw candidate (original coordinates) lying wholly inside a
-// region the command writes to a file, on a tool_use capture. Applied after the
+// region the command writes to a file whose own scan covers that rule, on a tool_use capture. Applied after the
 // normalized pass is mapped back, so both passes see the same regions. It runs on the candidates before `gate`, so a dropped match is never
 // pooled, corroborated or merged.
 function outsideWrittenRegions(
@@ -120,7 +120,18 @@ function outsideWrittenRegions(
   return candidates.filter((c) => {
     if (c.rule.category !== 'code_flaw') return true;
     const { start, end } = c.match.span;
-    return !regions.some((r) => r.start <= start && end <= r.end);
+    // Dropped only where the payload scan judged this rule: it applies to the
+    // written file's extension (a payload with no known file keeps the rule).
+    return !regions.some(
+      (r) =>
+        r.start <= start &&
+        end <= r.end &&
+        ruleApplies(
+          c.rule,
+          r.filePath === undefined ? undefined : extensionOf(r.filePath),
+          'code_change',
+        ),
+    );
   });
 }
 
@@ -287,8 +298,12 @@ export interface ScanContext {
   // source, and the payload is judged where the code is. The rest of the
   // command, any other capture (an MCP argument, another harness's shell) and
   // a command with no extracted payload keep the rule family.
-  writtenRegions?: readonly Span[] | undefined;
+  // `filePath` is the file the payload was written to: a rule scoped to other
+  // extensions never judged that payload, so its findings stay on the command.
+  writtenRegions?: readonly WrittenRegion[] | undefined;
 }
+
+export type WrittenRegion = Span & { filePath?: string | undefined };
 
 // Pass 1: runs the primitive matchers for every applicable rule against
 // `matchText` and applies post-validators, returning candidates whose

@@ -633,6 +633,30 @@ describe('code_flaw findings inside regions a command writes to files', () => {
     expect(scan(inner, [pickle], { eventKind: 'tool_use', writtenRegions: [] })).toHaveLength(1);
   });
 
+  it('keeps a match whose rule the written file never scanned (another extension)', () => {
+    const pyOnly = RuleSchema.parse({
+      specVersion: 1,
+      id: 'test/pickle-py',
+      name: 'py-only pickle test rule',
+      category: 'code_flaw',
+      severity: 'high',
+      matcher: { type: 'regex', pattern: 'pickle\\.loads\\(', flags: 'g' },
+      appliesTo: { extensions: ['.py'] },
+    });
+    const inRegion = (filePath: string | undefined) => [{ start: 0, end: 24, filePath }];
+    // `pickle` is scoped to .py: a payload written to a .txt or .rb file was not judged by it.
+    for (const filePath of ['notes.txt', 'app.rb']) {
+      expect(
+        scan(inner, [pyOnly], { eventKind: 'tool_use', writtenRegions: inRegion(filePath) }),
+      ).toHaveLength(1);
+    }
+    for (const filePath of ['app.py', undefined, 'Makefile']) {
+      expect(
+        scan(inner, [pyOnly], { eventKind: 'tool_use', writtenRegions: inRegion(filePath) }),
+      ).toHaveLength(0);
+    }
+  });
+
   it('keeps a code_flaw match outside every region, in the same command', () => {
     const found = scan(command, [pickle], { eventKind: 'tool_use', writtenRegions: regions });
     expect(found).toHaveLength(1);

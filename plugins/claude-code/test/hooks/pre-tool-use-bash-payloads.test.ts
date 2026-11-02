@@ -130,20 +130,28 @@ describe('a Bash command that writes code to a file', () => {
     expect(denies(await run('Bash', { command: heredocName }))).toBe(true);
     const echoName = "echo 'x = 1' > debug:true";
     expect(denies(await run('Bash', { command: echoName }))).toBe(true);
-    const inside = "cat <<'EOF' > notes.txt\nobj = pickle.loads(blob)\nEOF\n";
-    expect(denies(await run('Bash', { command: inside }))).toBe(false);
-    const echoInside = "echo 'obj = pickle.loads(blob)' > notes.txt";
-    expect(denies(await run('Bash', { command: echoInside }))).toBe(false);
   });
 
-  it('control: a pure file write whose text only looks like code on the command line passes', async () => {
-    const command = 'echo "obj = pickle.loads(blob)" > notes.txt';
-    expect(denies(await run('Bash', { command }))).toBe(false);
-    expect(await findings()).toEqual([]);
+  it('keeps a rule on the command when the payload scan of that file does not cover it', async () => {
+    // deser-pickle is scoped to .py: the payload written to a .txt or .rb file
+    // is never judged by it, so the command line keeps the finding, as before.
+    const heredoc = "cat > notes.txt <<'EOF'\nobj = pickle.loads(blob)\nEOF\n";
+    expect(denies(await run('Bash', { command: heredoc }))).toBe(true);
+    const echoed = "echo 'obj = pickle.loads(blob)' > app.rb";
+    expect(denies(await run('Bash', { command: echoed }))).toBe(true);
   });
 
-  it('control: one writer behind a mkdir keeps the false-positive fix', async () => {
-    const command = "mkdir -p out && cat <<'EOF' > out/notes.txt\nobj = pickle.loads(blob)\nEOF\n";
+  it('reports a rule once for the written text, under the file, with none left on the command row', async () => {
+    // eval-dynamic-exec applies to every extension: the payload scan owns it.
+    const command = "cat > q.rb <<'EOF'\nresult = eval(user_input)\nEOF\n";
+    expect(denies(await run('Bash', { command }))).toBe(true);
+    const names = (await findings()).map((f) => f.ruleId);
+    expect(names).toEqual(['code-flaws/eval-dynamic-exec']);
+    expect(await files()).toEqual(['q.rb']);
+  });
+
+  it('control: one writer behind a mkdir attributes a clean body to its file and passes', async () => {
+    const command = "mkdir -p out && cat <<'EOF' > out/notes.txt\nx = 1\nEOF\n";
     expect(denies(await run('Bash', { command }))).toBe(false);
   });
 

@@ -1334,7 +1334,7 @@ export interface CaptureOptions extends DecisionOptions {
   kindScopedRules?: boolean;
   // A command capture whose written files the caller extracted and scans as
   // their own captures: code_flaw findings inside these regions are dropped (see ScanContext).
-  writtenRegions?: readonly Span[];
+  writtenRegions?: readonly (Span & { filePath?: string | undefined })[];
   // Records a clean capture that 'with-findings' would skip, so an attached
   // machine forwards it, with its content cut to `maxChars` (`cutForForward`).
   // A capture with findings, or a refused one, is recorded as it would be

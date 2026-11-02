@@ -353,7 +353,11 @@ export async function runPreToolUse(
   const commandText = toolName === 'Bash' ? (stringAtPath(effectiveInput, ['command']) ?? '') : '';
   const extraction = toolName === 'Bash' ? bashWrittenPayloads(commandText) : undefined;
   const bashPayloads = extraction?.incomplete === false ? extraction.payloads : [];
-  const writtenRegions = bashPayloads.map((p) => ({ start: p.start, end: p.end }));
+  const writtenRegions = bashPayloads.map((p) => ({
+    start: p.start,
+    end: p.end,
+    ...(p.path === undefined ? {} : { filePath: p.path }),
+  }));
   const scanned: ScannedField[] = [];
   const vaulted: PointersByText = new Map();
   const payloadScans: ScannedField[] = [];

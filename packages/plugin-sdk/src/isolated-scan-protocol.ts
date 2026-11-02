@@ -37,7 +37,7 @@ export interface ScanJob {
   // any rule: an unknown kind is a broken caller, not a reason to skip rules.
   eventKind?: EventKind | undefined;
   // See ScanContext.writtenRegions.
-  writtenRegions?: readonly Span[] | undefined;
+  writtenRegions?: readonly (Span & { filePath?: string | undefined })[] | undefined;
   // Scan each unverified rule ALONE first, announcing its index before it
   // starts, so a hang can be pinned on one rule. OFF on the happy path: it
   // costs a whole extra pass over the unverified rules on every scanned field,

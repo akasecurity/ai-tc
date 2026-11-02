@@ -341,6 +341,32 @@ describe('createIsolatedScanner.scan', () => {
     }
   });
 
+  it('carries the written file of a region, so a rule scoped to another extension keeps its finding', async () => {
+    const flaw: Rule = {
+      ...regexRule('pulled/flaw', 'pickle\\.loads\\('),
+      category: 'code_flaw',
+      appliesTo: { extensions: ['.py'] },
+    };
+    const scanner = isolated({ verified: [], unverified: [flaw] });
+    try {
+      const text = 'x pickle.loads(b) y';
+      for (const [filePath, kept] of [
+        ['a.py', 0],
+        ['notes.txt', 1],
+      ] as const) {
+        const outcome = await scanner.scan(text, {
+          eventKind: 'tool_use',
+          writtenRegions: [{ start: 0, end: 19, filePath }],
+        });
+        expect(outcome.status).toBe('ok');
+        if (outcome.status !== 'ok') return;
+        expect(outcome.findings).toHaveLength(kept);
+      }
+    } finally {
+      await scanner.close();
+    }
+  });
+
   it('ignores written regions that are not a sorted list of in-range integer spans', async () => {
     const flaw: Rule = { ...regexRule('pulled/flaw', 'pickle\\.loads\\('), category: 'code_flaw' };
     const scanner = isolated({ verified: [], unverified: [flaw] });
@@ -365,6 +391,7 @@ describe('createIsolatedScanner.scan', () => {
           { start: 0, end: 19 },
         ],
         [{ start: '0', end: 19 }],
+        [{ start: 0, end: 19, filePath: 7 }],
         [null],
         'all',
       ];

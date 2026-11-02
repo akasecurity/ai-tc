@@ -72,18 +72,23 @@ const MAX_REGIONS = 64;
 function validRegions(
   value: unknown,
   length: number,
-): { start: number; end: number }[] | undefined {
+): { start: number; end: number; filePath?: string }[] | undefined {
   if (!Array.isArray(value) || value.length === 0 || value.length > MAX_REGIONS) return undefined;
   let previousEnd = 0;
   for (const region of value as unknown[]) {
     if (typeof region !== 'object' || region === null) return undefined;
-    const { start, end } = region as { start?: unknown; end?: unknown };
+    const { start, end, filePath } = region as {
+      start?: unknown;
+      end?: unknown;
+      filePath?: unknown;
+    };
+    if (filePath !== undefined && typeof filePath !== 'string') return undefined;
     if (typeof start !== 'number' || typeof end !== 'number') return undefined;
     if (!Number.isInteger(start) || !Number.isInteger(end)) return undefined;
     if (start < previousEnd || start >= end || end > length) return undefined;
     previousEnd = end;
   }
-  return value as { start: number; end: number }[];
+  return value as { start: number; end: number; filePath?: string }[];
 }
 
 port.on('message', (job: ScanWorkerJob) => {

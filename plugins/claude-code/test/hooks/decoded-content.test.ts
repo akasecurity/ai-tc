@@ -78,6 +78,10 @@ describe('isOutboundCall', () => {
     "ftp 'files.example.com'",
     'TARGET=h ftp $TARGET',
     'ftp\nopen host.example\nput x\nbye',
+    'ftp\nopen host.example\nget secret.txt',
+    'ftp\nopen host.example\nmget *',
+    'ftp\nopen host.example\nls',
+    'ftp\nopen host.example\ndir',
     'ftp <<EOF\nopen host.example\nput x\nEOF',
     'ftp < cmds.txt',
     'cat cmds | ftp',
@@ -116,6 +120,7 @@ describe('isOutboundCall', () => {
     'ls -la /srv/ftp\ncd /tmp',
     'echo ftp\nmkdir -p /tmp/x',
     'ftp\ncd /srv',
+    'cat ftp\nopen the file',
   ])('leaves `%s` alone', (command) => {
     expect(isOutboundCall(...bash(command))).toBe(false);
   });

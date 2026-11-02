@@ -99,7 +99,7 @@ describe('a Bash command whose payload scan runs out of budget', () => {
     );
   }
 
-  const command = "cat > notes.txt <<'EOF'\nobj = pickle.loads(blob)\nEOF\n";
+  const command = "cat > notes.py <<'EOF'\nobj = pickle.loads(blob)\nEOF\n";
   // Clean on the command line, so only the refusal can deny it.
   const clean = "cat > notes.txt <<'EOF'\nx = 1\nEOF\n";
 
@@ -131,7 +131,17 @@ describe('a Bash command whose payload scan runs out of budget', () => {
     }
   });
 
-  it('control: with budget left the .txt payload passes', async () => {
-    expect(await denied(command)).toBe(false);
+  it('control: with budget left the .py payload is scanned and its finding recorded once', async () => {
+    expect(await denied(command)).toBe(true);
+    expect(captured.kinds).toContain('code_change');
+    const db = openLocalDatabase(join(home, '.aka', 'data'), {
+      shippedRegexMatchers: shippedRegexMatchers(),
+    });
+    try {
+      const recent = await db.findings.recentFindings({ limit: 50 });
+      expect(recent.filter((f) => f.ruleId === 'code-flaws/deser-pickle')).toHaveLength(1);
+    } finally {
+      db.close();
+    }
   });
 });

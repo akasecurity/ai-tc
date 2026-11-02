@@ -1245,18 +1245,11 @@ describe('the main-tier jobs in ci.yml', () => {
 
 // CodeQL analyses `main`, plus its schedule and manual runs.
 describe("the CodeQL job's condition", () => {
-  it('runs for main and for its schedule and manual runs', () => {
+  it('runs for main and for its schedule and manual runs, and nothing narrower', () => {
     const conditions = jobBlock(readWorkflow('codeql.yml'), 'analyze').match(/^ {4}if:.*$/gm) ?? [];
-    expect(conditions).toHaveLength(1);
-    for (const clause of [
-      "github.base_ref == 'main'",
-      "github.ref == 'refs/heads/main'",
-      "startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')",
-      "github.event_name == 'schedule'",
-      "github.event_name == 'workflow_dispatch'",
-    ]) {
-      expect(conditions[0]).toContain(clause);
-    }
+    expect(conditions).toEqual([
+      "    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}",
+    ]);
   });
 });
 

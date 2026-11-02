@@ -76,8 +76,6 @@ function blankQuoted(line: string): string {
 // is quoted or bare.
 const REDIRECT =
   /(?<![\w&])(\d*|&)(>>?\|?)(?!&)[ \t]*(?:'([^']+)'|"([^"]+)"|([^\s'"|;&<>()]+))(?=[\s;&|<>]|$)/dg;
-const TEE =
-  /\btee[ \t]+(?:-[A-Za-z]+[ \t]+)*(?:'([^']+)'|"([^"]+)"|([^\s'"|;&<>()-][^\s'"|;&<>()]*))(?=[\s;&|<>]|$)/d;
 
 // A decoder or encoder on the marker line means the body is not the file's
 // text as written, so it is not scanned as code.
@@ -93,20 +91,21 @@ const AFTER_REDIRECT =
   /(?<![\w&])(?:\d*|&)>>?\|?[ \t]*(?:'[^']*'|"[^"]*"|[^\s'"|;&<>()]+)|(?<![\w&])\d*>&\d*-?/g;
 
 // What the stage `before` (its words up to the heredoc operator, or the whole
-// stage) is: 'tee', another plain writer ('other'), or undefined for anything
-// else (an interpreter, an empty or unparsed stage, a writer with arguments
-// beyond the few it is read with). Every word is checked, not only the first:
-// `cat` takes no argument but `-`, `tee` an optional `-a` and exactly one file,
-// Redirects are skipped here and counted by the caller.
-function writerOf(before: string): 'tee' | 'other' | undefined {
-  const words = before
-    .trim()
-    .split(/[ \t]+/)
-    .filter(Boolean);
+// stage) is: 'tee' with the span of its one file word, another plain writer
+// ('other'), or undefined for anything else (an interpreter, an empty or
+// unparsed stage, a writer with arguments beyond the few it is read with).
+// Every word is checked, not only the first: `cat` takes no argument but `-`,
+// `tee` an optional `-a` and exactly one file. Redirects are skipped here and
+// counted by the caller. The tee file is the word parsed here, never a second
+// reading of the text, so it is the word the target count and the name share.
+function writerOf(
+  before: string,
+): { kind: 'tee'; file: { start: number; end: number } } | { kind: 'other' } | undefined {
   let skipArg = false;
   let command: string | undefined;
-  const args: string[] = [];
-  for (const w of words) {
+  const args: { w: string; start: number; end: number }[] = [];
+  for (const m of before.matchAll(/[^ \t]+/g)) {
+    const w = m[0];
     if (skipArg) {
       skipArg = false;
       continue;
@@ -119,14 +118,16 @@ function writerOf(before: string): 'tee' | 'other' | undefined {
     // counted as one: the word is not read.
     if (/[<>&]/.test(w)) return undefined;
     if (command === undefined) command = w;
-    else args.push(w);
+    else args.push({ w, start: m.index, end: m.index + w.length });
   }
   if (command === undefined || !WRITERS.has(command)) return undefined;
   if (command === 'tee') {
-    const files = args.filter((w) => w !== '-a');
-    return files.length === 1 && !files.some((w) => w.startsWith('-')) ? 'tee' : undefined;
+    const files = args.filter((a) => a.w !== '-a');
+    const file = files[0];
+    if (files.length !== 1 || file === undefined || file.w.startsWith('-')) return undefined;
+    return { kind: 'tee', file: { start: file.start, end: file.end } };
   }
-  if (command === 'cat') return args.every((w) => w === '-') ? 'other' : undefined;
+  if (command === 'cat') return args.every((a) => a.w === '-') ? { kind: 'other' } : undefined;
   return undefined;
 }
 
@@ -141,7 +142,7 @@ interface Target {
 function segmentTarget(
   seg: string,
   blank: string,
-  useTee: boolean,
+  teeFile: Target | undefined,
 ): { path: string | undefined; seen: boolean; spans: Target[] } {
   const found: { at: number; span: Target }[] = [];
   const spans: Target[] = [];
@@ -155,13 +156,10 @@ function segmentTarget(
     if (isDevice(value)) continue;
     found.push({ at: m.index, span: { start: span[0], end: span[1] } });
   }
-  const tee = useTee ? TEE.exec(blank) : null;
-  const teeSpan = tee?.indices?.[1] ?? tee?.indices?.[2] ?? tee?.indices?.[3];
-  if (teeSpan !== undefined) {
-    spans.push({ start: teeSpan[0], end: teeSpan[1] });
-    if (!isDevice(seg.slice(teeSpan[0], teeSpan[1]))) {
-      found.push({ at: tee?.index ?? 0, span: { start: teeSpan[0], end: teeSpan[1] } });
-    }
+  if (teeFile !== undefined) {
+    spans.push(teeFile);
+    if (!isDevice(seg.slice(teeFile.start, teeFile.end)))
+      found.push({ at: teeFile.start, span: teeFile });
   }
   const last = found.sort((a, b) => a.at - b.at).at(-1);
   if (last === undefined) return { path: undefined, seen: false, spans };
@@ -235,8 +233,9 @@ interface Pending {
 const none = (): BashExtraction => ({ payloads: [], incomplete: true });
 
 // The optional leading statement: `cd <word> && ` or `mkdir [-p] <words> && `,
-// words of plain path characters, single spaces.
-const PLAIN = '[\\w./@%+,:-]+';
+// words of plain path characters that do not start with `-`, single spaces; `-p`
+// is the only flag, so `mkdir -m 777 d &&` is no prefix and the command has none.
+const PLAIN = '[\\w./@%+,:][\\w./@%+,:-]*';
 const PREFIX = new RegExp(`^(?:(?:cd ${PLAIN}|mkdir(?: -p)? ${PLAIN}(?: ${PLAIN})*) && )?`);
 
 // Whether `line` ends outside any quote, read as blankQuoted reads it.
@@ -336,26 +335,32 @@ function heredocStatement(rest: string, base: number): BashExtraction | undefine
   stages.push({ start: from, end: blank.length });
   const own = stages[0];
   if (own === undefined || opAt > own.end) return none();
-  const kind = writerOf(blank.slice(own.start, opAt));
-  if (kind === undefined) return none();
+  const ownWriter = writerOf(blank.slice(own.start, opAt));
+  if (ownWriter === undefined) return none();
   // After the operator and its delimiter only redirects may follow.
   if (blank.slice(opEnd, own.end).replace(AFTER_REDIRECT, ' ').trim() !== '') return none();
   let tstage = own;
-  let useTee = kind === 'tee';
+  let teeFile: Target | undefined = ownWriter.kind === 'tee' ? ownWriter.file : undefined;
   if (stages.length === 2) {
     // `cat <<EOF | tee f`: the file is the last stage's, if that is a tee.
     const last = stages[1];
-    if (last === undefined || writerOf(blank.slice(last.start, last.end)) !== 'tee') return none();
-    if (useTee) return none();
+    const lastWriter = last === undefined ? undefined : writerOf(blank.slice(last.start, last.end));
+    if (last === undefined || lastWriter?.kind !== 'tee' || teeFile !== undefined) return none();
     tstage = last;
-    useTee = true;
+    teeFile = lastWriter.file;
   } else if (stages.length !== 1) {
     return none();
+  }
+  if (teeFile !== undefined) {
+    // The file word is one bare word or exactly one quoted string.
+    const word = blank.slice(tstage.start + teeFile.start, tstage.start + teeFile.end);
+    if (!/^(?:'_+'|"_+"|[^'"]+)$/.test(word)) return none();
+    if (/^['"]/.test(word)) teeFile = { start: teeFile.start + 1, end: teeFile.end - 1 };
   }
   // Exactly one file is written: a second redirect (any fd), or a tee file
   // besides a redirect, would give the body a name the path attribution does
   // not carry.
-  let targets = useTee ? 1 : 0;
+  let targets = teeFile === undefined ? 0 : 1;
   for (const m of blank.matchAll(REDIRECT)) {
     const at = m.indices?.[3] ?? m.indices?.[4] ?? m.indices?.[5];
     if (at !== undefined && !isDevice(line.slice(at[0], at[1]))) targets++;
@@ -364,7 +369,7 @@ function heredocStatement(rest: string, base: number): BashExtraction | undefine
   const found = segmentTarget(
     line.slice(tstage.start, tstage.end),
     blank.slice(tstage.start, tstage.end),
-    useTee,
+    teeFile,
   );
   if (!found.seen || (found.path !== undefined && hasDotDot(found.path))) return none();
   // A target's own name (`base64.py`) is not a transform of the body.

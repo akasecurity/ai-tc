@@ -432,6 +432,26 @@ describe('bashWrittenPayloads', () => {
     expect(r.payloads[0]?.path).toBeUndefined();
   });
 
+  it('names the tee file from the word tee is given, not a digit of a glued redirect', () => {
+    expect(paths("tee 2>/dev/null app.py <<'EOF'\nx\nEOF")).toEqual(['app.py']);
+    expect(paths("tee -a 1>/dev/null app.py <<'EOF'\nx\nEOF")).toEqual(['app.py']);
+    expect(paths("cat <<'EOF' | tee 2>/dev/null app.py\nx\nEOF")).toEqual(['app.py']);
+    expect(paths("tee -a f.py 2>/dev/null <<'EOF'\nx\nEOF")).toEqual(['f.py']);
+    expect(paths("tee 2>&1 f.py <<'EOF'\nx\nEOF")).toEqual([]);
+    expect(paths("tee 2>err.py f.txt <<'EOF'\nx\nEOF")).toEqual([]);
+    expect(paths("tee 3>/dev/null <<'EOF'\nx\nEOF")).toEqual([]);
+    expect(paths("tee 'a b.py' <<'EOF'\nx\nEOF")).toEqual(['a b.py']);
+  });
+
+  it('takes mkdir only with -p, and words that do not start with a dash', () => {
+    expect(paths("mkdir -p d e && cat <<'EOF' > a.txt\nx\nEOF")).toEqual(['a.txt']);
+    expect(paths("mkdir d && cat <<'EOF' > a.txt\nx\nEOF")).toEqual(['a.txt']);
+    expect(paths("mkdir -m 777 d && cat <<'EOF' > a.txt\nx\nEOF")).toEqual([]);
+    expect(paths("mkdir -p -m 777 d && cat <<'EOF' > a.txt\nx\nEOF")).toEqual([]);
+    expect(paths("cd -P d && cat <<'EOF' > a.txt\nx\nEOF")).toEqual([]);
+    expect(paths("cd - && cat <<'EOF' > a.txt\nx\nEOF")).toEqual([]);
+  });
+
   it('still reads a leading redirect before the operator, and a spaced one', () => {
     expect(paths("cat > a.txt <<'EOF'\nx\nEOF")).toEqual(['a.txt']);
     expect(paths("> a.txt cat <<'EOF'\nx\nEOF")).toEqual(['a.txt']);

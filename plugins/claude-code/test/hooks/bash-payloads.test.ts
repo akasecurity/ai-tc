@@ -156,6 +156,58 @@ describe('bashWrittenPayloads', () => {
     });
   });
 
+  it('does not take a body whose stdout a later pipeline stage reads', () => {
+    expect(paths("cat <<'EOF' | sh > out.txt\nx\nEOF")).toEqual([]);
+    expect(paths("cat <<'EOF' | tee f.txt | sh\nx\nEOF")).toEqual([]);
+    expect(paths("cat <<'EOF' > f.txt | sh\nx\nEOF")).toEqual([]);
+    expect(paths("cat <<'EOF' > f.txt | tee g.txt | sh\nx\nEOF")).toEqual([]);
+    expect(paths("tee f.txt <<'EOF' | sh\nx\nEOF")).toEqual([]);
+    expect(paths("cat <<'EOF' | tee f.txt\nx\nEOF")).toEqual(['f.txt']);
+    expect(paths("cat <<'EOF' | tee -a f.txt > /dev/null\nx\nEOF")).toEqual(['f.txt']);
+  });
+
+  it('does not take a heredoc from a stage it cannot positively read as a writer', () => {
+    expect(paths("<<'EOF' > f.py\nx\nEOF")).toEqual([]);
+    expect(paths("python3 <<'EOF' > f.py\nx\nEOF")).toEqual([]);
+    expect(paths("> f.py cat <<'EOF'\nx\nEOF")).toEqual(['f.py']);
+  });
+
+  it('does not take a heredoc under an assignment, substitution or subshell', () => {
+    expect(paths("X=$(python3 <<'EOF' > out.txt\nx\nEOF\n)")).toEqual([]);
+    expect(paths("X=`python3 <<'EOF' > out.txt\nx\nEOF\n`")).toEqual([]);
+    expect(paths("(python3 <<'EOF' > out.txt\nx\nEOF\n)")).toEqual([]);
+    expect(paths("cat <<'EOF' > $(echo f.py)\nx\nEOF")).toEqual([]);
+  });
+
+  it('is incomplete across a line continuation, ANSI-C quoting, or a heredoc with no line end', () => {
+    expect(read("python3 - <<'EOF' \\\n> out.txt\nx\nEOF")).toEqual({
+      incomplete: true,
+      payloads: [],
+    });
+    expect(bashWrittenPayloads('echo hi \\\n && echo "a" > f.txt').incomplete).toBe(true);
+    expect(bashWrittenPayloads("echo $'a\\x27b' > f.txt").incomplete).toBe(true);
+    expect(bashWrittenPayloads('cat <<EOF > a.py').incomplete).toBe(true);
+  });
+
+  it('does not take a double-quoted echo that runs a substitution', () => {
+    expect(paths('echo "$(python3 -c x)" > f.txt')).toEqual([]);
+    expect(paths('echo "`id`" > f.txt')).toEqual([]);
+    expect(paths("echo '$(id)' > f.txt")).toEqual(['f.txt']);
+  });
+
+  it("takes a quoted write only at command position, never inside another command's string", () => {
+    expect(paths(`sh -c "echo 'X' > f.txt"`)).toEqual([]);
+    expect(paths(`bash -c 'echo "X" > f.txt'`)).toEqual([]);
+    expect(paths(`python -c "import os; os.system('echo \\"X\\" > f.txt')"`)).toEqual([]);
+    expect(paths(`eval "echo 'X' > f.txt"`)).toEqual([]);
+    expect(paths(`echo hi # echo "a" > f.txt`)).toEqual([]);
+    expect(paths(`cat <<'EOF' > g.txt\necho "a" > f.txt\nEOF`)).toEqual(['g.txt']);
+    expect(paths(`echo "a"\n> f.txt`)).toEqual([]);
+    expect(paths(`echo "a" > f.txt <<'EOF'\nx\nEOF`)).toEqual([]);
+    expect(paths(`ls; echo "a" > f.txt && echo 'b' >> g.txt`)).toEqual(['f.txt', 'g.txt']);
+    expect(paths(`ls\necho "a" > f.txt`)).toEqual(['f.txt']);
+  });
+
   it('stays linear and bounded on hostile whitespace and repetition, for every pattern', () => {
     const inputs = [
       'cat <<EOF >f\n'.repeat(20_000),

@@ -157,6 +157,18 @@ describe('a Bash command that writes code to a file', () => {
     expect(denies(await run('Bash', { command }))).toBe(true);
   });
 
+  it.each([
+    ["cat <<'EOF' | sh > out.txt\nobj = pickle.loads(blob)\nEOF\n"],
+    ["cat <<'EOF' | tee f.txt | sh\nobj = pickle.loads(blob)\nEOF\n"],
+    ["X=$(python3 <<'EOF' > out.txt\nobj = pickle.loads(blob)\nEOF\n)"],
+    ["python3 - <<'EOF' \\\n> out.txt\nobj = pickle.loads(blob)\nEOF\n"],
+    ['echo "$(python3 -c "import pickle; pickle.loads(b)")" > f.txt'],
+    [`sh -c "echo 'obj = pickle.loads(blob)' > f.txt"`],
+    [`eval "echo 'obj = pickle.loads(blob)' > f.txt"`],
+  ])('keeps the rules on a span the shell runs rather than writes: %s', async (command) => {
+    expect(denies(await run('Bash', { command }))).toBe(true);
+  });
+
   it('keeps the rules on a command whose heredoc it cannot follow', async () => {
     const command = 'cat <<$D > a.txt\nx\n$D\npython -c "pickle.loads(b)"';
     expect(denies(await run('Bash', { command }))).toBe(true);

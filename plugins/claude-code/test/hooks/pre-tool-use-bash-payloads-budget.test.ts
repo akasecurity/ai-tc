@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
+import type { CaptureResult, PluginRuntime } from '@akasecurity/plugin-sdk';
 import { bundledDetections, shippedRegexMatchers } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -16,6 +17,32 @@ import { runPreToolUse } from '../../src/hooks/pre-tool-use-run.ts';
 import type { HookOutput } from '../../src/hooks/shared.ts';
 
 const spent = vi.hoisted(() => ({ value: false }));
+const refusePayloads = vi.hoisted(() => ({ value: false }));
+
+// The runtime is the real one; a code_change capture (an extracted payload) is
+// answered as a scan that did not finish when the test asks for it.
+vi.mock('@akasecurity/plugin-sdk', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  const real = actual.createPluginRuntime as (...args: unknown[]) => PluginRuntime;
+  return {
+    ...actual,
+    createPluginRuntime: (...args: unknown[]): PluginRuntime => {
+      const runtime = real(...args);
+      return {
+        ...runtime,
+        capture: (input, opts) =>
+          refusePayloads.value && input.kind === 'code_change'
+            ? Promise.resolve({
+                action: 'block',
+                text: null,
+                findings: [],
+                scanIncomplete: 'timeout',
+              } satisfies CaptureResult)
+            : runtime.capture(input, opts),
+      };
+    },
+  };
+});
 
 vi.mock('../../src/hooks/large-input.ts', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -46,6 +73,7 @@ describe('a Bash command whose payload scan runs out of budget', () => {
 
   afterEach(() => {
     spent.value = false;
+    refusePayloads.value = false;
     vi.unstubAllEnvs();
     removeTree(home);
   });
@@ -68,6 +96,11 @@ describe('a Bash command whose payload scan runs out of budget', () => {
   }
 
   const command = "cat > notes.txt <<'EOF'\nobj = pickle.loads(blob)\nEOF\n";
+
+  it('refuses the call when the payload scan itself comes back incomplete', async () => {
+    refusePayloads.value = true;
+    expect(await denied(command)).toBe(true);
+  });
 
   it('control: with budget left the .txt payload passes', async () => {
     expect(await denied(command)).toBe(false);

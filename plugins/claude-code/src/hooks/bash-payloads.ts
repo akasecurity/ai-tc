@@ -81,13 +81,19 @@ const WRITERS = new Set(['cat', 'tee', 'sponge', ':', 'true']);
 const SKIPPED_WORDS = new Set(['sudo', 'env', 'command', 'exec', 'nohup', 'time']);
 const SUDO_ARG_FLAGS = new Set(['-u', '-g', '-h', '-p', '-C', '-D', '-R', '-T', '-U']);
 
-// Does the pipeline stage holding the heredoc hand its input to a writer? The
-// stage is the text after the last pipe before the operator.
-function isWriterStage(before: string): boolean {
-  const stage = before.slice(before.lastIndexOf('|') + 1);
-  const words = stage.trim().split(/\s+/).filter(Boolean);
+// What the command at the end of `before` (the text of one pipeline stage up
+// to the heredoc operator) is: 'tee', another plain writer ('other', which
+// includes no command word at all after a redirect, `> f <<EOF`), or undefined
+// for anything else (an interpreter, an empty or unparsed stage). Only a
+// positively recognized writer counts.
+function writerOf(before: string): 'tee' | 'other' | undefined {
+  const words = before
+    .trim()
+    .split(/[ \t]+/)
+    .filter(Boolean);
   let skipArg = false;
   let afterSudo = false;
+  let redirected = false;
   for (const w of words) {
     if (skipArg) {
       skipArg = false;
@@ -102,12 +108,16 @@ function isWriterStage(before: string): boolean {
       skipArg = SUDO_ARG_FLAGS.has(w);
       continue;
     }
-    // The first command word. A redirect word before it (`> f <<EOF`) means no
-    // command at all, which writes the file too.
-    if (/^\d*>/.test(w) || w.startsWith('&>')) return true;
-    return WRITERS.has(w);
+    // A redirect before the command word (`> f cat <<EOF`, `>f <<EOF`).
+    if (/^\d*>/.test(w) || w.startsWith('&>')) {
+      redirected = true;
+      skipArg = /^(?:\d*|&)>>?$/.test(w);
+      continue;
+    }
+    if (w === 'tee') return 'tee';
+    return WRITERS.has(w) ? 'other' : undefined;
   }
-  return true;
+  return redirected ? 'other' : undefined;
 }
 
 interface Target {
@@ -121,6 +131,7 @@ interface Target {
 function segmentTarget(
   seg: string,
   blank: string,
+  useTee: boolean,
 ): { path: string | undefined; seen: boolean; spans: Target[] } {
   const found: { at: number; span: Target }[] = [];
   const spans: Target[] = [];
@@ -134,7 +145,7 @@ function segmentTarget(
     if (value.startsWith('/dev/')) continue;
     found.push({ at: m.index, span: { start: span[0], end: span[1] } });
   }
-  const tee = TEE.exec(blank);
+  const tee = useTee ? TEE.exec(blank) : null;
   const teeSpan = tee?.indices?.[1] ?? tee?.indices?.[2] ?? tee?.indices?.[3];
   if (teeSpan !== undefined) {
     spans.push({ start: teeSpan[0], end: teeSpan[1] });
@@ -172,10 +183,29 @@ function segmentBounds(blank: string, at: number): Target {
 // <<, not <<<; the delimiter bare (with `-` and `.`), backslash-escaped or quoted.
 const OPERATOR = /<<(-?)[ \t]*(?:'([^'\n]+)'|"([^"\n]+)"|\\?([A-Za-z0-9_][\w.-]*))/y;
 
-// echo/printf of one quoted string straight into a file. A printf whose string
-// holds a conversion is a format, not the text written, and is not read.
+// echo/printf of one quoted string straight into a file, at command position,
+// and nothing after it but the end of the command. A printf whose string holds
+// a conversion is a format, not the text written, and is not read.
 const QUOTED_WRITE =
-  /\b(echo|printf)\s+(?:-[A-Za-z]+\s+)*(?:'([^']*)'|"((?:[^"\\]|\\.)*)")\s*>>?\s*(?:'([^']+)'|"([^"]+)"|([^\s'"|;&<>()]+))/g;
+  /(echo|printf)[ \t]+(?:-[A-Za-z]+[ \t]+)*(?:'([^']*)'|"((?:[^"\\]|\\.)*)")[ \t]*>>?[ \t]*(?:'([^']+)'|"([^"]+)"|([^\s'"|;&<>()]+))(?=[ \t]*(?:$|[;&|\n#]))/y;
+
+// A QUOTED_WRITE match read as a payload, or undefined when it is not one.
+function quotedWrite(m: RegExpExecArray | null): BashPayload | undefined {
+  if (m === null) return undefined;
+  const text = m[2] ?? m[3];
+  const path = m[4] ?? m[5] ?? m[6];
+  if (text === undefined || text === '' || path === undefined) return undefined;
+  if (m[1] === 'printf' && text.replace(/%%/g, '').includes('%')) return undefined;
+  // A double-quoted string is expanded: `$(...)` or a backtick in it runs code.
+  if (m[3] !== undefined && /\$\(|`/.test(m[3])) return undefined;
+  if (path.startsWith('/dev/') || path.startsWith('&')) return undefined;
+  return {
+    ...(nameable(path) ? { path } : {}),
+    text,
+    start: m.index,
+    end: m.index + m[0].length,
+  };
+}
 
 // Bounds on one command's extraction, so a long command cannot turn it into a
 // cost the scan deadline never sees. Past any of them the extraction is
@@ -208,7 +238,8 @@ export function bashWrittenPayloads(command: string): BashExtraction {
   const none: BashExtraction = { payloads: [], incomplete: true };
   if (command.length > MAX_COMMAND_CHARS) return none;
   const bodies: Body[] = [];
-  const consumed: Target[] = [];
+  const quoted: BashPayload[] = [];
+  let atCommand = true;
   let incomplete = false;
   let pending: Pending[] = [];
   let quote = '';
@@ -228,8 +259,39 @@ export function bashWrittenPayloads(command: string): BashExtraction {
       }
       continue;
     }
+    if (atCommand) {
+      if (c === ' ' || c === '\t') {
+        i++;
+        continue;
+      }
+      atCommand = false;
+      if (c === 'e' || c === 'p') {
+        QUOTED_WRITE.lastIndex = i;
+        const w = quotedWrite(QUOTED_WRITE.exec(command));
+        if (w !== undefined) {
+          quoted.push(w);
+          if (quoted.length > MAX_PAYLOADS) return none;
+          i += w.end - w.start;
+          continue;
+        }
+      }
+    }
     if (c === '\\') {
+      // A line continuation joins the next line to this one, which this reader
+      // does not follow.
+      if (command.charAt(i + 1) === '\n' || command.startsWith('\r\n', i + 1)) incomplete = true;
       i += 2;
+    } else if (c === '$' && command.charAt(i + 1) === "'") {
+      // ANSI-C quoting: its escapes are not read here.
+      incomplete = true;
+      i += 2;
+    } else if (
+      c === ';' ||
+      c === '|' ||
+      (c === '&' && !/[<>]/.test(command.charAt(i - 1)) && command.charAt(i + 1) !== '>')
+    ) {
+      atCommand = true;
+      i++;
     } else if (c === "'" || c === '"') {
       quote = c;
       i++;
@@ -242,11 +304,11 @@ export function bashWrittenPayloads(command: string): BashExtraction {
       for (const p of pending) {
         const body = readBody(command, pos, p);
         bodies.push({ ...body, pending: p, lineStart, lineEnd: i });
-        consumed.push({ start: body.bodyStart, end: body.next });
         if (!body.terminated) incomplete = true;
         pos = body.next;
       }
       pending = [];
+      atCommand = true;
       i = pos;
     } else if (c === '<' && command.charAt(i + 1) === '<') {
       if (command.charAt(i + 2) === '<') {
@@ -274,8 +336,8 @@ export function bashWrittenPayloads(command: string): BashExtraction {
       i++;
     }
   }
-  // Operators on a last line with no newline have no body.
-  if (incomplete) return none;
+  // Operators on a last line with no newline have no body to read.
+  if (incomplete || pending.length > 0) return none;
 
   const payloads: BashPayload[] = [];
   for (const b of bodies) {
@@ -288,11 +350,47 @@ export function bashWrittenPayloads(command: string): BashExtraction {
     const markerLine = comment === null ? rawLine : rawLine.slice(0, comment.index);
     const blankLine = comment === null ? rawBlank : rawBlank.slice(0, comment.index);
     const rel = b.pending.opAt - b.lineStart;
+    if (rel < 0) return none;
     const { start, end } = segmentBounds(blankLine, rel);
     const seg = markerLine.slice(start, end);
     const blank = blankLine.slice(start, end);
-    if (!isWriterStage(blank.slice(0, rel - start))) continue;
-    const target = segmentTarget(seg, blank);
+    // A substitution or subshell on the command runs code of its own.
+    if (/[(`]/.test(blank)) continue;
+    // The pipeline: the heredoc's stage is the writer, and nothing after it
+    // reads its stdout except one last `tee`.
+    const stages: Target[] = [];
+    let from = 0;
+    for (const m of blank.matchAll(/\|/g)) {
+      stages.push({ start: from, end: m.index });
+      from = m.index + 1;
+    }
+    stages.push({ start: from, end: blank.length });
+    const k = stages.findIndex((st) => st.start <= rel - start && rel - start <= st.end);
+    const own = stages[k];
+    if (own === undefined) continue;
+    const kind = writerOf(blank.slice(own.start, rel - start));
+    if (kind === undefined) continue;
+    let tstage = own;
+    let useTee = kind === 'tee';
+    if (k === stages.length - 2) {
+      // `cat <<EOF | tee f`: the file is the last stage's, if that is a tee.
+      const last = stages[k + 1];
+      if (last === undefined || writerOf(blank.slice(last.start, last.end)) !== 'tee') continue;
+      if (useTee) continue;
+      tstage = last;
+      useTee = true;
+    } else if (k !== stages.length - 1) {
+      continue;
+    }
+    const found = segmentTarget(
+      seg.slice(tstage.start, tstage.end),
+      blank.slice(tstage.start, tstage.end),
+      useTee,
+    );
+    const target = {
+      ...found,
+      spans: found.spans.map((t) => ({ start: t.start + tstage.start, end: t.end + tstage.start })),
+    };
     if (!target.seen) continue;
     // A target's own name (`base64.py`) is not a transform of the body.
     let words = blank;
@@ -316,22 +414,8 @@ export function bashWrittenPayloads(command: string): BashExtraction {
     });
     if (payloads.length > MAX_PAYLOADS) return none;
   }
-  for (const m of command.matchAll(QUOTED_WRITE)) {
-    if (consumed.some((r) => m.index >= r.start && m.index < r.end)) continue;
-    const text = m[2] ?? m[3];
-    const path = m[4] ?? m[5] ?? m[6];
-    if (m[1] === 'printf' && text?.replace(/%%/g, '').includes('%')) continue;
-    if (text === undefined || text === '' || path === undefined || path.startsWith('/dev/'))
-      continue;
-    if (path.startsWith('&')) continue;
-    payloads.push({
-      ...(nameable(path) ? { path } : {}),
-      text,
-      start: m.index,
-      end: m.index + m[0].length,
-    });
-    if (payloads.length > MAX_PAYLOADS) return none;
-  }
+  payloads.push(...quoted);
+  if (payloads.length > MAX_PAYLOADS) return none;
   return { payloads, incomplete: false };
 }
 

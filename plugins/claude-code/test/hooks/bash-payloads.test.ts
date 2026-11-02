@@ -53,12 +53,9 @@ describe('bashWrittenPayloads', () => {
     expect(paths('cat <<EOF # > c.py\nx = 1\nEOF')).toEqual([]);
   });
 
-  it('ends a CRLF heredoc at its delimiter, so the next write is its own payload', () => {
+  it('takes nothing from a CRLF command, whose carriage returns bash keeps in its words', () => {
     const cmd = 'cat > f.py <<EOF\r\nEVIL1\r\nEOF\r\ncat > g.py <<EOF\r\nEVIL2\r\nEOF';
-    expect(read(cmd).payloads).toEqual([
-      { path: 'f.py', text: 'EVIL1' },
-      { path: 'g.py', text: 'EVIL2' },
-    ]);
+    expect(read(cmd).payloads).toEqual([]);
   });
 
   it('does not take a decoded body as code, but a file named base64.py is not a decoder', () => {
@@ -263,6 +260,29 @@ describe('bashWrittenPayloads', () => {
     });
     const mixed = paths(`echo "a" > f.txt; cat <<A > g.txt\nb\nA\ncd "x y" # c`);
     expect([...mixed].sort()).toEqual(['f.txt', 'g.txt']);
+  });
+
+  it.each([
+    ['cat <<EOF > a.txt\nhello\nEO\\\nF\necho RAN\nEOF\n'],
+    ['cat <<EOF > b.txt\nv=$\\\n(echo RAN)\nEOF\n'],
+    ['cat <<EOF > b.txt\nv=$\\\r\n(echo RAN)\nEOF\n'],
+    ["bash -c 'sleep 1; python3 x.py' | cat <<'EOF' > x.py\n<payload>\nEOF\n"],
+    ["true | cat <<'EOF' > x.py\n<payload>\nEOF\n"],
+    ["true | echo '<payload>' > x.py"],
+    ["cat <<'EOF' > c.py\nprint('RAN')\nEOF\ntrue\v#; python3 c.py\n"],
+    ["cat <<'EOF' > c.py\nprint('RAN')\nEOF\ntrue\f#; python3 c.py\n"],
+    ["cat <<'EOF' > c.py\nprint('RAN')\nEOF\ntrue\u00a0#; python3 c.py\n"],
+    ["cat <<'EOF' > c.py\nprint('RAN')\nEOF\ntrue\u2003#; python3 c.py\n"],
+    ["cat <<'EOF' > c.py\nprint('RAN')\nEOF\ntrue\r#; python3 c.py\n"],
+    ["cat <<'EOF' > c.py\nprint('RAN')\nEOF\ncd café\n"],
+  ])('takes nothing from a command bash reads differently: %j', (command) => {
+    expect(bashWrittenPayloads(command).payloads).toEqual([]);
+  });
+
+  it('still takes a quoted-delimiter body with a backslash-newline, and a real comment', () => {
+    expect(paths("cat <<'EOF' > a.txt\nline \\\nmore\nEOF\n")).toEqual(['a.txt']);
+    expect(paths('cat <<EOF > a.txt\nplain\nEOF\ntrue # note; python3 a.txt\n')).toEqual(['a.txt']);
+    expect(paths("cat <<'EOF' | tee a.txt\nx\nEOF")).toEqual(['a.txt']);
   });
 
   it('does not take a writer behind an assignment or wrapper word', () => {

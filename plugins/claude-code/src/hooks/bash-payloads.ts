@@ -201,6 +201,7 @@ function quotedWrite(m: RegExpExecArray | null): BashPayload | undefined {
   // A double-quoted string is expanded: `$(...)` or a backtick in it runs code.
   if (m[3] !== undefined && /\$\(|`/.test(m[3])) return undefined;
   if (path.startsWith('/dev/') || path.startsWith('&')) return undefined;
+  if (!/^[\x21-\x7e]+$/.test(path)) return undefined;
   return {
     ...(nameable(path) ? { path } : {}),
     text,
@@ -265,6 +266,12 @@ export function bashWrittenPayloads(command: string): BashExtraction {
   let i = 0;
   while (i < n) {
     const c = command.charAt(i);
+    if (quote === '') {
+      // Bash splits words at a space, tab or newline only: any other control or
+      // non-ASCII character outside quotes is not read here.
+      const code = c.charCodeAt(0);
+      if (code !== 9 && code !== 10 && (code < 32 || code > 126)) nonFlat = true;
+    }
     if (quote !== '') {
       // A double-quoted string is expanded: a substitution in it runs code.
       if (quote === '"' && (c === '`' || (c === '$' && command.charAt(i + 1) === '('))) {
@@ -313,7 +320,6 @@ export function bashWrittenPayloads(command: string): BashExtraction {
         nonFlat = true;
         i++;
       }
-      atCommand = true;
       i++;
     } else if (c === '&') {
       if (command.charAt(i + 1) === '&') {
@@ -332,7 +338,7 @@ export function bashWrittenPayloads(command: string): BashExtraction {
     } else if (c === "'" || c === '"') {
       quote = c;
       i++;
-    } else if (c === '#' && (i === 0 || /\s/.test(command.charAt(i - 1)))) {
+    } else if (c === '#' && (i === 0 || /[ \t\n]/.test(command.charAt(i - 1)))) {
       commentAt = i;
       const e = command.indexOf('\n', i);
       i = e === -1 ? n : e;
@@ -343,6 +349,11 @@ export function bashWrittenPayloads(command: string): BashExtraction {
         const body = readBody(command, pos, p);
         bodies.push({ ...body, pending: p, lineStart, lineEnd: i });
         if (!body.terminated) incomplete = true;
+        // An unquoted body joins a line ending in a backslash to the next: the
+        // delimiter and a substitution can be spelled across lines.
+        if (!p.literal && /\\\r?\n/.test(command.slice(body.bodyStart, body.next))) {
+          incomplete = true;
+        }
         pos = body.next;
       }
       pending = [];
@@ -388,7 +399,7 @@ export function bashWrittenPayloads(command: string): BashExtraction {
     const rawLine = command.slice(b.lineStart, lineEnd);
     const rawBlank = blankQuoted(rawLine);
     // A `#` comment on the marker line is not part of the command.
-    const comment = /(?<=^|\s)#/.exec(rawBlank);
+    const comment = /(?<=^|[ \t])#/.exec(rawBlank);
     const markerLine = comment === null ? rawLine : rawLine.slice(0, comment.index);
     const blankLine = comment === null ? rawBlank : rawBlank.slice(0, comment.index);
     const rel = b.pending.opAt - b.lineStart;
@@ -408,6 +419,8 @@ export function bashWrittenPayloads(command: string): BashExtraction {
     }
     stages.push({ start: from, end: blank.length });
     const k = stages.findIndex((st) => st.start <= rel - start && rel - start <= st.end);
+    // Whatever runs before the heredoc's stage in a pipeline is not read here.
+    if (k !== 0) continue;
     const own = stages[k];
     if (own === undefined) continue;
     const kind = writerOf(blank.slice(own.start, rel - start));
@@ -496,8 +509,7 @@ function readBody(
   while (at <= command.length) {
     let e = command.indexOf('\n', at);
     if (e === -1) e = command.length;
-    // A CRLF body ends its delimiter line with `\r`.
-    const l = command.slice(at, e > at && command[e - 1] === '\r' ? e - 1 : e);
+    const l = command.slice(at, e);
     if ((p.stripTabs ? l.replace(/^\t+/, '') : l) === p.delimiter) {
       return {
         bodyStart,

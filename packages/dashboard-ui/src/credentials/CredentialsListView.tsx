@@ -191,7 +191,7 @@ export function CredentialsListView({
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {refused ? (
-          <p role="alert" className="px-5 py-10 text-center text-sm text-text-3">
+          <p role="alert" className="px-5 py-10 text-center text-sm text-sev-critical-ink">
             {error}
           </p>
         ) : loadingEmpty ? (

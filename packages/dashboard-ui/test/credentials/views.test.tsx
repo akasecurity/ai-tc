@@ -290,6 +290,10 @@ describe('CredentialsListView', () => {
     expect(mounted.host.querySelector('[role="alert"]')?.textContent).toBe(
       'You need permission to view detections.',
     );
+    // An announced failure is not the muted colour the quiet states use.
+    expect(mounted.host.querySelector('[role="alert"]')?.className).toContain(
+      'text-sev-critical-ink',
+    );
     expect(mounted.host.querySelector('table')).toBeNull();
     expect(text()).toContain('Not available');
     expect(text()).not.toContain('0 credentials');

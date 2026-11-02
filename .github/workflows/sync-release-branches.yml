@@ -10,7 +10,9 @@ name: Sync release branches
 # issue, including one left open by a run cancelled between its push and the close.
 #
 # A branch named for a version (release/<digit>…) is a stable cut, not future work, and is
-# left alone: rebasing it would pull unreleased dev work into a stable release.
+# left alone: rebasing it would pull unreleased dev work into a stable release. The workflow
+# acts only on a release/<name> branch whose name does not start with a digit; a repository
+# whose release branches are all version-named has nothing for it to sync.
 #
 # Pushes made with GITHUB_TOKEN start no workflow runs, so a sync costs this job only. Anyone
 # with a local copy of a release branch updates it with `git pull --rebase`.

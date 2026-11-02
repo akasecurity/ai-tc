@@ -47,7 +47,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      # A schedule runs on the default branch; the benchmark measures main.
+      # A scheduled run checks out main, since a schedule otherwise runs on the
+      # default branch; a manual run measures the branch it was started from.
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event_name == 'schedule' && 'main' || '' }}

@@ -530,7 +530,10 @@ describe('the workflows behind those checks', () => {
   // end-of-block test that stopped at the first two-space non-space character
   // would end at a comment line instead, so a `branches:` filter written below
   // one would sit outside the captured block and be missed.
-  it.each(['audit.yml', 'codeql.yml'])('%s runs on every PR, whatever its base', (file) => {
+  // This is about the TRIGGER. CodeQL's `analyze` job then carries its own
+  // condition, pinned below, so on a pull request outside `main` it reports
+  // as skipped, which counts as passing.
+  it.each(['audit.yml', 'codeql.yml'])('%s is triggered by every PR, whatever its base', (file) => {
     const source = readWorkflow(file);
     const trigger = /^ {2}pull_request:[^\S\n]*$([\s\S]*?)^ {2}[^\s#]/m.exec(source);
     expect(trigger).not.toBeNull();
@@ -1226,6 +1229,37 @@ describe('the installer trust chain is wired into CI', () => {
 // restore-key is the whole of what prevents it, and it is one edit from being
 // dropped. It matters most on the Windows leg, which is the newest to take a
 // cache and the one whose packages differ most by platform.
+// Every ci.yml job but `ci` itself runs for `main` only. Each carries exactly the
+// main-tier condition, so a narrower one cannot skip a check `main` requires.
+describe('the main-tier jobs in ci.yml', () => {
+  const ci = readWorkflow('ci.yml');
+
+  it.each(['no-network', 'claude-code-mods'])('%s runs for every pull request into main', (job) => {
+    expectMainTier(jobBlock(ci, job), job);
+  });
+
+  it('leaves the `ci` job unconditioned, so every base runs it', () => {
+    expect(jobBlock(ci, 'ci')).not.toMatch(/^ {4}if:/m);
+  });
+});
+
+// CodeQL analyses `main`, plus its schedule and manual runs.
+describe("the CodeQL job's condition", () => {
+  it('runs for main and for its schedule and manual runs', () => {
+    const conditions = jobBlock(readWorkflow('codeql.yml'), 'analyze').match(/^ {4}if:.*$/gm) ?? [];
+    expect(conditions).toHaveLength(1);
+    for (const clause of [
+      "github.base_ref == 'main'",
+      "github.ref == 'refs/heads/main'",
+      "startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')",
+      "github.event_name == 'schedule'",
+      "github.event_name == 'workflow_dispatch'",
+    ]) {
+      expect(conditions[0]).toContain(clause);
+    }
+  });
+});
+
 describe('the Turbo caches in ci.yml', () => {
   const ci = readWorkflow('ci.yml');
 

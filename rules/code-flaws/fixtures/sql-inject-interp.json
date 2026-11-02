@@ -562,5 +562,55 @@
     "label": "UPDATE with a ${prefix} table name",
     "text": "\"UPDATE ${prefix}users SET a = 1 WHERE id = $id\"",
     "shouldMatch": true
+  },
+  {
+    "label": "SELECT interpolation containing the opening quote (join)",
+    "text": "\"SELECT #{cols.join(\", \")} FROM users\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "SELECT interpolation containing a quoted call argument",
+    "text": "\"SELECT #{quote_column(\"name\")} FROM users WHERE x = 1\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "SELECT interpolation with a nested block and inner interpolation",
+    "text": "\"SELECT #{fields.map { |f| \"t.#{f}\" }.join(\",\")} FROM t\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "SELECT PHP brace interpolation containing the opening quote",
+    "text": "$q = \"SELECT {$opts[\"cols\"]} FROM users\";",
+    "shouldMatch": true
+  },
+  {
+    "label": "SELECT with an escaped quote before FROM",
+    "text": "\"SELECT #{col} AS \\\"n\\\" FROM users\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "whole SET var followed by a comma",
+    "text": "$q = \"UPDATE t SET $sets, updated_at = NOW()\";",
+    "shouldMatch": true
+  },
+  {
+    "label": "no space between SET and a backticked column",
+    "text": "\"UPDATE t SET`a` = #{a}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "known gap: positional placeholder as the WHERE operand is not matched",
+    "text": "\"WHERE ? = #{x}\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: named placeholder as the WHERE operand is not matched",
+    "text": "\"WHERE :id = #{x}\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: @variable as the WHERE operand is not matched",
+    "text": "\"WHERE @x = #{x}\"",
+    "shouldMatch": false
   }
 ]

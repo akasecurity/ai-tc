@@ -34,7 +34,7 @@ describe('bashWrittenPayloads', () => {
     expect(read(`printf 'a = 1\\n' > conf.py`).payloads).toEqual([
       { path: 'conf.py', text: 'a = 1\\n' },
     ]);
-    const cmd = `echo "a = 1" > conf.py; ls`;
+    const cmd = `cd d; echo "a = 1" > conf.py`;
     const p = bashWrittenPayloads(cmd).payloads[0];
     expect(cmd.slice(p?.start, p?.end)).toBe(`echo "a = 1" > conf.py`);
   });
@@ -120,13 +120,9 @@ describe('bashWrittenPayloads', () => {
     expect(paths('cat <<MY-END > a.py\nx\nMY-END')).toEqual(['a.py']);
     expect(paths('cat <<END.1 > a.py\nx\nEND.1')).toEqual(['a.py']);
     expect(paths('cat <<<x > f.py')).toEqual([]);
-    expect(read('cat <<<x > f.py\ncat <<EOF > g.py\ny\nEOF').payloads).toEqual([
-      { path: 'g.py', text: 'y' },
-    ]);
-    expect(read('echo "<<EOF" > a.py\nfoo\nEOF').payloads).toEqual([
-      { path: 'a.py', text: '<<EOF' },
-    ]);
-    expect(paths("echo '<<EOF' && cat <<EOF > b.py\nz\nEOF")).toEqual(['b.py']);
+    expect(paths('cat <<<x > f.py\ncat <<EOF > g.py\ny\nEOF')).toEqual([]);
+    expect(read(`echo "<<EOF" > a.py`).payloads).toEqual([{ path: 'a.py', text: '<<EOF' }]);
+    expect(paths("true '<<EOF' && cat <<EOF > b.py\nz\nEOF")).toEqual(['b.py']);
   });
 
   it('leaves an unquoted body with command substitution unextracted, a quoted one extracted', () => {
@@ -204,8 +200,8 @@ describe('bashWrittenPayloads', () => {
     expect(paths(`cat <<'EOF' > g.txt\necho "a" > f.txt\nEOF`)).toEqual(['g.txt']);
     expect(paths(`echo "a"\n> f.txt`)).toEqual([]);
     expect(paths(`echo "a" > f.txt <<'EOF'\nx\nEOF`)).toEqual([]);
-    expect(paths(`ls; echo "a" > f.txt && echo 'b' >> g.txt`)).toEqual(['f.txt', 'g.txt']);
-    expect(paths(`ls\necho "a" > f.txt`)).toEqual(['f.txt']);
+    expect(paths(`cd d; echo "a" > f.txt && echo 'b' >> g.txt`)).toEqual(['f.txt', 'g.txt']);
+    expect(paths(`cd d\necho "a" > f.txt`)).toEqual(['f.txt']);
   });
 
   it('does not take a heredoc whose command word follows the operator', () => {
@@ -226,8 +222,54 @@ describe('bashWrittenPayloads', () => {
     expect(paths("echo '<code>' > o.txt 1>&2")).toEqual([]);
     expect(paths("echo '<code>' >| o.txt")).toEqual([]);
     expect(paths("echo '<code>' > o.txt <<<x")).toEqual([]);
-    expect(paths("echo '<code>' > o.txt & ls")).toEqual(['o.txt']);
-    expect(paths("echo '<code>' > o.txt && ls")).toEqual(['o.txt']);
+    expect(paths("echo '<code>' > o.txt & ls")).toEqual([]);
+    expect(paths("echo '<code>' > o.txt && cd d")).toEqual(['o.txt']);
+  });
+
+  it.each([
+    ["{\ncat <<'EOF' | tee f1.txt\nx\nEOF\n} | sh"],
+    ["eval $(\ncat <<'EOF' | tee f2.txt\nx\nEOF\n)"],
+    ["sh <(\ncat <<'EOF' > f3.txt\nx\nEOF\n)"],
+    ["while true; do\ntee f7.txt <<'EOF'\nx\nEOF\nbreak; done | sh"],
+    ["(\ncat <<'EOF' > f8.txt\nx\nEOF\n) | bash"],
+    ["if true; then\ncat <<'EOF' > f9.txt\nx\nEOF\nfi"],
+    ["for i in 1; do\ncat <<'EOF' > f10.txt\nx\nEOF\ndone"],
+    ["f() {\ncat <<'EOF' > f11.txt\nx\nEOF\n}\nf"],
+    ["cat(){ sh; }\ncat <<'EOF' > f4.txt\nx\nEOF"],
+    ['echo(){ sh -c "$1"; }; echo \'<payload>\' > f5.txt'],
+    ["alias cat=sh\ncat <<'EOF' > f.txt\nx\nEOF"],
+    ["shopt -s expand_aliases; alias echo=sh; echo '<payload>' > f.txt"],
+    ["export BASH_ENV=/tmp/e\ncat <<'EOF' > f.txt\nx\nEOF"],
+    ["cat <<'EOF' > f6.txt\nx\nEOF\nsh f6.txt"],
+    ["cat <<'EOF' > f6.txt\nx\nEOF\n. f6.txt"],
+    ["cat <<'EOF' > f6.txt\nx\nEOF\nsource f6.txt"],
+    ["cat <<'EOF' > f6.txt\nx\nEOF\nbash f6.txt"],
+    ["cat <<'EOF' > f6.txt\nx\nEOF\nchmod +x f6.txt; ./f6.txt"],
+    ["cat <<'EOF' > f6.txt\nx\nEOF\nexec f6.txt"],
+    ["echo '<payload>' > f6.txt; sh f6.txt"],
+    ["true || cat <<'EOF' > f.txt\nx\nEOF"],
+    ["cat <<'EOF' > f.txt &\nx\nEOF"],
+    ["cat <<'EOF' > f.txt\nx\nEOF\nls"],
+  ])('takes nothing when the command is more than writers and inert statements: %s', (command) => {
+    expect(read(command)).toEqual({ incomplete: true, payloads: [] });
+  });
+
+  it('keeps regions for a flat sequence of plain writers and inert statements', () => {
+    const cmd =
+      "cd d && mkdir -p out\ncat <<'EOF' > out/a.txt\nx\nEOF\ntouch b; : ; true\n# note\n";
+    expect(read(cmd)).toEqual({
+      incomplete: false,
+      payloads: [{ path: 'out/a.txt', text: 'x' }],
+    });
+    const mixed = paths(`echo "a" > f.txt; cat <<A > g.txt\nb\nA\ncd "x y" # c`);
+    expect([...mixed].sort()).toEqual(['f.txt', 'g.txt']);
+  });
+
+  it('does not take a writer behind an assignment or wrapper word', () => {
+    expect(paths("PATH=/tmp/d cat <<'EOF' > f.txt\nx\nEOF")).toEqual([]);
+    expect(paths("BASH_ENV=/tmp/e cat <<'EOF' > f.txt\nx\nEOF")).toEqual([]);
+    expect(paths("env cat <<'EOF' > f.txt\nx\nEOF")).toEqual([]);
+    expect(paths("/tmp/d/cat <<'EOF' > f.txt\nx\nEOF")).toEqual([]);
   });
 
   it('stays linear and bounded on hostile whitespace and repetition, for every pattern', () => {

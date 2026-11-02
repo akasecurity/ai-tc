@@ -129,6 +129,12 @@ describe('a Bash command that writes code to a file', () => {
     expect(await findings()).toEqual([]);
   });
 
+  it('control: a flat sequence of writers and inert statements keeps the false-positive fix', async () => {
+    const command =
+      "cd d && mkdir -p out\ncat <<'EOF' > out/notes.txt\nobj = pickle.loads(blob)\nEOF\ntouch b\n";
+    expect(denies(await run('Bash', { command }))).toBe(false);
+  });
+
   it('extracts both heredocs opened on one marker line', async () => {
     const command = 'cat <<A > a.txt; cat <<B > b.py\nx = 1\nA\nobj = pickle.loads(blob)\nB\n';
     expect(denies(await run('Bash', { command }))).toBe(true);
@@ -165,6 +171,14 @@ describe('a Bash command that writes code to a file', () => {
     ['echo "$(python3 -c "import pickle; pickle.loads(b)")" > f.txt'],
     [`sh -c "echo 'obj = pickle.loads(blob)' > f.txt"`],
     [`eval "echo 'obj = pickle.loads(blob)' > f.txt"`],
+    ["{\ncat <<'EOF' | tee f1.txt\nobj = pickle.loads(blob)\nEOF\n} | sh"],
+    ["eval $(\ncat <<'EOF' | tee f2.txt\nobj = pickle.loads(blob)\nEOF\n)"],
+    ["while true; do\ntee f7.txt <<'EOF'\nobj = pickle.loads(blob)\nEOF\nbreak; done | sh"],
+    ["cat(){ sh; }\ncat <<'EOF' > f4.txt\nobj = pickle.loads(blob)\nEOF"],
+    ['echo(){ sh -c "$1"; }; echo \'obj = pickle.loads(blob)\' > f5.txt'],
+    ["PATH=/tmp/d cat <<'EOF' > f.txt\nobj = pickle.loads(blob)\nEOF"],
+    ["cat <<'EOF' > f6.txt\nobj = pickle.loads(blob)\nEOF\nsh f6.txt"],
+    ["echo 'obj = pickle.loads(blob)' > f6.txt; bash f6.txt"],
     ["> o.txt <<'EOF' python3\nobj = pickle.loads(blob)\nEOF\n"],
     ["2>/dev/null <<'EOF' python3 > o.txt\nobj = pickle.loads(blob)\nEOF\n"],
     ["echo 'obj = pickle.loads(blob)' > o.txt &> >(python3)"],

@@ -7,6 +7,12 @@
 // extension-scoped rules apply to it. Everything outside those regions, and the
 // whole command when extraction is incomplete, keeps the rule family.
 //
+// Regions exist only for a command that is, in full, a flat sequence of
+// statements (newline, `;`, `&&`) that are each a plain writer or one of a few
+// inert statements (`cd`, `mkdir`, `touch`, `true`, `:`). A command that mixes a
+// write with any other statement keeps every rule on its whole text: that is
+// intended, since the other statement may run what was written.
+//
 // Only a body written to a file counts: a heredoc fed to an interpreter or a
 // client (`python - <<EOF > out.txt`, `psql <<EOF`) is a command's input, not a
 // file written, and stays unextracted. Any form this reader does not take
@@ -78,8 +84,12 @@ const TRANSFORMED = /(?<![\w./-])(?:base64|xxd|openssl)(?![\w./])|\bb64decode\b/
 // The commands whose heredoc input goes to the file a redirect or `tee` names.
 // Any other command word (`python`, `psql`, `ssh`) takes the body as its input.
 const WRITERS = new Set(['cat', 'tee', 'sponge', ':', 'true']);
-const SKIPPED_WORDS = new Set(['sudo', 'env', 'command', 'exec', 'nohup', 'time']);
-const SUDO_ARG_FLAGS = new Set(['-u', '-g', '-h', '-p', '-C', '-D', '-R', '-T', '-U']);
+
+// The statements besides a writer that leave a command flat: they run nothing
+// the command wrote and change nothing a writer relies on. Words are plain, or
+// quoted with no expansion.
+const WORD = `(?:[\\w./~@%+,:-]+|'[^']*'|"[^"$\`\\\\]*")`;
+const INERT = new RegExp(`^(?:(?:cd|mkdir|touch|true|:)(?:[ \\t]+${WORD})*)$`);
 
 // A redirect (with its target, or an fd dup) that may follow a heredoc operator.
 const AFTER_REDIRECT = /(?:\d*|&)>>?\|?[ \t]*(?:'[^']*'|"[^"]*"|[^\s'"|;&<>()]+)|\d*>&\d*-?/g;
@@ -95,26 +105,17 @@ function writerOf(before: string): 'tee' | 'other' | undefined {
     .split(/[ \t]+/)
     .filter(Boolean);
   let skipArg = false;
-  let afterSudo = false;
   for (const w of words) {
     if (skipArg) {
       skipArg = false;
       continue;
     }
-    if (SKIPPED_WORDS.has(w)) {
-      afterSudo = afterSudo || w === 'sudo';
-      continue;
-    }
-    if (/^[A-Za-z_]\w*=/.test(w)) continue;
-    if (afterSudo && w.startsWith('-')) {
-      skipArg = SUDO_ARG_FLAGS.has(w);
-      continue;
-    }
-    // A redirect before the command word (`> f cat <<EOF`, `>f <<EOF`).
+    // A redirect before the command word (`> f cat <<EOF`).
     if (/^\d*>/.test(w) || w.startsWith('&>')) {
       skipArg = /^(?:\d*|&)>>?$/.test(w);
       continue;
     }
+    // The first command word, as written: no assignment, wrapper or path.
     if (w === 'tee') return 'tee';
     return WRITERS.has(w) ? 'other' : undefined;
   }
@@ -242,6 +243,17 @@ export function bashWrittenPayloads(command: string): BashExtraction {
   const bodies: Body[] = [];
   const quoted: BashPayload[] = [];
   let atCommand = true;
+  // The statements of the command at depth 0 (split at a newline, `;`, `&&`),
+  // heredoc bodies excluded, and whether anything but a flat sequence was seen.
+  const stmts: Target[] = [];
+  let stmtStart = 0;
+  let commentAt = -1;
+  let nonFlat = false;
+  const endStmt = (at: number, next: number): void => {
+    stmts.push({ start: stmtStart, end: commentAt >= 0 ? commentAt : at });
+    commentAt = -1;
+    stmtStart = next;
+  };
   let incomplete = false;
   let pending: Pending[] = [];
   let quote = '';
@@ -254,6 +266,10 @@ export function bashWrittenPayloads(command: string): BashExtraction {
   while (i < n) {
     const c = command.charAt(i);
     if (quote !== '') {
+      // A double-quoted string is expanded: a substitution in it runs code.
+      if (quote === '"' && (c === '`' || (c === '$' && command.charAt(i + 1) === '('))) {
+        nonFlat = true;
+      }
       if (c === '\\' && quote === '"') i += 2;
       else {
         if (c === quote) quote = '';
@@ -287,17 +303,37 @@ export function bashWrittenPayloads(command: string): BashExtraction {
       // ANSI-C quoting: its escapes are not read here.
       incomplete = true;
       i += 2;
-    } else if (
-      c === ';' ||
-      c === '|' ||
-      (c === '&' && !/[<>]/.test(command.charAt(i - 1)) && command.charAt(i + 1) !== '>')
-    ) {
+    } else if (c === ';') {
+      endStmt(i, i + 1);
       atCommand = true;
+      i++;
+    } else if (c === '|') {
+      // A pipe stays inside its statement; `||` is not a flat sequence.
+      if (command.charAt(i + 1) === '|') {
+        nonFlat = true;
+        i++;
+      }
+      atCommand = true;
+      i++;
+    } else if (c === '&') {
+      if (command.charAt(i + 1) === '&') {
+        endStmt(i, i + 2);
+        atCommand = true;
+        i += 2;
+      } else {
+        // `>&`, `&>` are redirects; a lone `&` backgrounds the command.
+        if (!/[<>]/.test(command.charAt(i - 1)) && command.charAt(i + 1) !== '>') nonFlat = true;
+        i++;
+      }
+    } else if (c === '(' || c === ')' || c === '{' || c === '}' || c === '`') {
+      // A group, subshell, substitution or function body.
+      nonFlat = true;
       i++;
     } else if (c === "'" || c === '"') {
       quote = c;
       i++;
     } else if (c === '#' && (i === 0 || /\s/.test(command.charAt(i - 1)))) {
+      commentAt = i;
       const e = command.indexOf('\n', i);
       i = e === -1 ? n : e;
     } else if (c === '\n') {
@@ -311,6 +347,7 @@ export function bashWrittenPayloads(command: string): BashExtraction {
       }
       pending = [];
       atCommand = true;
+      endStmt(i, pos);
       i = pos;
     } else if (c === '<' && command.charAt(i + 1) === '<') {
       if (command.charAt(i + 2) === '<') {
@@ -341,8 +378,10 @@ export function bashWrittenPayloads(command: string): BashExtraction {
   }
   // Operators on a last line with no newline have no body to read.
   if (incomplete || pending.length > 0) return none;
+  endStmt(n, n);
 
   const payloads: BashPayload[] = [];
+  const writerOps = new Set<number>();
   for (const b of bodies) {
     const lineEnd = b.lineEnd;
     if (lineEnd - b.lineStart > MAX_MARKER_LINE_CHARS) return none;
@@ -405,6 +444,7 @@ export function bashWrittenPayloads(command: string): BashExtraction {
       words = words.slice(0, t.start) + ' '.repeat(t.end - t.start) + words.slice(t.end);
     }
     if (TRANSFORMED.test(words)) continue;
+    writerOps.add(b.pending.opAt);
     const text = (b.bodyStart >= b.bodyEnd ? '' : command.slice(b.bodyStart, b.bodyEnd)).replace(
       /\r$/,
       '',
@@ -423,6 +463,24 @@ export function bashWrittenPayloads(command: string): BashExtraction {
   }
   payloads.push(...quoted);
   if (payloads.length > MAX_PAYLOADS) return none;
+  if (payloads.length === 0) return { payloads, incomplete: false };
+  // Regions only for a command that is, in full, a flat sequence of plain
+  // writers and a few inert statements: one other statement (a command that
+  // may run what was written, a function or alias that changes a writer, a
+  // group) and the whole command keeps every rule.
+  if (nonFlat) return none;
+  const quotedAt = new Set(quoted.map((q) => q.start));
+  for (const st of stmts) {
+    const text = command.slice(st.start, st.end).trim();
+    if (text === '' || INERT.test(text)) continue;
+    const lead =
+      st.start +
+      (command.slice(st.start, st.end).length - command.slice(st.start, st.end).trimStart().length);
+    if (quotedAt.has(lead)) continue;
+    const ops = bodies.filter((b) => b.pending.opAt >= st.start && b.pending.opAt < st.end);
+    if (ops.length > 0 && ops.every((b) => writerOps.has(b.pending.opAt))) continue;
+    return none;
+  }
   return { payloads, incomplete: false };
 }
 

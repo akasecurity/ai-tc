@@ -196,17 +196,17 @@
     ]
   },
   {
-    "label": "KNOWN GAP (PR #714): pure dotted literal — the pattern cannot tell it from a property chain, so it stays undetected by design",
+    "label": "KNOWN GAP: pure dotted literal — the pattern cannot tell it from a property chain, so it stays undetected by design",
     "text": "ACCESS_TOKEN=abc.def.ghi",
     "shouldMatch": false
   },
   {
-    "label": "KNOWN GAP (PR #714): dotted sk.live key — same property-chain indistinguishability, stays undetected by design",
+    "label": "KNOWN GAP: dotted sk.live key — same property-chain indistinguishability, stays undetected by design",
     "text": "API_KEY=sk.live.abcdef1234567890",
     "shouldMatch": false
   },
   {
-    "label": "KNOWN GAP (PR #714): dot-separated id/secret pair (Twilio-style) — same, stays undetected by design",
+    "label": "KNOWN GAP: dot-separated id/secret pair (Twilio-style) — same, stays undetected by design",
     "text": "TWILIO_TOKEN=abcdef1234567890.abcdef1234567890",
     "shouldMatch": false
   },

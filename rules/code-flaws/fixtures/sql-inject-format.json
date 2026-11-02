@@ -322,6 +322,26 @@
     "shouldMatch": true
   },
   {
+    "label": "known false positive: prose \"where <word> > {n}\" satisfies the WHERE..compare arm",
+    "text": "msg = f\"the point where total > {n} in the chart\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "known false positive: prose \"where <word> < {n}\" satisfies the WHERE..compare arm",
+    "text": "msg = f\"the row where total < {n} collapses\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "known false positive: prose \"where <word> <> {n}\" satisfies the WHERE..compare arm",
+    "text": "msg = f\"the case where a <> {b} differs\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "known false positive: the same prose compare shape in the % spelling",
+    "text": "msg = \"the point where total > %s in the chart\" % n",
+    "shouldMatch": true
+  },
+  {
     "label": "INSERT OR REPLACE INTO with a %s placeholder",
     "text": "q = \"INSERT OR REPLACE INTO t VALUES (%s)\" % v",
     "shouldMatch": true

@@ -96,13 +96,16 @@ describe('a Bash command whose payload scan runs out of budget', () => {
   }
 
   const command = "cat > notes.txt <<'EOF'\nobj = pickle.loads(blob)\nEOF\n";
+  // Clean on the command line, so only the refusal can deny it.
+  const clean = "cat > notes.txt <<'EOF'\nx = 1\nEOF\n";
 
   it('refuses the call when the payload scan itself comes back incomplete', async () => {
+    expect(await denied(clean)).toBe(false);
     refusePayloads.value = true;
-    expect(await denied(command)).toBe(true);
+    expect(await denied(clean)).toBe(true);
   });
 
-  it('records the command findings once when the payloads were not scanned', async () => {
+  it('scans the command with every rule on, and records its findings once, when the payloads were not scanned', async () => {
     spent.value = true;
     expect(await denied(command)).toBe(true);
     const db = openLocalDatabase(join(home, '.aka', 'data'), {
@@ -118,10 +121,5 @@ describe('a Bash command whose payload scan runs out of budget', () => {
 
   it('control: with budget left the .txt payload passes', async () => {
     expect(await denied(command)).toBe(false);
-  });
-
-  it('scans the command again with every rule on, so the call is not allowed silently', async () => {
-    spent.value = true;
-    expect(await denied(command)).toBe(true);
   });
 });

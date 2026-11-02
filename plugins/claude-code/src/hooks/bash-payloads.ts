@@ -7,11 +7,12 @@
 // extension-scoped rules apply to it. Everything outside those regions, and the
 // whole command when extraction is incomplete, keeps the rule family.
 //
-// Regions exist only for a command that is, in full, a flat sequence of
-// statements (newline, `;`, `&&`) that are each a plain writer or one of a few
-// inert statements (`cd`, `mkdir`, `touch`, `true`, `:`). A command that mixes a
-// write with any other statement keeps every rule on its whole text: that is
-// intended, since the other statement may run what was written.
+// Regions exist only for a command that is, in full, ONE statement: an optional
+// leading `cd <word> &&` or `mkdir -p <words> &&`, then one plain heredoc writer
+// or one quoted echo/printf writer to exactly one plain-path target, with no
+// other text anywhere. Anything else keeps every rule on its whole text: that
+// is intended, since another statement may run what was written, and a reader
+// of more shapes has not converged.
 //
 // Only a body written to a file counts: a heredoc fed to an interpreter or a
 // client (`python - <<EOF > out.txt`, `psql <<EOF`) is a command's input, not a
@@ -86,12 +87,6 @@ const TRANSFORMED = /(?<![\w./-])(?:base64|xxd|openssl)(?![\w./])|\bb64decode\b/
 // Any other command word (`python`, `psql`, `ssh`) takes the body as its input.
 const WRITERS = new Set(['cat', 'tee', ':', 'true']);
 
-// The statements besides a writer that leave a command flat: they run nothing
-// the command wrote and change nothing a writer relies on. Words are plain, or
-// quoted with no expansion.
-const WORD = `(?:[\\w./~@%+,:-]+|'[^']*'|"[^"$\`\\\\]*")`;
-const INERT = new RegExp(`^(?:(?:cd|mkdir|touch|true|:)(?:[ \\t]+${WORD})*)$`);
-
 // A redirect (with its target, or an fd dup) that may follow a heredoc operator.
 const AFTER_REDIRECT =
   /(?<![\w&])(?:\d*|&)>>?\|?[ \t]*(?:'[^']*'|"[^"]*"|[^\s'"|;&<>()]+)|(?<![\w&])\d*>&\d*-?/g;
@@ -115,7 +110,7 @@ function writerOf(before: string): 'tee' | 'other' | undefined {
       skipArg = false;
       continue;
     }
-    if (/^\d*>/.test(w) || w.startsWith('&>')) {
+    if (/^(?:\d*|&)>>?\|?[^<>]*$/.test(w)) {
       skipArg = /^(?:\d*|&)>>?\|?$/.test(w);
       continue;
     }
@@ -185,30 +180,14 @@ function nameable(path: string): boolean {
   return !/[$`*?[{\\]/.test(path) && !path.startsWith('&') && !isDevice(path);
 }
 
-// The part of the marker line holding one command, between `;`, `&&`, `||` and
-// a lone `&`; pipes stay in it.
-function segmentBounds(blank: string, at: number): Target {
-  const sep = /;|&&|\|\||(?<![<>&])&(?![>&])/g;
-  let start = 0;
-  let end = blank.length;
-  for (const m of blank.matchAll(sep)) {
-    if (m.index < at) start = m.index + m[0].length;
-    else {
-      end = m.index;
-      break;
-    }
-  }
-  return { start, end };
-}
-
 // <<, not <<<; the delimiter bare (with `-` and `.`), backslash-escaped or quoted.
-const OPERATOR = /<<(-?)[ \t]*(?:'([^'\n]+)'|"([^"\n]+)"|\\?([A-Za-z0-9_][\w.-]*))/y;
+const OPERATOR = /<<(-?)[ \t]*(?:'([^'\n]+)'|"([^"\n]+)"|\\?([A-Za-z0-9_][\w.-]*))(?=[ \t<>]|$)/y;
 
 // echo/printf of one quoted string straight into a file, at command position,
 // and nothing after it but the end of the command. A printf whose string holds
 // a conversion is a format, not the text written, and is not read.
 const QUOTED_WRITE =
-  /(echo|printf)[ \t]+(?:-[A-Za-z]+[ \t]+)*(?:'([^']*)'|"((?:[^"\\]|\\.)*)")[ \t]*>>?[ \t]*(?:'([^']+)'|"([^"]+)"|([^\s'"|;&<>()]+))(?=[ \t]*(?:$|[;\n]|&&)|[ \t]+#)/y;
+  /(echo|printf)[ \t]+(?:-[A-Za-z]+[ \t]+)*(?:'([^']*)'|"((?:[^"\\]|\\.)*)")[ \t]*>>?[ \t]*(?:'([^']+)'|"([^"]+)"|([^\s'"|;&<>()]+))(?=[ \t]*$)/y;
 
 // A QUOTED_WRITE match read as a payload, or undefined when it is not one.
 function quotedWrite(m: RegExpExecArray | null): BashPayload | undefined {
@@ -235,304 +214,168 @@ function quotedWrite(m: RegExpExecArray | null): BashPayload | undefined {
 }
 
 // Bounds on one command's extraction, so a long command cannot turn it into a
-// cost the scan deadline never sees. Past any of them the extraction is
-// incomplete (the command is then scanned whole, with all rules).
-const MAX_HEREDOCS = 64;
-const MAX_PAYLOADS = 32;
+// cost the scan deadline never sees. Past any of them nothing is extracted (the
+// command is then scanned whole, with all rules).
 const MAX_COMMAND_CHARS = 256 * 1024;
 // A line holding a heredoc marker is read by several patterns, so it is bounded
-// on its own: past this the extraction is incomplete.
+// on its own.
 const MAX_MARKER_LINE_CHARS = 4096;
 
 interface Pending {
-  opAt: number;
-  opEnd: number;
   delimiter: string;
   stripTabs: boolean;
-  /** Quoted or backslash-escaped delimiter: the body is not expanded. */
-  literal: boolean;
 }
 
-interface Body {
-  pending: Pending;
-  bodyStart: number;
-  bodyEnd: number;
-  lineStart: number;
-  lineEnd: number;
-  terminated: boolean;
+const none = (): BashExtraction => ({ payloads: [], incomplete: true });
+
+// The optional leading statement: `cd <word> && ` or `mkdir [-p] <words> && `,
+// words of plain path characters, single spaces.
+const PLAIN = '[\\w./~@%+,:-]+';
+const PREFIX = new RegExp(`^(?:(?:cd ${PLAIN}|mkdir(?: -p)? ${PLAIN}(?: ${PLAIN})*) && )?`);
+
+// Whether `line` ends outside any quote, read as blankQuoted reads it.
+function endsOutsideQuote(line: string): boolean {
+  let quote = '';
+  for (let i = 0; i < line.length; i++) {
+    const c = line.charAt(i);
+    if (quote === '') {
+      if (c === '\\') i++;
+      else if (c === "'" || c === '"') quote = c;
+    } else if (c === quote) {
+      quote = '';
+    } else if (c === '\\' && quote === '"') {
+      i++;
+    }
+  }
+  return quote === '';
+}
+
+// Only tab and printable ASCII: bash splits words at nothing else here.
+function plainAscii(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code !== 9 && (code < 32 || code > 126)) return false;
+  }
+  return true;
 }
 
 export function bashWrittenPayloads(command: string): BashExtraction {
-  const none: BashExtraction = { payloads: [], incomplete: true };
-  if (command.length > MAX_COMMAND_CHARS) return none;
-  const bodies: Body[] = [];
-  const quoted: BashPayload[] = [];
-  let atCommand = true;
-  // The statements of the command at depth 0 (split at a newline, `;`, `&&`),
-  // heredoc bodies excluded, and whether anything but a flat sequence was seen.
-  const stmts: Target[] = [];
-  let stmtStart = 0;
-  let commentAt = -1;
-  let nonFlat = false;
-  const endStmt = (at: number, next: number): void => {
-    stmts.push({ start: stmtStart, end: commentAt >= 0 ? commentAt : at });
-    commentAt = -1;
-    stmtStart = next;
-  };
-  let incomplete = false;
-  let pending: Pending[] = [];
-  let quote = '';
-  let seen = 0;
-  const n = command.length;
-  // One pass, as the shell reads it: quotes and comments are tracked so a
-  // `<<` inside them is text, and the bodies of the heredocs opened on a line
-  // are skipped at its end, so a marker inside a body is text too.
-  let i = 0;
-  while (i < n) {
-    const c = command.charAt(i);
-    if (quote === '') {
-      // Bash splits words at a space, tab or newline only: any other control or
-      // non-ASCII character outside quotes is not read here.
-      const code = c.charCodeAt(0);
-      if (code !== 9 && code !== 10 && (code < 32 || code > 126)) nonFlat = true;
-    }
-    if (quote !== '') {
-      // A double-quoted string is expanded: a substitution in it runs code.
-      if (quote === '"' && (c === '`' || (c === '$' && command.charAt(i + 1) === '('))) {
-        nonFlat = true;
-      }
-      if (c === '\\' && quote === '"') i += 2;
-      else {
-        if (c === quote) quote = '';
-        i++;
-      }
-      continue;
-    }
-    if (atCommand) {
-      if (c === ' ' || c === '\t') {
-        i++;
-        continue;
-      }
-      atCommand = false;
-      if (c === 'e' || c === 'p') {
-        QUOTED_WRITE.lastIndex = i;
-        const w = quotedWrite(QUOTED_WRITE.exec(command));
-        if (w !== undefined) {
-          quoted.push(w);
-          if (quoted.length > MAX_PAYLOADS) return none;
-          i += w.end - w.start;
-          continue;
-        }
-      }
-    }
-    if (c === '\\') {
-      // A line continuation joins the next line to this one, which this reader
-      // does not follow.
-      if (command.charAt(i + 1) === '\n' || command.startsWith('\r\n', i + 1)) incomplete = true;
-      i += 2;
-    } else if (c === '$' && command.charAt(i + 1) === "'") {
-      // ANSI-C quoting: its escapes are not read here.
-      incomplete = true;
-      i += 2;
-    } else if (c === ';') {
-      endStmt(i, i + 1);
-      atCommand = true;
-      i++;
-    } else if (c === '|') {
-      // A pipe stays inside its statement; `||` is not a flat sequence.
-      if (command.charAt(i + 1) === '|') {
-        nonFlat = true;
-        i++;
-      }
-      i++;
-    } else if (c === '&') {
-      if (command.charAt(i + 1) === '&') {
-        endStmt(i, i + 2);
-        atCommand = true;
-        i += 2;
-      } else {
-        // `>&`, `&>` are redirects; a lone `&` backgrounds the command.
-        if (!/[<>]/.test(command.charAt(i - 1)) && command.charAt(i + 1) !== '>') nonFlat = true;
-        i++;
-      }
-    } else if (c === '(' || c === ')' || c === '{' || c === '}' || c === '`') {
-      // A group, subshell, substitution or function body.
-      nonFlat = true;
-      i++;
-    } else if (c === "'" || c === '"') {
-      quote = c;
-      i++;
-    } else if (c === '#' && (i === 0 || /[ \t\n]/.test(command.charAt(i - 1)))) {
-      commentAt = i;
-      const e = command.indexOf('\n', i);
-      i = e === -1 ? n : e;
-    } else if (c === '\n') {
-      let pos = i + 1;
-      const lineStart = command.lastIndexOf('\n', i - 1) + 1;
-      for (const p of pending) {
-        const body = readBody(command, pos, p);
-        bodies.push({ ...body, pending: p, lineStart, lineEnd: i });
-        if (!body.terminated) incomplete = true;
-        // An unquoted body joins a line ending in a backslash to the next: the
-        // delimiter and a substitution can be spelled across lines.
-        if (!p.literal && /\\\r?\n/.test(command.slice(body.bodyStart, body.next))) {
-          incomplete = true;
-        }
-        pos = body.next;
-      }
-      pending = [];
-      atCommand = true;
-      endStmt(i, pos);
-      i = pos;
-    } else if (c === '<' && command.charAt(i + 1) === '<') {
-      if (command.charAt(i + 2) === '<') {
-        i += 3;
-        continue;
-      }
-      OPERATOR.lastIndex = i;
-      const m = OPERATOR.exec(command);
-      const delimiter = m?.[2] ?? m?.[3] ?? m?.[4];
-      if (m === null || delimiter === undefined) {
-        // `<<$X`, `<<(`: a heredoc this reader cannot follow.
-        incomplete = true;
-        i += 2;
-        continue;
-      }
-      if (++seen > MAX_HEREDOCS) return none;
-      pending.push({
-        opAt: i,
-        opEnd: i + m[0].length,
-        delimiter,
-        stripTabs: m[1] === '-',
-        literal: m[2] !== undefined || m[3] !== undefined || m[0].includes('\\'),
-      });
-      i += m[0].length;
-    } else {
-      i++;
-    }
-  }
-  // Operators on a last line with no newline have no body to read.
-  if (incomplete || pending.length > 0) return none;
-  endStmt(n, n);
+  if (command.length > MAX_COMMAND_CHARS) return none();
+  const text = command.endsWith('\n') ? command.slice(0, -1) : command;
+  const base = PREFIX.exec(text)?.[0].length ?? 0;
+  const rest = text.slice(base);
+  if (base > 0 && !plainAscii(text.slice(0, base))) return none();
+  return quotedStatement(rest, base) ?? heredocStatement(rest, base) ?? none();
+}
 
-  const payloads: BashPayload[] = [];
-  const writerOps = new Set<number>();
-  for (const b of bodies) {
-    const lineEnd = b.lineEnd;
-    if (lineEnd - b.lineStart > MAX_MARKER_LINE_CHARS) return none;
-    const rawLine = command.slice(b.lineStart, lineEnd);
-    const rawBlank = blankQuoted(rawLine);
-    // A `#` comment on the marker line is not part of the command.
-    const comment = /(?<=^|[ \t])#/.exec(rawBlank);
-    const markerLine = comment === null ? rawLine : rawLine.slice(0, comment.index);
-    const blankLine = comment === null ? rawBlank : rawBlank.slice(0, comment.index);
-    const rel = b.pending.opAt - b.lineStart;
-    if (rel < 0) return none;
-    const { start, end } = segmentBounds(blankLine, rel);
-    const seg = markerLine.slice(start, end);
-    const blank = blankLine.slice(start, end);
-    // A substitution or subshell on the command runs code of its own.
-    if (/[(`]/.test(blank)) continue;
-    // A duplicated fd (`>&2`, `1>&2`, `<&3`) sends the output somewhere else.
-    if (/[<>]&/.test(blank)) continue;
-    // The pipeline: the heredoc's stage is the writer, and nothing after it
-    // reads its stdout except one last `tee`.
-    const stages: Target[] = [];
-    let from = 0;
-    for (const m of blank.matchAll(/\|/g)) {
-      stages.push({ start: from, end: m.index });
-      from = m.index + 1;
-    }
-    stages.push({ start: from, end: blank.length });
-    const k = stages.findIndex((st) => st.start <= rel - start && rel - start <= st.end);
-    // Whatever runs before the heredoc's stage in a pipeline is not read here.
-    if (k !== 0) continue;
-    const own = stages[k];
-    if (own === undefined) continue;
-    const kind = writerOf(blank.slice(own.start, rel - start));
-    if (kind === undefined) continue;
-    // After the operator and its delimiter only redirects may follow: a word
-    // there (`<<EOF python3`) is the command that runs the body.
-    const after = blank.slice(b.pending.opEnd - b.lineStart - start, own.end);
-    if (after.replace(AFTER_REDIRECT, ' ').trim() !== '') continue;
-    let tstage = own;
-    let useTee = kind === 'tee';
-    if (k === stages.length - 2) {
-      // `cat <<EOF | tee f`: the file is the last stage's, if that is a tee.
-      const last = stages[k + 1];
-      if (last === undefined || writerOf(blank.slice(last.start, last.end)) !== 'tee') continue;
-      if (useTee) continue;
-      tstage = last;
-      useTee = true;
-    } else if (k !== stages.length - 1) {
-      continue;
-    }
-    // Exactly one file is written in the whole segment: a second redirect (any
-    // fd), or a tee file besides a redirect, would give the body a name the
-    // path attribution does not carry.
-    let targets = useTee ? 1 : 0;
-    for (const m of blank.matchAll(REDIRECT)) {
-      const at = m.indices?.[3] ?? m.indices?.[4] ?? m.indices?.[5];
-      if (at !== undefined && !isDevice(seg.slice(at[0], at[1]))) targets++;
-    }
-    if (targets !== 1) continue;
-    const found = segmentTarget(
-      seg.slice(tstage.start, tstage.end),
-      blank.slice(tstage.start, tstage.end),
-      useTee,
-    );
-    if (found.path !== undefined && hasDotDot(found.path)) return none;
-    const target = {
-      ...found,
-      spans: found.spans.map((t) => ({ start: t.start + tstage.start, end: t.end + tstage.start })),
-    };
-    if (!target.seen) continue;
-    // A target's own name (`base64.py`) is not a transform of the body.
-    let words = blank;
-    for (const t of target.spans) {
-      words = words.slice(0, t.start) + ' '.repeat(t.end - t.start) + words.slice(t.end);
-    }
-    if (TRANSFORMED.test(words)) continue;
-    const text = (b.bodyStart >= b.bodyEnd ? '' : command.slice(b.bodyStart, b.bodyEnd)).replace(
-      /\r$/,
-      '',
-    );
-    // An unquoted body is expanded by the shell: a `$` (parameter, arithmetic or
-    // command substitution) or a backtick in it means the file holds something
-    // other than the text read here, so the body is not the file's text, and
-    // the heredoc is not a plain writer (the whole command then has no regions).
-    if (!b.pending.literal && /[$`]/.test(text)) continue;
-    writerOps.add(b.pending.opAt);
-    if (text === '') continue;
-    payloads.push({
-      ...(target.path === undefined ? {} : { path: target.path }),
-      text,
-      start: b.bodyStart,
-      end: b.bodyEnd,
-    });
-    if (payloads.length > MAX_PAYLOADS) return none;
+// `echo '...' > file` and nothing else.
+function quotedStatement(rest: string, base: number): BashExtraction | undefined {
+  if (!/^(?:echo|printf)[ \t]/.test(rest)) return undefined;
+  QUOTED_WRITE.lastIndex = 0;
+  const m = QUOTED_WRITE.exec(rest);
+  const w = quotedWrite(m);
+  if (w === undefined) return none();
+  return {
+    payloads: [{ ...w, start: w.start + base, end: w.end + base }],
+    incomplete: false,
+  };
+}
+
+// One heredoc writer: a marker line, its body, and the delimiter line last.
+function heredocStatement(rest: string, base: number): BashExtraction | undefined {
+  const nl = rest.indexOf('\n');
+  if (nl === -1 || !rest.slice(0, nl).includes('<<')) return undefined;
+  const line = rest.slice(0, nl);
+  if (line.length > MAX_MARKER_LINE_CHARS || !plainAscii(line) || !endsOutsideQuote(line)) {
+    return none();
   }
-  payloads.push(...quoted);
-  if (payloads.length > MAX_PAYLOADS) return none;
-  if (payloads.length === 0) return { payloads, incomplete: false };
-  // Regions only for a command that is, in full, a flat sequence of plain
-  // writers and a few inert statements: one other statement (a command that
-  // may run what was written, a function or alias that changes a writer, a
-  // group) and the whole command keeps every rule.
-  if (nonFlat) return none;
-  const quotedAt = new Set(quoted.map((q) => q.start));
-  for (const st of stmts) {
-    const text = command.slice(st.start, st.end).trim();
-    if (text === '' || INERT.test(text)) continue;
-    const lead =
-      st.start +
-      (command.slice(st.start, st.end).length - command.slice(st.start, st.end).trimStart().length);
-    if (quotedAt.has(lead)) continue;
-    const ops = bodies.filter((b) => b.pending.opAt >= st.start && b.pending.opAt < st.end);
-    if (ops.length > 0 && ops.every((b) => writerOps.has(b.pending.opAt))) continue;
-    return none;
+  const blank = blankQuoted(line);
+  // One command: no list, comment, group, substitution, background or fd dup.
+  if (/&&|\|\||[;#(){}`]/.test(blank) || blank.replace(/&>>?/g, '').includes('&')) return none();
+  if (blank.includes('<<<') || blank.indexOf('<<') !== blank.lastIndexOf('<<')) return none();
+  const opAt = blank.indexOf('<<');
+  OPERATOR.lastIndex = opAt;
+  const om = OPERATOR.exec(line);
+  const delimiter = om?.[2] ?? om?.[3] ?? om?.[4];
+  if (om === null || delimiter === undefined) return none();
+  const escaped = om[0].includes('\\');
+  const literal = om[2] !== undefined || om[3] !== undefined || escaped;
+  if ((line.match(/\\/g) ?? []).length !== (escaped ? 1 : 0)) return none();
+  const opEnd = opAt + om[0].length;
+  const body = readBody(rest, nl + 1, { delimiter, stripTabs: om[1] === '-' });
+  if (!body.terminated || body.next < rest.length) return none();
+
+  // The pipeline: the heredoc's stage is the first, the writer, and nothing
+  // after it reads its stdout except one last `tee`.
+  const stages: Target[] = [];
+  let from = 0;
+  for (const m of blank.matchAll(/\|/g)) {
+    stages.push({ start: from, end: m.index });
+    from = m.index + 1;
   }
-  return { payloads, incomplete: false };
+  stages.push({ start: from, end: blank.length });
+  const own = stages[0];
+  if (own === undefined || opAt > own.end) return none();
+  const kind = writerOf(blank.slice(own.start, opAt));
+  if (kind === undefined) return none();
+  // After the operator and its delimiter only redirects may follow.
+  if (blank.slice(opEnd, own.end).replace(AFTER_REDIRECT, ' ').trim() !== '') return none();
+  let tstage = own;
+  let useTee = kind === 'tee';
+  if (stages.length === 2) {
+    // `cat <<EOF | tee f`: the file is the last stage's, if that is a tee.
+    const last = stages[1];
+    if (last === undefined || writerOf(blank.slice(last.start, last.end)) !== 'tee') return none();
+    if (useTee) return none();
+    tstage = last;
+    useTee = true;
+  } else if (stages.length !== 1) {
+    return none();
+  }
+  // Exactly one file is written: a second redirect (any fd), or a tee file
+  // besides a redirect, would give the body a name the path attribution does
+  // not carry.
+  let targets = useTee ? 1 : 0;
+  for (const m of blank.matchAll(REDIRECT)) {
+    const at = m.indices?.[3] ?? m.indices?.[4] ?? m.indices?.[5];
+    if (at !== undefined && !isDevice(line.slice(at[0], at[1]))) targets++;
+  }
+  if (targets !== 1) return none();
+  const found = segmentTarget(
+    line.slice(tstage.start, tstage.end),
+    blank.slice(tstage.start, tstage.end),
+    useTee,
+  );
+  if (!found.seen || (found.path !== undefined && hasDotDot(found.path))) return none();
+  // A target's own name (`base64.py`) is not a transform of the body.
+  let words = blank;
+  for (const t of found.spans) {
+    const a = t.start + tstage.start;
+    const b = t.end + tstage.start;
+    words = words.slice(0, a) + ' '.repeat(b - a) + words.slice(b);
+  }
+  if (TRANSFORMED.test(words)) return none();
+  const text = body.bodyStart >= body.bodyEnd ? '' : rest.slice(body.bodyStart, body.bodyEnd);
+  // An unquoted body is expanded by the shell: a `$` or a backtick, or a
+  // backslash-newline joining lines, means the file holds something other than
+  // the text read here.
+  if (!literal && (/[$`]/.test(text) || /\\\r?\n/.test(rest.slice(body.bodyStart)))) {
+    return none();
+  }
+  if (text.includes('\r')) return none();
+  // An empty body writes an empty file: a plain writer with nothing to scan.
+  if (text === '') return { payloads: [], incomplete: false };
+  return {
+    payloads: [
+      {
+        ...(found.path === undefined ? {} : { path: found.path }),
+        text,
+        start: base + body.bodyStart,
+        end: base + body.bodyEnd,
+      },
+    ],
+    incomplete: false,
+  };
 }
 
 // The body of one heredoc starting at `pos`: up to the first line equal to the

@@ -32,7 +32,7 @@ describe('bashWrittenPayloads', () => {
     expect(read(`echo 'select * from t where a = ' + x > q.py`).payloads).toEqual([]);
     expect(read(`echo "a = 1" > conf.py`).payloads).toEqual([{ path: 'conf.py', text: 'a = 1' }]);
     expect(read(`printf 'a = 1' > conf.py`).payloads).toEqual([{ path: 'conf.py', text: 'a = 1' }]);
-    const cmd = `cd d; echo "a = 1" > conf.py`;
+    const cmd = `cd d && echo "a = 1" > conf.py\n`;
     const p = bashWrittenPayloads(cmd).payloads[0];
     expect(cmd.slice(p?.start, p?.end)).toBe(`echo "a = 1" > conf.py`);
   });
@@ -64,7 +64,7 @@ describe('bashWrittenPayloads', () => {
 
   it('leaves a heredoc fed to a command unextracted, whatever its stdout goes to', () => {
     expect(read("psql <<'EOF'\nselect * from t where id = '%s'\nEOF")).toEqual({
-      incomplete: false,
+      incomplete: true,
       payloads: [],
     });
     expect(read('python - <<EOF\nprint(1)\nEOF').payloads).toEqual([]);
@@ -80,14 +80,10 @@ describe('bashWrittenPayloads', () => {
     expect(read(cmd).payloads).toEqual([{ path: 'a.txt', text: 'cat <<B > b.txt\nB' }]);
   });
 
-  it('takes both heredocs opened on one line, each with its own file', () => {
-    const cmd = 'cat <<A > a.txt; cat <<B > b.py\nbody a\nA\nbody b\nB\n';
-    expect(read(cmd).payloads).toEqual([
-      { path: 'a.txt', text: 'body a' },
-      { path: 'b.py', text: 'body b' },
-    ]);
-    const same = 'cat <<A > a.txt && cat <<B | tee b.py\nbody a\nA\nbody b\nB\n';
-    expect(paths(same)).toEqual(['a.txt', 'b.py']);
+  it('takes nothing from two heredocs opened on one line, or from a list of writers', () => {
+    expect(paths('cat <<A > a.txt; cat <<B > b.py\nbody a\nA\nbody b\nB\n')).toEqual([]);
+    expect(paths('cat <<A > a.txt && cat <<B | tee b.py\nbody a\nA\nbody b\nB\n')).toEqual([]);
+    expect(paths('cat <<A <<B > a.txt\nbody a\nA\nbody b\nB\n')).toEqual([]);
   });
 
   it('skips stderr, fd and /dev/null redirects when naming the file', () => {
@@ -116,7 +112,27 @@ describe('bashWrittenPayloads', () => {
     expect(paths('cat <<<x > f.py')).toEqual([]);
     expect(paths('cat <<<x > f.py\ncat <<EOF > g.py\ny\nEOF')).toEqual([]);
     expect(read(`echo "<<EOF" > a.py`).payloads).toEqual([{ path: 'a.py', text: '<<EOF' }]);
-    expect(paths("true '<<EOF' && cat <<EOF > b.py\nz\nEOF")).toEqual(['b.py']);
+    expect(paths("true '<<EOF' && cat <<EOF > b.py\nz\nEOF")).toEqual([]);
+    expect(paths("cat '<<X' <<EOF > b.py\nz\nEOF")).toEqual([]);
+  });
+
+  it('is incomplete when the delimiter word does not end at a boundary', () => {
+    expect(read("cat <<EOF'bar' > a.txt\nx\nEOF'bar'\n")).toEqual({
+      incomplete: true,
+      payloads: [],
+    });
+    expect(read('cat <<EOF\\bar > a.txt\nx\nEOF\n')).toEqual({ incomplete: true, payloads: [] });
+    expect(read('cat <<EOF$x > a.txt\nx\nEOF\n')).toEqual({ incomplete: true, payloads: [] });
+  });
+
+  it('is not misled by a quoted word that spans lines before the marker', () => {
+    const cmd =
+      "python3 -c 'import time, runpy; runpy.run_path(\"notes.txt\")' '\n>' | 2>/tmp/\\'a cat <<'EOF' > notes.txt\nimport pickle\nobj = pickle.loads(blob)\nEOF";
+    expect(read(cmd)).toEqual({ incomplete: true, payloads: [] });
+    expect(read("echo 'a\nb' > f.txt").payloads).toEqual([{ path: 'f.txt', text: 'a\nb' }]);
+    expect(read("cat '>\n' <<'EOF' > f.txt\nx\nEOF")).toEqual({ incomplete: true, payloads: [] });
+    expect(paths("cat >'foo'bar <<'EOF'\nx\nEOF")).toEqual([]);
+    expect(paths("cat >>>foo <<'EOF'\nx\nEOF")).toEqual([]);
   });
 
   it('leaves an unquoted body with command substitution unextracted, a quoted one extracted', () => {
@@ -132,16 +148,12 @@ describe('bashWrittenPayloads', () => {
   });
 
   it('is incomplete past each cap, with nothing returned', () => {
-    const many = 'cat <<A >f\nx\nA\n'.repeat(65);
-    expect(bashWrittenPayloads(many)).toEqual({ incomplete: true, payloads: [] });
-    const echoes = 'echo "a" > f.py\n'.repeat(33);
-    expect(bashWrittenPayloads(echoes)).toEqual({ incomplete: true, payloads: [] });
     const big = `echo "a" > f.py\n${'#'.repeat(256 * 1024)}`;
     expect(bashWrittenPayloads(big)).toEqual({ incomplete: true, payloads: [] });
     const longLine = `cat <<A > f.py ${'x '.repeat(3000)}\nbody\nA\n`;
     expect(bashWrittenPayloads(longLine)).toEqual({ incomplete: true, payloads: [] });
-    expect(bashWrittenPayloads('cat <<A\nx\nA\n'.repeat(64))).toEqual({
-      incomplete: false,
+    expect(bashWrittenPayloads('echo "a" > f.py\n'.repeat(2))).toEqual({
+      incomplete: true,
       payloads: [],
     });
   });
@@ -185,7 +197,7 @@ describe('bashWrittenPayloads', () => {
     expect(paths("echo '$(id)' > f.txt")).toEqual(['f.txt']);
   });
 
-  it("takes a quoted write only at command position, never inside another command's string", () => {
+  it("takes a quoted write only as the whole command, never inside another command's string", () => {
     expect(paths(`sh -c "echo 'X' > f.txt"`)).toEqual([]);
     expect(paths(`bash -c 'echo "X" > f.txt'`)).toEqual([]);
     expect(paths(`python -c "import os; os.system('echo \\"X\\" > f.txt')"`)).toEqual([]);
@@ -194,8 +206,10 @@ describe('bashWrittenPayloads', () => {
     expect(paths(`cat <<'EOF' > g.txt\necho "a" > f.txt\nEOF`)).toEqual(['g.txt']);
     expect(paths(`echo "a"\n> f.txt`)).toEqual([]);
     expect(paths(`echo "a" > f.txt <<'EOF'\nx\nEOF`)).toEqual([]);
-    expect(paths(`cd d; echo "a" > f.txt && echo 'b' >> g.txt`)).toEqual(['f.txt', 'g.txt']);
-    expect(paths(`cd d\necho "a" > f.txt`)).toEqual(['f.txt']);
+    expect(paths(`cd d; echo "a" > f.txt && echo 'b' >> g.txt`)).toEqual([]);
+    expect(paths(`cd d\necho "a" > f.txt`)).toEqual([]);
+    expect(paths(`echo "a" > f.txt\necho "b" > g.txt`)).toEqual([]);
+    expect(paths(`cd d && echo "a" > f.txt`)).toEqual(['f.txt']);
   });
 
   it('does not take a heredoc whose command word follows the operator', () => {
@@ -218,7 +232,7 @@ describe('bashWrittenPayloads', () => {
     expect(paths("echo '<code>' >| o.txt")).toEqual([]);
     expect(paths("echo '<code>' > o.txt <<<x")).toEqual([]);
     expect(paths("echo '<code>' > o.txt & ls")).toEqual([]);
-    expect(paths("echo '<code>' > o.txt && cd d")).toEqual(['o.txt']);
+    expect(paths("echo '<code>' > o.txt && cd d")).toEqual([]);
   });
 
   it.each([
@@ -258,15 +272,23 @@ describe('bashWrittenPayloads', () => {
     expect(read(command)).toEqual({ incomplete: true, payloads: [] });
   });
 
-  it('keeps regions for a flat sequence of plain writers and inert statements', () => {
-    const cmd =
-      "cd d && mkdir -p out\ncat <<'EOF' > out/a.txt\nx\nEOF\ntouch b; : ; true\n# note\n";
-    expect(read(cmd)).toEqual({
+  it('keeps regions for one writer behind at most one cd or mkdir -p', () => {
+    expect(read("cd d && mkdir -p out\ncat <<'EOF' > out/a.txt\nx\nEOF\n")).toEqual({
+      incomplete: true,
+      payloads: [],
+    });
+    expect(read("mkdir -p out sub && cat <<'EOF' > out/a.txt\nx\nEOF\n")).toEqual({
       incomplete: false,
       payloads: [{ path: 'out/a.txt', text: 'x' }],
     });
-    const mixed = paths(`echo "a" > f.txt; cat <<A > g.txt\nb\nA\ncd "x y" # c`);
-    expect([...mixed].sort()).toEqual(['f.txt', 'g.txt']);
+    expect(read("cd d && cat <<'EOF' > a.txt\nx\nEOF")).toEqual({
+      incomplete: false,
+      payloads: [{ path: 'a.txt', text: 'x' }],
+    });
+    expect(paths("cd 'x y' && cat <<'EOF' > a.txt\nx\nEOF")).toEqual([]);
+    expect(paths("touch b && cat <<'EOF' > a.txt\nx\nEOF")).toEqual([]);
+    expect(paths("cd d && cd e && cat <<'EOF' > a.txt\nx\nEOF")).toEqual([]);
+    expect(paths("cat <<'EOF' > a.txt\nx\nEOF\ntouch b\n")).toEqual([]);
   });
 
   it.each([
@@ -286,10 +308,10 @@ describe('bashWrittenPayloads', () => {
     expect(bashWrittenPayloads(command).payloads).toEqual([]);
   });
 
-  it('still takes a quoted-delimiter body with a backslash-newline, and a real comment', () => {
+  it('still takes a quoted-delimiter body with a backslash-newline', () => {
     expect(paths("cat <<'EOF' > a.txt\nline \\\nmore\nEOF\n")).toEqual(['a.txt']);
-    expect(paths('cat <<EOF > a.txt\nplain\nEOF\ntrue # note; python3 a.txt\n')).toEqual(['a.txt']);
     expect(paths("cat <<'EOF' | tee a.txt\nx\nEOF")).toEqual(['a.txt']);
+    expect(paths('cat <<EOF > a.txt\nplain\nEOF\ntrue # note\n')).toEqual([]);
   });
 
   it.each([
@@ -326,9 +348,9 @@ describe('bashWrittenPayloads', () => {
     expect(paths(command)).toEqual([]);
   });
 
-  it('takes a path it cannot spell plainly with no name, and a comment after a space', () => {
-    expect(bashWrittenPayloads("cat > a.p\\y <<'EOF'\nx\nEOF").payloads[0]?.path).toBeUndefined();
-    expect(paths("echo 'a' > notes.txt # .py")).toEqual(['notes.txt']);
+  it('takes a path it cannot spell plainly with no name, and a comment only before the writer ends', () => {
+    expect(bashWrittenPayloads("cat > a.p\\y <<'EOF'\nx\nEOF").incomplete).toBe(true);
+    expect(paths("echo 'a' > notes.txt # .py")).toEqual([]);
     expect(paths("cat <<'EOF' > /dev/null\nx\nEOF")).toEqual([]);
     expect(paths("cat <<'EOF' | tee n.txt >/dev/stderr\nx\nEOF")).toEqual(['n.txt']);
   });
@@ -365,18 +387,9 @@ describe('bashWrittenPayloads', () => {
 
   it('counts an empty-body heredoc as a plain writer only when it is one', () => {
     expect(read("cat <<'EOF' > e.txt\nEOF\n")).toEqual({ incomplete: false, payloads: [] });
-    expect(read("cat <<'EOF' > e.txt\nEOF\ncat <<'EOF' > f.txt\nx\nEOF\n").payloads).toEqual([
-      { path: 'f.txt', text: 'x' },
-    ]);
-    expect(read("cat <<'EOF' > e.txt\nEOF\ncat <<'EOF' > f.txt\nx\nEOF\nsh f.txt\n")).toEqual({
-      incomplete: true,
-      payloads: [],
-    });
-    expect(read("python3 <<'EOF' > e.txt\nEOF\ncat <<'EOF' > f.txt\nx\nEOF\n")).toEqual({
-      incomplete: true,
-      payloads: [],
-    });
-    expect(read("cat <<'EOF' > e.txt 1>&2\nEOF\ncat <<'EOF' > f.txt\nx\nEOF\n")).toEqual({
+    expect(read("python3 <<'EOF' > e.txt\nEOF\n")).toEqual({ incomplete: true, payloads: [] });
+    expect(read("cat <<'EOF' > e.txt 1>&2\nEOF\n")).toEqual({ incomplete: true, payloads: [] });
+    expect(read("cat <<'EOF' > e.txt\nEOF\ncat <<'EOF' > f.txt\nx\nEOF\n")).toEqual({
       incomplete: true,
       payloads: [],
     });

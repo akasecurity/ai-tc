@@ -166,13 +166,21 @@ describe('CredentialsListView', () => {
       chip('Rotation overdue')?.click();
     });
     expect(onStatus).toHaveBeenLastCalledWith('rotation_overdue');
-    // A status no credential carries counts zero, which is a count to show and
-    // not a count to omit: `byStatus` holds a number for every status.
+  });
+
+  it('shows a status that counts zero, and still filters by it', () => {
+    const onStatus = vi.fn();
+    // `byStatus` holds a number for every status, so zero is a count to show
+    // rather than a value the host has withheld.
     list({
       onStatus,
       statusCounts: { all: 0, byStatus: { rotation_overdue: 0, exposed: 0 } },
     });
     expect(chip('Exposed')?.textContent).toBe('Exposed, 0');
+    act(() => {
+      chip('Exposed')?.click();
+    });
+    expect(onStatus).toHaveBeenLastCalledWith('exposed');
   });
 
   it('shows no chips without a status callback, and chips without counts while none are known', () => {

@@ -39,3 +39,15 @@ export function largeInputBound(
     remainingMs: () => deadlineAt - now(),
   };
 }
+
+/**
+ * Whether a call that started at `startedAt` has used up HOOK_SCAN_DEADLINE_MS.
+ * Measured from the call's own start, not the process's: the hook server is
+ * long-lived, so `performance.now()` alone passes the deadline 6 s after boot.
+ */
+export function callScanBudgetSpent(
+  startedAt: number,
+  now: () => number = () => performance.now(),
+): boolean {
+  return now() - startedAt > HOOK_SCAN_DEADLINE_MS;
+}

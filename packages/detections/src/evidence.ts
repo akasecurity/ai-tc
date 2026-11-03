@@ -32,6 +32,7 @@ const BUNDLED_CODE_EVIDENCE: ReadonlySet<string> = new Set([
   'code-flaws/sql-inject-concat-dot',
   'code-flaws/sql-inject-format',
   'code-flaws/sql-inject-interp',
+  'code-flaws/sql-inject-interp-multiline',
   'code-flaws/ssrf-user-url',
   'code-flaws/xss-dangerously-set',
   'code-flaws/xss-inner-html',

@@ -49,7 +49,7 @@ jobs:
     steps:
       # A scheduled run checks out main, since a schedule otherwise runs on the
       # default branch; a manual run measures the branch it was started from.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event_name == 'schedule' && 'main' || '' }}
 
@@ -57,7 +57,7 @@ jobs:
         with:
           version: 10.30.1
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
           cache: pnpm
@@ -83,7 +83,7 @@ jobs:
         # measured — and so a missing artifact means the job never got here,
         # rather than meaning the upload was skipped.
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: bench-results-${{ github.sha }}
           path: '**/bench-results.json'

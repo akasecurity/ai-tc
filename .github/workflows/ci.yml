@@ -101,7 +101,7 @@ jobs:
       # that landed on main since the branch started to this PR. That is wrong in
       # both directions: an unrelated merge can redden a clean PR, and enough
       # well-covered churn can dilute a genuinely untested change into a pass.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -118,7 +118,7 @@ jobs:
         with:
           version: 10.30.1
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
           cache: pnpm
@@ -176,7 +176,7 @@ jobs:
       # written. Failure is the case this fixes; cancellation is not.
       - name: Restore Turbo cache
         id: turbo-cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .turbo/cache
           key: turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
@@ -264,7 +264,7 @@ jobs:
       # artifact.
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage
           path: |
@@ -282,7 +282,7 @@ jobs:
       # a save there is a no-op that only logs a scary "already exists".
       - name: Save Turbo cache
         if: ${{ !cancelled() && steps.turbo-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .turbo/cache
           key: turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
@@ -311,7 +311,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # One retry: the action verifies the pnpm download against the registry and
       # failed once with ERR_PNPM_ENGINE_IDENTITY_UNVERIFIABLE on a network blip.
@@ -326,7 +326,7 @@ jobs:
         with:
           version: 10.30.1
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
           cache: pnpm
@@ -381,7 +381,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # One retry: the action verifies the pnpm download against the registry and
       # failed once with ERR_PNPM_ENGINE_IDENTITY_UNVERIFIABLE on a network blip.
@@ -396,7 +396,7 @@ jobs:
         with:
           version: 10.30.1
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
           cache: pnpm
@@ -483,7 +483,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # One retry: the action verifies the pnpm download against the registry and
       # failed once with ERR_PNPM_ENGINE_IDENTITY_UNVERIFIABLE on a network blip.
@@ -498,7 +498,7 @@ jobs:
         with:
           version: 10.30.1
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
           cache: pnpm
@@ -511,7 +511,7 @@ jobs:
       # given there too: the combined action saves nothing when the job is red.
       - name: Restore Turbo cache
         id: turbo-cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .turbo/cache
           key: turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
@@ -527,7 +527,7 @@ jobs:
 
       - name: Save Turbo cache
         if: ${{ !cancelled() && steps.turbo-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .turbo/cache
           key: turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
@@ -774,7 +774,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # One retry: the action verifies the pnpm download against the registry and
       # failed once with ERR_PNPM_ENGINE_IDENTITY_UNVERIFIABLE on a network blip.
@@ -789,7 +789,7 @@ jobs:
         with:
           version: 10.30.1
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
           cache: pnpm
@@ -807,7 +807,7 @@ jobs:
       # saved — the cache mattered most exactly where it was guaranteed absent.
       - name: Restore Turbo cache
         id: turbo-cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .turbo/cache
           key: turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
@@ -1136,7 +1136,7 @@ jobs:
 
       - name: Save Turbo cache
         if: ${{ !cancelled() && steps.turbo-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .turbo/cache
           key: turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
@@ -1241,7 +1241,7 @@ jobs:
     env:
       TURBO_CONCURRENCY: 2
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # One retry: the action verifies the pnpm download against the registry and
       # failed once with ERR_PNPM_ENGINE_IDENTITY_UNVERIFIABLE on a network blip.
@@ -1256,7 +1256,7 @@ jobs:
         with:
           version: 10.30.1
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
           cache: pnpm
@@ -1285,7 +1285,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # One retry: the action verifies the pnpm download against the registry and
       # failed once with ERR_PNPM_ENGINE_IDENTITY_UNVERIFIABLE on a network blip.
@@ -1300,7 +1300,7 @@ jobs:
         with:
           version: 10.30.1
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
           cache: pnpm

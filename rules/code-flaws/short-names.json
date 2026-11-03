@@ -3,6 +3,7 @@
   "code-flaws/sql-inject-concat-dot": "SQL injection (PHP)",
   "code-flaws/sql-inject-format": "SQL injection (format string)",
   "code-flaws/sql-inject-interp": "SQL injection (interpolation)",
+  "code-flaws/sql-inject-interp-multiline": "SQL injection (interpolation)",
   "code-flaws/cmd-inject-shell": "Command injection (shell)",
   "code-flaws/cmd-inject-exec": "Command injection (Java exec)",
   "code-flaws/cmd-inject-node-exec": "Command injection (Node exec)",

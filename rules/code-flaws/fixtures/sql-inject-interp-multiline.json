@@ -1,0 +1,217 @@
+[
+  {
+    "label": "single-line statement at offset 0 of the text",
+    "text": "SELECT * FROM t WHERE id = #{id}",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 0,
+        "end": 29
+      }
+    ]
+  },
+  {
+    "label": "known gap: a prose line after the first that starts with a sql word and carries interpolation still matches",
+    "text": "Example:\nselect #{name} from the menu",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 9,
+        "end": 18
+      }
+    ]
+  },
+  {
+    "label": "Ruby heredoc with interpolation in a SELECT",
+    "text": "sql = <<~SQL\n  SELECT * FROM t WHERE id = #{id}\nSQL",
+    "shouldMatch": true
+  },
+  {
+    "label": "PHP heredoc with a variable in a SELECT",
+    "text": "$sql = <<<SQL\n  SELECT * FROM t WHERE id = $id\nSQL;",
+    "shouldMatch": true
+  },
+  {
+    "label": "Ruby heredoc without interpolation",
+    "text": "sql = <<~SQL\n  SELECT * FROM t WHERE id = 1\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "Ruby heredoc with a blank line after the opener: span starts on the SQL line",
+    "text": "q = <<~SQL\n\n  SELECT * FROM t WHERE id = #{id}\nSQL",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 12,
+        "end": 43
+      }
+    ]
+  },
+  {
+    "label": "where on its own heredoc line with interpolation",
+    "text": "sql = <<~SQL\n  SELECT *\n  FROM t\n  WHERE id = #{id}\nSQL",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 33,
+        "end": 48
+      }
+    ]
+  },
+  {
+    "label": "WHERE with a double-quoted identifier",
+    "text": "WHERE \"id\" = $id",
+    "shouldMatch": true
+  },
+  {
+    "label": "multi-line SELECT in a Ruby heredoc: FROM on a following line",
+    "text": "sql = <<~SQL\n  SELECT #{cols}\n  FROM users\nSQL",
+    "shouldMatch": true
+  },
+  {
+    "label": "multi-line SELECT with a computed column: FROM on the next line",
+    "text": "SELECT id, #{score_expr} AS score\n  FROM users",
+    "shouldMatch": true
+  },
+  {
+    "label": "multi-line SELECT in a PHP heredoc",
+    "text": "sql = <<<SQL\nSELECT $cols\nFROM users\nSQL;",
+    "shouldMatch": true
+  },
+  {
+    "label": "known gap: interpolation on a later line than SELECT in a heredoc is not matched",
+    "text": "sql = <<~SQL\n  SELECT id,\n  #{expr}\n  FROM users\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: FROM more than three lines after SELECT is not matched",
+    "text": "sql = <<~SQL\n  SELECT #{cols}\n  a\n  b\n  c\n  FROM users\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "prose with update ... set is not a statement (line-start form)",
+    "text": "<<~SQL\n  update the readme and then set #{name} aside\nSQL",
+    "shouldMatch": false,
+    "filePath": "x.rb"
+  },
+  {
+    "label": "known gap by design: nine or more comma-listed tables exceed the cap (uncapped, the alternation costs about 32 s against a 100 ms budget) (line-start form)",
+    "text": "<<~SQL\n  UPDATE a,b,c,d,e,f,g,h,i SET x = #{v}\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "prose with the word set is not an UPDATE: no assignment follows SET (line-start form)",
+    "text": "<<~SQL\n  update the record set to #{value}\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: MySQL multi-table UPDATE with JOIN ... ON before SET is not matched (line-start form)",
+    "text": "<<~SQL\n  UPDATE t1 JOIN t2 ON t1.id = t2.id SET t1.a = #{x}\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: tuple SET is not matched (line-start form)",
+    "text": "<<~SQL\n  UPDATE t SET (a, b) = (#{x}, #{y})\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: SELECT with no FROM is not matched (line-start form)",
+    "text": "<<~SQL\n  SELECT #{cols}\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: DELETE with an interpolated target before FROM is not matched (line-start form)",
+    "text": "<<~SQL\n  DELETE #{t} FROM x WHERE y = 1\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: comma-joined multi-table DELETE is not matched (line-start form)",
+    "text": "<<~SQL\n  DELETE t1 FROM t1, t2 WHERE x = #{y}\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: DELETE with STRAIGHT_JOIN is not matched (line-start form)",
+    "text": "<<~SQL\n  DELETE t1 FROM t1 STRAIGHT_JOIN t2 WHERE x = #{y}\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: UPDATE with INNER JOIN before SET is not matched (line-start form)",
+    "text": "<<~SQL\n  UPDATE t1 INNER JOIN t2 ON t1.id = t2.id SET t1.a = #{x}\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: UPDATE with LEFT JOIN before SET is not matched (line-start form)",
+    "text": "<<~SQL\n  UPDATE t1 LEFT JOIN t2 ON t1.id = t2.id SET t1.a = #{x}\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: a literal backslash-n between the table and SET is not matched (line-start form)",
+    "text": "<<~SQL\n  UPDATE t\\nSET a = #{x}\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: INSERT without INTO is not matched (line-start form)",
+    "text": "<<~SQL\n  INSERT t (a) VALUES (#{x})\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: two bare PHP variables after WHERE are not matched (line-start form)",
+    "text": "<<~SQL\n  WHERE $a $b\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "prose with update ... set and a bare variable followed by more words is not a statement (line-start form)",
+    "text": "<<~SQL\n  update the record set $x and more\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: positional placeholder as the WHERE operand is not matched (line-start form)",
+    "text": "<<~SQL\n  WHERE ? = #{x}\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: named placeholder as the WHERE operand is not matched (line-start form)",
+    "text": "<<~SQL\n  WHERE :id = #{x}\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "known gap: @variable as the WHERE operand is not matched (line-start form)",
+    "text": "<<~SQL\n  WHERE @x = #{x}\nSQL",
+    "shouldMatch": false
+  },
+  {
+    "label": "bare boolean column then AND in a heredoc line",
+    "text": "<<~SQL\n  WHERE active AND id = #{id}\nSQL",
+    "shouldMatch": true
+  },
+  {
+    "label": "double-quoted heredoc tag matches only the multiline rule",
+    "text": "sql = <<~\"SQL\"\n  SELECT * FROM t WHERE id = #{id}\nSQL",
+    "shouldMatch": true
+  },
+  {
+    "label": "single-quoted heredoc tag matches only the multiline rule",
+    "text": "sql = <<~'SQL'\n  SELECT * FROM t WHERE id = #{id}\nSQL",
+    "shouldMatch": true
+  },
+  {
+    "label": "PHP double-quoted heredoc tag matches only the multiline rule",
+    "text": "$sql = <<<\"SQL\"\nSELECT * FROM t WHERE id = $id\nSQL;",
+    "shouldMatch": true
+  },
+  {
+    "label": "WHERE on the line after a closing quote matches only the multiline rule",
+    "text": "sql = \"UPDATE t SET name = 'x'\n  WHERE id = #{id}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "quote closing inside a heredoc statement line matches only the multiline rule",
+    "text": "<<~SQL\n  UPDATE t SET a = 'q' WHERE b = #{x}\nSQL",
+    "shouldMatch": true
+  },
+  {
+    "label": "single-line quoted statement matches only the quoted rule (the other rule must stay silent: one finding per statement)",
+    "text": "sql = \"UPDATE t SET a = 'q' WHERE b = #{x}\"",
+    "shouldMatch": false
+  }
+]

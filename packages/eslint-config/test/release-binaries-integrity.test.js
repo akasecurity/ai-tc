@@ -221,7 +221,8 @@ const rollingStep = () => stepNamed(releaseJob(), 'Publish the rolling bin-lates
 /** The release job's one artifact upload: the rendered manifests. */
 function manifestUploadStep() {
   const matching = stepsOf(releaseJob()).filter(
-    (step) => typeof step.uses === 'string' && /^actions\/upload-artifact@v\d+$/.test(step.uses),
+    (step) =>
+      typeof step.uses === 'string' && /^actions\/upload-artifact@[0-9a-f]{40}$/.test(step.uses),
   );
   expect(matching, 'the release job uploads no single artifact').toHaveLength(1);
   return matching[0];
@@ -1165,7 +1166,8 @@ describe('the release job renders the package-manager manifests', () => {
   // pinned the way the build fan-out pins the runtime it embeds.
   it('pins the runtime the renderer runs under', () => {
     const matching = stepsOf(releaseJob()).filter(
-      (step) => typeof step.uses === 'string' && /^actions\/setup-node@v\d+$/.test(step.uses),
+      (step) =>
+        typeof step.uses === 'string' && /^actions\/setup-node@[0-9a-f]{40}$/.test(step.uses),
     );
     expect(matching, 'the release job runs no single setup-node step').toHaveLength(1);
     expect(inputsOf(matching[0])['node-version']).toBe('24');
@@ -1198,7 +1200,7 @@ describe('the release job renders the package-manager manifests', () => {
   it('installs that runtime after the version check and before the render', () => {
     const job = releaseJob();
     const check = stepIndex(job, 'Verify tag matches package version');
-    const setup = usesIndex(job, 'actions/setup-node@v6');
+    const setup = usesIndex(job, 'actions/setup-node@');
     const render = stepIndex(job, 'Render the package-manager manifests');
 
     expect(check).toBeLessThan(setup);

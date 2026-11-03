@@ -593,6 +593,105 @@ describe('appliesTo extension gating', () => {
   });
 });
 
+describe('code_flaw findings inside regions a command writes to files', () => {
+  const pickle = RuleSchema.parse({
+    specVersion: 1,
+    id: 'test/pickle',
+    name: 'pickle test rule',
+    category: 'code_flaw',
+    severity: 'high',
+    matcher: { type: 'regex', pattern: 'pickle\\.loads\\(', flags: 'g' },
+  });
+  const secret = RuleSchema.parse({
+    specVersion: 1,
+    id: 'test/token',
+    name: 'token test rule',
+    category: 'secret',
+    severity: 'high',
+    matcher: { type: 'regex', pattern: 'tok_[a-z]{8}', flags: 'g' },
+  });
+  const inner = 'obj = pickle.loads(blob)';
+  const command = `echo '${inner}' > a.py; python -c "import pickle; pickle.loads(b)"`;
+  const start = command.indexOf(inner);
+  const regions = [{ start, end: start + inner.length }];
+
+  it('drops a code_flaw match inside a region of a tool_use capture only', () => {
+    expect(
+      scan(inner, [pickle], { eventKind: 'tool_use', writtenRegions: [{ start: 0, end: 24 }] }),
+    ).toHaveLength(0);
+    expect(
+      scan(inner, [pickle], {
+        eventKind: 'code_change',
+        filePath: 'a.py',
+        writtenRegions: regions,
+      }),
+    ).toHaveLength(1);
+    expect(scan(inner, [pickle], { eventKind: 'response', writtenRegions: regions })).toHaveLength(
+      1,
+    );
+    expect(scan(inner, [pickle], { eventKind: 'tool_use' })).toHaveLength(1);
+    expect(scan(inner, [pickle], { eventKind: 'tool_use', writtenRegions: [] })).toHaveLength(1);
+  });
+
+  it('keeps a match whose rule the written file never scanned (another extension)', () => {
+    const pyOnly = RuleSchema.parse({
+      specVersion: 1,
+      id: 'test/pickle-py',
+      name: 'py-only pickle test rule',
+      category: 'code_flaw',
+      severity: 'high',
+      matcher: { type: 'regex', pattern: 'pickle\\.loads\\(', flags: 'g' },
+      appliesTo: { extensions: ['.py'] },
+    });
+    const inRegion = (filePath: string | undefined) => [{ start: 0, end: 24, filePath }];
+    // `pickle` is scoped to .py: a payload written to a .txt or .rb file was not judged by it.
+    for (const filePath of ['notes.txt', 'app.rb']) {
+      expect(
+        scan(inner, [pyOnly], { eventKind: 'tool_use', writtenRegions: inRegion(filePath) }),
+      ).toHaveLength(1);
+    }
+    for (const filePath of ['app.py', undefined, 'Makefile']) {
+      expect(
+        scan(inner, [pyOnly], { eventKind: 'tool_use', writtenRegions: inRegion(filePath) }),
+      ).toHaveLength(0);
+    }
+  });
+
+  it('keeps a code_flaw match outside every region, in the same command', () => {
+    const found = scan(command, [pickle], { eventKind: 'tool_use', writtenRegions: regions });
+    expect(found).toHaveLength(1);
+    expect(found[0]?.span.start).toBeGreaterThan(start + inner.length);
+  });
+
+  it('keeps a match that only straddles a region edge, and other categories inside one', () => {
+    const edge = [{ start: start + 5, end: start + inner.length }];
+    expect(scan(inner, [pickle], { eventKind: 'tool_use', writtenRegions: edge })).toHaveLength(1);
+    expect(
+      scan('x tok_abcdefgh y', [secret], {
+        eventKind: 'tool_use',
+        writtenRegions: [{ start: 0, end: 16 }],
+      }),
+    ).toHaveLength(1);
+  });
+
+  it('applies the regions in original coordinates to a match found only after normalization', () => {
+    const padded = 'pickle.l\u200Boads(blob) # x';
+    expect(scan(padded, [pickle], { eventKind: 'tool_use' })).toHaveLength(1);
+    expect(
+      scan(padded, [pickle], {
+        eventKind: 'tool_use',
+        writtenRegions: [{ start: 0, end: padded.length }],
+      }),
+    ).toHaveLength(0);
+    expect(
+      scan(padded, [pickle], {
+        eventKind: 'tool_use',
+        writtenRegions: [{ start: 0, end: 4 }],
+      }),
+    ).toHaveLength(1);
+  });
+});
+
 describe('appliesTo eventKinds gating', () => {
   const commandOnly = RuleSchema.parse({
     specVersion: 1,

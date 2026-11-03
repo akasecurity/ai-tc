@@ -24,7 +24,7 @@ import { describe, expect, it } from 'vitest';
 // it, and HarnessSelect puts its border COLOUR behind a conditional, so a search
 // for the literal pairing missed that.
 //
-// The SEARCH fields are no longer hand-rolled — all six render `SearchField`
+// The SEARCH fields are no longer hand-rolled — every one renders `SearchField`
 // (shared/SearchField.tsx), and BOTH halves live there: the focus rule, and the
 // edge/fill pair, which `SURFACE_CLASS` resolves from a `surface` prop naming
 // what the field sits on.
@@ -40,7 +40,7 @@ import { describe, expect, it } from 'vitest';
 // edge/fill cases read the component, which it never changes. So the order is
 // pinned below, as the one fact the rest of this file's design rests on.
 //
-// So the six are pinned in ONE place now, and the call-site table below asserts
+// So they are pinned in ONE place now, and the call-site table below asserts
 // a different thing: which surface each one declares. That is still a per-site
 // decision — what makes a fill wrong is the fill of the thing UNDER it, which
 // the component cannot see.
@@ -182,6 +182,13 @@ const FIELDS: {
   {
     file: 'inventory/InventoryTable.tsx',
     control: 'the inventory table search',
+    on: 'a Card',
+    edge: 'surface="card"',
+    shared: true,
+  },
+  {
+    file: 'credentials/CredentialsListView.tsx',
+    control: 'the credentials search',
     on: 'a Card',
     edge: 'surface="card"',
     shared: true,

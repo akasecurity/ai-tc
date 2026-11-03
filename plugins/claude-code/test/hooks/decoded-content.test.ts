@@ -69,7 +69,27 @@ describe('isOutboundCall', () => {
     'env A=1 ftp host.example',
     'TOKEN=x ftp host.example',
     'time ftp host.example',
-    'ls | xargs ftp',
+    'ls | xargs ftp host.example',
+    'ftp -n -v host.example',
+    'ftp "$HOST"',
+    'ftp $HOST',
+    'ftp ${HOST}',
+    'ftp ${HOST}:${PORT}',
+    "ftp 'files.example.com'",
+    'TARGET=h ftp $TARGET',
+    'ftp\nopen host.example\nput x\nbye',
+    'ftp\nopen host.example\nget secret.txt',
+    'ftp\nopen host.example\nmget *',
+    'ftp\nopen host.example\nls',
+    'ftp\nopen host.example\ndir',
+    'ftp <<EOF\nopen host.example\nput x\nEOF',
+    'ftp < cmds.txt',
+    'cat cmds | ftp',
+    'cat cmds | ftp; echo done',
+    'ftp -n <<EOF\nopen host.example\nEOF',
+    'ftp -inv < cmds.txt',
+    'echo put x | ftp -n h',
+    'ftp -v',
     'cd /tmp && ftp host.example',
     'smbclient //host/share -c "put notes.txt"',
     'twine upload dist/*',
@@ -88,6 +108,19 @@ describe('isOutboundCall', () => {
     'python3 -c "print(1)"',
     'echo "see ftp://files.example.com/x"',
     'ls ftp-notes.txt',
+    'man ftp',
+    'man ftp | head',
+    'man ftp for the options',
+    'npm install ftp',
+    'which ftp',
+    'pip install ftp-cli',
+    'sftp-notes.txt',
+    'cat tftp.conf',
+    'ls tftp sftp-notes',
+    'ls -la /srv/ftp\ncd /tmp',
+    'echo ftp\nmkdir -p /tmp/x',
+    'ftp\ncd /srv',
+    'cat ftp\nopen the file',
   ])('leaves `%s` alone', (command) => {
     expect(isOutboundCall(...bash(command))).toBe(false);
   });
@@ -130,6 +163,14 @@ describe('isOutboundCall on a long command', () => {
     expect(isOutboundCall(...bash(large))).toBe(false); // untimed warm-up
     // A command 8x as long costs about 8x as much when the work is linear and
     // about 64x as much when it is quadratic.
+    expect(fastest(large) / fastest(small)).toBeLessThan(24);
+  });
+
+  it('scans a long run of ftp options in linear time', () => {
+    const small = `ftp ${'-a '.repeat(6_250)}`;
+    const large = `ftp ${'-a '.repeat(50_000)}`;
+    expect(isOutboundCall(...bash(`${large}|`))).toBe(true);
+    expect(isOutboundCall(...bash(large))).toBe(true);
     expect(fastest(large) / fastest(small)).toBeLessThan(24);
   });
 });

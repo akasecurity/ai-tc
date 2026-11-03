@@ -1,9 +1,8 @@
 'use client';
 
 // Right pane for one skill / MCP server / hook / config file: status, description,
-// the type's own detail fields, the MCP trust classifier and exposed tools, and
-// per-type actions. Without a host `actions` node, the per-type action buttons are
-// visual affordances only.
+// the type's own detail fields, the MCP trust classifier, exposed tools, and the
+// host's own actions.
 import type {
   AssetDetail as AssetDetailShape,
   AssetType,
@@ -25,7 +24,6 @@ import {
   typeMeta,
 } from './data.ts';
 import { Ico } from './Ico.tsx';
-import { type IconName } from './icons.ts';
 
 type AssetKind = Exclude<AssetType, 'project'>;
 
@@ -133,8 +131,7 @@ export function AssetDetail({
    * never called. Only an MCP asset has a trust picker.
    */
   trustRefusal?: string | undefined;
-  /** The host's actions for this asset, drawn after the details in place of the
-   * per-type action buttons. */
+  /** The host's actions for this asset, drawn after the details. */
   actions?: ReactNode;
 }) {
   const isMcp = asset.type === 'mcp';
@@ -143,8 +140,6 @@ export function AssetDetail({
   const trustReasonId = useId();
   const command = asset.type === 'hook' ? metaText(asset.meta, 'command') : null;
   const fields = detailFields(asset, locale);
-  // null, false and undefined all mean nothing to draw, so the per-type buttons stay.
-  const hostActions = actions ?? false;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -215,7 +210,7 @@ export function AssetDetail({
           </Section>
         )}
 
-        {hostActions}
+        {actions}
 
         {asset.finding && (
           <Section label="Related finding">
@@ -232,10 +227,6 @@ export function AssetDetail({
         )}
 
         {isMcp && asset.tools && <ToolsSection tools={asset.tools} />}
-
-        {hostActions === false && (
-          <div className="flex flex-wrap gap-2">{actionsFor(asset, trust)}</div>
-        )}
       </div>
     </div>
   );
@@ -398,69 +389,4 @@ function ToolsSection({ tools }: { tools: McpTool[] }) {
       )}
     </div>
   );
-}
-
-interface Action {
-  key: string;
-  primary?: boolean;
-  icon: IconName;
-  label: string;
-}
-function actionsFor(asset: AssetDetailShape, trust: TrustLevel | null): ReactNode {
-  let actions: Action[];
-  if (asset.type === 'skill') {
-    const latest = metaText(asset.meta, 'latestVersion') ?? '';
-    actions = asset.flags.includes('update')
-      ? [
-          { key: 'u', primary: true, icon: 'arrow-up', label: `Update to ${latest}`.trim() },
-          { key: 'c', icon: 'book', label: 'Changelog' },
-        ]
-      : [{ key: 'r', icon: 'refresh', label: 'Check for updates' }];
-  } else if (asset.type === 'mcp') {
-    actions =
-      trust === 'unapproved'
-        ? [
-            { key: 'a', primary: true, icon: 'shield-check', label: 'Approve & allow-list' },
-            { key: 'b', icon: 'slash-circle', label: 'Block server' },
-          ]
-        : [
-            { key: 'v', icon: 'eye', label: 'View tools' },
-            { key: 'r', icon: 'refresh', label: 'Re-verify' },
-          ];
-  } else if (asset.type === 'hook') {
-    if (asset.flags.includes('conflict'))
-      actions = [
-        { key: 'r', primary: true, icon: 'branch', label: 'Resolve run order' },
-        { key: 'd', icon: 'eye-off', label: 'Disable hook' },
-      ];
-    else if (asset.flags.includes('unknown'))
-      actions = [
-        { key: 'v', primary: true, icon: 'shield-check', label: 'Review & verify' },
-        { key: 'b', icon: 'slash-circle', label: 'Block' },
-      ];
-    else actions = [{ key: 'v', icon: 'eye', label: 'View script' }];
-  } else {
-    if (asset.flags.includes('risk'))
-      actions = [
-        { key: 'r', primary: true, icon: 'shield-check', label: 'Review change' },
-        { key: 'd', icon: 'swap', label: 'View diff' },
-      ];
-    else if (asset.flags.length)
-      actions = [
-        { key: 'd', icon: 'swap', label: 'View diff' },
-        { key: 'm', icon: 'check', label: 'Mark reviewed' },
-      ];
-    else actions = [{ key: 'o', icon: 'eye', label: 'Open file' }];
-  }
-  return actions.map((a) => (
-    <Button
-      key={a.key}
-      variant={a.primary ? 'solid' : 'outline'}
-      tone={a.primary ? 'primary' : 'neutral'}
-      size="sm"
-    >
-      <Ico name={a.icon} className="size-3.5" />
-      {a.label}
-    </Button>
-  ));
 }

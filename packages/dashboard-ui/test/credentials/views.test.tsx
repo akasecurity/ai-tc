@@ -166,6 +166,13 @@ describe('CredentialsListView', () => {
       chip('Rotation overdue')?.click();
     });
     expect(onStatus).toHaveBeenLastCalledWith('rotation_overdue');
+    // A status no credential carries counts zero, which is a count to show and
+    // not a count to omit: `byStatus` holds a number for every status.
+    list({
+      onStatus,
+      statusCounts: { all: 0, byStatus: { rotation_overdue: 0, exposed: 0 } },
+    });
+    expect(chip('Exposed')?.textContent).toBe('Exposed, 0');
   });
 
   it('shows no chips without a status callback, and chips without counts while none are known', () => {

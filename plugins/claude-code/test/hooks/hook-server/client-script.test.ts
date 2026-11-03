@@ -7,6 +7,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   symlinkSync,
   utimesSync,
@@ -66,7 +67,23 @@ beforeAll(() => {
   );
   chmodSync(fakeNode, 0o755);
 });
+// Every client is started as the leader of its own process group, so a shell
+// helper it left running (a paused stand-in, a background server start) can be
+// killed with it once the case is over.
+const groups = new Set<number>();
+function reapGroups(): void {
+  for (const pgid of groups) {
+    try {
+      process.kill(-pgid, 'SIGKILL');
+    } catch {
+      // Already gone.
+    }
+  }
+  groups.clear();
+}
+afterEach(reapGroups);
 afterAll(() => {
+  reapGroups();
   removeTree(root);
 });
 
@@ -96,7 +113,9 @@ function runClient(options: {
       env,
       cwd: options.cwd ?? tmpdir(),
       stdio: ['pipe', 'pipe', 'ignore'],
+      detached: true,
     });
+    if (child.pid !== undefined) groups.add(child.pid);
     let stdout = '';
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
@@ -146,6 +165,92 @@ describeUnix.each(SHELLS)('the hook client under %s without a server', (shell) =
     const home = newHome();
     await Promise.all([1, 2, 3].map(() => runClient({ shell, home, payload: '{}' })));
     await new Promise((resolve) => setTimeout(resolve, 200));
+    const starts = readNodeLog()
+      .split('\n')
+      .filter((l) => l.includes('--daemonize'));
+    // A second start names its cause: the node log and what the run folder holds.
+    const run = join(home, '.aka', 'run');
+    const held = existsSync(run) ? readdirSync(run).join(' ') : 'no run folder';
+    expect(starts, `node log:\n${readNodeLog()}\nrun folder: ${held}`).toHaveLength(1);
+  });
+
+  it('starts one server for a burst even when the system mkdir reports success to every caller', async () => {
+    resetNodeLog();
+    const home = newHome();
+    // uutils mkdir (the default on Ubuntu 26.04) does this when calls race.
+    const fake = join(home, 'fake-bin');
+    mkdirSync(fake);
+    writeFileSync(
+      join(fake, 'mkdir'),
+      ['#!/bin/sh', 'for a; do d=$a; done', '/bin/mkdir -p "$d"', ''].join('\n'),
+      { mode: 0o755 },
+    );
+    const path = `${fake}:${bin}:/usr/bin:/bin`;
+    await Promise.all([1, 2, 3].map(() => runClient({ shell, home, payload: '{}', path })));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const starts = readNodeLog()
+      .split('\n')
+      .filter((l) => l.includes('--daemonize'));
+    expect(starts).toHaveLength(1);
+  });
+
+  it('starts no second server when a call takes the lock after the first server released it', async () => {
+    resetNodeLog();
+    const home = newHome();
+    const run = join(home, '.aka', 'run');
+    const lock = join(run, `hook-${VERSION}.starting`);
+    const sock = join(run, `hook-${VERSION}.sock`);
+    const held = join(home, 'held');
+    const go = join(home, 'go');
+    // A node whose server start listens on the socket and releases the lock, as
+    // the real one does, and a mkdir that pauses one call between its probe and
+    // its lock attempt.
+    const fake = join(home, 'fake-bin');
+    mkdirSync(fake);
+    writeFileSync(
+      join(fake, 'node'),
+      [
+        '#!/bin/sh',
+        `printf '%s|LC_ALL=%s\\n' "$*" "\${LC_ALL-unset}" >> "$AKA_TEST_NODE_LOG"`,
+        'case $* in *hook-server.js*)',
+        `  exec perl -e 'use Socket;socket(S,PF_UNIX,SOCK_STREAM,0);bind(S,sockaddr_un($ARGV[0]));listen(S,5);rmdir $ARGV[1];$SIG{ALRM}=sub{exit 0};alarm 3;sleep 3' "$HOME/.aka/run/hook-${VERSION}.sock" "$HOME/.aka/run/hook-${VERSION}.starting" ;;`,
+        'esac',
+        'printf "NODE:"; cat',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    writeFileSync(
+      join(fake, 'mkdir'),
+      [
+        '#!/bin/sh',
+        'if [ "$1" = -p ] && [ -n "$AKA_TEST_HOLD" ]; then',
+        '  : > "$AKA_TEST_HELD"',
+        '  n=0',
+        '  until [ -e "$AKA_TEST_GO" ] || [ "$n" -ge 250 ]; do sleep 0.02; n=$((n + 1)); done',
+        'fi',
+        'exec /bin/mkdir "$@"',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    const path = `${fake}:/usr/bin:/bin`;
+    const slow = runClient({
+      shell,
+      home,
+      payload: '{}',
+      path,
+      env: { AKA_TEST_HOLD: '1', AKA_TEST_HELD: held, AKA_TEST_GO: go },
+    });
+    const until = async (done: () => boolean): Promise<void> => {
+      for (let i = 0; i < 500 && !done(); i++) await new Promise((r) => setTimeout(r, 20));
+    };
+    await until(() => existsSync(held));
+    await runClient({ shell, home, payload: '{}', path });
+    await until(() => existsSync(sock) && !existsSync(lock));
+    writeFileSync(go, '');
+    await slow;
+    await new Promise((resolve) => setTimeout(resolve, 200));
     expect(
       readNodeLog()
         .split('\n')
@@ -163,6 +268,50 @@ describeUnix.each(SHELLS)('the hook client under %s without a server', (shell) =
     await runClient({ shell, home, payload: '{}' });
     expect(existsSync(lock)).toBe(false);
     expect(readNodeLog()).not.toContain('--daemonize');
+  });
+
+  it('starts nothing when the second probe times out, keeps the lock until it ages out, then starts one', async () => {
+    resetNodeLog();
+    const home = newHome();
+    const lock = join(home, '.aka', 'run', `hook-${VERSION}.starting`);
+    // A perl whose 1 s probe alarm fires (exit 2), as a probe starved of CPU
+    // would; every other perl call, the lock included, runs the real one.
+    const fake = join(home, 'fake-bin');
+    mkdirSync(fake);
+    writeFileSync(
+      join(fake, 'perl'),
+      ['#!/bin/sh', 'case $2 in *"alarm 1;"*) exit 2 ;; esac', 'exec /usr/bin/perl "$@"', ''].join(
+        '\n',
+      ),
+      { mode: 0o755 },
+    );
+    const slowPath = `${fake}:${bin}:/usr/bin:/bin`;
+    const daemonizes = (): number =>
+      readNodeLog()
+        .split('\n')
+        .filter((l) => l.includes('--daemonize')).length;
+
+    // The timed-out probe is no answer: no server starts, and the lock stays held.
+    await runClient({ shell, home, payload: '{}', path: slowPath });
+    expect(daemonizes()).toBe(0);
+    expect(existsSync(lock)).toBe(true);
+
+    // A fresh lock suppresses every start, however many calls come.
+    await runClient({ shell, home, payload: '{}', path: slowPath });
+    expect(daemonizes()).toBe(0);
+    expect(existsSync(lock)).toBe(true);
+
+    // Once it is over a minute old the next call reclaims it, still starting nothing...
+    const old = new Date(Date.now() - 5 * 60_000);
+    utimesSync(lock, old, old);
+    await runClient({ shell, home, payload: '{}', path: slowPath });
+    expect(existsSync(lock)).toBe(false);
+    expect(daemonizes()).toBe(0);
+
+    // ...and the call after that starts the one server.
+    await runClient({ shell, home, payload: '{}' });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(daemonizes()).toBe(1);
   });
 
   it('puts the caller locale back before node starts', async () => {

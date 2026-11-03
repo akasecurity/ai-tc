@@ -1,9 +1,9 @@
-// Every plugin release workflow publishes a stable version only from a commit
-// `main` holds.
+// Every plugin release workflow, and the CLI's, publishes a stable version only
+// from a commit `main` holds.
 //
-// A stable plugin tag is cut after its release pull request merges, on the
-// commit that merge put on `main`, so the commit a stable version's npm
-// provenance names is one `main` holds. Each `release-plugin-*.yml` refuses a
+// A stable tag is cut after its release pull request merges, on the commit that
+// merge put on `main`, so the commit a stable version's npm provenance names is
+// one `main` holds. Each `release-plugin-*.yml` and `release-cli.yml` refuses a
 // stable version whose commit `main` lacks, before anything publishes; a
 // pre-release, which is tagged on its release branch, is exempt.
 //
@@ -47,9 +47,10 @@ import {
 // Derived, so a plugin release workflow added later is held to the rule without
 // an edit here. The four listed are the positive control: a derivation that
 // matched nothing would leave every case below unwritten, which reads as green.
-const PLUGIN_WORKFLOW_PATH = /^\.github\/workflows\/release-plugin-[^/]+\.ya?ml$/;
+const PLUGIN_WORKFLOW_PATH = /^\.github\/workflows\/release-(?:plugin-[^/]+|cli)\.ya?ml$/;
 const PLUGIN_WORKFLOWS = releaseWorkflows().filter((f) => PLUGIN_WORKFLOW_PATH.test(f));
 const KNOWN_PLUGIN_WORKFLOWS = [
+  '.github/workflows/release-cli.yml',
   '.github/workflows/release-plugin-antigravity.yml',
   '.github/workflows/release-plugin-claude.yml',
   '.github/workflows/release-plugin-codex.yml',
@@ -68,6 +69,13 @@ const CHECK_GATES = [TAG_PUSH, TAG_PUSH_OR_PUBLISH];
 
 /** The action that cuts a GitHub Release. */
 const RELEASE_ACTION = 'softprops/action-gh-release@';
+
+/**
+ * How many publishes a workflow carries at least: the CLI publishes to npm and
+ * cuts a Release; each plugin also publishes to GitHub Packages.
+ * @param {string} workflow
+ */
+const minPublishes = (workflow) => (workflow.endsWith('/release-cli.yml') ? 2 : 3);
 
 /** @param {string} workflow */
 const readWorkflow = (workflow) => readFileSync(join(REPO_ROOT, workflow), 'utf8');
@@ -108,7 +116,7 @@ function tagPrefixOf(workflow) {
     true,
   );
   const pattern = String(/** @type {unknown[]} */ (tags)[0]);
-  expect(pattern, 'the tag pattern is not `<prefix>*`').toMatch(/^plugin-[a-z-]+-v\*$/);
+  expect(pattern, 'the tag pattern is not `<prefix>*`').toMatch(/^(?:plugin-[a-z-]+|cli)-v\*$/);
   return pattern.slice(0, -1);
 }
 
@@ -164,8 +172,11 @@ describe.each(PLUGIN_WORKFLOWS)('%s: the on-main check runs before anything publ
         }
       }
     }
-    // Non-vacuity: an npm publish, a GitHub Packages publish and a Release.
-    expect(found, 'no publish was found, so the loop asserted nothing').toBeGreaterThanOrEqual(3);
+    // Non-vacuity: an npm publish and a Release, plus a GitHub Packages publish
+    // in each plugin workflow.
+    expect(found, 'no publish was found, so the loop asserted nothing').toBeGreaterThanOrEqual(
+      minPublishes(path),
+    );
   });
 
   it('places the check before every publish in its job, and makes every other publishing job wait for it', () => {
@@ -198,7 +209,7 @@ describe.each(PLUGIN_WORKFLOWS)('%s: the on-main check runs before anything publ
           .flatMap((id) => stepsOf(jobOf(workflow, id)))
           .filter((s) => typeof s.uses === 'string' && s.uses.startsWith(RELEASE_ACTION)).length,
     );
-    expect(found).toBeGreaterThanOrEqual(3);
+    expect(found).toBeGreaterThanOrEqual(minPublishes(path));
   });
 
   it('reads the version the publish ships, from a step that runs before it', () => {

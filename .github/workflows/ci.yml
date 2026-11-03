@@ -1,9 +1,9 @@
 name: CI
 
 on:
-  # Both lists name `main` and every `release/**` branch, so a pull request
-  # based on a release branch runs every job below and reports the same check
-  # names as one based on main. The two lists move together: a branch matched on
+  # Both lists name `main`, `dev` and every `release/**` branch, so a pull
+  # request based on any of them reports the same check names. The two lists
+  # move together: a branch matched on
   # `pull_request` but not on `push` gets a pre-merge verdict and no post-merge
   # one, and a branch matched on `push` but not on `pull_request` gets the
   # reverse. `release/**` rather than `release/*` because a glob segment stops
@@ -13,9 +13,9 @@ on:
   # setting and is not visible in this tree; CONTRIBUTING.md records the table
   # of check names, and required-checks.test.js drives it against these jobs.
   push:
-    branches: [main, 'release/**']
+    branches: [main, dev, 'release/**']
   pull_request:
-    branches: [main, 'release/**']
+    branches: [main, dev, 'release/**']
     # `edited` is on top of the three default types (opened, synchronize,
     # reopened) because retargeting a PR's BASE fires only `edited`. Without it
     # a stacked PR moved onto a matched base after its parent merged never runs
@@ -64,6 +64,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Two tiers. The `ci` job runs for every event above. The other jobs run only
+# for `main`: a pull request into it, a push to it, and its merge queue. On a
+# pull request into `dev` or `release/**` they report as skipped, which counts
+# as passing, so `main` can require a check that `dev` does not run.
 jobs:
   ci:
     name: Lint · Typecheck · Test · Build
@@ -303,6 +307,7 @@ jobs:
   # own command (`vitest run --force`), which vitest rejects outright.
   no-network:
     name: No-network · Full suite, egress blocked
+    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -372,6 +377,7 @@ jobs:
   # reports on something else.
   packaged-artifact:
     name: Packaged artifact · Egress blocked
+    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -473,6 +479,7 @@ jobs:
   # of the prefix, and do not add a restore-key that omits it.
   macos:
     name: macOS · Full suite
+    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') }}
     runs-on: macos-latest
     timeout-minutes: 25
     steps:
@@ -763,6 +770,7 @@ jobs:
   # the pairing's wall clock; serialising removes both.
   windows:
     name: Windows · Unit tests (shipped surface)
+    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') }}
     runs-on: windows-latest
     timeout-minutes: 35
     steps:
@@ -1200,6 +1208,7 @@ jobs:
   # anything and blocks every merge until a repo admin re-points it.
   windows-lint:
     name: Windows · Lint
+    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') }}
     runs-on: windows-latest
     timeout-minutes: 25
     # `pnpm lint` fans `turbo run lint` across every package, and this was the one
@@ -1272,6 +1281,7 @@ jobs:
   # no model call — so there is no secret and the job runs on forks too.
   claude-code-mods:
     name: Claude Code · Mod runtime
+    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

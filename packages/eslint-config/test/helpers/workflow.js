@@ -209,3 +209,26 @@ export function blockScalarText(step, key, ...rejected) {
   const offsets = body.filter((line) => line.trim() !== '').map((line) => line.search(/\S/));
   return body.map((line) => line.slice(Math.min(...offsets))).join('\n');
 }
+
+/**
+ * The job-level condition that limits a `ci.yml` job to `main`: a pull request
+ * into it, a push to it, and an entry in its merge queue. A job skipped by its
+ * own `if:` reports as passing, so the check can stay required on `main`.
+ */
+export const MAIN_TIER_IF =
+  "if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') }}";
+
+/**
+ * Assert a job body carries exactly one job-level `if:`, and that it is
+ * `MAIN_TIER_IF`, so the job runs for every pull request into `main` and is
+ * narrowed by nothing else.
+ *
+ * @param {string} body a job body from `jobBlock`
+ * @param {string} key the job id, for the failure message
+ */
+export function expectMainTier(body, key) {
+  const conditions = body.match(/^ {4}if:.*$/gm) ?? [];
+  expect(conditions, `\`${key}\` should carry exactly the main-tier condition`).toEqual([
+    `    ${MAIN_TIER_IF}`,
+  ]);
+}

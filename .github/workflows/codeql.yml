@@ -1,9 +1,10 @@
 name: CodeQL
 
 # Static analysis via GitHub CodeQL over the TypeScript/JavaScript workspace
-# and the Actions workflow files themselves. Runs on every PR, on main pushes,
-# and weekly so newly released queries sweep the unchanged tree. Findings land
-# in the repository's Security tab.
+# and the Actions workflow files themselves. Analyses PRs into main, main pushes
+# and main's merge queue, plus a weekly run so newly released queries sweep the
+# unchanged tree. On a PR into any other base the job reports as skipped, which
+# counts as passing. Findings land in the repository's Security tab.
 
 on:
   push:
@@ -48,6 +49,7 @@ concurrency:
 jobs:
   analyze:
     name: CodeQL (${{ matrix.language }})
+    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:

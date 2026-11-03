@@ -21,7 +21,7 @@ import {
   workspaceLintScripts,
   workspacePackageDirs,
 } from './helpers/lint-invocations.js';
-import { dropComments, jobBlock } from './helpers/workflow.js';
+import { dropComments, expectMainTier, jobBlock } from './helpers/workflow.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const WORKFLOWS = join(REPO_ROOT, '.github', 'workflows');
@@ -530,7 +530,10 @@ describe('the workflows behind those checks', () => {
   // end-of-block test that stopped at the first two-space non-space character
   // would end at a comment line instead, so a `branches:` filter written below
   // one would sit outside the captured block and be missed.
-  it.each(['audit.yml', 'codeql.yml'])('%s runs on every PR, whatever its base', (file) => {
+  // This is about the TRIGGER. CodeQL's `analyze` job then carries its own
+  // condition, pinned below, so on a pull request outside `main` it reports
+  // as skipped, which counts as passing.
+  it.each(['audit.yml', 'codeql.yml'])('%s is triggered by every PR, whatever its base', (file) => {
     const source = readWorkflow(file);
     const trigger = /^ {2}pull_request:[^\S\n]*$([\s\S]*?)^ {2}[^\s#]/m.exec(source);
     expect(trigger).not.toBeNull();
@@ -788,18 +791,11 @@ describe('the macOS leg', () => {
     expect(block).toMatch(/path: \.turbo\/cache$/m);
   });
 
-  // A job-level `if:` is the obvious lever for anyone trimming macOS runner
-  // minutes — draft PRs, a label gate, push-only. It is also the one lever that
-  // cannot be applied here, and not merely because it would narrow the promise:
-  // GitHub reports a skipped job as PENDING for a required check, so a condition
-  // that makes this leg skip does not save a PR the wait, it blocks the merge
-  // outright and with nothing red to point at. Narrow the work inside the job
-  // instead, never whether the job runs.
-  //
-  // Absence-only, so its positive control is jobBlock's own structural pair —
-  // without those this passes on a body cut short above its steps.
-  it('carries no condition that could skip it on a PR', () => {
-    expect(jobBlock(ci, 'macos')).not.toMatch(/^ {4}if:/m);
+  // The leg runs for every pull request into `main` and is skipped elsewhere by
+  // the one main-tier condition. Any other job-level `if:` (draft PRs, a label
+  // gate, push-only) would narrow which `main` pull requests it covers.
+  it('runs for every pull request into main, and is narrowed by nothing else', () => {
+    expectMainTier(jobBlock(ci, 'macos'), 'macos');
   });
 });
 
@@ -1053,10 +1049,9 @@ describe('the Windows legs', () => {
     expect(Number(bound[1])).toBeLessThanOrEqual(4);
   });
 
-  // Same reasoning as the macOS leg: a job-level `if:` does not save a PR the
-  // wait, because GitHub reports a skipped job as PENDING for a required check.
-  it.each(['windows', 'windows-lint'])('%s carries no condition that could skip it', (job) => {
-    expect(jobBlock(ci, job)).not.toMatch(/^ {4}if:/m);
+  // Same rule as the macOS leg: the main-tier condition and nothing else.
+  it.each(['windows', 'windows-lint'])('%s runs for every pull request into main', (job) => {
+    expectMainTier(jobBlock(ci, job), job);
   });
 
   // The windows-lint job's whole justification is that a `lint` script carries a
@@ -1234,6 +1229,30 @@ describe('the installer trust chain is wired into CI', () => {
 // restore-key is the whole of what prevents it, and it is one edit from being
 // dropped. It matters most on the Windows leg, which is the newest to take a
 // cache and the one whose packages differ most by platform.
+// Every ci.yml job but `ci` itself runs for `main` only. Each carries exactly the
+// main-tier condition, so a narrower one cannot skip a check `main` requires.
+describe('the main-tier jobs in ci.yml', () => {
+  const ci = readWorkflow('ci.yml');
+
+  it.each(['no-network', 'claude-code-mods'])('%s runs for every pull request into main', (job) => {
+    expectMainTier(jobBlock(ci, job), job);
+  });
+
+  it('leaves the `ci` job unconditioned, so every base runs it', () => {
+    expect(jobBlock(ci, 'ci')).not.toMatch(/^ {4}if:/m);
+  });
+});
+
+// CodeQL analyses `main`, plus its schedule and manual runs.
+describe("the CodeQL job's condition", () => {
+  it('runs for main and for its schedule and manual runs, and nothing narrower', () => {
+    const conditions = jobBlock(readWorkflow('codeql.yml'), 'analyze').match(/^ {4}if:.*$/gm) ?? [];
+    expect(conditions).toEqual([
+      "    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}",
+    ]);
+  });
+});
+
 describe('the Turbo caches in ci.yml', () => {
   const ci = readWorkflow('ci.yml');
 

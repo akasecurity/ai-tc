@@ -95,6 +95,9 @@ describe('pointer-shield shim', () => {
     const text = `before ${POINTER} after`;
     const shielded = shieldPointers(text);
     expect(shielded.text).toBe(`before ${' '.repeat(POINTER.length)} after`);
+    // Same length, so a caller's offsets into the text (a command's written
+    // regions) still hold in the text the engine scans.
+    expect(shielded.text).toHaveLength(text.length);
     expect(shielded.spans).toEqual([{ start: 7, end: 7 + POINTER.length }]);
     expect(
       dropShieldedFindings([{ span: { start: 7, end: 7 + POINTER.length } }], shielded.spans),

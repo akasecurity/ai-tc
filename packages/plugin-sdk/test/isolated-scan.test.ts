@@ -317,6 +317,114 @@ describe('createIsolatedScanner.scan', () => {
     }
   });
 
+  it('carries the written regions across the worker boundary', async () => {
+    // A code_flaw match inside a region of a tool_use job drops only when the
+    // regions reach the worker's scan() call; outside them it stays.
+    const flaw: Rule = { ...regexRule('pulled/flaw', 'pickle\\.loads\\('), category: 'code_flaw' };
+    const scanner = isolated({ verified: [], unverified: [flaw] });
+    try {
+      const text = 'x pickle.loads(b) y; pickle.loads(c)';
+      const inside = [{ start: 0, end: 20 }];
+      const withRegions = await scanner.scan(text, {
+        eventKind: 'tool_use',
+        writtenRegions: inside,
+      });
+      expect(withRegions.status).toBe('ok');
+      if (withRegions.status !== 'ok') return;
+      expect(withRegions.findings.map((f) => f.span.start)).toEqual([21]);
+      const without = await scanner.scan(text, { eventKind: 'tool_use' });
+      expect(without.status).toBe('ok');
+      if (without.status !== 'ok') return;
+      expect(without.findings).toHaveLength(2);
+    } finally {
+      await scanner.close();
+    }
+  });
+
+  it('carries the written file of a region, so a rule scoped to another extension keeps its finding', async () => {
+    const flaw: Rule = {
+      ...regexRule('pulled/flaw', 'pickle\\.loads\\('),
+      category: 'code_flaw',
+      appliesTo: { extensions: ['.py'] },
+    };
+    const scanner = isolated({ verified: [], unverified: [flaw] });
+    try {
+      const text = 'x pickle.loads(b) y';
+      for (const [filePath, kept] of [
+        ['a.py', 0],
+        ['notes.txt', 1],
+      ] as const) {
+        const outcome = await scanner.scan(text, {
+          eventKind: 'tool_use',
+          writtenRegions: [{ start: 0, end: 19, filePath }],
+        });
+        expect(outcome.status).toBe('ok');
+        if (outcome.status !== 'ok') return;
+        expect(outcome.findings).toHaveLength(kept);
+      }
+    } finally {
+      await scanner.close();
+    }
+  });
+
+  it('ignores written regions that are not a sorted list of in-range integer spans', async () => {
+    const flaw: Rule = { ...regexRule('pulled/flaw', 'pickle\\.loads\\('), category: 'code_flaw' };
+    const scanner = isolated({ verified: [], unverified: [flaw] });
+    try {
+      // The match is at 2..15; every list below would drop it if it were
+      // accepted, so a finding that survives proves the list was ignored.
+      const text = 'x pickle.loads(b) y';
+      const bad: unknown[] = [
+        [{ start: 0, end: 100 }],
+        [{ start: -1, end: 19 }],
+        [
+          { start: 0, end: 19 },
+          { start: 19, end: 19 },
+        ],
+        [{ start: 0.5, end: 19 }],
+        [
+          { start: 0, end: 19 },
+          { start: 5, end: 19 },
+        ],
+        [
+          { start: 10, end: 19 },
+          { start: 0, end: 19 },
+        ],
+        [{ start: '0', end: 19 }],
+        [{ start: 0, end: 19, filePath: 7 }],
+        [null],
+        'all',
+      ];
+      for (const writtenRegions of bad) {
+        const outcome = await scanner.scan(text, {
+          eventKind: 'tool_use',
+          writtenRegions: writtenRegions as { start: number; end: number }[],
+        });
+        expect(outcome.status).toBe('ok');
+        if (outcome.status !== 'ok') return;
+        expect(outcome.findings).toHaveLength(1);
+      }
+      const long = `pickle.loads(b)${' '.repeat(100)}`;
+      const tooMany = [{ start: 0, end: 15 }];
+      for (let i = 20; i < 84; i++) tooMany.push({ start: i, end: i + 1 });
+      expect(tooMany).toHaveLength(65);
+      const capped = await scanner.scan(long, { eventKind: 'tool_use', writtenRegions: tooMany });
+      expect(capped.status === 'ok' && capped.findings.length).toBe(1);
+      const sixtyFour = await scanner.scan(long, {
+        eventKind: 'tool_use',
+        writtenRegions: tooMany.slice(0, 64),
+      });
+      expect(sixtyFour.status === 'ok' && sixtyFour.findings.length).toBe(0);
+      const good = await scanner.scan(text, {
+        eventKind: 'tool_use',
+        writtenRegions: [{ start: 0, end: text.length }],
+      });
+      expect(good.status === 'ok' && good.findings.length).toBe(0);
+    } finally {
+      await scanner.close();
+    }
+  });
+
   it('refuses a job whose eventKind is not an EventKind', async () => {
     const scanner = isolated({ verified: [BENIGN], unverified: [] });
     try {

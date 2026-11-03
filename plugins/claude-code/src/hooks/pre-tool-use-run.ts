@@ -32,15 +32,16 @@ import { isAuthorizedValue, takeToolHandoff } from '../mod/handoff.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote, userDisclosure } from '../protocol/notes.ts';
 import { resolveHookAccount, stampFor } from './account-stamp.ts';
+import { bashWrittenPayloads } from './bash-payloads.ts';
 import { sessionHoldDenial } from './capture-forward.ts';
 import {
   isOutboundCall,
   MCP_OUTPUT_SESSION_MARKER,
   mcpOutputSessionField,
 } from './decoded-content.ts';
-import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
+import { callScanBudgetSpent, HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
 import { handleSubagentSpawn } from './model-guard.ts';
-import { replaceAtPath } from './paths.ts';
+import { replaceAtPath, stringAtPath } from './paths.ts';
 import type { PointerDenyField, PointerField } from './pointer-substitution.ts';
 import {
   decideInputPointers,
@@ -100,6 +101,7 @@ export async function runPreToolUse(
   emit: (output: HookOutput) => Promise<void>,
   options: PreToolUseRunOptions,
 ): Promise<PreToolUseRun> {
+  const callStartedAt = performance.now();
   const toolName = getString(input, 'tool_name') ?? '';
   const sessionId = getString(input, 'session_id');
 
@@ -343,10 +345,68 @@ export async function runPreToolUse(
   });
   const scopeKey = stampFor(gateway, account, captureScopeKey(input, filePath));
 
+  // What a Bash command writes to a file, read before the fields are scanned.
+  // The command's own capture drops code_flaw findings only inside the regions
+  // those payloads came from (see ScanContext.writtenRegions); the payloads are
+  // judged as code below. Incomplete extraction gives none, so the whole command
+  // keeps its rules.
+  const commandText = toolName === 'Bash' ? (stringAtPath(effectiveInput, ['command']) ?? '') : '';
+  const extraction = toolName === 'Bash' ? bashWrittenPayloads(commandText) : undefined;
+  const bashPayloads = extraction?.incomplete === false ? extraction.payloads : [];
+  const writtenRegions = bashPayloads.map((p) => ({
+    start: p.start,
+    end: p.end,
+    ...(p.path === undefined ? {} : { filePath: p.path }),
+  }));
   const scanned: ScannedField[] = [];
   const vaulted: PointersByText = new Map();
+  const payloadScans: ScannedField[] = [];
   try {
-    for (const spec of fields) {
+    // What a Bash command writes to a file is code: scan it as a code_change
+    // under that file, where code_flaw rules apply. Not rewritable: it sits
+    // inside the command. These run FIRST, so the command's own capture is made
+    // once, and with regions only when every payload was scanned: a payload left
+    // unscanned (the call's scan budget is spent) must not drop the command's
+    // rules, and a payload scan that did not finish refuses the call.
+    let regionsOk = bashPayloads.length > 0;
+    for (const payload of bashPayloads) {
+      if (callScanBudgetSpent(callStartedAt)) {
+        regionsOk = false;
+        break;
+      }
+      const result = await captureStamped(
+        runtime,
+        {
+          kind: 'code_change',
+          sourceTool: SOURCE_TOOL.ClaudeCode,
+          text: payload.text,
+          metadata: {
+            ...metadata,
+            ...(payload.path === undefined ? {} : { filePath: payload.path }),
+          },
+          lineBasis: 'file',
+        },
+        scopeKey,
+        { persist: 'with-findings', kindScopedRules: false, rewritable: false },
+      );
+      // Synthetic: the text is a part of the command, not the value at any
+      // path in the input, so nothing is ever written back through `path`.
+      // Its path ['command'] is shared with the real command entry on purpose:
+      // the decision treats each entry on its own result, a rewrite is never
+      // attempted (executable), and the mod notes key on the text. The deny
+      // cases in pre-tool-use-bash-payloads.test.ts run both entries through it.
+      payloadScans.push({
+        spec: { path: ['command'], executable: true, text: payload.text },
+        text: payload.text,
+        result,
+      });
+      if (result.scanIncomplete !== undefined) {
+        regionsOk = false;
+        break;
+      }
+    }
+    const refused = payloadScans.some((f) => f.result.scanIncomplete !== undefined);
+    for (const spec of refused ? [] : fields) {
       // A joined-keys chunk (see pre-tool-use-fields.ts) carries its own
       // text, computed during the walk rather than addressable at spec.path
       // in the tool input — never a deref target, so effectiveInput (which
@@ -383,6 +443,8 @@ export async function runPreToolUse(
           // `redactFallback` inside the runtime, the one place the emitted
           // decision, the recorded action and the ledger all read.
           rewritable: !spec.executable,
+          // Only the command itself: a data field of the call keeps its rules.
+          ...(regionsOk && spec.executable && text === commandText ? { writtenRegions } : {}),
         },
       );
       scanned.push({ spec, text, result });
@@ -390,6 +452,7 @@ export async function runPreToolUse(
       // the rest would only spend the time the deadline is there to protect.
       if (result.scanIncomplete !== undefined) break;
     }
+    scanned.push(...payloadScans);
   } finally {
     await runtime.close();
   }

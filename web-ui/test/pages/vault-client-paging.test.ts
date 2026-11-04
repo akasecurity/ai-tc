@@ -267,6 +267,19 @@ describe('the inventory list', () => {
 });
 
 describe('the reuse list', () => {
+  it('drops a value an earlier page already showed', async () => {
+    openTab(/reuse/i);
+    loadMoreVaultReuse.mockResolvedValue({
+      totals: { reused: 500 },
+      items: [entry('r1'), entry('r2')],
+      nextCursor: null,
+    });
+    await clickSlot('pagination-next');
+
+    expect(container.textContent).toContain('MASK-r2');
+    expect(container.textContent).not.toContain('MASK-r1');
+  });
+
   it('reads a jumped-to page from its row position', async () => {
     openTab(/reuse/i);
     loadMoreVaultReuse.mockResolvedValue({
@@ -326,6 +339,47 @@ describe('the de-reference trail', () => {
     await clickSlot('pagination-next');
 
     expect(container.textContent).toContain('9 display/render');
+  });
+
+  it('adopts a fresh first page from the server, turning the filter back off', async () => {
+    const trail = (hiddenBatched: number) => ({
+      ...derefPage(['d5'], null, 3),
+      hiddenBatched,
+    });
+    loadVaultDerefs.mockResolvedValue(trail(3));
+    await clickSlot('pagination-next');
+    expect(field().value).toBe('2');
+
+    act(() => {
+      root.render(
+        createElement(VaultDashboardClient, {
+          inventory: inventoryPage(['v1'], 'inv-1'),
+          reuse: { totals: { reused: 500 }, items: [entry('r1')], nextCursor: 'reuse-1' },
+          derefs: derefPage(['d8'], null, 8),
+          renderedAt: Date.parse(AT),
+          locale: 'en-US',
+        }),
+      );
+    });
+
+    expect(status()).toBe('1–1 of 8 resolutions');
+    expect(field().value).toBe('1');
+  });
+
+  it('says so when the filter’s own read fails', async () => {
+    loadVaultDerefs.mockResolvedValueOnce({ ...derefPage(['d2'], 'deref-2'), hiddenBatched: 3 });
+    await clickSlot('pagination-next');
+    loadVaultDerefs.mockRejectedValueOnce(new Error('locked'));
+    const toggle = [...container.querySelectorAll('button')].find((b) =>
+      b.textContent.includes('Show them'),
+    );
+    expect(toggle, 'the toggle was not offered').toBeTruthy();
+    await act(async () => {
+      toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('The de-reference trail could not be read.');
   });
 
   it('drops a page still in flight when the filter flips', async () => {

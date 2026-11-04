@@ -272,6 +272,12 @@ describe('InventoryTable, a harness', () => {
     click(next);
     expect(bodyRows()).toHaveLength(3);
     expect(pageField().value).toBe('2');
+
+    const previous = mounted.host.querySelector('[data-slot="pagination-previous"]');
+    if (previous === null) throw new Error('no Previous button');
+    click(previous);
+    expect(pageField().value).toBe('1');
+    expect(bodyRows()).toHaveLength(PAGE_SIZE);
   });
 
   it('formats the footer in the locale it is given', () => {

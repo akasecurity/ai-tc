@@ -883,12 +883,8 @@ describe('CredentialsListView dismissed toggle', () => {
 
   it('keeps the separator for readers only, inside the count element', () => {
     list({ onDismissedChange: vi.fn(), dismissedCount: 4 });
-    const count = button('Dismissed')?.querySelector('span');
-    expect(count?.className).toContain('tabular-nums');
-    const separator = count?.querySelector('span');
+    const separator = button('Dismissed')?.querySelector('span.tabular-nums > span.sr-only');
     expect(separator?.textContent).toBe(', ');
-    // In the name, never on screen.
-    expect(separator?.className).toContain('sr-only');
   });
 
   it('shows a zero count rather than dropping it', () => {

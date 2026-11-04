@@ -22,15 +22,20 @@ import {
 import type { AtRestVault } from './at-rest-vault.ts';
 import { composeAtRestContent, isScanVaultable } from './at-rest-vault.ts';
 import type { DataGateway } from './data-gateway.ts';
+import type { DiagnosticSink } from './diagnostics.ts';
 import { buildIngestEvent, contentHashOf } from './events.ts';
 import { createFindingLocator, evidenceLookup } from './finding-context.ts';
 import { computeFindingKey } from './finding-key.ts';
 import type { FingerprintKey } from './fingerprint.ts';
 import { fingerprintValue, loadOrCreateFingerprintKey, readFingerprintKey } from './fingerprint.ts';
 import { cutForForward, reviewCandidatesOf } from './forward-cut.ts';
-import type { GuardedScanner } from './guarded-scan.ts';
+import type { GuardedScanner, GuardedScanOptions } from './guarded-scan.ts';
 import { createGuardedScanner } from './guarded-scan.ts';
-import type { IsolatedScanner, IsolatedScanOptions } from './isolated-scan.ts';
+import type {
+  IsolatedScanner,
+  IsolatedScannerFactory,
+  IsolatedScanOptions,
+} from './isolated-scan.ts';
 import { createIsolatedScanner } from './isolated-scan.ts';
 import { bundledMaskingRules } from './mask.ts';
 import { dropShieldedFindings, shieldPointers } from './pointer-shield.ts';
@@ -231,6 +236,13 @@ export interface PluginRuntimeOptions {
   // policy says, and then pass through the same degrade-then-cap step as any
   // resolved action. A finding the user excepted still resolves to `allow`.
   blockRules?: ReadonlySet<string> | undefined;
+  // Builds every isolated scanner the runtime uses: the timing pre-flight's
+  // prober, and the scanners behind a ruleset with a pulled or custom-pack
+  // regex rule. Each is passed `scanIsolation`. Omitted, `createIsolatedScanner`.
+  isolatedScanner?: IsolatedScannerFactory | undefined;
+  // Receives each diagnostic line the runtime writes, without its trailing
+  // newline, in place of stderr. Omitted, the lines go to stderr.
+  diagnostics?: DiagnosticSink | undefined;
 }
 
 // The remaining time a bounded scan may spend, or undefined for no caller limit.
@@ -255,6 +267,8 @@ let keepScanners = false;
 let keptScanner: {
   readonly key: string;
   readonly gateway: DataGateway;
+  readonly isolatedScanner: IsolatedScannerFactory | undefined;
+  readonly diagnostics: DiagnosticSink | undefined;
   readonly scanner: GuardedScanner;
 } | null = null;
 
@@ -328,6 +342,13 @@ export function createPluginRuntime(
   const dataDir = opts?.dataDir;
   const largeInput = opts?.largeInput;
   const blockRules = opts?.blockRules;
+  const isolatedScanner = opts?.isolatedScanner;
+  const diagnostics = opts?.diagnostics;
+  const guardedScanOptions: GuardedScanOptions = {
+    ...opts?.scanIsolation,
+    isolatedScanner,
+    diagnostics,
+  };
   let rules: Rule[] = [];
   // Whether each rule's match is code or a value, over the effective ruleset —
   // rebuilt only when that ruleset is.
@@ -353,12 +374,12 @@ export function createPluginRuntime(
   });
 
   // The scanner for this ruleset: new, or the kept one when this process keeps
-  // scanners and the ruleset, the gateway and the scanner's health are all as
-  // they were. Only a ruleset with a pulled or custom-pack regex rule has a
+  // scanners and the ruleset, the gateway, the scanner factory, the diagnostics
+  // sink and the scanner's health are all as they were. Only a ruleset with a pulled or custom-pack regex rule has a
   // worker behind its scanner, which is what makes keeping one worthwhile.
   async function scannerFor(verified: Rule[], unverified: Rule[]): Promise<GuardedScanner> {
     if (!keepScanners) {
-      return createGuardedScanner({ verified, unverified }, gateway, opts?.scanIsolation);
+      return createGuardedScanner({ verified, unverified }, gateway, guardedScanOptions);
     }
     const key = createHash('sha256')
       .update(JSON.stringify([verified, unverified]))
@@ -367,13 +388,15 @@ export function createPluginRuntime(
       keptScanner !== null &&
       keptScanner.key === key &&
       keptScanner.gateway === gateway &&
+      keptScanner.isolatedScanner === isolatedScanner &&
+      keptScanner.diagnostics === diagnostics &&
       !keptScanner.scanner.degraded()
     ) {
       return keptScanner.scanner;
     }
     await releaseKeptScanner();
-    const created = createGuardedScanner({ verified, unverified }, gateway, opts?.scanIsolation);
-    keptScanner = { key, gateway, scanner: created };
+    const created = createGuardedScanner({ verified, unverified }, gateway, guardedScanOptions);
+    keptScanner = { key, gateway, isolatedScanner, diagnostics, scanner: created };
     return created;
   }
 
@@ -416,10 +439,14 @@ export function createPluginRuntime(
     const gated = await filterUnsafeRules(needsGate, gateway, {
       prober: {
         probe: (rule) => {
-          prober ??= createIsolatedScanner({ verified: [], unverified: [] }, opts?.scanIsolation);
+          prober ??= (isolatedScanner ?? createIsolatedScanner)(
+            { verified: [], unverified: [] },
+            opts?.scanIsolation,
+          );
           return prober.probe(rule);
         },
       },
+      diagnostics,
     });
     await prober?.close();
     // A rule that clears the timing gate has an EMPIRICAL verdict behind it: it

@@ -241,6 +241,16 @@ export interface IsolatedScanner {
   close(): Promise<void>;
 }
 
+/**
+ * Builds an {@link IsolatedScanner} over a ruleset, with the same contract as
+ * {@link createIsolatedScanner}: a failure is reported as an outcome, never
+ * thrown, and `unavailable` means no answer rather than nothing found.
+ */
+export type IsolatedScannerFactory = (
+  data: ScanWorkerData,
+  opts?: IsolatedScanOptions,
+) => IsolatedScanner;
+
 // Resolved lazily and once: a process that never isolates a scan never pays for
 // the probe, and one that does pays twice at most.
 let resolvedWorkerUrl: URL | null | undefined;

@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const loadMoreVaultInventory = vi.fn<(q: unknown) => Promise<ListVaultInventoryResponse>>();
 const loadMoreVaultReuse = vi.fn<(q: unknown) => Promise<ListVaultReuseResponse>>();
+const revokeRevealGrant = vi.fn<(q: unknown) => Promise<{ ok: boolean }>>();
 const loadVaultDerefs = vi.fn<(q: unknown) => Promise<ListVaultDerefsResponse>>();
 
 vi.mock('../../app/(app)/vault/actions', () => ({
@@ -24,7 +25,7 @@ vi.mock('../../app/(app)/vault/actions', () => ({
   loadVaultDerefs: (q: unknown) => loadVaultDerefs(q),
   purgeVault: vi.fn(),
   revealEntry: vi.fn(),
-  revokeRevealGrant: vi.fn(),
+  revokeRevealGrant: (q: unknown) => revokeRevealGrant(q),
   rotateVaultKey: vi.fn(),
 }));
 
@@ -32,7 +33,7 @@ const { VaultDashboardClient } = await import('../../app/(app)/vault/VaultDashbo
 
 const AT = '2026-01-01T00:00:00.000Z';
 
-function entry(pointerId: string): VaultInventoryEntry {
+function entry(pointerId: string, revealGrantId: string | null = null): VaultInventoryEntry {
   return {
     pointerId,
     category: 'secret',
@@ -42,6 +43,7 @@ function entry(pointerId: string): VaultInventoryEntry {
     firstSeen: AT,
     lastSeen: AT,
     sightings: [],
+    revealGrantId,
   } as unknown as VaultInventoryEntry;
 }
 
@@ -63,7 +65,7 @@ const inventoryPage = (
   values = 500,
 ): ListVaultInventoryResponse => ({
   totals: { values },
-  items: ids.map(entry),
+  items: ids.map((id) => entry(id)),
   nextCursor,
 });
 
@@ -187,6 +189,49 @@ describe('the inventory list', () => {
     expect(field().value).toBe('6');
   });
 
+  it('reads page 1 again rather than replaying it, so a rewritten row stays rewritten', async () => {
+    loadMoreVaultInventory.mockResolvedValueOnce(inventoryPage(['v7'], 'inv-7'));
+    await jumpTo(7);
+    loadMoreVaultInventory.mockResolvedValueOnce(inventoryPage(['v1'], 'inv-1'));
+    await jumpTo(1);
+
+    expect(lastQuery(loadMoreVaultInventory)).toEqual({ offset: 0 });
+    expect(field().value).toBe('1');
+  });
+
+  it('clears a revoked grant from the row on screen', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    revokeRevealGrant.mockResolvedValue({ ok: true });
+    loadMoreVaultInventory.mockResolvedValue({
+      ...inventoryPage([], null),
+      items: [entry('v2', 'grant-2')],
+    });
+    await clickSlot('pagination-next');
+    const revoke = () =>
+      [...container.querySelectorAll('button')].find((b) => b.textContent.includes('Revoke'));
+    expect(revoke(), 'the row offered no revoke').toBeTruthy();
+
+    await act(async () => {
+      revoke()?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(revokeRevealGrant).toHaveBeenCalledWith({ grantId: 'grant-2' });
+    expect(revoke()).toBeUndefined();
+  });
+
+  it('keeps the forward pages when stepping back from a jump', async () => {
+    loadMoreVaultInventory.mockResolvedValueOnce(inventoryPage(['v7'], 'inv-7'));
+    await jumpTo(7);
+    loadMoreVaultInventory.mockResolvedValueOnce(inventoryPage(['v6'], 'inv-6'));
+    await clickSlot('pagination-previous');
+    expect(field().value).toBe('6');
+
+    await clickSlot('pagination-next');
+    expect(field().value).toBe('7');
+    expect(loadMoreVaultInventory).toHaveBeenCalledTimes(2);
+  });
+
   it('follows the total of the latest read, and never counts below the page', async () => {
     loadMoreVaultInventory.mockResolvedValue(inventoryPage(['v2'], 'inv-2', 40));
     await clickSlot('pagination-next');
@@ -274,6 +319,79 @@ describe('the de-reference trail', () => {
     expect(container.textContent).toContain(
       'That page of the de-reference trail is no longer there.',
     );
+  });
+
+  it('shows the hidden count of the latest read', async () => {
+    loadVaultDerefs.mockResolvedValue({ ...derefPage(['d2'], null), hiddenBatched: 9 });
+    await clickSlot('pagination-next');
+
+    expect(container.textContent).toContain('9 display/render');
+  });
+
+  it('drops a page still in flight when the filter flips', async () => {
+    loadVaultDerefs.mockResolvedValueOnce({ ...derefPage(['d2'], 'deref-2'), hiddenBatched: 3 });
+    await clickSlot('pagination-next');
+    let release: ((page: ListVaultDerefsResponse) => void) | undefined;
+    loadVaultDerefs.mockReturnValueOnce(
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+    );
+    await act(async () => {
+      container
+        .querySelector('[role="tabpanel"]:not([hidden]) [data-slot="pagination-next"]')
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    // The filter's own read never answers here, so only the token can drop the page.
+    let releaseFlip: ((page: ListVaultDerefsResponse) => void) | undefined;
+    loadVaultDerefs.mockReturnValueOnce(
+      new Promise((resolve) => {
+        releaseFlip = resolve;
+      }),
+    );
+    const toggle = [...container.querySelectorAll('button')].find((b) =>
+      b.textContent.includes('Show them'),
+    );
+    expect(toggle, 'the toggle was not offered').toBeTruthy();
+    await act(async () => {
+      toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      release?.(derefPage(['stale'], null));
+      await Promise.resolve();
+    });
+
+    expect(status()).toBe('51–51 of 500 resolutions');
+
+    // A pending async transition holds up every later one, so it must not outlive
+    // this case.
+    await act(async () => {
+      releaseFlip?.(derefPage(['d9'], null));
+      await Promise.resolve();
+    });
+  });
+
+  it('keeps the filter it was flipped to when paging', async () => {
+    const fresh = { ...derefPage(['d1'], 'deref-1'), hiddenBatched: 3 };
+    loadVaultDerefs.mockResolvedValueOnce(fresh);
+    await clickSlot('pagination-next');
+    const toggle = [...container.querySelectorAll('button')].find((b) =>
+      b.textContent.includes('Show them'),
+    );
+    expect(toggle, 'the toggle was not offered').toBeTruthy();
+    loadVaultDerefs.mockResolvedValueOnce(derefPage(['d3'], 'deref-3'));
+    await act(async () => {
+      toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(lastQuery(loadVaultDerefs)).toEqual({ includeBatched: true });
+
+    loadVaultDerefs.mockResolvedValueOnce(derefPage(['d4'], null));
+    await clickSlot('pagination-next');
+    expect(lastQuery(loadVaultDerefs)).toEqual({ includeBatched: true, cursor: 'deref-3' });
   });
 
   it('takes its total from each read, since the filter can change it', async () => {

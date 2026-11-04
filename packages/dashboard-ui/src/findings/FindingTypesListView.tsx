@@ -144,9 +144,12 @@ export function FindingTypesListView({
   pageCount,
   onPageChange,
   pageError,
+  rangeCount,
   locale,
   emptyState,
 }: TablePageProps & {
+  /** Rows the footer's range covers, where the page holds one outside it. */
+  rangeCount?: number | undefined;
   types: FindingTypeSummary[];
   /** The selected type's id (its rule id), or '' when nothing is selected. */
   activeId: string;
@@ -233,6 +236,7 @@ export function FindingTypesListView({
       {onNextPage && (hasPreviousPage || hasNextPage || types.length > 0) && (
         <TablePagination
           itemCount={types.length}
+          rangeCount={rangeCount}
           pageStart={pageStart}
           total={total}
           noun="types"

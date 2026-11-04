@@ -1,7 +1,6 @@
 'use client';
 
 import {
-  appendPage,
   type DeploymentDisplay,
   FindingDetailView,
   FindingLevelFilters,
@@ -16,20 +15,12 @@ import {
   formatNumber,
   PageHead,
   type PagePosition,
-  planNextMove,
-  planPageMove,
   rangeLabel,
-  runHasNext,
-  runHasPrevious,
-  runItems,
-  runPage,
-  runPageCount,
-  runPageStart,
-  startRun,
   type SummaryStatItem,
   SummaryStripView,
   TIME_RANGE_OPTIONS,
   type TimeRange,
+  usePagedRun,
 } from '@akasecurity/dashboard-ui';
 import {
   DEFAULT_FINDING_LOCATIONS_LIMIT,
@@ -40,6 +31,7 @@ import {
   type FindingInstanceDetail,
   type FindingLocationSummary,
   type FindingsOverview,
+  type FindingTypeSummary,
   type ListFindingInstancesResponse,
   type ListFindingLocationsResponse,
   type ListFindingTypesResponse,
@@ -60,7 +52,7 @@ import {
 } from '@akasecurity/ui-kit';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useCallback, useEffect, useRef, useState, useTransition } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import {
   AlertIcon,
@@ -637,29 +629,24 @@ function TypesMasterDetail({
   onSeverityChange: (next: string[]) => void;
   onFiltersChange: (next: FindingsFilters) => void;
 }) {
-  const typePages = usePagedList(
-    types,
-    types.items,
-    types.nextCursor,
-    types.totals.types,
-    DEFAULT_FINDING_TYPES_LIMIT,
-    (position, pages) =>
+  const typePages = usePagedRun<FindingTypeSummary, ListFindingTypesResponse>({
+    first: types,
+    fetchPage: (position) =>
       loadMoreFindingTypes({
         // Built from the SERVER-RENDERED filters, never the live debounced query:
         // a click during the debounce window would otherwise page a differently
         // filtered set into this one.
         ...toFindingTypesQuery(filters, serverQuery, session, { ...(from ? { from } : {}) }),
         ...position,
-      }).then((next) => ({
-        // The selected type is appended to page 0 out of sort order (see
-        // ListFindingTypesQuery.includeId) and resurfaces here at its natural
-        // cursor position once paging reaches it — drop the repeat so a page never
-        // shows the same type twice.
-        items: dedupeAgainstPages(pages, next.items),
-        next,
-        total: next.totals.types,
-      })),
-  );
+      }),
+    totalOf: (page) => page.totals.types,
+    pageSize: DEFAULT_FINDING_TYPES_LIMIT,
+    keyOf: (type) => type.id,
+    what: 'types',
+    // Only the server's first page carries the selected type (see
+    // ListFindingTypesQuery.includeId).
+    replayFirstPage: true,
+  });
 
   const selectedType = types.items.find((t) => t.id === selectedRule) ?? null;
 
@@ -681,8 +668,8 @@ function TypesMasterDetail({
         severityCounts={new Map(types.facets.severity.map((f) => [f.value, f.count]))}
         selectedSeverities={filters.severity}
         onSeverityChange={onSeverityChange}
-        onNextPage={typePages.onNextPage}
-        onPreviousPage={typePages.onPreviousPage}
+        onNextPage={typePages.next}
+        onPreviousPage={typePages.previous}
         hasNextPage={typePages.hasNextPage}
         hasPreviousPage={typePages.hasPreviousPage}
         loadingNextPage={typePages.loading}
@@ -690,8 +677,9 @@ function TypesMasterDetail({
         total={typePages.total}
         page={typePages.page}
         pageCount={typePages.pageCount}
-        onPageChange={typePages.onPageChange}
+        onPageChange={typePages.goToPage}
         pageError={typePages.error}
+        rangeCount={typePages.rangeCount}
         locale={locale}
         {...(emptyState === undefined ? {} : { emptyState })}
       />
@@ -762,146 +750,6 @@ function TypesMasterDetail({
 }
 
 /**
- * A keyset-paged list's client-side page cache: one consecutive run of fetched
- * pages (see `PagedRun`). Stepping forward past the run's end fetches and appends;
- * stepping back inside it just moves — the page is still here. A move outside it
- * reads from a row position and starts a new run there. Shared by both panels so
- * the two caches are independent by construction rather than by two copies of the
- * same bookkeeping agreeing.
- */
-function usePagedList<T>(
-  forResponse: object,
-  firstPage: T[],
-  // The cursor that fetches the page AFTER `firstPage`. Required, never
-  // defaulted: a default reads as safe at every call site that omits it, and
-  // omitting it leaves `hasNextPage` false on page 1 — a Next button that is
-  // disabled on a list which plainly has more, with nothing thrown and nothing
-  // logged. Required, the compiler names each caller that has to supply one.
-  firstCursor: string | null,
-  firstTotal: number,
-  pageSize: number,
-  fetchPage: (
-    position: PagePosition,
-    pages: T[][],
-  ) => Promise<{ items: T[]; next: { nextCursor: string | null }; total: number }>,
-  /** Called once a move has happened, and not for one that was refused or failed. */
-  onMoved?: () => void,
-) {
-  const [run, setRun] = useState(() => startRun(firstPage, firstCursor, firstTotal));
-  const [error, setError] = useState<string | null>(null);
-  const [loading, startLoading] = useTransition();
-
-  // Reset the cache when the server hands back a different first page — checked
-  // DURING RENDER against the response object's identity, not in an effect. An
-  // effect would commit one frame in which the previous query's page is rendered
-  // under the new one, with duplicate React keys.
-  const [forData, setForData] = useState(forResponse);
-  if (forData !== forResponse) {
-    setForData(forResponse);
-    setRun(startRun(firstPage, firstCursor, firstTotal));
-    setError(null);
-  }
-
-  // Mirrors the current response for the async continuation below, which needs
-  // the LATEST one rather than the one its own closure captured. Written in an
-  // effect rather than in the reset above: a ref may not be touched during
-  // render. The gap that leaves — between the reset's commit and this effect —
-  // cannot hold the continuation, which is parked on a Server Action round trip.
-  const forDataRef = useRef(forResponse);
-  useEffect(() => {
-    forDataRef.current = forResponse;
-  }, [forResponse]);
-
-  /** Read a page, and apply it unless the list has been replaced in the meantime. */
-  const load = (
-    position: PagePosition,
-    pages: T[][],
-    apply: (read: { items: T[]; nextCursor: string | null; total: number }) => void,
-  ) => {
-    // The response this fetch belongs to. The reset above runs during RENDER, so
-    // a server re-render can land while this promise is outstanding — a debounced
-    // search push is the ordinary way, and clicking Next does not cancel that
-    // debounce. Without this check the continuation places the previous query's
-    // rows onto the new list: the reader gets page 2 of the old filter, labelled
-    // as page 2 of the new one.
-    const epoch = forResponse;
-    startLoading(async () => {
-      try {
-        const { items, next, total } = await fetchPage(position, pages);
-        if (epoch !== forDataRef.current) return;
-        apply({ items, nextCursor: next.nextCursor, total });
-      } catch {
-        // A read can fail — the CLI holding a write lock is enough.
-        if (epoch === forDataRef.current) setError('That page could not be read.');
-      }
-    });
-  };
-
-  const showCached = (index: number) => {
-    setRun((prev) => ({ ...prev, index }));
-    onMoved?.();
-  };
-
-  const goToPage = (page: number) => {
-    setError(null);
-    const move = planPageMove(page, run, pageSize);
-    if (move.kind === 'cached') {
-      showCached(move.index);
-      return;
-    }
-    // The first page is kept rather than read again: it alone carries the selected
-    // row the server appended (see ListFindingTypesQuery.includeId).
-    if (page === 0) {
-      setRun((prev) => startRun(firstPage, firstCursor, prev.total));
-      onMoved?.();
-      return;
-    }
-    load({ offset: move.offset }, [], ({ items, nextCursor, total }) => {
-      // Stay put on an empty answer: the list shrank past that page, and moving
-      // would strand the reader on a blank one.
-      if (items.length === 0) {
-        setError('That page is no longer there.');
-        return;
-      }
-      setRun(startRun(items, nextCursor, total, page));
-      onMoved?.();
-    });
-  };
-
-  return {
-    pages: run.pages,
-    items: runItems(run),
-    pageStart: runPageStart(run, pageSize),
-    page: runPage(run),
-    pageCount: runPageCount(run, pageSize),
-    total: run.total,
-    hasNextPage: runHasNext(run),
-    hasPreviousPage: runHasPrevious(run),
-    loading,
-    error,
-    onPreviousPage: () => {
-      goToPage(Math.max(0, runPage(run) - 2));
-    },
-    onPageChange: (page: number) => {
-      goToPage(page - 1);
-    },
-    onNextPage: () => {
-      setError(null);
-      const move = planNextMove(run);
-      if (move === null) return;
-      if (move.kind === 'cached') {
-        showCached(move.index);
-        return;
-      }
-      load({ cursor: move.cursor }, run.pages, ({ items, nextCursor, total }) => {
-        setRun((prev) => appendPage(prev, items, nextCursor, total));
-        onMoved?.();
-      });
-    },
-  };
-}
-
-/**
  * A paginated list of findings plus its detail drawer — the right-hand panel of
  * the By-type view, and the whole of the flat view. One component rather than
  * two so the two cannot drift; what differs between them arrives as props.
@@ -936,24 +784,20 @@ function InstancesPanel({
   renderDrawerFooter?: (instance: FindingInstanceDetail) => React.ReactNode;
 }) {
   const [selectedInstanceId, setSelectedInstanceId] = useState(initialSelected?.id ?? '');
-  const paged = usePagedList(
-    data,
-    data.items,
-    data.nextCursor,
-    data.totals.findings,
-    DEFAULT_FLAT_FINDINGS_LIMIT,
-    (position) =>
-      loadMore(position).then((next) => ({
-        items: next.items,
-        next,
-        total: next.totals.findings,
-      })),
+  const paged = usePagedRun<FindingInstanceDetail, ListFindingInstancesResponse>({
+    first: data,
+    fetchPage: loadMore,
+    totalOf: (page) => page.totals.findings,
+    pageSize: DEFAULT_FLAT_FINDINGS_LIMIT,
+    keyOf: (instance) => instance.id,
+    what: 'findings',
+    replayFirstPage: true,
     // Paging closes the drawer rather than leaving it pointing at a row the new
     // page no longer contains. A move that never happened leaves it open.
-    () => {
+    onMoved: () => {
       setSelectedInstanceId('');
     },
-  );
+  });
 
   // Re-seed when an in-app navigation lands with a DIFFERENT deep-linked
   // finding. The initializer alone misses it: this component survives RSC
@@ -994,14 +838,14 @@ function InstancesPanel({
       pageStart={paged.pageStart}
       page={paged.page}
       pageCount={paged.pageCount}
-      onPageChange={paged.onPageChange}
+      onPageChange={paged.goToPage}
       pageError={paged.error}
       locale={locale}
       hasNextPage={paged.hasNextPage}
       hasPreviousPage={paged.hasPreviousPage}
       loadingNextPage={paged.loading}
-      onNextPage={paged.onNextPage}
-      onPreviousPage={paged.onPreviousPage}
+      onNextPage={paged.next}
+      onPreviousPage={paged.previous}
       {...(emptyState === undefined ? {} : { emptyState })}
     />
   );
@@ -1209,13 +1053,9 @@ function LocationsMasterDetail({
   deployment: DeploymentDisplay | null;
   onSelectLocation: (loc: string) => void;
 }) {
-  const locationPages = usePagedList(
-    locations,
-    locations.items,
-    locations.nextCursor,
-    locations.totals.locations,
-    DEFAULT_FINDING_LOCATIONS_LIMIT,
-    (position, pages) =>
+  const locationPages = usePagedRun<FindingLocationSummary, ListFindingLocationsResponse>({
+    first: locations,
+    fetchPage: (position) =>
       loadMoreFindingLocations({
         // Built from the SERVER-RENDERED term, never the live debounced one: a
         // click during the debounce window would otherwise page a differently
@@ -1225,16 +1065,15 @@ function LocationsMasterDetail({
           ...(tools.length ? { tools } : {}),
         }),
         ...position,
-      }).then((next) => ({
-        // The selected location is appended to page 0 out of sort order (see
-        // ListFindingLocationsQuery.includeId) and resurfaces here at its natural
-        // cursor position once paging reaches it — drop the repeat so a page
-        // never shows the same location twice.
-        items: dedupeAgainstPages(pages, next.items),
-        next,
-        total: next.totals.locations,
-      })),
-  );
+      }),
+    totalOf: (page) => page.totals.locations,
+    pageSize: DEFAULT_FINDING_LOCATIONS_LIMIT,
+    keyOf: (location) => location.id,
+    what: 'locations',
+    // Only the server's first page carries the selected location (see
+    // ListFindingLocationsQuery.includeId).
+    replayFirstPage: true,
+  });
 
   return (
     <div className="grid h-full min-h-0 grid-cols-1 gap-4 lg:grid-cols-[352px_1fr]">
@@ -1246,8 +1085,8 @@ function LocationsMasterDetail({
         }}
         renderedAt={renderedAt}
         locale={locale}
-        onNextPage={locationPages.onNextPage}
-        onPreviousPage={locationPages.onPreviousPage}
+        onNextPage={locationPages.next}
+        onPreviousPage={locationPages.previous}
         hasNextPage={locationPages.hasNextPage}
         hasPreviousPage={locationPages.hasPreviousPage}
         loadingNextPage={locationPages.loading}
@@ -1255,8 +1094,9 @@ function LocationsMasterDetail({
         total={locationPages.total}
         page={locationPages.page}
         pageCount={locationPages.pageCount}
-        onPageChange={locationPages.onPageChange}
+        onPageChange={locationPages.goToPage}
         pageError={locationPages.error}
+        rangeCount={locationPages.rangeCount}
         {...(emptyState === undefined ? {} : { emptyState })}
       />
 
@@ -1316,23 +1156,6 @@ function LocationsMasterDetail({
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-//
-// Exported (rather than file-local) so the page-cache derivation itself is
-// directly unit-testable — see test/pages/findings-pagination.test.ts — without
-// rendering GroupedView/FlatView, which this package's vitest setup (no DOM,
-// no React renderer) cannot do.
-
-/**
- * Drop any item already rendered on an earlier page. The one case this matters
- * for today: GroupedView's `?finding=` deep link is appended to page 0 out of
- * sort order (see ListGroupedFindingsQuery.includeId) and resurfaces here at
- * its natural cursor position once paging reaches it — without this, that
- * group renders twice as the user pages through.
- */
-export function dedupeAgainstPages<T extends { id: string }>(pages: T[][], incoming: T[]): T[] {
-  const seen = new Set(pages.flat().map((item) => item.id));
-  return incoming.filter((item) => !seen.has(item.id));
-}
 
 /**
  * A one-instance FindingGroup, so the shared detail view can render a flat row.

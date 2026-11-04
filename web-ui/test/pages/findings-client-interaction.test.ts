@@ -415,6 +415,13 @@ describe('By-type view — load-more pairs the cursor with the term it was minte
 });
 
 describe('By-type view — the type list pages on its own', () => {
+  it('leaves the appended selected type out of the range', () => {
+    const items = Array.from({ length: 51 }, (_, i) => type(`rule/${String(i)}`));
+    mount({ types: { ...TYPES, items, totals: { findings: 84, types: 214 } } });
+
+    expect(typeList().textContent).toContain('1–50 of 214 types');
+  });
+
   it('reads a jumped-to page of types from its row position', async () => {
     loadMoreFindingTypes.mockResolvedValue({
       ...TYPES,
@@ -543,7 +550,7 @@ describe('By-type view — the findings panel pages on its own', () => {
 
     expect(panelField().value).toBe('1');
     expect(panel().querySelector('[role="alert"]')?.textContent).toBe(
-      'That page could not be read.',
+      'That page of findings could not be read.',
     );
     expect(container.textContent).toContain('MASK-f1');
   });
@@ -553,7 +560,7 @@ describe('By-type view — the findings panel pages on its own', () => {
     mount({ instances: LONG });
     await clickPanelNext();
     expect(panel().querySelector('[role="alert"]')?.textContent).toBe(
-      'That page could not be read.',
+      'The next page of findings could not be read.',
     );
 
     loadMoreFindingInstances.mockResolvedValueOnce(pageOf(['f3'], null));
@@ -568,7 +575,7 @@ describe('By-type view — the findings panel pages on its own', () => {
     await jumpTo(7);
 
     expect(panel().querySelector('[role="alert"]')?.textContent).toBe(
-      'That page is no longer there.',
+      'That page of findings is no longer there.',
     );
   });
 
@@ -590,10 +597,9 @@ describe('By-type view — the findings panel pages on its own', () => {
       ...pageOf(ids, cursor),
       totals: { findings: 500 },
     });
-    // 51 rows on the first page, as with a selected row the server appended.
-    const long = Array.from({ length: 51 }, (_, i) => `r${String(i)}`);
+    const long = Array.from({ length: 50 }, (_, i) => `r${String(i)}`);
     mount({ instances: read(long, 'cursor-1') });
-    expect(panel().textContent).toContain('1–51 of 500 findings');
+    expect(panel().textContent).toContain('1–50 of 500 findings');
 
     loadMoreFindingInstances.mockResolvedValueOnce(read(['s1'], 'cursor-2'));
     await clickPanelNext();
@@ -606,6 +612,30 @@ describe('By-type view — the findings panel pages on its own', () => {
     expect(panel().textContent).toContain('51–51 of 500 findings');
   });
 
+  it('closes an open drawer when stepping to a held page', async () => {
+    loadMoreFindingInstances.mockResolvedValue(pageOf(['f3'], null));
+    mount({ instances: LONG });
+    await clickPanelNext();
+    const open = () =>
+      [...document.querySelectorAll('[role="dialog"]')].some((el) => !container.contains(el));
+    click(
+      byText('tbody tr', 'MASK-f3', panel())?.querySelector('button, [role="button"]') ??
+        byText('tbody tr', 'MASK-f3', panel()),
+    );
+    expect(open(), 'the row did not open a drawer').toBe(true);
+
+    // Back and forward over held pages: the selection must not survive the trip
+    // and reopen the drawer on the row it came from.
+    await act(async () => {
+      panelPrev()?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    await clickPanelNext();
+
+    expect(container.textContent).toContain('MASK-f3');
+    expect(open()).toBe(false);
+  });
+
   it('closes an open drawer once a jump lands', async () => {
     loadMoreFindingInstances.mockResolvedValue(pageOf(['f9'], 'cursor-9'));
     mount({ instances: LONG, deepLinkedInstance: instance('f1') });
@@ -616,6 +646,52 @@ describe('By-type view — the findings panel pages on its own', () => {
     await jumpTo(7);
 
     expect(open()).toBe(false);
+  });
+
+  it('keeps the forward pages when stepping back from a jump', async () => {
+    const read = (ids: string[], cursor: string) => ({
+      ...pageOf(ids, cursor),
+      totals: { findings: 500 },
+    });
+    loadMoreFindingInstances.mockResolvedValueOnce(read(['f9'], 'cursor-9'));
+    mount({ instances: LONG });
+    await jumpTo(7);
+    loadMoreFindingInstances.mockResolvedValueOnce(read(['f8'], 'cursor-8'));
+    const previous = panelPrev();
+    await act(async () => {
+      previous?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(panelField().value).toBe('6');
+    expect(loadMoreFindingInstances).toHaveBeenCalledTimes(2);
+
+    // Page 7 was kept, so this step reads nothing.
+    await clickPanelNext();
+    expect(panelField().value).toBe('7');
+    expect(container.textContent).toContain('MASK-f9');
+    expect(loadMoreFindingInstances).toHaveBeenCalledTimes(2);
+  });
+
+  it('drops a row already shown when a later page repeats it', async () => {
+    loadMoreFindingInstances.mockResolvedValue(pageOf(['f2', 'f3'], null));
+    mount();
+    await clickPanelNext();
+
+    const rows = [...container.querySelectorAll('tbody tr')].map((row) => row.textContent);
+    expect(rows.some((text) => text.includes('MASK-f3'))).toBe(true);
+    expect(rows.some((text) => text.includes('MASK-f2'))).toBe(false);
+  });
+
+  it('stays put when a later page repeats everything, and takes its cursor', async () => {
+    loadMoreFindingInstances.mockResolvedValue(pageOf(['f1', 'f2'], null));
+    mount({ instances: LONG });
+    await clickPanelNext();
+
+    expect(panelField().value).toBe('1');
+    expect(panel().querySelector('[role="alert"]')?.textContent).toBe(
+      'The rest of findings moved while you were reading it.',
+    );
+    expect(panelNext()?.hasAttribute('disabled')).toBe(true);
   });
 
   it('keeps an open drawer when the move does not happen', async () => {
@@ -774,6 +850,21 @@ describe('findings client — the By-location view', () => {
     // 97 is the locations read's count; the panel's own facets say 4.
     expect(popover?.textContent).toContain('97');
     expect(popover?.textContent).not.toContain('4');
+  });
+
+  it('leaves the appended selected location out of the range', () => {
+    const items = Array.from({ length: 51 }, (_, i) =>
+      location({ id: `acme%2Fapi/${String(i)}`, file: `f${String(i)}.ts` }),
+    );
+    mountFiles({
+      locations: {
+        ...locationsPage(items, 'loc-cursor-1'),
+        totals: { findings: 24, locations: 214 },
+      },
+      selectedLocation: items[0],
+    });
+
+    expect(typeList().textContent).toContain('1–50 of 214 locations');
   });
 
   it('reads a jumped-to page of locations from its row position', async () => {

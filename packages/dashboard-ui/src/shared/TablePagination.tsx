@@ -27,6 +27,8 @@ export interface TablePageProps {
 export interface TablePaginationProps extends TablePageProps {
   /** Rows on the page showing now. */
   itemCount: number;
+  /** Rows the range covers, where the page holds one outside it. Absent ⇒ `itemCount`. */
+  rangeCount?: number | undefined;
   /** 1-indexed position of the page's first row. Absent ⇒ "{itemCount} shown". */
   pageStart?: number | undefined;
   /** Rows across the whole list. Absent ⇒ "{itemCount} shown". */
@@ -146,6 +148,7 @@ function PageSelector({
 
 export function TablePagination({
   itemCount,
+  rangeCount,
   pageStart,
   total,
   noun,
@@ -163,7 +166,7 @@ export function TablePagination({
   return (
     <Pagination className="flex-wrap justify-end gap-x-3 gap-y-2 border-t border-border px-5 py-3">
       <PaginationStatus className="mr-auto">
-        {statusText({ itemCount, pageStart, total, noun, locale })}
+        {statusText({ itemCount: rangeCount ?? itemCount, pageStart, total, noun, locale })}
       </PaginationStatus>
       {pageError !== undefined && pageError !== null && (
         <p role="alert" className="text-xs text-sev-high-ink">

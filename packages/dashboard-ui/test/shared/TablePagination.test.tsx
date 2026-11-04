@@ -11,6 +11,7 @@ import {
   appendPage,
   pageCountOf,
   type PagedRun,
+  placePage,
   planNextMove,
   planPageMove,
   runHasNext,
@@ -19,6 +20,7 @@ import {
   runPage,
   runPageCount,
   runPageStart,
+  runRangeCount,
   startRun,
 } from '../../src/lib/pagination.ts';
 import {
@@ -70,6 +72,14 @@ describe('TablePagination status', () => {
 
   it('leaves the noun off when there is none', () => {
     expect(statusOf({ noun: undefined })).toBe('1–50 of 266,775');
+  });
+});
+
+describe('TablePagination range', () => {
+  it('counts only the rows the range covers', () => {
+    expect(statusOf({ itemCount: 51, rangeCount: 50, total: 214, noun: 'types' })).toBe(
+      '1–50 of 214 types',
+    );
   });
 });
 
@@ -134,6 +144,20 @@ describe('parseCount', () => {
     expect(parseCount('1 000', 'fr-FR')).toBe(1000);
     expect(parseCount('1.000', 'en-US')).toBeNull();
     expect(parseCount('1,000', 'de-DE')).toBeNull();
+  });
+
+  it('refuses grouping the locale would not write', () => {
+    expect(parseCount('1,00', 'en-US')).toBeNull();
+    expect(parseCount('1,000,00', 'en-US')).toBeNull();
+    expect(parseCount('1.50', 'de-DE')).toBeNull();
+    expect(parseCount('01,000', 'en-US')).toBeNull();
+    expect(parseCount('1,000,000', 'en-US')).toBe(1000000);
+  });
+
+  it('reads the digits a locale writes', () => {
+    expect(parseCount('٥٣٣٦', 'ar-EG')).toBe(5336);
+    expect(parseCount('٥٬٣٣٦', 'ar-EG')).toBe(5336);
+    expect(parseCount('5336', 'ar-EG')).toBe(5336);
   });
 
   it('refuses text that only looks grouped', () => {
@@ -204,6 +228,28 @@ describe('page arithmetic', () => {
   it('never counts fewer pages than the one showing', () => {
     expect(runPageCount(startRun(['a'], null, 500), 50)).toBe(10);
     expect(runPageCount(startRun(['a'], null, 500, 11), 50)).toBe(12);
+  });
+
+  it('leaves an appended row out of the range', () => {
+    const first = startRun(Array.from({ length: 51 }, String), 'c', 214);
+    expect(runRangeCount(first, 50)).toBe(50);
+    expect(runRangeCount(startRun(['a', 'b'], null, 2), 50)).toBe(2);
+  });
+
+  it('keeps the pages after it when placing the page just before the run', () => {
+    const run = appendPage(startRun(['k'], 'c-k', 500, 7), ['l'], 'c-l', 500);
+    const placed = placePage(run, 6, ['j'], 'c-j', 600);
+    expect(placed.pages).toEqual([['j'], ['k'], ['l']]);
+    expect(placed.cursors).toEqual(['c-j', 'c-k', 'c-l']);
+    expect(placed.firstCached).toBe(6);
+    expect(placed.index).toBe(0);
+    expect(placed.total).toBe(600);
+  });
+
+  it('starts over when placing any other page', () => {
+    const run = startRun(['k'], 'c-k', 500, 7);
+    expect(placePage(run, 5, ['h'], 'c-h', 500)).toEqual(startRun(['h'], 'c-h', 500, 5));
+    expect(placePage(run, 9, ['m'], null, 500)).toEqual(startRun(['m'], null, 500, 9));
   });
 
   it('adopts the total of the page it appends', () => {

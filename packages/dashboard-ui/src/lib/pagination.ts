@@ -89,6 +89,15 @@ export function planNextMove<T>(run: PagedRun<T>): NextMove {
   return cursor === null ? null : { kind: 'fetch', cursor };
 }
 
+/**
+ * The rows a footer's range covers. A page can hold one row past the page size:
+ * the selected row a server appends out of sort order, whose real rank is
+ * elsewhere. Leaving it out keeps page 1's range from running into page 2's.
+ */
+export function runRangeCount<T>(run: PagedRun<T>, pageSize: number): number {
+  return Math.min(runItems(run).length, pageSize);
+}
+
 /** The run with a page fetched by cursor added to its end, and showing. */
 export function appendPage<T>(
   run: PagedRun<T>,
@@ -101,6 +110,28 @@ export function appendPage<T>(
     pages: [...run.pages, items],
     cursors: [...run.cursors, nextCursor],
     index: run.pages.length,
+    total,
+  };
+}
+
+/**
+ * The run showing a page read outside it. The page just before the run is added to
+ * its front, keeping the pages after it cached for the way forward; any other page
+ * starts a new run.
+ */
+export function placePage<T>(
+  run: PagedRun<T>,
+  page: number,
+  items: T[],
+  nextCursor: string | null,
+  total: number,
+): PagedRun<T> {
+  if (page !== run.firstCached - 1) return startRun(items, nextCursor, total, page);
+  return {
+    pages: [items, ...run.pages],
+    cursors: [nextCursor, ...run.cursors],
+    index: 0,
+    firstCached: page,
     total,
   };
 }

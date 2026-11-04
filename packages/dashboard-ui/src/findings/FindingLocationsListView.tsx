@@ -168,8 +168,11 @@ export function FindingLocationsListView({
   pageCount,
   onPageChange,
   pageError,
+  rangeCount,
   emptyState,
 }: TablePageProps & {
+  /** Rows the footer's range covers, where the page holds one outside it. */
+  rangeCount?: number | undefined;
   locations: FindingLocationSummary[];
   /** The selected location's id, or '' when none is pinned. */
   activeId: string;
@@ -232,6 +235,7 @@ export function FindingLocationsListView({
       {onNextPage && (hasPreviousPage || hasNextPage || locations.length > 0) && (
         <TablePagination
           itemCount={locations.length}
+          rangeCount={rangeCount}
           pageStart={pageStart}
           total={total}
           noun="locations"

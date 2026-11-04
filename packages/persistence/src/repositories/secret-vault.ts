@@ -755,7 +755,6 @@ export class SqliteSecretVaultRepository {
     if (query.includeBatched !== true) {
       conditions.push(`reason NOT IN ('display', 'view-render')`);
     }
-    const scope = conditions.length === 0 ? '' : `WHERE ${conditions.join(' AND ')}`;
     if (cursor !== null) {
       conditions.push('(at < :cursorAt OR (at = :cursorAt AND id < :cursorId))');
     }
@@ -790,20 +789,20 @@ export class SqliteSecretVaultRepository {
     const page = hasMore ? rows.slice(0, limit) : rows;
     const last = page[page.length - 1];
 
-    const hiddenBatched =
-      query.includeBatched === true
-        ? 0
-        : countScalar(
-            this.db,
-            `SELECT count(*) AS n FROM secret_vault_deref WHERE reason IN ('display', 'view-render')`,
-          );
+    // One statement, so the two counts come from one scan of the trail and describe
+    // the same instant.
+    const counts = getRow<{ total: number; hidden: number }>(
+      this.db.prepare(
+        `SELECT count(*) AS total,
+                count(*) FILTER (WHERE reason IN ('display', 'view-render')) AS hidden
+           FROM secret_vault_deref`,
+      ),
+    ) ?? { total: 0, hidden: 0 };
+    const includeBatched = query.includeBatched === true;
+    const hiddenBatched = includeBatched ? 0 : counts.hidden;
 
     return {
-      // Counted on every read, as the other two lists' totals are: the footer's
-      // page count follows the latest one while the trail grows.
-      totals: {
-        derefs: countScalar(this.db, `SELECT count(*) AS n FROM secret_vault_deref ${scope}`),
-      },
+      totals: { derefs: includeBatched ? counts.total : counts.total - counts.hidden },
       items: page.map((r) => ({
         id: r.id,
         pointerId: r.pointer_id,

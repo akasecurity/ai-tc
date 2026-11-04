@@ -26,6 +26,7 @@ export {
   type TimeRange,
   type TimeRangeOption,
 } from './lib/timeRanges.ts';
+export { type PagedRunOptions, usePagedRun } from './lib/usePagedRun.ts';
 // `CLOCK_TICK_MS` is public because a host's own guards have to advance time by
 // the interval this hook actually runs on — web-ui's clock-liveness suite reads
 // it rather than restating 30s, so retuning the tick cannot leave a test

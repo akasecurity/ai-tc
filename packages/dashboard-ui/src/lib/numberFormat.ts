@@ -56,23 +56,35 @@ function groupSeparator(locale: string): string | null {
   return parts.find((part) => part.type === 'group')?.value ?? null;
 }
 
+/** `text` with the digits `locale` writes (`٥` in ar-EG) read as ASCII. */
+function toAsciiDigits(text: string, locale: string): string {
+  const formatter = formatterFor(locale);
+  const digits = Array.from({ length: 10 }, (_, digit) => formatter.format(digit));
+  return text.replace(/\p{Nd}/gu, (char) => {
+    const digit = digits.indexOf(char);
+    return digit === -1 ? char : String(digit);
+  });
+}
+
 /**
  * The whole number typed text names, or null when it names none. Accepts bare
- * digits and the grouping {@link formatNumber} writes for `locale`, where a group
- * has two or three digits: `1,000` is a thousand in en-US, while `1.5` is refused
- * everywhere rather than read as fifteen in de-DE.
+ * digits, ASCII or the locale's own, and a grouped form only when it is exactly
+ * what {@link formatNumber} writes for that number: `1,000` is a thousand in
+ * en-US, while `1,00` and de-DE's `1.5` are refused rather than misread.
  */
 export function parseCount(text: string, locale: string): number | null {
   const trimmed = text.trim();
-  if (/^\d+$/.test(trimmed)) return Number(trimmed);
+  const ascii = toAsciiDigits(trimmed, locale);
+  if (/^\d+$/.test(ascii)) return Number(ascii);
   const separator = groupSeparator(locale);
   if (separator === null) return null;
+  const digits = ascii.split(separator).join('');
   // Whitespace separators (fr-FR's narrow no-break space) are typed as a plain space.
-  const unified = /^\s$/.test(separator) ? trimmed.replace(/\s/g, separator) : trimmed;
-  const groups = unified.split(separator);
-  const well =
-    /^\d{1,3}$/.test(groups[0] ?? '') && groups.slice(1).every((g) => /^\d{2,3}$/.test(g));
-  return groups.length > 1 && well ? Number(groups.join('')) : null;
+  const grouped = /^\s$/.test(separator) ? trimmed.replace(/\s/g, separator) : trimmed;
+  const bare = /^\s$/.test(separator) ? digits.replace(/\s/g, '') : digits;
+  if (!/^\d+$/.test(bare)) return null;
+  const value = Number(bare);
+  return formatNumber(value, locale) === grouped ? value : null;
 }
 
 /**

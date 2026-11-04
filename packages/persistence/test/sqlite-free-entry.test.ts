@@ -93,9 +93,9 @@ describe('the ./sqlite-free entry', () => {
     }
   });
 
-  it('serves pointer minting as one call that derives its own sign subkey', () => {
+  it('serves pointer minting only as calls that derive their own sign subkey', () => {
     const minting = Object.keys(entry).filter((name) => /pointer|subkey/i.test(name));
-    expect(minting).toEqual(['mintPointer']);
+    expect(minting).toEqual(['mintPointer', 'mintPointerWith']);
   });
 
   it('loads no module that imports node:sqlite', () => {

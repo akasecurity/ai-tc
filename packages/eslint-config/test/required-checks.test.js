@@ -556,6 +556,17 @@ describe('the workflows behind those checks', () => {
     expect(trigger[1]).toMatch(/types:\s*\[[^\]]*\bedited\b[^\]]*\]/);
   });
 
+  // Adding the `full-ci` label fires ONLY `labeled`. Without the type, labelling
+  // a PR into `dev` changes the job conditions but starts no run, so the full
+  // tier stays skipped until the next push.
+  it.each(['ci.yml', 'codeql.yml'])('%s re-runs when a PR is labelled', (file) => {
+    const trigger = /^ {2}pull_request:[^\S\n]*$([\s\S]*?)(?=^ {2}[^\s#])/m.exec(
+      dropComments(readWorkflow(file)),
+    );
+    expect(trigger, `${file} has no pull_request trigger block`).not.toBeNull();
+    expect(trigger[1]).toMatch(/types:\s*\[[^\]]*\blabeled\b[^\]]*\]/);
+  });
+
   it('both run daily or weekly as well as on PRs', () => {
     expect(readWorkflow('audit.yml')).toMatch(/^\s*- cron: '[^']+'$/m);
     expect(readWorkflow('codeql.yml')).toMatch(/^\s*- cron: '[^']+'$/m);
@@ -1245,10 +1256,10 @@ describe('the main-tier jobs in ci.yml', () => {
 
 // CodeQL analyses `main`, plus its schedule and manual runs.
 describe("the CodeQL job's condition", () => {
-  it('runs for main and for its schedule and manual runs, and nothing narrower', () => {
+  it('runs for main, for a PR labelled full-ci, and for its schedule and manual runs, and nothing narrower', () => {
     const conditions = jobBlock(readWorkflow('codeql.yml'), 'analyze').match(/^ {4}if:.*$/gm) ?? [];
     expect(conditions).toEqual([
-      "    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}",
+      "    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') || contains(github.event.pull_request.labels.*.name, 'full-ci') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}",
     ]);
   });
 });

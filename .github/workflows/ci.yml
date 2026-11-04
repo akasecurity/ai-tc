@@ -24,7 +24,7 @@ on:
     # with nothing to re-run. The cost is a run on title/body edits too — GitHub
     # gives one `edited` type for all three — which the concurrency group below
     # bounds, since it cancels a superseded run per PR ref.
-    types: [opened, synchronize, reopened, edited]
+    types: [opened, synchronize, reopened, edited, labeled]
   # The merge queue reaches a workflow through `merge_group` and through no other
   # event, so a required check without this trigger never runs in the queue at
   # all: the entry waits on a check nothing will ever report, rather than failing
@@ -68,6 +68,12 @@ concurrency:
 # for `main`: a pull request into it, a push to it, and its merge queue. On a
 # pull request into `dev` or `release/**` they report as skipped, which counts
 # as passing, so `main` can require a check that `dev` does not run.
+#
+# A pull request into any base opts into the full tier with the `full-ci`
+# label. Adding a label fires only `labeled`, which is why the `pull_request`
+# types above carry it; without it the label would change nothing until the
+# next push. Any other label re-runs the `ci` job too, the same cost `edited`
+# already pays for title and body edits.
 jobs:
   ci:
     name: Lint · Typecheck · Test · Build
@@ -307,7 +313,7 @@ jobs:
   # own command (`vitest run --force`), which vitest rejects outright.
   no-network:
     name: No-network · Full suite, egress blocked
-    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') }}
+    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -377,7 +383,7 @@ jobs:
   # reports on something else.
   packaged-artifact:
     name: Packaged artifact · Egress blocked
-    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') }}
+    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -479,7 +485,7 @@ jobs:
   # of the prefix, and do not add a restore-key that omits it.
   macos:
     name: macOS · Full suite
-    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') }}
+    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
     runs-on: macos-latest
     timeout-minutes: 25
     steps:
@@ -770,7 +776,7 @@ jobs:
   # the pairing's wall clock; serialising removes both.
   windows:
     name: Windows · Unit tests (shipped surface)
-    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') }}
+    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
     runs-on: windows-latest
     timeout-minutes: 35
     steps:
@@ -1208,7 +1214,7 @@ jobs:
   # anything and blocks every merge until a repo admin re-points it.
   windows-lint:
     name: Windows · Lint
-    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') }}
+    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
     runs-on: windows-latest
     timeout-minutes: 25
     # `pnpm lint` fans `turbo run lint` across every package, and this was the one
@@ -1281,7 +1287,7 @@ jobs:
   # no model call — so there is no secret and the job runs on forks too.
   claude-code-mods:
     name: Claude Code · Mod runtime
-    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') }}
+    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

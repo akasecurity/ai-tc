@@ -476,6 +476,9 @@ nowhere.
   The other `ci.yml` jobs, CodeQL and the binary builds run for pull requests into `main`, for
   pushes to `main` and for its merge queue; elsewhere the `ci.yml` and CodeQL jobs report as
   skipped, which counts as passing, so `main` can require a check that `dev` does not run.
+- Add the `full-ci` label to a pull request into `dev` or `release/**` to run those `ci.yml`
+  and CodeQL jobs on it as well, before it reaches `main`. Adding the label starts a new run;
+  removing it takes effect on the next push. The binary builds still run only for `main`.
 
 ### Release branches
 

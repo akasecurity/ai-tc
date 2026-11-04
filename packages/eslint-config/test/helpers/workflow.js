@@ -212,11 +212,13 @@ export function blockScalarText(step, key, ...rejected) {
 
 /**
  * The job-level condition that limits a `ci.yml` job to `main`: a pull request
- * into it, a push to it, and an entry in its merge queue. A job skipped by its
- * own `if:` reports as passing, so the check can stay required on `main`.
+ * into it, a push to it, and an entry in its merge queue — plus a pull request
+ * into any other base that carries the `full-ci` label, which opts it into the
+ * full tier. A job skipped by its own `if:` reports as passing, so the check
+ * can stay required on `main`.
  */
 export const MAIN_TIER_IF =
-  "if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') }}";
+  "if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') || contains(github.event.pull_request.labels.*.name, 'full-ci') }}";
 
 /**
  * Assert a job body carries exactly one job-level `if:`, and that it is

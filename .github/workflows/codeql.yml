@@ -3,8 +3,9 @@ name: CodeQL
 # Static analysis via GitHub CodeQL over the TypeScript/JavaScript workspace
 # and the Actions workflow files themselves. Analyses PRs into main, main pushes
 # and main's merge queue, plus a weekly run so newly released queries sweep the
-# unchanged tree. On a PR into any other base the job reports as skipped, which
-# counts as passing. Findings land in the repository's Security tab.
+# unchanged tree. A PR into any other base is analysed only when it carries the
+# `full-ci` label (hence the `labeled` type below); otherwise the job reports as
+# skipped, which counts as passing. Findings land in the repository's Security tab.
 
 on:
   push:
@@ -25,7 +26,7 @@ on:
   # three — which the concurrency group below bounds, since it cancels a
   # superseded PR run per ref rather than queueing another.
   pull_request:
-    types: [opened, synchronize, reopened, edited]
+    types: [opened, synchronize, reopened, edited, labeled]
   # A merge queue reaches this workflow through `merge_group` and no other event.
   # These analyses are meant to be required checks, and a required check missing
   # this trigger does not fail in the queue — it never reports, so the entry waits
@@ -49,7 +50,7 @@ concurrency:
 jobs:
   analyze:
     name: CodeQL (${{ matrix.language }})
-    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') || contains(github.event.pull_request.labels.*.name, 'full-ci') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:

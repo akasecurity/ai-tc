@@ -50,6 +50,31 @@ export function formatNumber(value: number, locale: string): string {
   return formatterFor(locale).format(value);
 }
 
+/** The separator `locale` groups digits with, or null where it uses none. */
+function groupSeparator(locale: string): string | null {
+  const parts = formatterFor(locale).formatToParts(1_000_000);
+  return parts.find((part) => part.type === 'group')?.value ?? null;
+}
+
+/**
+ * The whole number typed text names, or null when it names none. Accepts bare
+ * digits and the grouping {@link formatNumber} writes for `locale`, where a group
+ * has two or three digits: `1,000` is a thousand in en-US, while `1.5` is refused
+ * everywhere rather than read as fifteen in de-DE.
+ */
+export function parseCount(text: string, locale: string): number | null {
+  const trimmed = text.trim();
+  if (/^\d+$/.test(trimmed)) return Number(trimmed);
+  const separator = groupSeparator(locale);
+  if (separator === null) return null;
+  // Whitespace separators (fr-FR's narrow no-break space) are typed as a plain space.
+  const unified = /^\s$/.test(separator) ? trimmed.replace(/\s/g, separator) : trimmed;
+  const groups = unified.split(separator);
+  const well =
+    /^\d{1,3}$/.test(groups[0] ?? '') && groups.slice(1).every((g) => /^\d{2,3}$/.test(g));
+  return groups.length > 1 && well ? Number(groups.join('')) : null;
+}
+
 /**
  * Compact notation is PINNED to en-US rather than following the reader. Its
  * K/M/B/T roll-up is a product-wide convention shared with the CLI and the

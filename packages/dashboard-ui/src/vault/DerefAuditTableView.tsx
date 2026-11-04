@@ -5,10 +5,6 @@ import {
   Badge,
   Button,
   cn,
-  Pagination,
-  PaginationNext,
-  PaginationPrevious,
-  PaginationStatus,
   Table,
   TableBody,
   TableCell,
@@ -18,9 +14,10 @@ import {
 } from '@akasecurity/ui-kit';
 
 import { relativeTime } from '../lib/relativeTime.ts';
+import { type TablePageProps, TablePagination } from '../shared/TablePagination.tsx';
 import { DEREF_REASON_LABEL } from './atoms.tsx';
 
-export interface DerefAuditTableViewProps {
+export interface DerefAuditTableViewProps extends TablePageProps {
   rows: VaultDeref[];
   // How many display/view-render rows the caller's query hid. Counted over the
   // whole trail, not the page — the toggle below reveals all of them, not the
@@ -36,6 +33,13 @@ export interface DerefAuditTableViewProps {
   loadingNextPage?: boolean;
   // 1-based position of this window's first row in the whole trail.
   pageStart?: number | undefined;
+  // Rows the current filter selects across the whole trail.
+  total?: number | undefined;
+  /**
+   * The locale the footer's counts are formatted in: the one the host resolved
+   * for this request. Required for the reason `renderedAt` is. See ../lib/locale.ts.
+   */
+  locale: string;
   /**
    * The instant this render is measured against, in epoch milliseconds. The host
    * captures one and every relative label below reads it. Required: a view that
@@ -80,6 +84,12 @@ export function DerefAuditTableView({
   onPreviousPage,
   loadingNextPage = false,
   pageStart,
+  page,
+  pageCount,
+  onPageChange,
+  pageError,
+  locale,
+  total,
   renderedAt,
 }: DerefAuditTableViewProps) {
   const toggle =
@@ -192,24 +202,22 @@ export function DerefAuditTableView({
         </Table>
       )}
       {onNextPage ? (
-        <Pagination>
-          <PaginationPrevious
-            disabled={!hasPreviousPage || loadingNextPage}
-            onClick={onPreviousPage}
-          />
-          <PaginationStatus>
-            {pageStart === undefined
-              ? `${String(rows.length)} shown`
-              : isEmpty
-                ? '0 resolutions'
-                : `${String(pageStart)}–${String(pageStart + rows.length - 1)} resolutions`}
-          </PaginationStatus>
-          <PaginationNext
-            disabled={!hasNextPage || loadingNextPage}
-            loading={loadingNextPage}
-            onClick={onNextPage}
-          />
-        </Pagination>
+        <TablePagination
+          itemCount={rows.length}
+          pageStart={pageStart}
+          total={total}
+          noun="resolutions"
+          page={page}
+          pageCount={pageCount}
+          onPageChange={onPageChange}
+          pageError={pageError}
+          hasPreviousPage={hasPreviousPage}
+          hasNextPage={hasNextPage}
+          onPreviousPage={onPreviousPage}
+          onNextPage={onNextPage}
+          loading={loadingNextPage}
+          locale={locale}
+        />
       ) : (
         hasNextPage && (
           <p className="mt-4 text-center text-xs text-text-3">

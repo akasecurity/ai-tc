@@ -8,10 +8,6 @@ import type { AssetType, Flag } from '@akasecurity/schema';
 import {
   Badge,
   cn,
-  Pagination,
-  PaginationNext,
-  PaginationPrevious,
-  PaginationStatus,
   SegmentedControl,
   SegmentedControlItem,
   Select,
@@ -32,6 +28,7 @@ import {
 import { type ReactNode, useMemo, useState } from 'react';
 
 import { SearchField } from '../shared/SearchField.tsx';
+import { TablePagination } from '../shared/TablePagination.tsx';
 import { FlagChip, TrustPill } from './chips.tsx';
 import { type Column, NAME_COLUMN, tableColumns } from './columns.ts';
 import {
@@ -72,6 +69,8 @@ export interface InventoryTableProps {
   onOpen: (row: InventoryRow) => void;
   /** The instant relative times are measured against, in epoch milliseconds. */
   renderedAt: number;
+  /** The locale the footer's counts are formatted in, as the host resolved it. */
+  locale: string;
   /** Rendered between the header and the filters. */
   children?: ReactNode;
 }
@@ -135,6 +134,7 @@ export function InventoryTable({
   searchNoun,
   onOpen,
   renderedAt,
+  locale,
   children,
 }: InventoryTableProps) {
   const [query, setQuery] = useState('');
@@ -198,8 +198,7 @@ export function InventoryTable({
   const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const current = Math.min(page, pages - 1);
   const view = filtered.slice(current * PAGE_SIZE, (current + 1) * PAGE_SIZE);
-  const first = filtered.length === 0 ? 0 : current * PAGE_SIZE + 1;
-  const last = Math.min(filtered.length, (current + 1) * PAGE_SIZE);
+  const first = current * PAGE_SIZE + 1;
 
   const label = (s: StatusFilter) => statusLabel(s, reasons, attention, rows.length);
   const search = (q: string) => {
@@ -349,26 +348,26 @@ export function InventoryTable({
         )}
       </div>
 
-      <Pagination className="justify-start gap-3 border-t border-border px-5 py-3">
-        <PaginationStatus className="flex-1">
-          {filtered.length === 0
-            ? '0 of 0'
-            : `${String(first)}–${String(last)} of ${String(filtered.length)}`}
-        </PaginationStatus>
-        <PaginationPrevious
-          disabled={current === 0}
-          onClick={() => {
-            setPage(current - 1);
-          }}
-        />
-        <span className="text-xs text-text-2">{`Page ${String(current + 1)} of ${String(pages)}`}</span>
-        <PaginationNext
-          disabled={current >= pages - 1}
-          onClick={() => {
-            setPage(current + 1);
-          }}
-        />
-      </Pagination>
+      <TablePagination
+        itemCount={view.length}
+        pageStart={first}
+        total={filtered.length}
+        noun="assets"
+        page={current + 1}
+        pageCount={pages}
+        onPageChange={(next) => {
+          setPage(next - 1);
+        }}
+        hasPreviousPage={current > 0}
+        hasNextPage={current < pages - 1}
+        onPreviousPage={() => {
+          setPage(current - 1);
+        }}
+        onNextPage={() => {
+          setPage(current + 1);
+        }}
+        locale={locale}
+      />
     </div>
   );
 }

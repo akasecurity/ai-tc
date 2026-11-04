@@ -18,19 +18,12 @@
 // label there is no clock to thread, so this component needs no `renderedAt` and
 // cannot disagree with itself between the server render and hydration.
 import type { FindingTypeSummary } from '@akasecurity/schema';
-import {
-  Card,
-  cn,
-  Pagination,
-  PaginationNext,
-  PaginationPrevious,
-  PaginationStatus,
-  SEVERITY_DOT_CLASS,
-} from '@akasecurity/ui-kit';
+import { Card, cn, SEVERITY_DOT_CLASS } from '@akasecurity/ui-kit';
 import type { ReactNode } from 'react';
 
 import { KeyIcon } from '../shared/icons.tsx';
 import { SearchField } from '../shared/SearchField.tsx';
+import { type TablePageProps, TablePagination } from '../shared/TablePagination.tsx';
 import { CATEGORY_ICON_FALLBACK, categoryLabel, categoryStyle, SEVERITIES } from './meta.ts';
 
 /**
@@ -147,8 +140,13 @@ export function FindingTypesListView({
   loadingNextPage = false,
   pageStart,
   total,
+  page,
+  pageCount,
+  onPageChange,
+  pageError,
+  locale,
   emptyState,
-}: {
+}: TablePageProps & {
   types: FindingTypeSummary[];
   /** The selected type's id (its rule id), or '' when nothing is selected. */
   activeId: string;
@@ -170,6 +168,11 @@ export function FindingTypesListView({
   loadingNextPage?: boolean;
   /** 1-indexed position of `types[0]` in the whole result set — for "51–100 of N". */
   pageStart?: number | undefined;
+  /**
+   * The locale the footer's counts are formatted in: the one the host resolved
+   * for this request. Required for the reason `renderedAt` is. See ../lib/locale.ts.
+   */
+  locale: string;
   /** Types matching the filters across the whole scope, not just this page. */
   total?: number | undefined;
   /**
@@ -228,27 +231,22 @@ export function FindingTypesListView({
           Gated on the row count, the footer carrying Previous then vanishes at
           exactly the moment it is the only way out. */}
       {onNextPage && (hasPreviousPage || hasNextPage || types.length > 0) && (
-        <Pagination>
-          <PaginationPrevious
-            disabled={!hasPreviousPage || loadingNextPage}
-            onClick={onPreviousPage}
-          />
-          <PaginationStatus>
-            {/* An EMPTY page takes the count branch, not the range one. A page
-                can arrive empty behind a live cursor — the caller drops the
-                appended selection once paging reaches its natural position — and
-                the range then runs backwards (`52–51 of 51`), directly above the
-                Previous button that is the only way out of it. */}
-            {types.length === 0 || total === undefined || pageStart === undefined
-              ? `${String(types.length)} shown`
-              : `${String(pageStart)}–${String(pageStart + types.length - 1)} of ${String(total)} types`}
-          </PaginationStatus>
-          <PaginationNext
-            disabled={!hasNextPage || loadingNextPage}
-            loading={loadingNextPage}
-            onClick={onNextPage}
-          />
-        </Pagination>
+        <TablePagination
+          itemCount={types.length}
+          pageStart={pageStart}
+          total={total}
+          noun="types"
+          page={page}
+          pageCount={pageCount}
+          onPageChange={onPageChange}
+          pageError={pageError}
+          hasPreviousPage={hasPreviousPage}
+          hasNextPage={hasNextPage}
+          onPreviousPage={onPreviousPage}
+          onNextPage={onNextPage}
+          loading={loadingNextPage}
+          locale={locale}
+        />
       )}
     </Card>
   );

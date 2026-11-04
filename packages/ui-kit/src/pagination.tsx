@@ -7,11 +7,9 @@ import { cn } from './lib/cn.ts';
  * Discrete-page footer: Previous/Next buttons plus a status line.
  *
  * For a list whose caller pages through discrete chunks instead of
- * accumulating everything fetched so far. Stepping only — no numbered page
- * links — because the lists this backs are keyset-paged: there is no offset
- * to jump to, only "the page after this cursor." The caller owns its page
- * cache and cursor history, so Previous is expected to replay an
- * already-fetched page rather than refetch.
+ * accumulating everything fetched so far. These are the parts; a dashboard table
+ * reaches them through dashboard-ui's `TablePagination`, which arranges them and
+ * adds the page selector.
  */
 export function Pagination({ className, ...props }: ComponentPropsWithRef<'nav'>) {
   return (

@@ -373,6 +373,7 @@ describe('ListVaultReuseResponse', () => {
 describe('ListVaultDerefsResponse', () => {
   it('parses a page with the whole-trail hidden count', () => {
     const result = ListVaultDerefsResponse.safeParse({
+      totals: { derefs: 0 },
       items: [derefRow],
       nextCursor: 'opaque-cursor',
       hiddenBatched: 4172,
@@ -386,20 +387,50 @@ describe('ListVaultDerefsResponse', () => {
 
   it('parses a null nextCursor at the last page', () => {
     expect(
-      ListVaultDerefsResponse.safeParse({ items: [], nextCursor: null, hiddenBatched: 0 }).success,
+      ListVaultDerefsResponse.safeParse({
+        totals: { derefs: 0 },
+        items: [],
+        nextCursor: null,
+        hiddenBatched: 0,
+      }).success,
     ).toBe(true);
   });
 
+  it('rejects a missing or negative total', () => {
+    expect(
+      ListVaultDerefsResponse.safeParse({ items: [], nextCursor: null, hiddenBatched: 0 }).success,
+    ).toBe(false);
+    expect(
+      ListVaultDerefsResponse.safeParse({
+        totals: { derefs: -1 },
+        items: [],
+        nextCursor: null,
+        hiddenBatched: 0,
+      }).success,
+    ).toBe(false);
+  });
+
   it('rejects an omitted nextCursor key', () => {
-    expect(ListVaultDerefsResponse.safeParse({ items: [], hiddenBatched: 0 }).success).toBe(false);
+    expect(
+      ListVaultDerefsResponse.safeParse({ totals: { derefs: 0 }, items: [], hiddenBatched: 0 })
+        .success,
+    ).toBe(false);
   });
 
   // The count the "N hidden" line and its toggle speak for — a response that
   // omits it would render the toggle with nothing behind it.
   it('rejects a missing or negative hiddenBatched', () => {
-    expect(ListVaultDerefsResponse.safeParse({ items: [], nextCursor: null }).success).toBe(false);
     expect(
-      ListVaultDerefsResponse.safeParse({ items: [], nextCursor: null, hiddenBatched: -1 }).success,
+      ListVaultDerefsResponse.safeParse({ totals: { derefs: 0 }, items: [], nextCursor: null })
+        .success,
+    ).toBe(false);
+    expect(
+      ListVaultDerefsResponse.safeParse({
+        totals: { derefs: 0 },
+        items: [],
+        nextCursor: null,
+        hiddenBatched: -1,
+      }).success,
     ).toBe(false);
   });
 });

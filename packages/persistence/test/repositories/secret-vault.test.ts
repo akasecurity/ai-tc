@@ -521,6 +521,42 @@ describe('SqliteSecretVaultRepository.listInventory paging', () => {
     expect(restarted.nextCursor).not.toBeNull();
   });
 
+  it('reads from a row position, and carries on from there by cursor', () => {
+    seed();
+    const jumped = vault.listInventory({ limit: 2, offset: 3 });
+    expect(jumped.items.map((i) => i.pointerId)).toEqual(EXPECTED_ORDER.slice(3, 5));
+    expect(jumped.totals.values).toBe(EXPECTED_ORDER.length);
+
+    const after = vault.listInventory({ limit: 2, cursor: jumped.nextCursor ?? '' });
+    expect(after.items.map((i) => i.pointerId)).toEqual(EXPECTED_ORDER.slice(5));
+    expect(after.nextCursor).toBeNull();
+  });
+
+  it('prefers a position over a cursor', () => {
+    seed();
+    const first = vault.listInventory({ limit: 2 });
+    const both = vault.listInventory({ limit: 2, cursor: first.nextCursor ?? '', offset: 0 });
+    expect(both.items.map((i) => i.pointerId)).toEqual(EXPECTED_ORDER.slice(0, 2));
+  });
+
+  it('answers a position past the end with an empty last page', () => {
+    seed();
+    const res = vault.listInventory({ limit: 2, offset: 70 });
+    expect(res.items).toEqual([]);
+    expect(res.nextCursor).toBeNull();
+  });
+
+  it('clamps a position SQLite could not bind', () => {
+    seed();
+    const start = EXPECTED_ORDER.slice(0, 2);
+    expect(vault.listInventory({ limit: 2, offset: -3 }).items.map((i) => i.pointerId)).toEqual(
+      start,
+    );
+    expect(vault.listInventory({ limit: 2, offset: 1.5 }).items.map((i) => i.pointerId)).toEqual(
+      EXPECTED_ORDER.slice(1, 3),
+    );
+  });
+
   it('pages at DEFAULT_VAULT_INVENTORY_LIMIT when the query omits a limit', () => {
     const total = DEFAULT_VAULT_INVENTORY_LIMIT + 5;
     for (let i = 0; i < total; i += 1) {
@@ -725,6 +761,22 @@ describe('SqliteSecretVaultRepository.listReuse', () => {
     vault.recordSighting({ pointerId: 'reuse-solo', location: 'c.ts', kind: 'file' }, NOW);
   }
 
+  it('reads from a row position, and carries on from there by cursor', () => {
+    seedReuse();
+    const jumped = vault.listReuse({ limit: 1, offset: 2 }, NOW);
+    expect(jumped.items.map((i) => i.pointerId)).toEqual(EXPECTED_REUSE.slice(2, 3));
+
+    const after = vault.listReuse({ limit: 1, cursor: jumped.nextCursor ?? '' }, NOW);
+    expect(after.items.map((i) => i.pointerId)).toEqual(EXPECTED_REUSE.slice(3));
+  });
+
+  it('prefers a position over a cursor', () => {
+    seedReuse();
+    const first = vault.listReuse({ limit: 1 }, NOW);
+    const both = vault.listReuse({ limit: 1, cursor: first.nextCursor ?? '', offset: 0 }, NOW);
+    expect(both.items.map((i) => i.pointerId)).toEqual(EXPECTED_REUSE.slice(0, 1));
+  });
+
   it('lists exactly the reused values, most-reused first', () => {
     seedReuse();
     const res = vault.listReuse({ limit: 10 }, NOW);
@@ -862,6 +914,34 @@ describe('SqliteSecretVaultRepository.listDerefs', () => {
     }
     return { ids, reasons, hidden, cursors };
   }
+
+  it('reads from a row position under the same filter, and carries on by cursor', () => {
+    seedTrail();
+    const jumped = vault.listDerefs({ limit: 2, offset: 2 });
+    expect(jumped.items.map((i) => i.id)).toEqual(EXPECTED_VISIBLE.slice(2, 4));
+
+    const after = vault.listDerefs({ limit: 2, cursor: jumped.nextCursor ?? '' });
+    expect(after.items.map((i) => i.id)).toEqual(EXPECTED_VISIBLE.slice(4));
+
+    const wide = vault.listDerefs({ limit: 2, offset: 2, includeBatched: true });
+    expect(wide.items.map((i) => i.id)).toEqual(EXPECTED_ALL.slice(2, 4));
+  });
+
+  it('prefers a position over a cursor', () => {
+    seedTrail();
+    const first = vault.listDerefs({ limit: 2 });
+    const both = vault.listDerefs({ limit: 2, cursor: first.nextCursor ?? '', offset: 0 });
+    expect(both.items.map((i) => i.id)).toEqual(EXPECTED_VISIBLE.slice(0, 2));
+  });
+
+  it('totals the rows the filter selects, unchanged as the reader pages', () => {
+    seedTrail();
+    const walked = vault.listDerefs({ limit: 2 });
+    expect(walked.totals.derefs).toBe(EXPECTED_VISIBLE.length);
+    const later = vault.listDerefs({ limit: 2, cursor: walked.nextCursor ?? '' });
+    expect(later.totals.derefs).toBe(EXPECTED_VISIBLE.length);
+    expect(vault.listDerefs({ includeBatched: true }).totals.derefs).toBe(EXPECTED_ALL.length);
+  });
 
   it('hides the batched reasons and walks the rest newest-first, ids breaking ties', () => {
     seedTrail();

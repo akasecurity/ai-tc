@@ -7,6 +7,7 @@ export { formatDateTime } from './lib/dateFormat.ts';
 export type { IconComponent } from './lib/icons.ts';
 export { DEFAULT_LOCALE, resolveLocale } from './lib/locale.ts';
 export { compactCount, formatNumber } from './lib/numberFormat.ts';
+export * from './lib/pagination.ts';
 export { relativeTime, relativeTimeShort } from './lib/relativeTime.ts';
 export {
   BLOCKED_WINDOW_MS,
@@ -55,6 +56,11 @@ export {
   type SummaryStatItem,
   SummaryStripView,
 } from './shared/SummaryStripView.tsx';
+export {
+  type TablePageProps,
+  TablePagination,
+  type TablePaginationProps,
+} from './shared/TablePagination.tsx';
 export { TimeRangeSelect } from './shared/TimeRangeSelect.tsx';
 export { WidgetEmpty, WidgetError } from './shared/widget-state.tsx';
 

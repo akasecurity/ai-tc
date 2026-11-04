@@ -20,7 +20,12 @@
 // would pass every case below; the first case drives a component formatted
 // with a bare toLocaleString() through the same harness and requires the
 // mismatch to be reported.
-import { HarnessInventory, PolicyStatsView, SyncPanelView } from '@akasecurity/dashboard-ui';
+import {
+  HarnessInventory,
+  PolicyStatsView,
+  SyncPanelView,
+  TablePagination,
+} from '@akasecurity/dashboard-ui';
 import type {
   ActivitySession,
   ActivitySessionSummary,
@@ -228,6 +233,26 @@ describe('a de-DE reader on an en-US server', () => {
     const result = hydrate(() => findingsRoute('files'));
     expect(result.errors).toEqual([]);
     expect(result.serverHtml).toContain('title="5.678 findings"');
+  });
+
+  it('hydrates the pagination footer’s counts without a mismatch', () => {
+    const result = hydrate(() =>
+      createElement(TablePagination, {
+        itemCount: 50,
+        pageStart: 1001,
+        total: 266775,
+        noun: 'findings',
+        page: 21,
+        pageCount: 5336,
+        onPageChange: () => undefined,
+        hasPreviousPage: true,
+        hasNextPage: true,
+        locale: READER,
+      }),
+    );
+    expect(result.errors).toEqual([]);
+    expect(result.text).toContain('1.001–1.050 of 266.775 findings');
+    expect(result.text).toContain('of 5.336');
   });
 
   it('hydrates the activity list and detail times without a mismatch', () => {

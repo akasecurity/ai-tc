@@ -77,6 +77,12 @@ const cellsOf = (name: string): string[] => {
 const headers = (): string[] =>
   [...mounted.host.querySelectorAll('thead th')].map((th) => th.textContent);
 
+function pageField(): HTMLInputElement {
+  const el = mounted.host.querySelector('input[aria-label="Go to page"]');
+  if (!(el instanceof HTMLInputElement)) throw new Error('no page field');
+  return el;
+}
+
 function buttonNamed(text: string): HTMLButtonElement {
   const el = [...mounted.host.querySelectorAll('button')].find((b) => b.textContent === text);
   if (!(el instanceof HTMLButtonElement)) throw new Error(`no "${text}" button`);
@@ -114,6 +120,7 @@ function mount(props: Partial<Parameters<typeof InventoryTable>[0]>): void {
       searchNoun="inventory"
       onOpen={vi.fn()}
       renderedAt={NOW}
+      locale="en-US"
       {...props}
     />,
   );
@@ -257,13 +264,35 @@ describe('InventoryTable, a harness', () => {
     expect(mounted.host.textContent).toContain(
       `1–${String(PAGE_SIZE)} of ${String(PAGE_SIZE + 3)}`,
     );
-    expect(mounted.host.textContent).toContain('Page 1 of 2');
+    expect(pageField().value).toBe('1');
+    expect(mounted.host.textContent).toContain('of 2');
 
     const next = mounted.host.querySelector('[data-slot="pagination-next"]');
     if (next === null) throw new Error('no Next button');
     click(next);
     expect(bodyRows()).toHaveLength(3);
-    expect(mounted.host.textContent).toContain('Page 2 of 2');
+    expect(pageField().value).toBe('2');
+  });
+
+  it('formats the footer in the locale it is given', () => {
+    const many = Array.from({ length: PAGE_SIZE * 80 }, (_, i) =>
+      skill(`s${String(i).padStart(4, '0')}`),
+    );
+    mount({ rows: many, locale: 'de-DE' });
+    expect(mounted.host.textContent).toContain('1–25 of 2.000 assets');
+  });
+
+  it('jumps to a typed page and formats the counts', () => {
+    const size = PAGE_SIZE * 80;
+    const many = Array.from({ length: size }, (_, i) => skill(`s${String(i).padStart(4, '0')}`));
+    mount({ rows: many });
+    expect(mounted.host.textContent).toContain('1–25 of 2,000 assets');
+    typeInto(pageField(), '3');
+    act(() => {
+      pageField().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(mounted.host.textContent).toContain('51–75 of 2,000 assets');
+    expect(pageField().value).toBe('3');
   });
 
   it('keeps an active type pill on screen after its rows are gone, so it can be cleared', () => {

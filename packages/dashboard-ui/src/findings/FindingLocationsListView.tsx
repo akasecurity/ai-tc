@@ -23,20 +23,12 @@
 // explicitly does not reconcile. The exact count it shows on hover takes the
 // request's `locale` for the same reason.
 import type { FindingLocationSummary } from '@akasecurity/schema';
-import {
-  Badge,
-  Card,
-  cn,
-  Pagination,
-  PaginationNext,
-  PaginationPrevious,
-  PaginationStatus,
-  SeverityBadge,
-} from '@akasecurity/ui-kit';
+import { Badge, Card, cn, SeverityBadge } from '@akasecurity/ui-kit';
 import type { ReactNode } from 'react';
 
 import { compactCount, formatNumber } from '../lib/numberFormat.ts';
 import { relativeTimeShort } from '../lib/relativeTime.ts';
+import { type TablePageProps, TablePagination } from '../shared/TablePagination.tsx';
 import { findingStatusMeta } from './meta.ts';
 
 /**
@@ -172,8 +164,12 @@ export function FindingLocationsListView({
   loadingNextPage = false,
   pageStart,
   total,
+  page,
+  pageCount,
+  onPageChange,
+  pageError,
   emptyState,
-}: {
+}: TablePageProps & {
   locations: FindingLocationSummary[];
   /** The selected location's id, or '' when none is pinned. */
   activeId: string;
@@ -234,27 +230,22 @@ export function FindingLocationsListView({
           Gated on the row count, the footer carrying Previous then vanishes at
           exactly the moment it is the only way out. */}
       {onNextPage && (hasPreviousPage || hasNextPage || locations.length > 0) && (
-        <Pagination>
-          <PaginationPrevious
-            disabled={!hasPreviousPage || loadingNextPage}
-            onClick={onPreviousPage}
-          />
-          <PaginationStatus>
-            {/* An EMPTY page takes the count branch, not the range one. A page
-                can arrive empty behind a live cursor — the caller drops the
-                appended selection once paging reaches its natural position — and
-                the range then runs backwards (`52–51 of 51`), directly above the
-                Previous button that is the only way out of it. */}
-            {locations.length === 0 || total === undefined || pageStart === undefined
-              ? `${String(locations.length)} shown`
-              : `${String(pageStart)}–${String(pageStart + locations.length - 1)} of ${String(total)} locations`}
-          </PaginationStatus>
-          <PaginationNext
-            disabled={!hasNextPage || loadingNextPage}
-            loading={loadingNextPage}
-            onClick={onNextPage}
-          />
-        </Pagination>
+        <TablePagination
+          itemCount={locations.length}
+          pageStart={pageStart}
+          total={total}
+          noun="locations"
+          page={page}
+          pageCount={pageCount}
+          onPageChange={onPageChange}
+          pageError={pageError}
+          hasPreviousPage={hasPreviousPage}
+          hasNextPage={hasNextPage}
+          onPreviousPage={onPreviousPage}
+          onNextPage={onNextPage}
+          loading={loadingNextPage}
+          locale={locale}
+        />
       )}
     </Card>
   );

@@ -67,6 +67,14 @@ function pageLimit(requested: number | undefined, fallback: number): number {
   return Math.min(Math.max(1, Math.trunc(requested)), MAX_VAULT_PAGE_LIMIT);
 }
 
+/**
+ * A row position to bind as `OFFSET`. Clamped for the reason `pageLimit` is: a
+ * fractional or negative value would otherwise reach SQLite as a bind error.
+ */
+function pageOffset(requested: number | undefined): number {
+  return requested === undefined ? 0 : Math.max(0, Math.trunc(requested));
+}
+
 /** What a caller supplies when it asks for a value to be vaulted. */
 export interface VaultRowInsert {
   pointerId: string;
@@ -585,13 +593,18 @@ export class SqliteSecretVaultRepository {
    */
   listInventory(query: ListVaultInventoryQuery = {}, now = Date.now()): ListVaultInventoryResponse {
     const limit = pageLimit(query.limit, DEFAULT_VAULT_INVENTORY_LIMIT);
-    const cursor = query.cursor === undefined ? null : decodeKeysetCursor(query.cursor);
+    const offset = pageOffset(query.offset);
+    const cursor =
+      query.cursor === undefined || query.offset !== undefined
+        ? null
+        : decodeKeysetCursor(query.cursor);
 
     // Keyset pagination, expanded tuple comparison (node:sqlite has no row-value
     // syntax): strictly-older last_seen, or the same last_seen and a lower
     // pointer id.
     //
-    // What this buys over an offset, precisely: an INSERT between two page
+    // `offset` is only where a jump to another page starts; stepping from there
+    // stays on this keyset. What this buys over an offset, precisely: an INSERT between two page
     // requests cannot shift the window, so no row is skipped or repeated
     // because of one. It does NOT make the walk a snapshot, because `last_seen`
     // is not immutable — `upsert` bumps it on every repeat detection, and the
@@ -625,11 +638,12 @@ export class SqliteSecretVaultRepository {
            FROM secret_vault v
            ${where}
           ORDER BY v.last_seen DESC, v.pointer_id DESC
-          LIMIT :limit`,
+          LIMIT :limit OFFSET :offset`,
       ),
       bindParams({
         now,
         limit: limit + 1,
+        offset,
         ...(cursor === null
           ? {}
           : { cursorLastSeen: cursor.startedAtMs, cursorPointerId: cursor.id }),
@@ -661,7 +675,11 @@ export class SqliteSecretVaultRepository {
    */
   listReuse(query: ListVaultReuseQuery = {}, now = Date.now()): ListVaultReuseResponse {
     const limit = pageLimit(query.limit, DEFAULT_VAULT_INVENTORY_LIMIT);
-    const cursor = query.cursor === undefined ? null : decodeReuseCursor(query.cursor);
+    const offset = pageOffset(query.offset);
+    const cursor =
+      query.cursor === undefined || query.offset !== undefined
+        ? null
+        : decodeReuseCursor(query.cursor);
 
     // Same expanded tuple comparison as above, over (occurrence_count DESC,
     // pointer_id DESC) — this list ranks by how often a value recurs, not by
@@ -689,11 +707,12 @@ export class SqliteSecretVaultRepository {
            FROM secret_vault v
           WHERE ${REUSED_PREDICATE} ${after}
           ORDER BY v.occurrence_count DESC, v.pointer_id DESC
-          LIMIT :limit`,
+          LIMIT :limit OFFSET :offset`,
       ),
       bindParams({
         now,
         limit: limit + 1,
+        offset,
         ...(cursor === null
           ? {}
           : { cursorOccurrences: cursor.occurrences, cursorPointerId: cursor.pointerId }),
@@ -726,12 +745,17 @@ export class SqliteSecretVaultRepository {
    */
   listDerefs(query: ListVaultDerefsQuery = {}): ListVaultDerefsResponse {
     const limit = pageLimit(query.limit, DEFAULT_VAULT_DEREFS_LIMIT);
-    const cursor = query.cursor === undefined ? null : decodeKeysetCursor(query.cursor);
+    const offset = pageOffset(query.offset);
+    const cursor =
+      query.cursor === undefined || query.offset !== undefined
+        ? null
+        : decodeKeysetCursor(query.cursor);
 
     const conditions: string[] = [];
     if (query.includeBatched !== true) {
       conditions.push(`reason NOT IN ('display', 'view-render')`);
     }
+    const scope = conditions.length === 0 ? '' : `WHERE ${conditions.join(' AND ')}`;
     if (cursor !== null) {
       conditions.push('(at < :cursorAt OR (at = :cursorAt AND id < :cursorId))');
     }
@@ -753,10 +777,11 @@ export class SqliteSecretVaultRepository {
       this.db.prepare(
         `SELECT id, pointer_id, at, target, reason, outcome, grant_id, pointer_count
            FROM secret_vault_deref ${where}
-          ORDER BY at DESC, id DESC LIMIT :limit`,
+          ORDER BY at DESC, id DESC LIMIT :limit OFFSET :offset`,
       ),
       bindParams({
         limit: limit + 1,
+        offset,
         ...(cursor === null ? {} : { cursorAt: cursor.startedAtMs, cursorId: cursor.id }),
       }),
     );
@@ -774,6 +799,11 @@ export class SqliteSecretVaultRepository {
           );
 
     return {
+      // Counted on every read, as the other two lists' totals are: the footer's
+      // page count follows the latest one while the trail grows.
+      totals: {
+        derefs: countScalar(this.db, `SELECT count(*) AS n FROM secret_vault_deref ${scope}`),
+      },
       items: page.map((r) => ({
         id: r.id,
         pointerId: r.pointer_id,

@@ -1,6 +1,7 @@
 import { PageHead } from '@akasecurity/dashboard-ui';
 
 import { db } from '../../lib/db';
+import { renderLocale } from '../../lib/render-locale';
 import { renderInstant } from '../../lib/rendered-at';
 import { VaultDashboardClient } from './VaultDashboardClient';
 import { VaultLookupClient } from './VaultLookupClient';
@@ -22,7 +23,7 @@ export const metadata = { title: 'Vault' };
 // The reuse list is its OWN read rather than a filter over the inventory page:
 // reuse is a property of the whole store, and deriving it from the newest 50
 // rows would quietly under-report the values a reader most needs to see.
-export default function VaultPage() {
+export default async function VaultPage() {
   const inventory = db().secretVault.listInventory();
   const reuse = db().secretVault.listReuse();
   // Only the default (batched-hidden) variant up front. The toggle re-queries
@@ -32,6 +33,7 @@ export default function VaultPage() {
   // One instant for the whole route: every relative label below is measured
   // against it during the server render and again during hydration.
   const renderedAt = renderInstant();
+  const locale = await renderLocale();
 
   return (
     <div className="p-6">
@@ -46,6 +48,7 @@ export default function VaultPage() {
           reuse={reuse}
           derefs={derefs}
           renderedAt={renderedAt}
+          locale={locale}
         />
       </div>
     </div>

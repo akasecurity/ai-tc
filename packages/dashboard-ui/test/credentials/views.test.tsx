@@ -153,10 +153,10 @@ describe('CredentialsListView', () => {
       onStatus,
       statusCounts: { all: 40, byStatus: { rotation_overdue: 3, exposed: 5 } },
     });
-    expect(chip('All')?.textContent).toBe('All40');
-    expect(chip('Rotation overdue')?.textContent).toBe('Rotation overdue3');
+    expect(chip('All')?.textContent).toBe('All, 40');
+    expect(chip('Rotation overdue')?.textContent).toBe('Rotation overdue, 3');
     expect(chip('All')?.getAttribute('aria-pressed')).toBe('false');
-    expect(chip('Exposed')?.textContent).toBe('Exposed5');
+    expect(chip('Exposed')?.textContent).toBe('Exposed, 5');
     expect(chip('Rotation overdue')?.getAttribute('aria-pressed')).toBe('true');
     act(() => {
       chip('All')?.click();
@@ -166,6 +166,21 @@ describe('CredentialsListView', () => {
       chip('Rotation overdue')?.click();
     });
     expect(onStatus).toHaveBeenLastCalledWith('rotation_overdue');
+  });
+
+  it('shows a status that counts zero, and still filters by it', () => {
+    const onStatus = vi.fn();
+    // `byStatus` holds a number for every status, so zero is a count to show
+    // rather than a value the host has withheld.
+    list({
+      onStatus,
+      statusCounts: { all: 0, byStatus: { rotation_overdue: 0, exposed: 0 } },
+    });
+    expect(chip('Exposed')?.textContent).toBe('Exposed, 0');
+    act(() => {
+      chip('Exposed')?.click();
+    });
+    expect(onStatus).toHaveBeenLastCalledWith('exposed');
   });
 
   it('shows no chips without a status callback, and chips without counts while none are known', () => {
@@ -851,10 +866,7 @@ describe('CredentialsListView dismissed toggle', () => {
     const onDismissedChange = vi.fn();
     list({ onDismissedChange, dismissedCount: 4 });
     const toggle = button('Dismissed');
-    // The label and the count are separate nodes, laid out with a flex gap, so
-    // the glued `textContent` is a string nothing renders and no reader hears.
-    expect(toggle?.firstChild?.textContent).toBe('Dismissed');
-    expect(toggle?.querySelector('span')?.textContent).toBe('4');
+    expect(toggle?.textContent).toBe('Dismissed, 4');
     expect(toggle?.getAttribute('aria-pressed')).toBe('false');
     act(() => {
       toggle?.click();
@@ -867,6 +879,17 @@ describe('CredentialsListView dismissed toggle', () => {
       button('Dismissed')?.click();
     });
     expect(onDismissedChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it('keeps the separator for readers only, inside the count element', () => {
+    list({ onDismissedChange: vi.fn(), dismissedCount: 4 });
+    const separator = button('Dismissed')?.querySelector('span.tabular-nums > span.sr-only');
+    expect(separator?.textContent).toBe(', ');
+  });
+
+  it('shows a zero count rather than dropping it', () => {
+    list({ onDismissedChange: vi.fn(), dismissedCount: 0 });
+    expect(button('Dismissed')?.textContent).toBe('Dismissed, 0');
   });
 
   it('shows the toggle without a count when the host gives none', () => {

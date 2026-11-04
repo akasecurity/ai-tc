@@ -7,6 +7,7 @@ export { formatDateTime } from './lib/dateFormat.ts';
 export type { IconComponent } from './lib/icons.ts';
 export { DEFAULT_LOCALE, resolveLocale } from './lib/locale.ts';
 export { compactCount, formatNumber } from './lib/numberFormat.ts';
+export * from './lib/pagination.ts';
 export { relativeTime, relativeTimeShort } from './lib/relativeTime.ts';
 export {
   BLOCKED_WINDOW_MS,
@@ -25,6 +26,7 @@ export {
   type TimeRange,
   type TimeRangeOption,
 } from './lib/timeRanges.ts';
+export { type PagedRunOptions, usePagedRun } from './lib/usePagedRun.ts';
 // `CLOCK_TICK_MS` is public because a host's own guards have to advance time by
 // the interval this hook actually runs on — web-ui's clock-liveness suite reads
 // it rather than restating 30s, so retuning the tick cannot leave a test
@@ -55,6 +57,11 @@ export {
   type SummaryStatItem,
   SummaryStripView,
 } from './shared/SummaryStripView.tsx';
+export {
+  type TablePageProps,
+  TablePagination,
+  type TablePaginationProps,
+} from './shared/TablePagination.tsx';
 export { TimeRangeSelect } from './shared/TimeRangeSelect.tsx';
 export { WidgetEmpty, WidgetError } from './shared/widget-state.tsx';
 

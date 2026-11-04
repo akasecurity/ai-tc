@@ -101,7 +101,7 @@ beforeAll(async () => {
   await seedFixture();
 }, SEED_TIMEOUT_MS);
 
-afterAll(() => {
+afterAll(async () => {
   // Cleanup sits in the `finally` because vitest runs afterAll even when
   // beforeAll THREW (measured, not assumed). On that path the invariant below
   // reads a store that was never seeded and throws in turn — so outside a
@@ -111,7 +111,7 @@ afterAll(() => {
     // The shared-fixture invariant, checked where a writing test cannot dodge
     // it by running after the totals case. Reads through the memoised handle,
     // so it opens nothing.
-    const props = renderPage();
+    const props = await renderPage();
     expect(props.inventory.totals.values).toBe(SEEDED_VALUES);
     expect(props.derefs.hiddenBatched).toBe(BATCHED_DEREFS);
   } finally {
@@ -143,8 +143,8 @@ function findClient(node: ReactNode): ReactElement<ClientProps> | null {
 }
 
 /** Call the route and return the props it hands the dashboard client. */
-function renderPage(): ClientProps {
-  const client = findClient(VaultPage());
+async function renderPage(): Promise<ClientProps> {
+  const client = findClient(await VaultPage());
   // Asserted, never assumed: a miss here means the tree moved, and every prop
   // assertion downstream would go red naming a value instead of the structure.
   expect(client).not.toBeNull();
@@ -284,8 +284,8 @@ describe('the vault route hands down first pages, not whole tables', () => {
     expect(SURFACED_DEREFS).toBeGreaterThan(DEFAULT_VAULT_DEREFS_LIMIT);
   });
 
-  it('caps each list at one page and says there is more', () => {
-    const props = renderPage();
+  it('caps each list at one page and says there is more', async () => {
+    const props = await renderPage();
 
     expect(props.inventory.items).toHaveLength(DEFAULT_VAULT_INVENTORY_LIMIT);
     expect(props.inventory.nextCursor).not.toBeNull();
@@ -295,8 +295,8 @@ describe('the vault route hands down first pages, not whole tables', () => {
     expect(props.derefs.nextCursor).not.toBeNull();
   });
 
-  it('reports the whole-store totals alongside the capped pages', () => {
-    const props = renderPage();
+  it('reports the whole-store totals alongside the capped pages', async () => {
+    const props = await renderPage();
 
     // The counts the section headings speak for cover the store, so they must
     // not shrink to the page the reader is looking at.
@@ -306,8 +306,8 @@ describe('the vault route hands down first pages, not whole tables', () => {
 });
 
 describe('the vault route wires each read to the prop that needs it', () => {
-  it('is a fixture the two orderings disagree on', () => {
-    const props = renderPage();
+  it('is a fixture the two orderings disagree on', async () => {
+    const props = await renderPage();
 
     // The control for the wiring cases below: the inventory's page and the
     // reuse list's page must not be the same rows in the same order, or both
@@ -317,8 +317,8 @@ describe('the vault route wires each read to the prop that needs it', () => {
     );
   });
 
-  it('leads the inventory with the newest value', () => {
-    const props = renderPage();
+  it('leads the inventory with the newest value', async () => {
+    const props = await renderPage();
 
     expect(props.inventory.items[0]?.pointerId).toBe(NEWEST_POINTER);
     // The most-reused value is also the OLDEST, so it is the last of 55 rows and
@@ -327,8 +327,8 @@ describe('the vault route wires each read to the prop that needs it', () => {
     expect(props.inventory.items.map((e) => e.pointerId)).not.toContain(OLDEST_POINTER);
   });
 
-  it('leads the reuse list with the most-reused value, wherever it sits in time', () => {
-    const props = renderPage();
+  it('leads the reuse list with the most-reused value, wherever it sits in time', async () => {
+    const props = await renderPage();
 
     expect(props.reuse.items[0]?.pointerId).toBe(OLDEST_POINTER);
     expect(props.reuse.items[0]?.occurrences).toBe(OLDEST_OCCURRENCES);
@@ -375,8 +375,8 @@ describe('the vault route wires each read to the prop that needs it', () => {
     );
   });
 
-  it('hides the batched render reasons from the trail and counts them whole', () => {
-    const props = renderPage();
+  it('hides the batched render reasons from the trail and counts them whole', async () => {
+    const props = await renderPage();
 
     expect(props.derefs.items.map((r) => r.reason)).not.toContain('display');
     expect(props.derefs.items.map((r) => r.reason)).not.toContain('view-render');

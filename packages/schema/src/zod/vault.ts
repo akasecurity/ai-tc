@@ -269,7 +269,8 @@ export type VaultInventoryEntry = z.infer<typeof VaultInventoryEntry>;
 // every query behind them put together.
 //
 // Every shape below follows the findings/activity list convention (`limit` +
-// opaque `cursor` in, `items` + `totals` + `nextCursor` out) with one deliberate
+// opaque `cursor` in, plus an `offset` to jump to a page, and `items` + `totals` +
+// `nextCursor` out) with one deliberate
 // departure: NO `.meta({ id })` on the responses either, per the file header —
 // nothing about the vault belongs on a public API surface.
 //
@@ -292,6 +293,10 @@ export const ListVaultInventoryQuery = z.object({
   limit: z.coerce.number().int().min(1).max(MAX_VAULT_PAGE_LIMIT).optional(),
   // Opaque; names the last row of the page just served.
   cursor: z.string().optional(),
+  // A row position to read from, for jumping to a page instead of stepping to
+  // it. Takes precedence over `cursor`, and the page's `nextCursor` carries on
+  // from wherever it lands.
+  offset: z.coerce.number().int().min(0).optional(),
 });
 export type ListVaultInventoryQuery = z.infer<typeof ListVaultInventoryQuery>;
 
@@ -312,6 +317,10 @@ export type ListVaultInventoryResponse = z.infer<typeof ListVaultInventoryRespon
 export const ListVaultReuseQuery = z.object({
   limit: z.coerce.number().int().min(1).max(MAX_VAULT_PAGE_LIMIT).optional(),
   cursor: z.string().optional(),
+  // A row position to read from, for jumping to a page instead of stepping to
+  // it. Takes precedence over `cursor`, and the page's `nextCursor` carries on
+  // from wherever it lands.
+  offset: z.coerce.number().int().min(0).optional(),
 });
 export type ListVaultReuseQuery = z.infer<typeof ListVaultReuseQuery>;
 
@@ -332,10 +341,16 @@ export const ListVaultDerefsQuery = z.object({
   includeBatched: z.boolean().optional(),
   limit: z.coerce.number().int().min(1).max(MAX_VAULT_PAGE_LIMIT).optional(),
   cursor: z.string().optional(),
+  // A row position to read from, for jumping to a page instead of stepping to
+  // it. Takes precedence over `cursor`, and the page's `nextCursor` carries on
+  // from wherever it lands.
+  offset: z.coerce.number().int().min(0).optional(),
 });
 export type ListVaultDerefsQuery = z.infer<typeof ListVaultDerefsQuery>;
 
 export const ListVaultDerefsResponse = z.object({
+  // Rows this filter selects across the whole trail, not just this page.
+  totals: z.object({ derefs: z.number().int().nonnegative() }),
   items: z.array(VaultDeref),
   nextCursor: z.string().nullable(),
   // Display/view-render rows the query hid, over the WHOLE trail rather than

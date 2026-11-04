@@ -599,9 +599,10 @@ export class SqliteFindingsRepository
     // store is written by processes this read does not coordinate with, and an
     // offset skips or repeats a row whenever a write reorders one between
     // pages. compareFindingGroupOrder is a total order, so "strictly after the
-    // cursor" always names exactly one position.
+    // cursor" always names exactly one position. `offset` is only where a jump to
+    // another page starts; stepping from there stays on the cursor.
     const cursor = query.cursor === undefined ? null : decodeGroupCursor(query.cursor);
-    const start = cursor === null ? 0 : firstAfter(sorted, cursor);
+    const start = query.offset ?? (cursor === null ? 0 : firstAfter(sorted, cursor));
     const page = sorted.slice(start, start + limit);
     // From the page, BEFORE any deep-link append: the appended row is out of
     // sort order, and minting the cursor from it would skip everything between
@@ -736,7 +737,8 @@ export class SqliteFindingsRepository
       accumulator.add(row);
       if (!matchesInstanceFilters(row, opts)) continue;
       total += 1;
-      if (!isPastCursor(row)) continue;
+      // `total` is this row's 1-based rank in the filtered scope.
+      if (query.offset === undefined ? !isPastCursor(row) : total <= query.offset) continue;
       if (items.length < limit) {
         items.push(toInstanceDetail(row));
         last = row;
@@ -847,7 +849,7 @@ export class SqliteFindingsRepository
     }
     sorted.sort(compareLocationOrder);
 
-    const start = cursor === null ? 0 : firstLocationAfter(sorted, cursor);
+    const start = query.offset ?? (cursor === null ? 0 : firstLocationAfter(sorted, cursor));
     const page = sorted.slice(start, start + limit);
     // Minted from the last row of the PAGE, before the selection below is
     // appended — that one is out of sort order, so resuming from it would skip

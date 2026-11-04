@@ -69,6 +69,7 @@ export function HarnessInventory({
       searchNoun="inventory"
       onOpen={onOpen}
       renderedAt={renderedAt}
+      locale={locale}
     >
       <HarnessEvents events={events} renderedAt={renderedAt} locale={locale} />
     </InventoryTable>

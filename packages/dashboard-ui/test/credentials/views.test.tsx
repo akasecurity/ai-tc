@@ -85,6 +85,7 @@ const dialogButton = (label: string) =>
 
 function list(overrides: Partial<CredentialsListViewProps> = {}) {
   const props: CredentialsListViewProps = {
+    locale: 'en-US',
     items: [ITEM],
     total: 1,
     search: '',
@@ -264,6 +265,22 @@ describe('CredentialsListView', () => {
       button('Export')?.click();
     });
     expect(props.onExport).toHaveBeenCalledTimes(1);
+  });
+
+  it('hands the footer its counts, its page and its locale', () => {
+    list({
+      total: 266775,
+      pageStart: 1001,
+      hasNextPage: true,
+      hasPreviousPage: true,
+      page: 21,
+      pageCount: 5336,
+      onPageChange: vi.fn(),
+      locale: 'de-DE',
+    });
+    expect(text()).toContain('1.001–1.001 of 266.775 credentials');
+    expect(text()).toContain('of 5.336');
+    expect(mounted.host.querySelector('input[aria-label="Go to page"]')).not.toBeNull();
   });
 
   it('pages, and shows where the page sits in the whole result', () => {

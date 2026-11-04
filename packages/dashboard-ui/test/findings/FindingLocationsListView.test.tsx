@@ -36,6 +36,21 @@ function render(props: Partial<Parameters<typeof FindingLocationsListView>[0]> =
 }
 
 describe('FindingLocationsListView', () => {
+  it('hands the footer its counts, its page and its locale', () => {
+    const html = render({
+      pageStart: 1001,
+      total: 266775,
+      page: 21,
+      pageCount: 5336,
+      onPageChange: vi.fn(),
+      onNextPage: vi.fn(),
+      locale: 'de-DE',
+    });
+    expect(html).toContain('1.001–1.001 of 266.775 locations');
+    expect(html).toContain('of 5.336');
+    expect(html).toContain('aria-label="Go to page"');
+  });
+
   it('renders every fold a location row carries', () => {
     const html = render();
     expect(html).toContain('acme/api'); // the repo, as context
@@ -152,7 +167,7 @@ describe('FindingLocationsListView', () => {
     // render `52–51 of 51 locations` — pageStart to pageStart-1 — directly above
     // the button that is the only way out.
     const status = /pagination-status[^>]*>([^<]*)</.exec(html)?.[1];
-    expect(status).toBe('0 shown');
+    expect(status).toBe('0 of 51 locations');
   });
 
   it('states the range it is showing when the page has rows', () => {

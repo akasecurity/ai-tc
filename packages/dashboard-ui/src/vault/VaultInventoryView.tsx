@@ -2,10 +2,6 @@
 import type { VaultInventoryEntry } from '@akasecurity/schema';
 import {
   Button,
-  Pagination,
-  PaginationNext,
-  PaginationPrevious,
-  PaginationStatus,
   Table,
   TableBody,
   TableCell,
@@ -16,9 +12,10 @@ import {
 
 import { relativeTime } from '../lib/relativeTime.ts';
 import { ScrubbedValue } from '../shared/ScrubbedValue.tsx';
+import { type TablePageProps, TablePagination } from '../shared/TablePagination.tsx';
 import { RevealToModelBadge, SightingKindChip } from './atoms.tsx';
 
-export interface VaultInventoryViewProps {
+export interface VaultInventoryViewProps extends TablePageProps {
   entries: VaultInventoryEntry[];
   // Owner-surface reveal by row id; omitting it renders the table read-only.
   onReveal?: (pointerId: string) => void;
@@ -37,6 +34,11 @@ export interface VaultInventoryViewProps {
   loadingNextPage?: boolean;
   // 1-based position of this window's first row in the whole list.
   pageStart?: number | undefined;
+  /**
+   * The locale the footer's counts are formatted in: the one the host resolved
+   * for this request. Required for the reason `renderedAt` is. See ../lib/locale.ts.
+   */
+  locale: string;
   // Vaulted values across the whole store, not just this page.
   total?: number | undefined;
   /**
@@ -73,6 +75,11 @@ export function VaultInventoryView({
   loadingNextPage = false,
   pageStart,
   total,
+  page,
+  pageCount,
+  onPageChange,
+  pageError,
+  locale,
   renderedAt,
 }: VaultInventoryViewProps) {
   // An empty page the reader PAGED INTO keeps its pager, because Previous is the
@@ -126,26 +133,22 @@ export function VaultInventoryView({
         </Table>
       )}
       {onNextPage ? (
-        <Pagination>
-          <PaginationPrevious
-            disabled={!hasPreviousPage || loadingNextPage}
-            onClick={onPreviousPage}
-          />
-          <PaginationStatus>
-            {total === undefined || pageStart === undefined
-              ? `${String(entries.length)} shown`
-              : // An empty page has no range to name — `pageStart + length - 1`
-                // renders it backwards ("51–50 of 51").
-                isEmpty
-                ? `0 of ${String(total)} values`
-                : `${String(pageStart)}–${String(pageStart + entries.length - 1)} of ${String(total)} values`}
-          </PaginationStatus>
-          <PaginationNext
-            disabled={!hasNextPage || loadingNextPage}
-            loading={loadingNextPage}
-            onClick={onNextPage}
-          />
-        </Pagination>
+        <TablePagination
+          itemCount={entries.length}
+          pageStart={pageStart}
+          total={total}
+          noun="values"
+          page={page}
+          pageCount={pageCount}
+          onPageChange={onPageChange}
+          pageError={pageError}
+          hasPreviousPage={hasPreviousPage}
+          hasNextPage={hasNextPage}
+          onPreviousPage={onPreviousPage}
+          onNextPage={onNextPage}
+          loading={loadingNextPage}
+          locale={locale}
+        />
       ) : (
         hasNextPage && (
           <p className="mt-4 text-center text-xs text-text-3">

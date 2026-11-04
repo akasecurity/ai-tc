@@ -521,6 +521,10 @@ export const ListFindingTypesQuery = z.object({
   includeId: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(MAX_FINDING_TYPES_LIMIT).optional(),
   cursor: z.string().optional(),
+  // A row position to read from, for jumping to a page instead of stepping to
+  // it. Takes precedence over `cursor`, and the page's `nextCursor` carries on
+  // from wherever it lands.
+  offset: z.coerce.number().int().min(0).optional(),
 });
 export type ListFindingTypesQuery = z.infer<typeof ListFindingTypesQuery>;
 
@@ -644,6 +648,10 @@ export const ListFindingInstancesQuery = z.object({
   from: z.iso.datetime().optional(),
   limit: z.coerce.number().int().min(1).max(MAX_FLAT_FINDINGS_LIMIT).optional(),
   cursor: z.string().optional(),
+  // A row position to read from, for jumping to a page instead of stepping to
+  // it. Takes precedence over `cursor`, and the page's `nextCursor` carries on
+  // from wherever it lands.
+  offset: z.coerce.number().int().min(0).optional(),
 });
 export type ListFindingInstancesQuery = z.infer<typeof ListFindingInstancesQuery>;
 
@@ -773,6 +781,10 @@ export const ListFindingLocationsQuery = z.object({
   includeId: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(MAX_FINDING_LOCATIONS_LIMIT).optional(),
   cursor: z.string().optional(),
+  // A row position to read from, for jumping to a page instead of stepping to
+  // it. Takes precedence over `cursor`, and the page's `nextCursor` carries on
+  // from wherever it lands.
+  offset: z.coerce.number().int().min(0).optional(),
 });
 export type ListFindingLocationsQuery = z.infer<typeof ListFindingLocationsQuery>;
 

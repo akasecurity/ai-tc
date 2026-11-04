@@ -210,6 +210,7 @@ function mount(over: Record<string, unknown> = {}): void {
           repo: '',
           file: '',
           renderedAt: Date.parse('2026-01-02T00:00:00.000Z'),
+          locale: 'en-US',
           deployment: null,
           overview: { findings: 0, open: 0, handled: 0, resolved: 0, dismissed: 0 },
           view: 'grouped',
@@ -257,6 +258,27 @@ const panel = (): ParentNode => {
 const typeList = (): ParentNode => panelCards()[0] as ParentNode;
 const panelNext = () => byText('button[data-slot="pagination-next"]', 'Next', panel());
 const panelPrev = () => byText('button[data-slot="pagination-previous"]', 'Previous', panel());
+const fieldIn = (parent: ParentNode): HTMLInputElement => {
+  const el = parent.querySelector('input[aria-label="Go to page"]');
+  if (!(el instanceof HTMLInputElement)) throw new Error('no page field');
+  return el;
+};
+const jumpIn = async (parent: ParentNode, page: number) => {
+  const input = fieldIn(parent);
+  await act(async () => {
+    // A property descriptor's `set`, applied with an explicit receiver below.
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+    if (setter === undefined) throw new Error('no value setter');
+    Reflect.apply(setter, input, [String(page)]);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await Promise.resolve();
+  });
+  await act(async () => {
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await Promise.resolve();
+  });
+};
 const clickPanelNext = async () => {
   const button = panelNext();
   await act(async () => {
@@ -338,6 +360,28 @@ describe('By-type view — a server re-render mid-fetch', () => {
     expect(container.textContent).not.toContain('MASK-stale-1');
     expect(container.textContent).toContain('MASK-g1');
   });
+
+  it('drops an in-flight jump the same way', async () => {
+    let release: ((r: ListFindingInstancesResponse) => void) | undefined;
+    loadMoreFindingInstances.mockReturnValue(
+      new Promise<ListFindingInstancesResponse>((resolve) => {
+        release = resolve;
+      }),
+    );
+    mount({ instances: { ...pageOf(['f1'], 'cursor-1'), totals: { findings: 500 } } });
+    await jumpIn(panel(), 7);
+    expect(loadMoreFindingInstances).toHaveBeenCalledTimes(1);
+
+    mount({ instances: pageOf(['g1'], null) });
+
+    await act(async () => {
+      release?.(pageOf(['stale-1'], null));
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).not.toContain('MASK-stale-1');
+    expect(container.textContent).toContain('MASK-g1');
+  });
 });
 
 describe('By-type view — load-more pairs the cursor with the term it was minted under', () => {
@@ -370,6 +414,31 @@ describe('By-type view — load-more pairs the cursor with the term it was minte
   });
 });
 
+describe('By-type view — the type list pages on its own', () => {
+  it('leaves the appended selected type out of the range', () => {
+    const items = Array.from({ length: 51 }, (_, i) => type(`rule/${String(i)}`));
+    mount({ types: { ...TYPES, items, totals: { findings: 84, types: 214 } } });
+
+    expect(typeList().textContent).toContain('1–50 of 214 types');
+  });
+
+  it('reads a jumped-to page of types from its row position', async () => {
+    loadMoreFindingTypes.mockResolvedValue({
+      ...TYPES,
+      totals: { findings: 84, types: 120 },
+      items: [type('rule/far')],
+    });
+    mount({ types: { ...TYPES, totals: { findings: 84, types: 120 } } });
+
+    await jumpIn(typeList(), 3);
+
+    const query = loadMoreFindingTypes.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(query.offset).toBe(100);
+    expect(fieldIn(typeList()).value).toBe('3');
+    expect(typeList().textContent).toContain('of 120 types');
+  });
+});
+
 describe('By-type view — the findings panel pages on its own', () => {
   it('fetches the next page once, then serves the way back from cache', async () => {
     loadMoreFindingInstances.mockResolvedValue(pageOf(['f3', 'f4'], null));
@@ -390,6 +459,267 @@ describe('By-type view — the findings panel pages on its own', () => {
     // Paging is not navigation — it must not touch the URL, or every step would
     // become a history entry and re-run the whole route.
     expect(push).not.toHaveBeenCalled();
+  });
+
+  // 500 findings at 50 a page: ten pages, of which the mount holds only the first.
+  const LONG = { ...pageOf(['f1', 'f2'], 'cursor-1'), totals: { findings: 500 } };
+
+  const panelField = () => fieldIn(panel());
+  const jumpTo = (page: number) => jumpIn(panel(), page);
+
+  it('reads a jumped-to page from its row position, keeping the scope', async () => {
+    loadMoreFindingInstances.mockResolvedValue({
+      ...pageOf(['f9'], 'cursor-9'),
+      totals: { findings: 500 },
+    });
+    mount({ instances: LONG });
+
+    await jumpTo(7);
+
+    const query = loadMoreFindingInstances.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(query.offset).toBe(300);
+    expect(query.cursor).toBeUndefined();
+    expect(query.subtype).toEqual([AWS]);
+    expect(container.textContent).toContain('MASK-f9');
+    expect(panelField().value).toBe('7');
+    expect(panel().textContent).toContain('301–301 of 500 findings');
+  });
+
+  it('carries on by cursor after a jump, and reads the page before it by position', async () => {
+    loadMoreFindingInstances.mockResolvedValueOnce(pageOf(['f9'], 'cursor-9'));
+    mount({ instances: LONG });
+    await jumpTo(7);
+
+    loadMoreFindingInstances.mockResolvedValueOnce(pageOf(['f10'], 'cursor-10'));
+    await clickPanelNext();
+    const forward = loadMoreFindingInstances.mock.calls[1]?.[0] as Record<string, unknown>;
+    expect(forward.cursor).toBe('cursor-9');
+    expect(forward.offset).toBeUndefined();
+    expect(panelField().value).toBe('8');
+
+    // Page 7 is held, so that step back reads nothing.
+    click(panelPrev());
+    expect(panelField().value).toBe('7');
+    expect(loadMoreFindingInstances).toHaveBeenCalledTimes(2);
+
+    // Page 6 is not, and there is no cursor that reaches it.
+    loadMoreFindingInstances.mockResolvedValueOnce(pageOf(['f8'], 'cursor-8'));
+    const previous = panelPrev();
+    await act(async () => {
+      previous?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    const back = loadMoreFindingInstances.mock.calls[2]?.[0] as Record<string, unknown>;
+    expect(back.offset).toBe(250);
+    expect(panelField().value).toBe('6');
+  });
+
+  it('stays put when the list has shrunk past the page', async () => {
+    loadMoreFindingInstances.mockResolvedValue(pageOf([], null));
+    mount({ instances: LONG });
+
+    await jumpTo(7);
+
+    expect(container.textContent).toContain('MASK-f1');
+    expect(panelField().value).toBe('1');
+  });
+
+  it('keeps the server’s first page on the way back to it', async () => {
+    loadMoreFindingInstances.mockResolvedValue(pageOf(['f9'], 'cursor-9'));
+    mount({ instances: LONG });
+    await jumpTo(7);
+    expect(loadMoreFindingInstances).toHaveBeenCalledTimes(1);
+
+    await jumpTo(1);
+
+    expect(loadMoreFindingInstances).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('MASK-f1');
+    expect(panelField().value).toBe('1');
+    // Next from there carries on from the first page's own cursor.
+    loadMoreFindingInstances.mockResolvedValue(pageOf(['f3'], null));
+    await clickPanelNext();
+    const query = loadMoreFindingInstances.mock.calls[1]?.[0] as Record<string, unknown>;
+    expect(query.cursor).toBe('cursor-1');
+  });
+
+  it('says so when a read fails, and stays put', async () => {
+    loadMoreFindingInstances.mockRejectedValue(new Error('locked'));
+    mount({ instances: LONG });
+
+    await jumpTo(7);
+
+    expect(panelField().value).toBe('1');
+    expect(panel().querySelector('[role="alert"]')?.textContent).toBe(
+      'That page of findings could not be read.',
+    );
+    expect(container.textContent).toContain('MASK-f1');
+  });
+
+  it('says so when Next fails, and clears it on the next move', async () => {
+    loadMoreFindingInstances.mockRejectedValueOnce(new Error('locked'));
+    mount({ instances: LONG });
+    await clickPanelNext();
+    expect(panel().querySelector('[role="alert"]')?.textContent).toBe(
+      'The next page of findings could not be read.',
+    );
+
+    loadMoreFindingInstances.mockResolvedValueOnce(pageOf(['f3'], null));
+    await clickPanelNext();
+    expect(panel().querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it('says so when the list has shrunk past the page', async () => {
+    loadMoreFindingInstances.mockResolvedValue(pageOf([], null));
+    mount({ instances: LONG });
+
+    await jumpTo(7);
+
+    expect(panel().querySelector('[role="alert"]')?.textContent).toBe(
+      'That page of findings is no longer there.',
+    );
+  });
+
+  it('follows the total of the latest read', async () => {
+    loadMoreFindingInstances.mockResolvedValue({
+      ...pageOf(['f3'], 'cursor-2'),
+      totals: { findings: 900 },
+    });
+    mount({ instances: LONG });
+
+    await clickPanelNext();
+
+    expect(panel().textContent).toContain('51–51 of 900 findings');
+    expect(panel().textContent).toContain('of 18');
+  });
+
+  it('numbers a page the same whichever way the reader reached it', async () => {
+    const read = (ids: string[], cursor: string) => ({
+      ...pageOf(ids, cursor),
+      totals: { findings: 500 },
+    });
+    const long = Array.from({ length: 50 }, (_, i) => `r${String(i)}`);
+    mount({ instances: read(long, 'cursor-1') });
+    expect(panel().textContent).toContain('1–50 of 500 findings');
+
+    loadMoreFindingInstances.mockResolvedValueOnce(read(['s1'], 'cursor-2'));
+    await clickPanelNext();
+    expect(panel().textContent).toContain('51–51 of 500 findings');
+
+    loadMoreFindingInstances.mockResolvedValueOnce(read(['t1'], 'cursor-7'));
+    await jumpTo(7);
+    loadMoreFindingInstances.mockResolvedValueOnce(read(['s1'], 'cursor-2'));
+    await jumpTo(2);
+    expect(panel().textContent).toContain('51–51 of 500 findings');
+  });
+
+  it('closes an open drawer when stepping to a held page', async () => {
+    loadMoreFindingInstances.mockResolvedValue(pageOf(['f3'], null));
+    mount({ instances: LONG });
+    await clickPanelNext();
+    const open = () =>
+      [...document.querySelectorAll('[role="dialog"]')].some((el) => !container.contains(el));
+    click(
+      byText('tbody tr', 'MASK-f3', panel())?.querySelector('button, [role="button"]') ??
+        byText('tbody tr', 'MASK-f3', panel()),
+    );
+    expect(open(), 'the row did not open a drawer').toBe(true);
+
+    // Back and forward over held pages: the selection must not survive the trip
+    // and reopen the drawer on the row it came from.
+    await act(async () => {
+      panelPrev()?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    await clickPanelNext();
+
+    expect(container.textContent).toContain('MASK-f3');
+    expect(open()).toBe(false);
+  });
+
+  it('closes an open drawer once a jump lands', async () => {
+    loadMoreFindingInstances.mockResolvedValue(pageOf(['f9'], 'cursor-9'));
+    mount({ instances: LONG, deepLinkedInstance: instance('f1') });
+    const open = () =>
+      [...document.querySelectorAll('[role="dialog"]')].some((el) => !container.contains(el));
+    expect(open()).toBe(true);
+
+    await jumpTo(7);
+
+    expect(open()).toBe(false);
+  });
+
+  it('keeps the forward pages when stepping back from a jump', async () => {
+    const read = (ids: string[], cursor: string) => ({
+      ...pageOf(ids, cursor),
+      totals: { findings: 500 },
+    });
+    loadMoreFindingInstances.mockResolvedValueOnce(read(['f9'], 'cursor-9'));
+    mount({ instances: LONG });
+    await jumpTo(7);
+    loadMoreFindingInstances.mockResolvedValueOnce(read(['f8'], 'cursor-8'));
+    const previous = panelPrev();
+    await act(async () => {
+      previous?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(panelField().value).toBe('6');
+    expect(loadMoreFindingInstances).toHaveBeenCalledTimes(2);
+
+    // Page 7 was kept, so this step reads nothing.
+    await clickPanelNext();
+    expect(panelField().value).toBe('7');
+    expect(container.textContent).toContain('MASK-f9');
+    expect(loadMoreFindingInstances).toHaveBeenCalledTimes(2);
+  });
+
+  it('drops a row already shown when a later page repeats it', async () => {
+    loadMoreFindingInstances.mockResolvedValue(pageOf(['f2', 'f3'], null));
+    mount();
+    await clickPanelNext();
+
+    const rows = [...container.querySelectorAll('tbody tr')].map((row) => row.textContent);
+    expect(rows.some((text) => text.includes('MASK-f3'))).toBe(true);
+    expect(rows.some((text) => text.includes('MASK-f2'))).toBe(false);
+  });
+
+  it('stays put when a later page repeats everything, and takes its cursor', async () => {
+    loadMoreFindingInstances.mockResolvedValue(pageOf(['f1', 'f2'], null));
+    mount({ instances: LONG });
+    await clickPanelNext();
+
+    expect(panelField().value).toBe('1');
+    expect(panel().querySelector('[role="alert"]')?.textContent).toBe(
+      'The rest of findings moved while you were reading it.',
+    );
+    expect(panelNext()?.hasAttribute('disabled')).toBe(true);
+  });
+
+  it('keeps an open drawer when the move does not happen', async () => {
+    loadMoreFindingInstances.mockResolvedValue(pageOf([], null));
+    mount({ instances: LONG, deepLinkedInstance: instance('f1') });
+    const open = () =>
+      [...document.querySelectorAll('[role="dialog"]')].some((el) => !container.contains(el));
+    expect(open()).toBe(true);
+
+    await act(async () => {
+      fieldIn(panel()).focus();
+      await Promise.resolve();
+    });
+    await jumpTo(7);
+
+    expect(open()).toBe(true);
+  });
+
+  it('replays a held page without reading', async () => {
+    loadMoreFindingInstances.mockResolvedValue(pageOf(['f3', 'f4'], 'cursor-2'));
+    mount({ instances: LONG });
+    await clickPanelNext();
+    expect(loadMoreFindingInstances).toHaveBeenCalledTimes(1);
+
+    await jumpTo(1);
+
+    expect(container.textContent).toContain('MASK-f1');
+    expect(loadMoreFindingInstances).toHaveBeenCalledTimes(1);
   });
 
   it('carries the pinned type into the page it fetches', async () => {
@@ -520,6 +850,37 @@ describe('findings client — the By-location view', () => {
     // 97 is the locations read's count; the panel's own facets say 4.
     expect(popover?.textContent).toContain('97');
     expect(popover?.textContent).not.toContain('4');
+  });
+
+  it('leaves the appended selected location out of the range', () => {
+    const items = Array.from({ length: 51 }, (_, i) =>
+      location({ id: `acme%2Fapi/${String(i)}`, file: `f${String(i)}.ts` }),
+    );
+    mountFiles({
+      locations: {
+        ...locationsPage(items, 'loc-cursor-1'),
+        totals: { findings: 24, locations: 214 },
+      },
+      selectedLocation: items[0],
+    });
+
+    expect(typeList().textContent).toContain('1–50 of 214 locations');
+  });
+
+  it('reads a jumped-to page of locations from its row position', async () => {
+    loadMoreFindingLocations.mockResolvedValue(locationsPage([LOCATIONS[1] as never], null));
+    mountFiles({
+      locations: {
+        ...locationsPage(LOCATIONS, 'loc-cursor-1'),
+        totals: { findings: 24, locations: 120 },
+      },
+    });
+
+    await jumpIn(typeList(), 3);
+
+    const query = loadMoreFindingLocations.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(query.offset).toBe(100);
+    expect(fieldIn(typeList()).value).toBe('3');
   });
 
   it('pages the panel with the pinned pair and the whole filter set', async () => {

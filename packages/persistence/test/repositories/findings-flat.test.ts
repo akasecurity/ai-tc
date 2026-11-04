@@ -202,6 +202,59 @@ describe('SqliteFindingsRepository.listFindingInstances', () => {
       expect(second.facets).toEqual(first.facets);
     });
 
+    it('reads from a row position, and carries on from there by cursor', async () => {
+      seedMany(25);
+      const all = await db.findings.listFindingInstances({ limit: 25 });
+      const ids = all.items.map((i) => i.id);
+
+      const jumped = await db.findings.listFindingInstances({ limit: 10, offset: 10 });
+      expect(jumped.items.map((i) => i.id)).toEqual(ids.slice(10, 20));
+      expect(jumped.totals.findings).toBe(25);
+
+      const after = await db.findings.listFindingInstances({
+        limit: 10,
+        cursor: jumped.nextCursor ?? '',
+      });
+      expect(after.items.map((i) => i.id)).toEqual(ids.slice(20));
+      expect(after.nextCursor).toBeNull();
+    });
+
+    it('counts a position among the rows the filters keep', async () => {
+      seedMany(25);
+      const kept = await db.findings.listFindingInstances({ limit: 25, repo: 'acme/api' });
+      record({
+        occurredAt: new Date(Date.UTC(2027, 0, 1)).toISOString(),
+        sourceTool: 'claude-code',
+        ruleId: 'rule-0',
+        repo: 'acme/other',
+      });
+      const jumped = await db.findings.listFindingInstances({
+        limit: 5,
+        offset: 5,
+        repo: 'acme/api',
+      });
+      expect(jumped.items.map((i) => i.id)).toEqual(kept.items.slice(5, 10).map((i) => i.id));
+    });
+
+    it('prefers a position over a cursor', async () => {
+      seedMany(12);
+      const first = await db.findings.listFindingInstances({ limit: 3 });
+      const both = await db.findings.listFindingInstances({
+        limit: 3,
+        cursor: first.nextCursor ?? '',
+        offset: 0,
+      });
+      expect(both.items.map((i) => i.id)).toEqual(first.items.map((i) => i.id));
+    });
+
+    it('answers a position past the end with an empty last page', async () => {
+      seedMany(4);
+      const res = await db.findings.listFindingInstances({ limit: 3, offset: 30 });
+      expect(res.items).toEqual([]);
+      expect(res.nextCursor).toBeNull();
+      expect(res.totals.findings).toBe(4);
+    });
+
     it('restarts from the top on an undecodable cursor', async () => {
       seedMany(6);
       const fresh = await db.findings.listFindingInstances({ limit: 3 });
@@ -555,6 +608,46 @@ describe('SqliteFindingsRepository.listFindingLocations', () => {
         expect(res.items).toHaveLength(3);
       },
     );
+  });
+
+  describe('offset', () => {
+    function seedFiles(): void {
+      for (const file of ['a.ts', 'b.ts', 'c.ts', 'd.ts', 'e.ts']) {
+        record({
+          occurredAt: new Date(Date.UTC(2026, 0, 1)).toISOString(),
+          sourceTool: 'claude-code',
+          ruleId: 'rule-0',
+          repo: 'acme/api',
+          filePath: file,
+        });
+      }
+    }
+
+    it('reads from a row position and carries on from there by cursor', async () => {
+      seedFiles();
+      const ids = (await db.findings.listFindingLocations({})).items.map((l) => l.id);
+      expect(ids).toHaveLength(5);
+
+      const jumped = await db.findings.listFindingLocations({ limit: 2, offset: 2 });
+      expect(jumped.items.map((l) => l.id)).toEqual(ids.slice(2, 4));
+
+      const after = await db.findings.listFindingLocations({
+        limit: 2,
+        cursor: jumped.nextCursor ?? '',
+      });
+      expect(after.items.map((l) => l.id)).toEqual(ids.slice(4));
+    });
+
+    it('prefers a position over a cursor', async () => {
+      seedFiles();
+      const first = await db.findings.listFindingLocations({ limit: 2 });
+      const both = await db.findings.listFindingLocations({
+        limit: 2,
+        cursor: first.nextCursor ?? '',
+        offset: 0,
+      });
+      expect(both.items.map((l) => l.id)).toEqual(first.items.map((l) => l.id));
+    });
   });
 
   describe('includeId', () => {
@@ -939,5 +1032,44 @@ describe('delivery state', () => {
     expect(listed).toBeDefined();
     const found = await db.findings.findingInstance(listed?.id ?? '');
     expect(found?.delivery).toEqual({ state: 'sent', at: epochMillisToIso(AT) });
+  });
+});
+
+describe('SqliteFindingsRepository.listFindingTypes offset', () => {
+  function seedRules(): void {
+    for (const ruleId of ['rule-a', 'rule-b', 'rule-c', 'rule-d', 'rule-e']) {
+      record({
+        occurredAt: new Date(Date.UTC(2026, 0, 1)).toISOString(),
+        sourceTool: 'claude-code',
+        ruleId,
+      });
+    }
+  }
+
+  it('reads from a row position and carries on from there by cursor', async () => {
+    seedRules();
+    const ids = (await db.findings.listFindingTypes({})).items.map((t) => t.id);
+    expect(ids).toHaveLength(5);
+
+    const jumped = await db.findings.listFindingTypes({ limit: 2, offset: 2 });
+    expect(jumped.items.map((t) => t.id)).toEqual(ids.slice(2, 4));
+    expect(jumped.totals.types).toBe(5);
+
+    const after = await db.findings.listFindingTypes({
+      limit: 2,
+      cursor: jumped.nextCursor ?? '',
+    });
+    expect(after.items.map((t) => t.id)).toEqual(ids.slice(4));
+  });
+
+  it('prefers a position over a cursor', async () => {
+    seedRules();
+    const first = await db.findings.listFindingTypes({ limit: 2 });
+    const both = await db.findings.listFindingTypes({
+      limit: 2,
+      cursor: first.nextCursor ?? '',
+      offset: 0,
+    });
+    expect(both.items.map((t) => t.id)).toEqual(first.items.map((t) => t.id));
   });
 });

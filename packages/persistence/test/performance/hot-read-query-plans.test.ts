@@ -330,7 +330,7 @@ const EXPECTED_FULL_INDEX_SCANS: Readonly<Record<string, readonly string[]>> = {
   '/activity sessionFindingsCount': [],
   '/vault listInventory': ['secret_vault', 'secret_vault'],
   '/vault listReuse': ['secret_vault', 'secret_vault'],
-  '/vault listDerefs': ['secret_vault_deref'],
+  '/vault listDerefs': ['secret_vault_deref', 'secret_vault_deref'],
 };
 
 describe('query plans of every hot dashboard read', () => {

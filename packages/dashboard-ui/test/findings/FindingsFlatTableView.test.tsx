@@ -34,6 +34,7 @@ function render(props: Partial<Parameters<typeof FindingsFlatTableView>[0]> = {}
   return renderToStaticMarkup(
     <FindingsFlatTableView
       renderedAt={RENDERED_AT}
+      locale="en-US"
       items={[instance()]}
       onSelect={vi.fn()}
       {...props}
@@ -46,6 +47,21 @@ const count = (html: string, tag: 'th' | 'td') =>
   (html.match(new RegExp(`<${tag}[\\s>]`, 'g')) ?? []).length;
 
 describe('FindingsFlatTableView', () => {
+  it('hands the footer its counts, its page and its locale', () => {
+    const html = render({
+      pageStart: 1001,
+      total: 266775,
+      page: 21,
+      pageCount: 5336,
+      onPageChange: vi.fn(),
+      onNextPage: vi.fn(),
+      locale: 'de-DE',
+    });
+    expect(html).toContain('1.001–1.001 of 266.775 findings');
+    expect(html).toContain('of 5.336');
+    expect(html).toContain('aria-label="Go to page"');
+  });
+
   it('renders the same number of header and body cells with the User column off', () => {
     const html = render();
     expect(html).not.toContain('>User<');

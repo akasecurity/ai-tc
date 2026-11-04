@@ -5,10 +5,6 @@ import {
   Badge,
   Card,
   cn,
-  Pagination,
-  PaginationNext,
-  PaginationPrevious,
-  PaginationStatus,
   SeverityBadge,
   Table,
   TableBody,
@@ -21,6 +17,7 @@ import type { ReactNode } from 'react';
 
 import { relativeTime } from '../lib/relativeTime.ts';
 import { KeyIcon } from '../shared/icons.tsx';
+import { type TablePageProps, TablePagination } from '../shared/TablePagination.tsx';
 import { ActionTag } from './ActionTag.tsx';
 import {
   CATEGORY_ICON_FALLBACK,
@@ -82,6 +79,11 @@ export function FindingsFlatTableView({
   onSelect,
   onNextPage,
   onPreviousPage,
+  page,
+  pageCount,
+  onPageChange,
+  pageError,
+  locale,
   hasNextPage = false,
   hasPreviousPage = false,
   loadingNextPage = false,
@@ -94,7 +96,7 @@ export function FindingsFlatTableView({
   pinnedType = false,
   header,
   renderedAt,
-}: {
+}: TablePageProps & {
   items: FindingInstanceDetail[];
   /** The row rendered as selected ('' for none). */
   selectedId?: string;
@@ -118,6 +120,11 @@ export function FindingsFlatTableView({
   loadingNextPage?: boolean;
   /** 1-indexed position of `items[0]` within the whole result set — needed to render "51–100 of N". Absent ⇒ falls back to "{items.length} shown". */
   pageStart?: number;
+  /**
+   * The locale the footer's counts are formatted in: the one the host resolved
+   * for this request. Required for the reason `renderedAt` is. See ../lib/locale.ts.
+   */
+  locale: string;
   /** Findings matching the filters across the whole scope, not just this page. */
   total?: number;
   isLoading?: boolean;
@@ -296,22 +303,22 @@ export function FindingsFlatTableView({
         )}
       </div>
       {onNextPage && items.length > 0 && (
-        <Pagination>
-          <PaginationPrevious
-            disabled={!hasPreviousPage || loadingNextPage}
-            onClick={onPreviousPage}
-          />
-          <PaginationStatus>
-            {total === undefined || pageStart === undefined
-              ? `${String(items.length)} shown`
-              : `${String(pageStart)}–${String(pageStart + items.length - 1)} of ${String(total)} findings`}
-          </PaginationStatus>
-          <PaginationNext
-            disabled={!hasNextPage || loadingNextPage}
-            loading={loadingNextPage}
-            onClick={onNextPage}
-          />
-        </Pagination>
+        <TablePagination
+          itemCount={items.length}
+          pageStart={pageStart}
+          total={total}
+          noun="findings"
+          page={page}
+          pageCount={pageCount}
+          onPageChange={onPageChange}
+          pageError={pageError}
+          hasPreviousPage={hasPreviousPage}
+          hasNextPage={hasNextPage}
+          onPreviousPage={onPreviousPage}
+          onNextPage={onNextPage}
+          loading={loadingNextPage}
+          locale={locale}
+        />
       )}
     </Card>
   );

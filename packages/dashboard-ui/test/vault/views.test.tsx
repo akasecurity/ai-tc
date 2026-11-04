@@ -113,6 +113,7 @@ describe('VaultInventoryView', () => {
   it('flags only rows covered by an active reveal grant', () => {
     const html = renderToStaticMarkup(
       <VaultInventoryView
+        locale="en-US"
         renderedAt={RENDERED_AT}
         entries={[
           entry({ pointerId: 'ptr-granted', revealGrantId: 'grant-1' }),
@@ -126,14 +127,18 @@ describe('VaultInventoryView', () => {
   it('names the variable a value was assigned to', () => {
     const name = ['STRIPE', 'SECRET', 'KEY'].join('_');
     const html = renderToStaticMarkup(
-      <VaultInventoryView renderedAt={RENDERED_AT} entries={[entry({ variableName: name })]} />,
+      <VaultInventoryView
+        locale="en-US"
+        renderedAt={RENDERED_AT}
+        entries={[entry({ variableName: name })]}
+      />,
     );
     expect(html).toContain(name);
   });
 
   it('renders each sighting with its location and kind chip', () => {
     const html = renderToStaticMarkup(
-      <VaultInventoryView renderedAt={RENDERED_AT} entries={[entry({})]} />,
+      <VaultInventoryView locale="en-US" renderedAt={RENDERED_AT} entries={[entry({})]} />,
     );
     expect(html).toContain('~/.claude/projects/demo/transcript.jsonl');
     expect(html).toContain('Transcript');
@@ -144,12 +149,13 @@ describe('VaultInventoryView', () => {
   it('renders row actions only when the callbacks are supplied', () => {
     const rows = [entry({ revealGrantId: 'grant-1' })];
     const readOnly = renderToStaticMarkup(
-      <VaultInventoryView renderedAt={RENDERED_AT} entries={rows} />,
+      <VaultInventoryView locale="en-US" renderedAt={RENDERED_AT} entries={rows} />,
     );
     expect(readOnly).not.toContain('Reveal</button>');
     expect(readOnly).not.toContain('Revoke grant');
     const actionable = renderToStaticMarkup(
       <VaultInventoryView
+        locale="en-US"
         renderedAt={RENDERED_AT}
         entries={rows}
         onReveal={() => undefined}
@@ -161,6 +167,7 @@ describe('VaultInventoryView', () => {
     // No revoke affordance without an active grant to revoke.
     const ungranted = renderToStaticMarkup(
       <VaultInventoryView
+        locale="en-US"
         renderedAt={RENDERED_AT}
         entries={[entry({})]}
         onReveal={() => undefined}
@@ -171,7 +178,9 @@ describe('VaultInventoryView', () => {
   });
 
   it('states the honest empty state', () => {
-    const html = renderToStaticMarkup(<VaultInventoryView renderedAt={RENDERED_AT} entries={[]} />);
+    const html = renderToStaticMarkup(
+      <VaultInventoryView locale="en-US" renderedAt={RENDERED_AT} entries={[]} />,
+    );
     expect(html).toContain('Nothing vaulted yet');
   });
 
@@ -182,6 +191,7 @@ describe('VaultInventoryView', () => {
   it('keeps the pager on an empty page the reader paged into', () => {
     const stranded = renderToStaticMarkup(
       <VaultInventoryView
+        locale="en-US"
         renderedAt={RENDERED_AT}
         entries={[]}
         hasPreviousPage={true}
@@ -209,6 +219,7 @@ describe('VaultInventoryView', () => {
   it('shows no pager on an empty first page, even when one is wired', () => {
     const fresh = renderToStaticMarkup(
       <VaultInventoryView
+        locale="en-US"
         renderedAt={RENDERED_AT}
         entries={[]}
         hasPreviousPage={false}
@@ -228,14 +239,19 @@ describe('VaultInventoryView', () => {
     const rows = [entry({ pointerId: 'ptr-a' }), entry({ pointerId: 'ptr-b' })];
     // Nothing beyond the page and no way to page: neither branch renders.
     const complete = renderToStaticMarkup(
-      <VaultInventoryView renderedAt={RENDERED_AT} entries={rows} />,
+      <VaultInventoryView locale="en-US" renderedAt={RENDERED_AT} entries={rows} />,
     );
     expect(complete).not.toContain(FOOTER);
     expect(complete).not.toContain('the rest are in the store');
     // More rows exist and there is no callback to reach them — saying so is
     // the honest render, and silence would hide the missing rows entirely.
     const truncated = renderToStaticMarkup(
-      <VaultInventoryView renderedAt={RENDERED_AT} entries={rows} hasNextPage={true} />,
+      <VaultInventoryView
+        locale="en-US"
+        renderedAt={RENDERED_AT}
+        entries={rows}
+        hasNextPage={true}
+      />,
     );
     expect(truncated).not.toContain(FOOTER);
     expect(truncated).toContain('Showing the first 2 values — the rest are in the store.');
@@ -245,6 +261,7 @@ describe('VaultInventoryView', () => {
     const rows = [entry({ pointerId: 'ptr-a' }), entry({ pointerId: 'ptr-b' })];
     const more = renderToStaticMarkup(
       <VaultInventoryView
+        locale="en-US"
         renderedAt={RENDERED_AT}
         entries={rows}
         hasNextPage={true}
@@ -261,6 +278,7 @@ describe('VaultInventoryView', () => {
     // pager a vanishing Next would also remove the reader's way back.
     const done = renderToStaticMarkup(
       <VaultInventoryView
+        locale="en-US"
         renderedAt={RENDERED_AT}
         entries={rows}
         hasNextPage={false}
@@ -282,6 +300,7 @@ describe('VaultInventoryView', () => {
     const rows = [entry({ pointerId: 'ptr-a' }), entry({ pointerId: 'ptr-b' })];
     const first = renderToStaticMarkup(
       <VaultInventoryView
+        locale="en-US"
         renderedAt={RENDERED_AT}
         entries={rows}
         hasNextPage={true}
@@ -295,6 +314,7 @@ describe('VaultInventoryView', () => {
 
     const second = renderToStaticMarkup(
       <VaultInventoryView
+        locale="en-US"
         renderedAt={RENDERED_AT}
         entries={rows}
         hasNextPage={true}
@@ -313,6 +333,7 @@ describe('VaultInventoryView', () => {
   it('disables the footer button while a page is in flight', () => {
     const html = renderToStaticMarkup(
       <VaultInventoryView
+        locale="en-US"
         renderedAt={RENDERED_AT}
         entries={[entry({})]}
         hasNextPage={true}
@@ -328,6 +349,7 @@ describe('VaultInventoryView', () => {
     // hold for a button that is disabled whatever the caller passes.
     const idle = renderToStaticMarkup(
       <VaultInventoryView
+        locale="en-US"
         renderedAt={RENDERED_AT}
         entries={[entry({})]}
         hasNextPage={true}
@@ -344,6 +366,7 @@ describe('VaultInventoryView', () => {
     const rows = [entry({ pointerId: 'ptr-a' }), entry({ pointerId: 'ptr-b' })];
     const html = renderToStaticMarkup(
       <VaultInventoryView
+        locale="en-US"
         renderedAt={RENDERED_AT}
         entries={rows}
         hasNextPage={true}
@@ -356,6 +379,7 @@ describe('VaultInventoryView', () => {
     // With no total the view claims only what it can see.
     const untotalled = renderToStaticMarkup(
       <VaultInventoryView
+        locale="en-US"
         renderedAt={RENDERED_AT}
         entries={rows}
         hasNextPage={true}
@@ -371,6 +395,7 @@ describe('VaultReuseView', () => {
   it('shows only reused entries, ranked by occurrences, scoped to this machine', () => {
     const html = renderToStaticMarkup(
       <VaultReuseView
+        locale="en-US"
         entries={[
           entry({ pointerId: 'ptr-once', maskedMatch: 'once****MASK' }),
           entry({ pointerId: 'ptr-three', maskedMatch: 'three****MASK', occurrences: 3 }),
@@ -387,6 +412,7 @@ describe('VaultReuseView', () => {
   it('counts multi-sighting single-occurrence values as reused', () => {
     const html = renderToStaticMarkup(
       <VaultReuseView
+        locale="en-US"
         entries={[
           entry({
             sightings: [
@@ -412,16 +438,18 @@ describe('VaultReuseView', () => {
   });
 
   it('scopes the empty-state claim to this machine', () => {
-    const html = renderToStaticMarkup(<VaultReuseView entries={[]} />);
+    const html = renderToStaticMarkup(<VaultReuseView locale="en-US" entries={[]} />);
     expect(html).toContain('No reused values detected on this machine.');
   });
 
   it('states the truncation rather than the footer when the caller cannot page', () => {
     const rows = mixedReuseRows();
-    const complete = renderToStaticMarkup(<VaultReuseView entries={rows} />);
+    const complete = renderToStaticMarkup(<VaultReuseView locale="en-US" entries={rows} />);
     expect(complete).not.toContain(FOOTER);
     expect(complete).not.toContain('the rest are in the store');
-    const truncated = renderToStaticMarkup(<VaultReuseView entries={rows} hasNextPage={true} />);
+    const truncated = renderToStaticMarkup(
+      <VaultReuseView locale="en-US" entries={rows} hasNextPage={true} />,
+    );
     expect(truncated).not.toContain(FOOTER);
     // Counted over the rendered rows, like the status line below — two of the
     // three inputs survive `isReused`.
@@ -431,7 +459,13 @@ describe('VaultReuseView', () => {
   it('keeps the pager on the last page, with Next disabled', () => {
     const rows = mixedReuseRows();
     const more = renderToStaticMarkup(
-      <VaultReuseView entries={rows} hasNextPage={true} onNextPage={() => undefined} total={40} />,
+      <VaultReuseView
+        locale="en-US"
+        entries={rows}
+        hasNextPage={true}
+        onNextPage={() => undefined}
+        total={40}
+      />,
     );
     expect(more).toContain(FOOTER);
     expect(more).toContain(FOOTER_NEXT);
@@ -439,7 +473,13 @@ describe('VaultReuseView', () => {
     expect(nextDisabled(more)).toBe(false);
     expect(more).not.toContain('the rest are in the store');
     const done = renderToStaticMarkup(
-      <VaultReuseView entries={rows} hasNextPage={false} onNextPage={() => undefined} total={40} />,
+      <VaultReuseView
+        locale="en-US"
+        entries={rows}
+        hasNextPage={false}
+        onNextPage={() => undefined}
+        total={40}
+      />,
     );
     expect(done).toContain(FOOTER);
     expect(done).toContain(FOOTER_NEXT);
@@ -451,6 +491,7 @@ describe('VaultReuseView', () => {
     const rows = mixedReuseRows();
     const html = renderToStaticMarkup(
       <VaultReuseView
+        locale="en-US"
         entries={rows}
         hasNextPage={true}
         onNextPage={() => undefined}
@@ -462,7 +503,13 @@ describe('VaultReuseView', () => {
     expect(html).toContain(SPINNER);
     expect(html).toContain('Loading…');
     const idle = renderToStaticMarkup(
-      <VaultReuseView entries={rows} hasNextPage={true} onNextPage={() => undefined} total={40} />,
+      <VaultReuseView
+        locale="en-US"
+        entries={rows}
+        hasNextPage={true}
+        onNextPage={() => undefined}
+        total={40}
+      />,
     );
     expect(idle).toContain(FOOTER_NEXT);
     expect(nextDisabled(idle)).toBe(false);
@@ -475,6 +522,7 @@ describe('VaultReuseView', () => {
     // never reach its denominator by paging.
     const html = renderToStaticMarkup(
       <VaultReuseView
+        locale="en-US"
         entries={mixedReuseRows()}
         hasNextPage={true}
         onNextPage={() => undefined}
@@ -486,7 +534,12 @@ describe('VaultReuseView', () => {
     expect(html).toContain('1–2 of 40 reused values</p>');
     expect(html).not.toContain('1–3 of 40 reused values');
     const untotalled = renderToStaticMarkup(
-      <VaultReuseView entries={mixedReuseRows()} hasNextPage={true} onNextPage={() => undefined} />,
+      <VaultReuseView
+        locale="en-US"
+        entries={mixedReuseRows()}
+        hasNextPage={true}
+        onNextPage={() => undefined}
+      />,
     );
     expect(untotalled).toContain('2 shown</p>');
     expect(untotalled).not.toContain('3 shown');
@@ -497,6 +550,7 @@ describe('DerefAuditTableView', () => {
   it('hides batched rows behind a muted count line by default', () => {
     const html = renderToStaticMarkup(
       <DerefAuditTableView
+        locale="en-US"
         renderedAt={RENDERED_AT}
         rows={[deref({})]}
         hiddenBatched={4}
@@ -511,6 +565,7 @@ describe('DerefAuditTableView', () => {
   it('shows batched rows with their pointerCount under the flag', () => {
     const html = renderToStaticMarkup(
       <DerefAuditTableView
+        locale="en-US"
         renderedAt={RENDERED_AT}
         rows={[deref({ reason: 'display', pointerCount: 12 })]}
         hiddenBatched={0}
@@ -524,6 +579,7 @@ describe('DerefAuditTableView', () => {
   it('marks a refused model crossing with the prominence hook', () => {
     const html = renderToStaticMarkup(
       <DerefAuditTableView
+        locale="en-US"
         renderedAt={RENDERED_AT}
         rows={[deref({ target: 'model', reason: 'model-input', outcome: 'refused' })]}
         hiddenBatched={0}
@@ -537,6 +593,7 @@ describe('DerefAuditTableView', () => {
   it('marks a revealed model crossing and its grant prefix', () => {
     const html = renderToStaticMarkup(
       <DerefAuditTableView
+        locale="en-US"
         renderedAt={RENDERED_AT}
         rows={[
           deref({
@@ -558,6 +615,7 @@ describe('DerefAuditTableView', () => {
   it('renders a purge as a distinguished event line', () => {
     const html = renderToStaticMarkup(
       <DerefAuditTableView
+        locale="en-US"
         renderedAt={RENDERED_AT}
         rows={[deref({ reason: 'purge', outcome: 'unavailable', pointerCount: 7 })]}
         hiddenBatched={0}
@@ -573,6 +631,7 @@ describe('DerefAuditTableView', () => {
     const rows = [deref({}), deref({ id: 'second-row-id' })];
     const complete = renderToStaticMarkup(
       <DerefAuditTableView
+        locale="en-US"
         renderedAt={RENDERED_AT}
         rows={rows}
         hiddenBatched={0}
@@ -583,6 +642,7 @@ describe('DerefAuditTableView', () => {
     expect(complete).not.toContain('Showing the most recent');
     const truncated = renderToStaticMarkup(
       <DerefAuditTableView
+        locale="en-US"
         renderedAt={RENDERED_AT}
         rows={rows}
         hiddenBatched={0}
@@ -598,6 +658,7 @@ describe('DerefAuditTableView', () => {
     const rows = [deref({}), deref({ id: 'second-row-id' })];
     const more = renderToStaticMarkup(
       <DerefAuditTableView
+        locale="en-US"
         renderedAt={RENDERED_AT}
         rows={rows}
         hiddenBatched={0}
@@ -613,6 +674,7 @@ describe('DerefAuditTableView', () => {
     expect(more).not.toContain('Showing the most recent');
     const done = renderToStaticMarkup(
       <DerefAuditTableView
+        locale="en-US"
         renderedAt={RENDERED_AT}
         rows={rows}
         hiddenBatched={0}
@@ -632,6 +694,7 @@ describe('DerefAuditTableView', () => {
     const rows = [deref({}), deref({ id: 'second-row-id' })];
     const html = renderToStaticMarkup(
       <DerefAuditTableView
+        locale="en-US"
         renderedAt={RENDERED_AT}
         rows={rows}
         hiddenBatched={0}
@@ -646,6 +709,7 @@ describe('DerefAuditTableView', () => {
     expect(html).toContain('Loading…');
     const idle = renderToStaticMarkup(
       <DerefAuditTableView
+        locale="en-US"
         renderedAt={RENDERED_AT}
         rows={rows}
         hiddenBatched={0}
@@ -665,6 +729,7 @@ describe('DerefAuditTableView', () => {
     const rows = [deref({}), deref({ id: 'second-row-id' })];
     const hidden = renderToStaticMarkup(
       <DerefAuditTableView
+        locale="en-US"
         renderedAt={RENDERED_AT}
         rows={rows}
         hiddenBatched={4}
@@ -682,6 +747,7 @@ describe('DerefAuditTableView', () => {
     // page footer is untouched by that switch.
     const shown = renderToStaticMarkup(
       <DerefAuditTableView
+        locale="en-US"
         renderedAt={RENDERED_AT}
         rows={rows}
         hiddenBatched={4}
@@ -703,11 +769,13 @@ describe('raw-value hygiene', () => {
     const html = renderToStaticMarkup(
       <>
         <VaultInventoryView
+          locale="en-US"
           renderedAt={RENDERED_AT}
           entries={[entry({ revealGrantId: 'grant-1' })]}
         />
-        <VaultReuseView entries={[entry({ occurrences: 2 })]} />
+        <VaultReuseView locale="en-US" entries={[entry({ occurrences: 2 })]} />
         <DerefAuditTableView
+          locale="en-US"
           renderedAt={RENDERED_AT}
           rows={[deref({ target: 'model', reason: 'model-input', outcome: 'revealed' })]}
           hiddenBatched={2}
@@ -725,6 +793,7 @@ describe('raw-value hygiene', () => {
     const html = renderToStaticMarkup(
       <>
         <VaultInventoryView
+          locale="en-US"
           renderedAt={RENDERED_AT}
           entries={[entry({ revealGrantId: 'grant-1' })]}
           hasNextPage={true}
@@ -733,12 +802,14 @@ describe('raw-value hygiene', () => {
           total={40}
         />
         <VaultReuseView
+          locale="en-US"
           entries={[entry({ occurrences: 2 })]}
           hasNextPage={true}
           onNextPage={() => undefined}
           total={40}
         />
         <DerefAuditTableView
+          locale="en-US"
           renderedAt={RENDERED_AT}
           rows={[deref({ target: 'model', reason: 'model-input', outcome: 'revealed' })]}
           hiddenBatched={2}
@@ -755,5 +826,53 @@ describe('raw-value hygiene', () => {
     expect(html.split(FOOTER_NEXT).length - 1).toBe(3);
     expect(html).not.toMatch(RAW_AWS_KEY_ID);
     expect(html).not.toMatch(RAW_LONG_TOKEN);
+  });
+});
+
+describe('the vault footers', () => {
+  const FOOTER = {
+    pageStart: 1001,
+    total: 266775,
+    page: 21,
+    pageCount: 5336,
+    onPageChange: () => undefined,
+    onNextPage: () => undefined,
+    locale: 'de-DE',
+  };
+  const assertFooter = (html: string, noun: string) => {
+    expect(html).toContain(`1.001–1.001 of 266.775 ${noun}`);
+    expect(html).toContain('of 5.336');
+    expect(html).toContain('aria-label="Go to page"');
+  };
+
+  it('hands the inventory footer its counts, its page and its locale', () => {
+    assertFooter(
+      renderToStaticMarkup(
+        <VaultInventoryView renderedAt={RENDERED_AT} entries={[entry({})]} {...FOOTER} />,
+      ),
+      'values',
+    );
+  });
+
+  it('hands the reuse footer its counts, its page and its locale', () => {
+    assertFooter(
+      renderToStaticMarkup(<VaultReuseView entries={[entry({ occurrences: 2 })]} {...FOOTER} />),
+      'reused values',
+    );
+  });
+
+  it('hands the audit footer its counts, its page and its locale', () => {
+    assertFooter(
+      renderToStaticMarkup(
+        <DerefAuditTableView
+          renderedAt={RENDERED_AT}
+          rows={[deref({})]}
+          hiddenBatched={0}
+          showBatched={false}
+          {...FOOTER}
+        />,
+      ),
+      'resolutions',
+    );
   });
 });

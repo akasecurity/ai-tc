@@ -110,16 +110,17 @@ describe('the per-branch gate tables', () => {
     expect(prCandidatesQuery('o', 'r', 10, 'dev')).toContain('baseRefName:"dev"');
   });
 
-  // The real record: every gated branch has a table, and dev requires the one
-  // job that runs on every dev pull request.
+  // The real record: every gated branch has a table, and dev's lists the two
+  // checks a dev pull request reports.
   it('has a table in CONTRIBUTING.md for every gated branch', () => {
     const record = readFileSync(`${REPO_ROOT}/CONTRIBUTING.md`, 'utf8');
     expect(GATED_BRANCHES).toEqual(['main', 'dev']);
     for (const branch of GATED_BRANCHES) {
       expect(parseGateTable(record, branch).length).toBeGreaterThan(0);
     }
-    expect(parseGateTable(record, 'dev')).toEqual([
-      { check: 'Lint · Typecheck · Test · Build', file: 'ci.yml', enforced: true },
+    expect(parseGateTable(record, 'dev').map((r) => r.check)).toEqual([
+      'Lint · Typecheck · Test · Build',
+      'Dependency audit',
     ]);
   });
 

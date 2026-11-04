@@ -3,7 +3,7 @@ import { scan } from '@akasecurity/detections';
 import type { Rule } from '@akasecurity/schema';
 
 import type { DiagnosticSink } from './diagnostics.ts';
-import { writeDiagnosticToStderr } from './diagnostics.ts';
+import { diagnosticWriter } from './diagnostics.ts';
 import type {
   IsolatedScanner,
   IsolatedScannerFactory,
@@ -125,9 +125,20 @@ export interface GuardedScanOptions extends IsolatedScanOptions {
    * restarted, and the default sentence would claim exactly that.
    */
   degradeScope?: string | undefined;
-  /** Builds each isolated scanner this scanner uses. Omitted, {@link createIsolatedScanner}. */
+}
+
+/**
+ * What a {@link createGuardedScanner} builds its isolated scanners with and
+ * reports its lines to. Kept apart from {@link GuardedScanOptions}, which is
+ * handed unchanged to every isolated scanner it builds.
+ */
+export interface GuardedScanDependencies {
+  /** Builds each isolated scanner. Omitted, {@link createIsolatedScanner}. */
   isolatedScanner?: IsolatedScannerFactory | undefined;
-  /** Receives each diagnostic line in place of stderr. Omitted, the lines go to stderr. */
+  /**
+   * Receives each diagnostic line in place of stderr; a throw from it is
+   * dropped. Omitted, the lines go to stderr.
+   */
   diagnostics?: DiagnosticSink | undefined;
 }
 
@@ -144,10 +155,11 @@ export function createGuardedScanner(
   partition: GuardedScanPartition,
   gateway: Pick<RuleProbeGateway, 'setRuleProbeVerdict'>,
   opts?: GuardedScanOptions,
+  dependencies?: GuardedScanDependencies,
 ): GuardedScanner {
   const degradeScope = opts?.degradeScope ?? DEFAULT_DEGRADE_SCOPE;
-  const buildIsolated = opts?.isolatedScanner ?? createIsolatedScanner;
-  const write = opts?.diagnostics ?? writeDiagnosticToStderr;
+  const buildIsolated = dependencies?.isolatedScanner ?? createIsolatedScanner;
+  const write = diagnosticWriter(dependencies?.diagnostics);
   const verified = partition.verified;
   let unverified = partition.unverified;
   let isolated: IsolatedScanner | undefined =

@@ -29,7 +29,7 @@ import { computeFindingKey } from './finding-key.ts';
 import type { FingerprintKey } from './fingerprint.ts';
 import { fingerprintValue, loadOrCreateFingerprintKey, readFingerprintKey } from './fingerprint.ts';
 import { cutForForward, reviewCandidatesOf } from './forward-cut.ts';
-import type { GuardedScanner, GuardedScanOptions } from './guarded-scan.ts';
+import type { GuardedScanDependencies, GuardedScanner } from './guarded-scan.ts';
 import { createGuardedScanner } from './guarded-scan.ts';
 import type {
   IsolatedScanner,
@@ -344,11 +344,7 @@ export function createPluginRuntime(
   const blockRules = opts?.blockRules;
   const isolatedScanner = opts?.isolatedScanner;
   const diagnostics = opts?.diagnostics;
-  const guardedScanOptions: GuardedScanOptions = {
-    ...opts?.scanIsolation,
-    isolatedScanner,
-    diagnostics,
-  };
+  const scanDependencies: GuardedScanDependencies = { isolatedScanner, diagnostics };
   let rules: Rule[] = [];
   // Whether each rule's match is code or a value, over the effective ruleset —
   // rebuilt only when that ruleset is.
@@ -375,11 +371,17 @@ export function createPluginRuntime(
 
   // The scanner for this ruleset: new, or the kept one when this process keeps
   // scanners and the ruleset, the gateway, the scanner factory, the diagnostics
-  // sink and the scanner's health are all as they were. Only a ruleset with a pulled or custom-pack regex rule has a
-  // worker behind its scanner, which is what makes keeping one worthwhile.
+  // sink and the scanner's health are all as they were. Only a ruleset with a
+  // pulled or custom-pack regex rule has a worker behind its scanner, which is
+  // what makes keeping one worthwhile.
   async function scannerFor(verified: Rule[], unverified: Rule[]): Promise<GuardedScanner> {
     if (!keepScanners) {
-      return createGuardedScanner({ verified, unverified }, gateway, guardedScanOptions);
+      return createGuardedScanner(
+        { verified, unverified },
+        gateway,
+        opts?.scanIsolation,
+        scanDependencies,
+      );
     }
     const key = createHash('sha256')
       .update(JSON.stringify([verified, unverified]))
@@ -395,7 +397,12 @@ export function createPluginRuntime(
       return keptScanner.scanner;
     }
     await releaseKeptScanner();
-    const created = createGuardedScanner({ verified, unverified }, gateway, guardedScanOptions);
+    const created = createGuardedScanner(
+      { verified, unverified },
+      gateway,
+      opts?.scanIsolation,
+      scanDependencies,
+    );
     keptScanner = { key, gateway, isolatedScanner, diagnostics, scanner: created };
     return created;
   }

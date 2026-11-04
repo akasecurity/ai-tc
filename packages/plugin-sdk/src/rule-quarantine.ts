@@ -4,7 +4,7 @@ import type { Rule } from '@akasecurity/schema';
 
 import type { DataGateway } from './data-gateway.ts';
 import type { DiagnosticSink } from './diagnostics.ts';
-import { writeDiagnosticToStderr } from './diagnostics.ts';
+import { diagnosticWriter } from './diagnostics.ts';
 import { contentHashOf } from './events.ts';
 import type { IsolatedProbeOutcome } from './isolated-scan.ts';
 import { workClockMs } from './work-clock.ts';
@@ -187,14 +187,15 @@ function warnUnmeasurable(reason: string, count: number, write: DiagnosticSink):
  * path, and a store error here must not cost the caller its scan on top of the
  * hang it just absorbed. A non-regex rule has no probe key and so cannot be
  * cached; it is still reported, because the caller saw it hang. The line goes
- * to `diagnostics` when given, and to stderr otherwise.
+ * to `diagnostics` when given, and to stderr otherwise; a throw from
+ * `diagnostics` is dropped.
  */
 export async function quarantineRule(
   gateway: Pick<RuleProbeGateway, 'setRuleProbeVerdict'>,
   rule: Rule,
   worstMs: number,
   detail: string,
-  diagnostics: DiagnosticSink = writeDiagnosticToStderr,
+  diagnostics?: DiagnosticSink,
 ): Promise<void> {
   const key = ruleProbeKey(rule);
   let cached = false;
@@ -207,7 +208,7 @@ export async function quarantineRule(
       // and may hang on it once more. Better than losing this scan too.
     }
   }
-  warn(rule, 'quarantined', detail, cached, diagnostics);
+  warn(rule, 'quarantined', detail, cached, diagnosticWriter(diagnostics));
 }
 
 /**
@@ -226,7 +227,8 @@ export async function quarantineRule(
  * has no upper bound; that path is for callers that already control the rules
  * they pass (tests, tooling), never for a pulled pack.
  *
- * `opts.diagnostics` receives each line in place of stderr.
+ * `opts.diagnostics` receives each line in place of stderr; a throw from it is
+ * dropped.
  */
 export async function filterUnsafeRules(
   rules: Rule[],
@@ -241,7 +243,7 @@ export async function filterUnsafeRules(
 ): Promise<Rule[]> {
   const passBudgetMs = opts?.passBudgetMs ?? PASS_BUDGET_MS;
   const prober = opts?.prober;
-  const write = opts?.diagnostics ?? writeDiagnosticToStderr;
+  const write = diagnosticWriter(opts?.diagnostics);
   const passStart = performance.now();
   const safe: Rule[] = [];
   // Case 3 is one fact about the install rather than N facts about rules, so it

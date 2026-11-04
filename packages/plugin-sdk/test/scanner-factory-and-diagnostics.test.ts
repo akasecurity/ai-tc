@@ -28,6 +28,11 @@ const PULLED: Rule = {
   matcher: { type: 'regex', pattern: String.raw`FACTORY-TOKEN-[0-9]{6}`, flags: 'g' },
 };
 const TOKEN_TEXT = 'note FACTORY-TOKEN-123456 here';
+const OTHER: Rule = {
+  ...PULLED,
+  id: 'pulled/other-token',
+  matcher: { type: 'regex', pattern: String.raw`OTHER-TOKEN-[0-9]{6}`, flags: 'g' },
+};
 
 const START_MS = 30_000;
 
@@ -238,8 +243,12 @@ describe('the isolated scanner factory', () => {
     expect(result.findings.map((f) => f.ruleId)).toEqual(['pulled/factory-token']);
     expect(degraded).toBe(false);
     expect(built.map((entry) => entry.unverified)).toEqual([[], ['pulled/factory-token']]);
-    expect(built.every((entry) => entry.opts?.workerUrl === CRASHING_WORKER)).toBe(true);
-    expect(built.every((entry) => entry.opts?.startBudgetMs === START_MS)).toBe(true);
+    expect(built.every((entry) => entry.opts === scanIsolation)).toBe(true);
+    expect(
+      built
+        .flatMap((entry): unknown[] => Object.values(entry.opts ?? {}))
+        .filter((v) => typeof v === 'function'),
+    ).toEqual([]);
     expect(gateway.verdicts.get(ruleProbeKey(PULLED) ?? '')?.verdict).toBe('safe');
     expect(stderr.text()).toBe('');
   });
@@ -309,14 +318,21 @@ describe('the isolated scanner factory', () => {
     const gateway = fakeGateway(bundle([PULLED]), clearedByPreflight(PULLED));
     const first = scriptedFactory();
     const second = scriptedFactory();
+    const scanIsolation = { startBudgetMs: START_MS };
 
-    await captureWith(gateway, { isolatedScanner: first.factory });
-    await captureWith(gateway, { isolatedScanner: first.factory });
+    await captureWith(gateway, { isolatedScanner: first.factory, scanIsolation });
+    await captureWith(gateway, { isolatedScanner: first.factory, scanIsolation });
     expect(first.built).toHaveLength(1);
 
-    const { result } = await captureWith(gateway, { isolatedScanner: second.factory });
+    const { result } = await captureWith(gateway, {
+      isolatedScanner: second.factory,
+      scanIsolation,
+    });
     expect(result.findings.map((f) => f.ruleId)).toEqual(['pulled/factory-token']);
     expect(second.built).toHaveLength(1);
+    expect([...first.built, ...second.built].every((entry) => entry.opts === scanIsolation)).toBe(
+      true,
+    );
   });
 });
 
@@ -418,7 +434,8 @@ describe('the scan building blocks', () => {
     const scanner = createGuardedScanner(
       { verified: [], unverified: [PULLED] },
       { setRuleProbeVerdict: () => Promise.resolve() },
-      { isolatedScanner: factory, diagnostics: sink, degradeScope: 'this scan' },
+      { degradeScope: 'this scan' },
+      { isolatedScanner: factory, diagnostics: sink },
     );
     try {
       expect(await scanner.scan(TOKEN_TEXT)).toEqual([]);
@@ -465,5 +482,116 @@ describe('the scan building blocks', () => {
         '(clear it with `aka detections unquarantine`)',
     ]);
     expect(stderr.text()).toBe(`${lines[0] ?? ''}\n`);
+  });
+});
+
+describe('a diagnostics sink that throws', () => {
+  const throwingSink = (): never => {
+    throw new Error('sink failed');
+  };
+  const KEYWORD: Rule = {
+    specVersion: 1,
+    id: 'pack/keyword-marker',
+    name: 'Keyword marker',
+    category: 'custom',
+    severity: 'low',
+    matcher: { type: 'keyword', keywords: ['KEYWORD_MARKER'], caseSensitive: true },
+  };
+
+  it('leaves a scan that hit its bound with its fallback findings, degraded', async () => {
+    const setRuleProbeVerdict = vi.fn(() => Promise.resolve());
+    const { factory } = scriptedFactory({
+      scan: { status: 'timeout', culpritIndex: 0, elapsedMs: 1_500 },
+    });
+    const scanner = createGuardedScanner(
+      { verified: [KEYWORD], unverified: [PULLED] },
+      { setRuleProbeVerdict },
+      undefined,
+      { isolatedScanner: factory, diagnostics: throwingSink },
+    );
+    try {
+      const findings = await scanner.scan(`KEYWORD_MARKER ${TOKEN_TEXT}`);
+      expect(findings.map((f) => f.ruleId)).toEqual(['pack/keyword-marker']);
+      expect(scanner.degraded()).toBe(true);
+      expect(setRuleProbeVerdict).toHaveBeenCalledWith(ruleProbeKey(PULLED), 'quarantined', 1_500);
+    } finally {
+      await scanner.close();
+    }
+  });
+
+  it('leaves the runtime degraded after a scan that hit its bound', async () => {
+    const { factory } = scriptedFactory({
+      scan: { status: 'timeout', culpritIndex: 0, elapsedMs: 1_500 },
+    });
+    const gateway = fakeGateway(bundle([PULLED]), clearedByPreflight(PULLED));
+
+    const { degraded } = await captureWith(gateway, {
+      isolatedScanner: factory,
+      diagnostics: throwingSink,
+    });
+
+    expect(degraded).toBe(true);
+    expect(gateway.verdicts.get(ruleProbeKey(PULLED) ?? '')?.verdict).toBe('quarantined');
+  });
+
+  it('leaves a large input refused rather than failing the capture', async () => {
+    const { factory } = scriptedFactory({ scan: NO_WORKER });
+    const gateway = fakeGateway(bundle([PULLED]), clearedByPreflight(PULLED));
+
+    const { result } = await captureWith(gateway, {
+      isolatedScanner: factory,
+      diagnostics: throwingSink,
+      largeInput: { thresholdChars: 8, budgetMs: 2_000, startBudgetMs: START_MS },
+    });
+
+    expect(result.scanIncomplete).toBe('unavailable');
+  });
+
+  it('does not reject a pre-flight that would otherwise succeed', async () => {
+    const quarantinedKey = ruleProbeKey(PULLED) ?? '';
+    const gateway = {
+      getRuleProbeVerdict: (k: string) =>
+        Promise.resolve(
+          k === quarantinedKey ? { verdict: 'quarantined' as const, worstProbeMs: 12 } : undefined,
+        ),
+      setRuleProbeVerdict: () => Promise.resolve(),
+    };
+
+    await expect(
+      filterUnsafeRules([PULLED, OTHER], gateway, {
+        prober: { probe: () => Promise.resolve(NO_WORKER) },
+        diagnostics: throwingSink,
+      }),
+    ).resolves.toEqual([]);
+  });
+
+  it('does not replace an error already leaving the pre-flight', async () => {
+    let probes = 0;
+    const gateway = {
+      getRuleProbeVerdict: () => Promise.resolve(undefined),
+      setRuleProbeVerdict: () => Promise.resolve(),
+    };
+
+    await expect(
+      filterUnsafeRules([PULLED, OTHER], gateway, {
+        prober: {
+          probe: () => {
+            probes += 1;
+            return probes === 1
+              ? Promise.resolve(NO_WORKER)
+              : Promise.reject(new Error('probe failed'));
+          },
+        },
+        diagnostics: throwingSink,
+      }),
+    ).rejects.toThrow('probe failed');
+  });
+
+  it('does not reject quarantineRule', async () => {
+    const setRuleProbeVerdict = vi.fn(() => Promise.resolve());
+    await expect(
+      quarantineRule({ setRuleProbeVerdict }, PULLED, 5, 'hung.', throwingSink),
+    ).resolves.toBeUndefined();
+    expect(setRuleProbeVerdict).toHaveBeenCalledTimes(1);
   });
 });

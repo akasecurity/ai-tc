@@ -48,6 +48,7 @@ export {
 } from './fingerprint.ts';
 export type {
   BoundedScanRequest,
+  GuardedScanDependencies,
   GuardedScanner,
   GuardedScanOptions,
   GuardedScanPartition,

@@ -1,1 +1,2 @@
+# Read by the out-of-repo publish scan: one "<rule><TAB><path glob>" per line; "#" lines are comments.
 tailnet-ip	rules/agent-egress/fixtures/cloud-metadata-access.json

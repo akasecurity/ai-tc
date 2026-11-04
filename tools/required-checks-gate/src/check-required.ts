@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Reads which status checks branch protection actually requires on `main`, and
-// compares that against the Enforced column of CONTRIBUTING.md's gate table.
+// Reads which status checks branch protection actually requires on `main` and on
+// `dev`, and compares each against the Enforced column of that branch's gate table
+// in CONTRIBUTING.md. The exit code is the worst of the two.
 //
 // Why a job rather than a note. The required set lives in repository settings,
 // so nothing in this tree can set it and no test can read it at build time. It
@@ -31,7 +32,7 @@ import { appendFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { type GateIo, runGate } from './lib.ts';
+import { GATED_BRANCHES, type GateIo, runGate } from './lib.ts';
 
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 // Owner and repo from the runner rather than baked in: a fork with Actions
@@ -91,4 +92,6 @@ const io: GateIo = {
   },
 };
 
-process.exitCode = runGate(io, OWNER, REPO, PR_CANDIDATES);
+process.exitCode = Math.max(
+  ...GATED_BRANCHES.map((branch) => runGate(io, OWNER, REPO, PR_CANDIDATES, branch)),
+);

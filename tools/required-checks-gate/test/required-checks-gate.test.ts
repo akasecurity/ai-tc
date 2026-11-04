@@ -8,6 +8,7 @@ import {
   buildSummary,
   compare,
   GateConfigError,
+  GATED_BRANCHES,
   type GateIo,
   type GateRow,
   isFailure,
@@ -83,6 +84,99 @@ describe('parseGateTable', () => {
       'Lint · Typecheck · Test · Build',
       'Windows · Unit tests (shipped surface)',
     ]);
+  });
+});
+
+// Each gated branch has its own table, read by heading, so `dev`'s table cannot
+// contribute rows to `main`'s comparison or the other way round.
+describe('the per-branch gate tables', () => {
+  const both = [
+    table(row('main-only')),
+    table(row('dev-only')).replace('### Checks that gate `main`', '### Checks that gate `dev`'),
+  ].join('\n\n');
+
+  it('reads only the named branch section', () => {
+    expect(parseGateTable(both, 'main').map((r) => r.check)).toEqual(['main-only']);
+    expect(parseGateTable(both, 'dev').map((r) => r.check)).toEqual(['dev-only']);
+  });
+
+  it('refuses, naming the branch, when a gated branch has no table', () => {
+    expect(() => parseGateTable(table(row('A')), 'dev')).toThrow(
+      'CONTRIBUTING.md has no "### Checks that gate `dev`" section',
+    );
+  });
+
+  it('asks for pull requests based on the branch it is reading', () => {
+    expect(prCandidatesQuery('o', 'r', 10, 'dev')).toContain('baseRefName:"dev"');
+  });
+
+  // The real record: every gated branch has a table, and dev requires the one
+  // job that runs on every dev pull request.
+  it('has a table in CONTRIBUTING.md for every gated branch', () => {
+    const record = readFileSync(`${REPO_ROOT}/CONTRIBUTING.md`, 'utf8');
+    expect(GATED_BRANCHES).toEqual(['main', 'dev']);
+    for (const branch of GATED_BRANCHES) {
+      expect(parseGateTable(record, branch).length).toBeGreaterThan(0);
+    }
+    expect(parseGateTable(record, 'dev')).toEqual([
+      { check: 'Lint · Typecheck · Test · Build', file: 'ci.yml', enforced: true },
+    ]);
+  });
+
+  it('runs the comparison against the branch it is given', () => {
+    const queries: string[] = [];
+    const io: GateIo = {
+      readRecord: () => both,
+      graphql: (query) => {
+        queries.push(query);
+        return queries.length === 1
+          ? JSON.stringify({
+              data: {
+                repository: {
+                  pullRequests: {
+                    nodes: [
+                      {
+                        number: 3,
+                        commits: {
+                          nodes: [
+                            {
+                              commit: {
+                                statusCheckRollup: { contexts: { nodes: [{ name: 'dev-only' }] } },
+                              },
+                            },
+                          ],
+                        },
+                      },
+                    ],
+                  },
+                },
+              },
+            })
+          : JSON.stringify({
+              data: {
+                repository: {
+                  pullRequest: {
+                    commits: {
+                      nodes: [
+                        {
+                          commit: {
+                            statusCheckRollup: {
+                              contexts: { nodes: [{ name: 'dev-only', isRequired: true }] },
+                            },
+                          },
+                        },
+                      ],
+                    },
+                  },
+                },
+              },
+            });
+      },
+      print: () => undefined,
+      appendSummary: () => undefined,
+    };
+    expect(runGate(io, 'o', 'r', 10, 'dev')).toBe(0);
+    expect(queries[0]).toContain('baseRefName:"dev"');
   });
 });
 
@@ -543,7 +637,7 @@ describe('runGate', () => {
     });
     expect(code).toBe(0);
     expect(printed.join('\n')).toContain(
-      'Required checks match the record: 1 enforced, 1 outstanding.',
+      'Required checks on main match the record: 1 enforced, 1 outstanding.',
     );
     // The step summary is the only place a maintainer reads this, so a run that
     // decided something must have written one.
@@ -587,7 +681,7 @@ describe('runGate', () => {
       graphql: () => JSON.stringify({ data: { repository: { pullRequests: { nodes: [] } } } }),
     });
     expect(code).toBe(2);
-    expect(printed.join('\n')).toContain('reported every check in the table');
+    expect(printed.join('\n')).toContain('reported every check in its table');
   });
 });
 
@@ -657,7 +751,7 @@ describe('runGate against a partial rollup', () => {
       appendSummary: () => undefined,
     };
     expect(runGate(io, 'o', 'r', 10)).toBe(2);
-    expect(printed.join('\n')).toContain('reported every check in the table');
+    expect(printed.join('\n')).toContain('reported every check in its table');
     // And emphatically NOT the drift wording, which would be a wrong diagnosis.
     expect(printed.join('\n')).not.toContain('does not require them');
   });

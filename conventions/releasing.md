@@ -196,9 +196,14 @@ unpublished`). Re-running it replaces the draft's files, skips npm if the versio
   refuses the file replacement that follows. The action always edits first.
 
 The Release on the `bin-latest` tag is one of those older ones, and it is retired: frozen on its
-aka 0.9.21 files and never edited, because any edit locks it. Nothing in the workflow touches it, and
-nothing in the tree links to it (`packages/eslint-config/test/install-links.test.js`). Links already
-out in the world keep serving 0.9.21. The tag still moves, and only the tag is in use.
+aka 0.9.21 files. Nothing in the workflow touches it, and nothing in the tree links to it
+(`packages/eslint-config/test/install-links.test.js`). Links already out in the world keep serving
+0.9.21. The tag still moves, and only the tag is in use.
+
+**Never edit that Release, not even its title or notes.** An edit locks it, and a locked Release's tag
+cannot move: the push is refused with `GH013` and `Cannot update this protected ref`. The one-liners
+and both version checks would then stay on the old tag, and every binary release would fail at the
+move. The lock cannot be undone. Never publish a Release on any tag that has to keep moving.
 
 `release-binaries.yml` follows the same draft order with no npm step, and it moves `bin-latest`
 between the draft and the publish, so that a job that dies at the move can still be re-run.

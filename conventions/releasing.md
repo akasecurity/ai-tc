@@ -311,6 +311,11 @@ release channel** from the `cli-v*` npm publish:
   here, because every release is flagged pre-release and seven tag prefixes share one Releases
   list, so its election could land on a plugin release, and a Release that took new files on each
   version cannot exist under immutable releases. The READMEs link the `bin-v*` releases instead.
+- **The version checks run ahead of the Release.** The tag moves before the draft is published, so
+  if `Publish GitHub Release` fails after the move, `brew livecheck` and Scoop's `checkver` name a
+  version with no downloads until the job is re-run. Installs do not move: `brew upgrade` and
+  `scoop update` follow the tap and the bucket, which change only after the release job has passed,
+  and the one-liners take the newest published release.
 - **`bin-latest` only moves FORWARD.** The workflow's concurrency group is per tag, so nothing
   else orders two releases: a re-run of an older tag's failed release, or two tags pushed out of
   order, would otherwise move it back. `Decide whether bin-latest moves forward` reads the

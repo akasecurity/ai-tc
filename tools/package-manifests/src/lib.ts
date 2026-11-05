@@ -44,6 +44,11 @@ export function downloadBase(repo: string, version: string): string {
  * What the two version-tracking probes read: the CLI's manifest at the `bin-latest`
  * tag, which each binary release moves forward and which names that release's version.
  * A file on a moving Release cannot serve here, because a published Release is locked.
+ *
+ * The tag moves before the Release is published, so if that publish fails, these probes name a
+ * version with no downloads until the job is re-run. Only `brew livecheck` and Scoop's `checkver`
+ * read them: `brew upgrade` and `scoop update` follow the tap and the bucket, which do not change
+ * until the release job has passed.
  */
 export function versionProbeUrl(repo: string): string {
   return `https://raw.githubusercontent.com/${repo}/bin-latest/cli/package.json`;

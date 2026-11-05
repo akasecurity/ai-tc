@@ -1027,7 +1027,9 @@ describe('resolveConfigInventory — a config path that is not a regular file', 
         const scan = resolveConfigInventory({ cwd: project, homeDir: home });
 
         expect(scan.configFiles.find((f) => f.path === path)).toBeUndefined();
-        expect(scan.errors.find((e) => e.source === path)?.reason).toContain('not a regular file');
+        const errors = scan.errors.filter((e) => e.source === path);
+        expect(errors).toHaveLength(1);
+        expect(errors[0]?.reason).toContain('not a regular file');
       });
     },
   );

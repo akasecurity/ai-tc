@@ -13,7 +13,7 @@ import type {
 import { mcpServerIdentityKey, skillIdentityKey, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { maskText } from './mask.ts';
-import { readRegularFile } from './regular-file.ts';
+import { notRegularFile, readRegularFile } from './regular-file.ts';
 import { remoteWithoutCredentials, resolveRepoIdentity } from './repo.ts';
 
 /**
@@ -483,15 +483,23 @@ function collectConfigFiles(scan: ConfigScanResult, claudeDir: string, cwd: stri
 }
 
 // The row skeleton every source shares: basename, mtime, kind. Returns
-// undefined when the path doesn't exist (a non-event, not an error).
+// undefined when the path doesn't exist (a non-event, not an error). `nonFile`
+// says what a path that is not a regular file gets: a row (`keep`), no row
+// (`skip`, for a file another collector reports), or no row and an error
+// (`report`).
 function configFileEntry(
   scan: ConfigScanResult,
   path: string,
   scope: ConfigScope,
   kind: string,
+  nonFile: 'keep' | 'skip' | 'report',
 ): ConfigFileScanEntry | undefined {
   try {
     const stat = statSync(path);
+    if (nonFile !== 'keep' && !stat.isFile()) {
+      if (nonFile === 'report') scan.errors.push({ source: path, reason: notRegularFile(path) });
+      return undefined;
+    }
     return { name: basename(path), path, scope, kind, updatedAt: stat.mtime.toISOString() };
   } catch (err) {
     if (!isAbsent(err)) scan.errors.push({ source: path, reason: message(err) });
@@ -505,10 +513,9 @@ function settingsConfigFile(
   scope: ConfigScope,
   kind: string,
 ): void {
-  const entry = configFileEntry(scan, path, scope, kind);
+  const entry = configFileEntry(scan, path, scope, kind, 'skip');
   if (!entry) return;
   const raw = readOptional(scan, path, false);
-  if (!isRegularFile(path)) return;
   if (raw !== undefined) {
     try {
       const parsed: unknown = JSON.parse(raw);
@@ -532,10 +539,9 @@ function memoryConfigFile(
   scope: ConfigScope,
   kind: string,
 ): void {
-  const entry = configFileEntry(scan, path, scope, kind);
+  const entry = configFileEntry(scan, path, scope, kind, 'report');
   if (!entry) return;
   const raw = readOptional(scan, path);
-  if (!isRegularFile(path)) return;
   if (raw !== undefined) {
     // Line count only — memory content never leaves the machine's file. A
     // trailing newline terminates the last line rather than starting a new
@@ -548,10 +554,9 @@ function memoryConfigFile(
 }
 
 function mcpJsonConfigFile(scan: ConfigScanResult, path: string): void {
-  const entry = configFileEntry(scan, path, 'project', 'MCP servers');
+  const entry = configFileEntry(scan, path, 'project', 'MCP servers', 'skip');
   if (!entry) return;
   const raw = readOptional(scan, path, false);
-  if (!isRegularFile(path)) return;
   if (raw !== undefined) {
     try {
       const parsed: unknown = JSON.parse(raw);
@@ -582,7 +587,7 @@ function mcpJsonConfigFile(scan: ConfigScanResult, path: string): void {
 // subdirectories — so count .md files recursively, and never count what the
 // harness doesn't load (.DS_Store, dotfiles, stray non-.md files).
 function dirConfigFile(scan: ConfigScanResult, path: string, kind: string, noun: string): void {
-  const entry = configFileEntry(scan, path, 'project', kind);
+  const entry = configFileEntry(scan, path, 'project', kind, 'keep');
   if (!entry) return;
   try {
     const count = countMarkdownFiles(path, 0);
@@ -874,14 +879,6 @@ function readOptional(scan: ConfigScanResult, path: string, record = true): stri
   } catch (err) {
     if (record && !isAbsent(err)) scan.errors.push({ source: path, reason: message(err) });
     return undefined;
-  }
-}
-
-function isRegularFile(path: string): boolean {
-  try {
-    return statSync(path).isFile();
-  } catch {
-    return false;
   }
 }
 

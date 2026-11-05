@@ -231,9 +231,12 @@ between the draft and the publish, so that a job that dies at the move can still
 condition that runs them for a pull request into `main`, a push to `main` and its merge queue, and
 skips them elsewhere; a skipped job reports as passing, so the full set is what a promotion into
 `main` has to pass, and a `dev` or release-branch pull request pays for the quick job alone.
+A pull request carrying the `full-ci` label opts into the full set on any base `ci.yml`
+matches; CodeQL honours the same label.
 `required-checks.test.js` and `packaged-cli-egress.test.js` pin that condition through
 `expectMainTier` in `test/helpers/workflow.js`, so a narrower one fails CI. CodeQL carries the
-same condition plus its schedule; `build-binaries.yml` filters its pull requests to `main`.
+same condition plus its schedule and pushes to `dev`, which give a labelled `dev` pull request a
+baseline to compare against; `build-binaries.yml` filters its pull requests to `main`.
 
 Two things are outside the tree and stay human steps. Branch protection for release branches is
 a repository setting — until it names the same required checks, a release-base pull request
@@ -241,8 +244,8 @@ REPORTS them and can still be merged red. A classic protection pattern uses the 
 rules as a workflow filter — `*` stops at a `/` — so `release/*` covers `release/stable` and not
 `release/0.9/stable`; the protection-side spelling that matches what `ci.yml`'s `release/**`
 matches is `release/**/*`. A branch named bare `release` matches neither list and gets no CI at
-all, so release branches are named `release/<something>`. On the push side, the dependency audit,
-CodeQL and the internal-path guard still run post-merge for `main` only.
+all, so release branches are named `release/<something>`. On the push side, the dependency audit
+and the internal-path guard still run post-merge for `main` only, and CodeQL for `main` and `dev`.
 `sync-release-branches.yml` rebases every `release/**` branch not named for a version
 (`release/<digit>…`) onto `dev` after each push to `dev`,
 and opens an issue for a rebase that conflicts.

@@ -26,10 +26,11 @@
 // it, which is why the tri-state below cannot collapse to a boolean:
 // `unignored` is an explicit re-include that overrides a caller's own default
 // skip floor, and `unmatched` is no opinion at all.
-import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import ignore, { type Ignore } from 'ignore';
+
+import { readRegularFile } from './regular-file.ts';
 
 /**
  * One ignore file's rules, plus how much of the walk's current directory path
@@ -65,7 +66,7 @@ export function readIgnoreLayer(
   anchorLen: number,
 ): IgnoreLayer | undefined {
   try {
-    return { matcher: ignore().add(readFileSync(join(dir, filename), 'utf8')), anchorLen };
+    return { matcher: ignore().add(readRegularFile(join(dir, filename))), anchorLen };
   } catch {
     return undefined;
   }

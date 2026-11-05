@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { resolveConfigInventory } from '../src/config-inventory.ts';
 import { bundledDetections } from '../src/index.ts';
 import { maskText } from '../src/mask.ts';
+import { withNamedPipe } from './helpers/named-pipe.ts';
 
 let home: string;
 let project: string;
@@ -1000,5 +1001,19 @@ describe('resolveConfigInventory — CLAUDE_CONFIG_DIR', () => {
 
     const scan = resolveConfigInventory({ cwd: project, homeDir: home, claudeConfigDir: file });
     expect(scan.errors.map((e) => e.source)).toContain(file);
+  });
+});
+
+describe('resolveConfigInventory — a config path that is not a regular file', () => {
+  it.skipIf(process.platform === 'win32')('records a named pipe rather than reading it', () => {
+    const path = join(project, '.mcp.json');
+    const servers = JSON.stringify({ mcpServers: { piped: { command: 'mcp-piped' } } });
+
+    withNamedPipe(path, servers, () => {
+      const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+
+      expect(scan.mcpServers.find((s) => s.name === 'piped')).toBeUndefined();
+      expect(scan.errors.find((e) => e.source === path)?.reason).toContain('not a regular file');
+    });
   });
 });

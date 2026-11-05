@@ -1,7 +1,9 @@
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, sep } from 'node:path';
 
 import { canonicalRepoUrl, namesARemoteAddress } from '@akasecurity/persistence';
+
+import { readRegularFile } from './regular-file.ts';
 
 // Repo attribution for a captured event. The Security dashboard's Top-Sources
 // (by repo) and the recommendation engine both group findings by `repo`, but the
@@ -432,9 +434,11 @@ function resolveGitContext(root: string): GitContext | undefined {
   return { configPath: join(commonGitDir, 'config'), headRoot };
 }
 
+const MAX_GIT_METADATA_BYTES = 1024 * 1024;
+
 function safeRead(path: string): string | undefined {
   try {
-    return readFileSync(path, 'utf8');
+    return readRegularFile(path, MAX_GIT_METADATA_BYTES);
   } catch {
     return undefined;
   }

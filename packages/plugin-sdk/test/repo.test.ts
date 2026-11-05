@@ -17,6 +17,7 @@ import {
   resolveRepoNwo,
   resolveWorktreeRoot,
 } from '../src/repo.ts';
+import { withNamedPipe } from './helpers/named-pipe.ts';
 
 let root: string;
 
@@ -627,5 +628,55 @@ describe('resolveHeadRoot', () => {
   it('is the CHECKOUT root for a worktree of a bare repo (common dir is not a .git)', () => {
     const checkout = bareRepoWorktree(ORIGIN('https://github.com/org/payments-api.git'));
     expect(resolveHeadRoot(checkout)).toBe(checkout);
+  });
+});
+
+describe('git metadata that is not a small regular file', () => {
+  const REMOTE = 'https://github.com/acme/elsewhere.git';
+
+  function elsewhere(): string {
+    const dir = join(root, 'elsewhere');
+    mkdirSync(dir);
+    writeFileSync(join(dir, 'config'), ORIGIN(REMOTE));
+    return dir;
+  }
+
+  function checkout(): string {
+    const dir = join(root, 'checkout');
+    mkdirSync(dir);
+    return dir;
+  }
+
+  it.skipIf(process.platform === 'win32')('does not read a named pipe at .git', () => {
+    const pointer = `gitdir: ${elsewhere()}`;
+    const dir = checkout();
+
+    withNamedPipe(join(dir, '.git'), pointer, () => {
+      expect(resolveRepoIdentity(dir)?.url).not.toBe(REMOTE);
+    });
+  });
+
+  it.skipIf(process.platform === 'win32')('does not read a named pipe at the config', () => {
+    const dir = checkout();
+    mkdirSync(join(dir, '.git'));
+
+    withNamedPipe(join(dir, '.git', 'config'), ORIGIN(REMOTE), () => {
+      expect(resolveRepoIdentity(dir)?.url).not.toBe(REMOTE);
+    });
+  });
+
+  it('does not read a .git pointer over the size limit', () => {
+    const dir = checkout();
+    const padding = 'x'.repeat(1024 * 1024);
+    writeFileSync(join(dir, '.git'), `gitdir: ${elsewhere()}\n${padding}\n`);
+
+    expect(resolveRepoIdentity(dir)?.url).not.toBe(REMOTE);
+  });
+
+  it('still follows a pointer to a directory outside the checkout', () => {
+    const dir = checkout();
+    writeFileSync(join(dir, '.git'), `gitdir: ${elsewhere()}\n`);
+
+    expect(resolveRepoIdentity(dir)?.url).toBe(REMOTE);
   });
 });

@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { readdirSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 
@@ -13,6 +13,7 @@ import type {
 import { mcpServerIdentityKey, skillIdentityKey, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { maskText } from './mask.ts';
+import { readRegularFile } from './regular-file.ts';
 import { remoteWithoutCredentials, resolveRepoIdentity } from './repo.ts';
 
 /**
@@ -866,7 +867,7 @@ function dedupeMcpServers(servers: McpServerScanEntry[]): McpServerScanEntry[] {
 // false, for a file another collector already reads and records.
 function readOptional(scan: ConfigScanResult, path: string, record = true): string | undefined {
   try {
-    return readFileSync(path, 'utf8');
+    return readRegularFile(path);
   } catch (err) {
     if (record && !isAbsent(err)) scan.errors.push({ source: path, reason: message(err) });
     return undefined;

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { canonicalRepoUrl } from '@akasecurity/persistence';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { resolveInventoryContext } from '../src/inventory-resolver.ts';
 import {
   remoteWithoutCredentials,
@@ -17,6 +18,7 @@ import {
   resolveRepoNwo,
   resolveWorktreeRoot,
 } from '../src/repo.ts';
+import { withNamedPipe } from './helpers/named-pipe.ts';
 
 let root: string;
 
@@ -25,7 +27,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(root, { recursive: true, force: true });
+  removeTree(root);
 });
 
 // Lay down a `.git` directory with the given config body at `dir`.
@@ -627,5 +629,77 @@ describe('resolveHeadRoot', () => {
   it('is the CHECKOUT root for a worktree of a bare repo (common dir is not a .git)', () => {
     const checkout = bareRepoWorktree(ORIGIN('https://github.com/org/payments-api.git'));
     expect(resolveHeadRoot(checkout)).toBe(checkout);
+  });
+});
+
+describe('git metadata that is not a small regular file', () => {
+  const REMOTE = 'https://github.com/acme/elsewhere.git';
+
+  function elsewhere(): string {
+    const dir = join(root, 'elsewhere');
+    mkdirSync(dir);
+    writeFileSync(join(dir, 'config'), ORIGIN(REMOTE));
+    return dir;
+  }
+
+  function checkout(): string {
+    const dir = join(root, 'checkout');
+    mkdirSync(dir);
+    return dir;
+  }
+
+  it.skipIf(process.platform === 'win32')('does not read a named pipe at .git', () => {
+    const pointer = `gitdir: ${elsewhere()}`;
+    const dir = checkout();
+
+    withNamedPipe(join(dir, '.git'), pointer, () => {
+      expect(resolveRepoIdentity(dir)?.url).toBe(posixPath(dir));
+    });
+  });
+
+  it.skipIf(process.platform === 'win32')('does not read a named pipe at the config', () => {
+    const dir = checkout();
+    mkdirSync(join(dir, '.git'));
+
+    withNamedPipe(join(dir, '.git', 'config'), ORIGIN(REMOTE), () => {
+      expect(resolveRepoIdentity(dir)?.url).toBe(posixPath(dir));
+    });
+  });
+
+  it('does not read a .git pointer over the size limit', () => {
+    const dir = checkout();
+    const padding = 'x'.repeat(1024 * 1024);
+    writeFileSync(join(dir, '.git'), `gitdir: ${elsewhere()}\n${padding}\n`);
+
+    expect(resolveRepoIdentity(dir)?.url).toBe(posixPath(dir));
+  });
+
+  describe('a config at the size limit', () => {
+    const LIMIT = 1024 * 1024;
+
+    function checkoutWithConfigOf(bytes: number): string {
+      const dir = checkout();
+      mkdirSync(join(dir, '.git'));
+      const config = ORIGIN(REMOTE);
+      writeFileSync(join(dir, '.git', 'config'), config + '#'.repeat(bytes - config.length));
+      return dir;
+    }
+
+    it('identifies the repository by its remote at exactly the limit', () => {
+      expect(resolveRepoIdentity(checkoutWithConfigOf(LIMIT))?.url).toBe(REMOTE);
+    });
+
+    it('identifies the repository by its path one byte over the limit', () => {
+      const dir = checkoutWithConfigOf(LIMIT + 1);
+
+      expect(resolveRepoIdentity(dir)?.url).toBe(posixPath(dir));
+    });
+  });
+
+  it('still follows a pointer to a directory outside the checkout', () => {
+    const dir = checkout();
+    writeFileSync(join(dir, '.git'), `gitdir: ${elsewhere()}\n`);
+
+    expect(resolveRepoIdentity(dir)?.url).toBe(REMOTE);
   });
 });

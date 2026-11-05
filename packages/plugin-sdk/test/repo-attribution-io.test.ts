@@ -4,7 +4,7 @@
 //
 // It needs its own file because the seam is a `vi.mock` of `node:fs`, which is
 // file-scoped. It has to be a module mock rather than a patch of the module
-// object's properties: repo.ts binds `existsSync` and `readFileSync` through
+// object's properties: repo.ts and its file reader bind `existsSync` and `openSync` through
 // NAMED imports, which such a patch never reaches. A count taken through a seam
 // that is not in the path reads zero, which is exactly what "no I/O" looks
 // like, so the first case asserts that the interception fired.
@@ -31,11 +31,11 @@ vi.mock('node:fs', async (importOriginal) => {
     io.probes.push(path);
     return actual.existsSync(...args);
   }) as typeof actual.existsSync;
-  const readFileSync = ((...args: Parameters<typeof actual.readFileSync>) => {
+  const openSync = ((...args: Parameters<typeof actual.openSync>) => {
     io.reads.push(String(args[0]));
-    return actual.readFileSync(...args);
-  }) as typeof actual.readFileSync;
-  return { ...actual, existsSync, readFileSync };
+    return actual.openSync(...args);
+  }) as typeof actual.openSync;
+  return { ...actual, existsSync, openSync };
 });
 
 const { resolveRepo, resolveRepoAttribution } = await import('../src/repo.ts');
@@ -58,7 +58,7 @@ function reset(): void {
 }
 
 // The ancestor walk is one `existsSync(<dir>/.git)` per directory climbed; the
-// config read is the single `readFileSync(<gitdir>/config)`.
+// config read is the single `openSync(<gitdir>/config)`.
 const walkProbes = (): number => io.probes.filter((p) => p.endsWith(`${sep}.git`)).length;
 const configReads = (): number => io.reads.filter((p) => p.endsWith(`${sep}config`)).length;
 

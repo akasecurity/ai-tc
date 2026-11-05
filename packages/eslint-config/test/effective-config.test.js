@@ -820,6 +820,18 @@ const networkRulesOf = (config) => Object.fromEntries(KEYS.map((k) => [k, config
 const errorRuleIds = (messages) =>
   new Set(messages.filter((m) => m.severity === 2).map((m) => m.ruleId));
 
+/**
+ * Asserts each network rule reported an error on `file`.
+ * @param {import('eslint').Linter.LintMessage[]} messages
+ * @param {string} file named in the failure
+ */
+const expectNetworkRulesError = (messages, file) => {
+  const errors = errorRuleIds(messages);
+  for (const key of KEYS) {
+    expect(errors, `${file} :: ${key} must fail the lint run, not merely warn`).toContain(key);
+  }
+};
+
 /** A rule's resolved severity, normalized out of the `[severity, …options]` form. */
 const severityOf = (config, ruleId) => {
   const entry = config?.rules?.[ruleId];
@@ -2625,6 +2637,34 @@ describe('eslintTargets / targetCoversDir / targetCoversFile (the lint-coverage 
   });
 });
 
+describe('errorRuleIds / expectNetworkRulesError (tested on synthetic messages)', () => {
+  const message = (ruleId, severity) => ({ ruleId, severity });
+
+  it('keeps errors and drops warnings', () => {
+    expect(errorRuleIds([message('a', 2), message('b', 1)])).toEqual(new Set(['a']));
+    expect(errorRuleIds([])).toEqual(new Set());
+  });
+
+  it('keeps a fatal parse error, which has no rule id', () => {
+    expect(errorRuleIds([message(null, 2)])).toEqual(new Set([null]));
+  });
+
+  it('passes only when every network rule reports an error', () => {
+    const allErrors = KEYS.map((key) => message(key, 2));
+    expect(() => expectNetworkRulesError(allErrors, 'f')).not.toThrow();
+    for (const key of KEYS) {
+      const others = allErrors.filter((m) => m.ruleId !== key);
+      expect(() => expectNetworkRulesError(others, 'f'), `${key} absent`).toThrow(key);
+      expect(
+        () => expectNetworkRulesError([...others, message(key, 1)], 'f'),
+        `${key} warns`,
+      ).toThrow(key);
+    }
+    // An unrelated error is what `errorCount > 0` used to accept.
+    expect(() => expectNetworkRulesError([message('unrelated', 2)], 'f')).toThrow();
+  });
+});
+
 describe('ignore flags subtract from what an invocation covers', () => {
   // An ignore flag is the one thing that makes a target read broader than the
   // run it describes. Parsing the targets alone reports `eslint *.config.*
@@ -3691,7 +3731,7 @@ describe('a planted network call in a file no workspace package owns is reported
   );
 });
 
-describe('end to end: eslint run the way the lint script runs it finds a planted root config file', () => {
+describe("end to end: eslint over the lint script's target that reaches it finds a planted root config file", () => {
   // The case above lints one path at a time, which proves the config bans the
   // network there but not that the `lint` script's own targets ENUMERATE it —
   // the half of the gap that let a `fetch()` in cli/tsup.config.ts pass
@@ -3719,15 +3759,13 @@ describe('end to end: eslint run the way the lint script runs it finds a planted
   it(
     'reports the planted file with every network rule',
     async () => {
-      const invocations = packageLintInvocations(
-        /** @type {{ lintScript: string }} */ (pkg).lintScript,
-      );
-      const invocation = invocations.find((i) =>
-        i.targets.some((t) => targetCoversFile(t, PROBE_FILE)),
+      const invocation = coveringInvocation(
+        packageLintInvocations(/** @type {{ lintScript: string }} */ (pkg).lintScript),
+        PROBE_FILE,
       );
       expect(
         invocation,
-        `no eslint invocation in cli's lint script targets a new ${PROBE_FILE} in the package root. ${probeUncoveredHint}`,
+        `no eslint invocation in cli's lint script lints a new ${PROBE_FILE} in the package root. ${probeUncoveredHint}`,
       ).toBeDefined();
       const { configName, targets } = /** @type {{configName?: string, targets: string[]}} */ (
         invocation
@@ -3755,13 +3793,7 @@ describe('end to end: eslint run the way the lint script runs it finds a planted
           messages.filter((m) => m.fatal).map((m) => m.message),
           `${PROBE_FILE} did not parse, so no rule ran against it`,
         ).toEqual([]);
-        const errors = errorRuleIds(messages);
-        for (const key of KEYS) {
-          expect(
-            errors,
-            `${PROBE_FILE} :: ${key} must fail the lint run, not merely warn`,
-          ).toContain(key);
-        }
+        expectNetworkRulesError(messages, PROBE_FILE);
       } finally {
         rmSync(probeAbs, { force: true });
       }
@@ -3800,12 +3832,10 @@ describe('end to end: an ignore flag really does silence the run, and the guard 
     'lints the planted file, stops once an ignore flag is added, and is reported as uncovered',
     async () => {
       const lintScript = /** @type {{ lintScript: string }} */ (pkg).lintScript;
-      const invocation = packageLintInvocations(lintScript).find((i) =>
-        i.targets.some((t) => targetCoversFile(t, PROBE_FILE)),
-      );
+      const invocation = coveringInvocation(packageLintInvocations(lintScript), PROBE_FILE);
       expect(
         invocation,
-        `no eslint invocation in cli's lint script targets a new ${PROBE_FILE} in the package root. ${probeUncoveredHint}`,
+        `no eslint invocation in cli's lint script lints a new ${PROBE_FILE} in the package root. ${probeUncoveredHint}`,
       ).toBeDefined();
       const { configName, targets } = /** @type {{configName?: string, targets: string[]}} */ (
         invocation
@@ -3837,13 +3867,7 @@ describe('end to end: an ignore flag really does silence the run, and the guard 
           `eslint ${reaching.join(' ')} never reached ${PROBE_FILE}, so the ignored run below ` +
             'would prove nothing',
         ).toBeDefined();
-        const errors = errorRuleIds(/** @type {ESLint.LintResult} */ (linted).messages);
-        for (const key of KEYS) {
-          expect(
-            errors,
-            `${PROBE_FILE} :: ${key} must fail the lint run, not merely warn`,
-          ).toContain(key);
-        }
+        expectNetworkRulesError(/** @type {ESLint.LintResult} */ (linted).messages, PROBE_FILE);
 
         // The fault: one flag, and the same run stops failing on the same file.
         const ignored = await resultFor({ ignorePatterns: [PROBE_FILE] });
@@ -3928,13 +3952,7 @@ describe('end to end: eslint run the way the root lint script runs it finds a pl
           messages.filter((m) => m.fatal).map((m) => m.message),
           `${PROBE_FILE} did not parse, so no rule ran against it`,
         ).toEqual([]);
-        const errors = errorRuleIds(messages);
-        for (const key of KEYS) {
-          expect(
-            errors,
-            `${PROBE_FILE} :: ${key} must fail the lint run, not merely warn`,
-          ).toContain(key);
-        }
+        expectNetworkRulesError(messages, PROBE_FILE);
       } finally {
         rmSync(probeAbs, { force: true });
       }

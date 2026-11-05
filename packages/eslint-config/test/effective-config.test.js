@@ -543,11 +543,22 @@ const invocationsCoverFile = (invocations, file) =>
  * and eslint resolves each target on its own, so the others change nothing it
  * asserts. They do cost it. In cli they are `src` and `test`, which take a full
  * type-aware pass over every file, and the slowest CI runners spend the case's
- * whole budget on that. `pnpm lint` still lints all of them.
+ * whole budget on that. `pnpm lint` still lints all of them. Empty when no target
+ * reaches `file`, so a caller selects its invocation by coverage first: eslint
+ * refuses an empty target list.
  * @param {string[]} targets
  * @param {string} file package-relative posix path
  */
 const targetsReaching = (targets, file) => targets.filter((t) => targetCoversFile(t, file));
+
+// What the two end-to-end cases that plant a file in cli may lint. A wider target
+// is still correct, but it brings back the type-aware pass over `src` and `test`,
+// and on its own that shows up only as a timeout on the slowest runner.
+const CLI_ROOT_FILE_TARGETS = ['*.config.*'];
+const WIDENED_TARGETS_MESSAGE =
+  "cli's lint script now reaches a root file through a wider target, so this case lints more " +
+  'than the one file it reads and can run past its timeout on a slow runner. Narrow the target, or ' +
+  'update CLI_ROOT_FILE_TARGETS and check the case still fits its budget';
 
 /**
  * Split the guarded packages by how they fail the config requirement. Pure over
@@ -2597,6 +2608,16 @@ describe('eslintTargets / targetCoversDir / targetCoversFile (the lint-coverage 
     // The pre-fix form: source dirs only, root files unreachable.
     expect(targetsCover('eslint src test', ['tsup.config.ts'])).toBe(false);
   });
+
+  it('targetsReaching keeps only the targets that reach the file', () => {
+    const reaching = (script, file) => targetsReaching(eslintTargets(script), file);
+    expect(reaching('eslint src test *.config.*', 'tsup.config.ts')).toEqual(['*.config.*']);
+    expect(reaching('eslint app middleware.ts test *.config.*', 'middleware.ts')).toEqual([
+      'middleware.ts',
+    ]);
+    expect(reaching('eslint .', 'tsup.config.ts')).toEqual(['.']);
+    expect(reaching('eslint src test', 'tsup.config.ts')).toEqual([]);
+  });
 });
 
 describe('ignore flags subtract from what an invocation covers', () => {
@@ -3706,6 +3727,8 @@ describe('end to end: eslint run the way the lint script runs it finds a planted
       const { configName, targets } = /** @type {{configName?: string, targets: string[]}} */ (
         invocation
       );
+      const reaching = targetsReaching(targets, PROBE_FILE);
+      expect(reaching, WIDENED_TARGETS_MESSAGE).toEqual(CLI_ROOT_FILE_TARGETS);
 
       writeFileSync(probeAbs, `${NETWORK_SNIPPET}\n`);
       try {
@@ -3713,13 +3736,14 @@ describe('end to end: eslint run the way the lint script runs it finds a planted
           cwd: pkgDir,
           ...(configName ? { overrideConfigFile: join(pkgDir, configName) } : {}),
         });
-        const results = await eslint.lintFiles(targetsReaching(targets, PROBE_FILE));
+        const results = await eslint.lintFiles(reaching);
         const probe = results.find((r) => r.filePath === probeAbs);
         expect(
           probe,
-          `eslint ${targets.join(' ')} never reached ${PROBE_FILE} — the lint script's targets do ` +
-            'not enumerate top-level files, which is exactly how a fetch() in tsup.config.ts passed ' +
-            '`pnpm lint`',
+          `eslint ${reaching.join(' ')} never reached ${PROBE_FILE}, though the lint script's ` +
+            'target reads as covering it. Look for an `ignores` entry in the config this ' +
+            'invocation uses, or a glob that does not expand to a new top-level file: either ' +
+            'leaves a fetch() in a root file passing `pnpm lint`',
         ).toBeDefined();
         const messages = /** @type {ESLint.LintResult} */ (probe).messages;
         expect(
@@ -3789,12 +3813,14 @@ describe('end to end: an ignore flag really does silence the run, and the guard 
       const mutatedScript =
         `eslint ${configName ? `-c ${configName} ` : ''}${targets.join(' ')} ` +
         `--ignore-pattern ${PROBE_FILE}`;
+      const reaching = targetsReaching(targets, PROBE_FILE);
+      expect(reaching, WIDENED_TARGETS_MESSAGE).toEqual(CLI_ROOT_FILE_TARGETS);
 
       writeFileSync(probeAbs, `${NETWORK_SNIPPET}\n`);
       try {
         const resultFor = async (options) => {
           const results = await new ESLint({ cwd: pkgDir, ...overrides, ...options }).lintFiles(
-            targetsReaching(targets, PROBE_FILE),
+            reaching,
           );
           return results.find((r) => r.filePath === probeAbs);
         };
@@ -3803,7 +3829,7 @@ describe('end to end: an ignore flag really does silence the run, and the guard 
         const linted = await resultFor({});
         expect(
           linted,
-          `eslint ${targets.join(' ')} never reached ${PROBE_FILE}, so the ignored run below ` +
+          `eslint ${reaching.join(' ')} never reached ${PROBE_FILE}, so the ignored run below ` +
             'would prove nothing',
         ).toBeDefined();
         const errors = errorRuleIds(/** @type {ESLint.LintResult} */ (linted).messages);

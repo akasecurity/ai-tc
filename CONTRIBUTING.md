@@ -487,8 +487,8 @@ nowhere.
   - Removing the label takes effect on the next run, and a title or body edit or any other
     label starts one too. So after removing it, an edit can turn a red macOS check into
     skipped, which counts as passing.
-  - Any label starts a run, and on a pull request into `main` or one carrying `full-ci` it
-    cancels the run in flight and restarts every job.
+  - Any label starts a new run and cancels the one in flight. On a pull request into `main`,
+    or one carrying `full-ci`, that restarts every job; otherwise it restarts only `ci`.
   - Adding a label needs triage access, so a contributor from a fork asks a maintainer.
     Read a fork's pull request before labelling it: whether a label from a maintainer
     bypasses the "Approve and run" step for a first-time contributor is not documented.

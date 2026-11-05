@@ -553,12 +553,17 @@ const targetsReaching = (targets, file) => targets.filter((t) => targetCoversFil
 
 // What the two end-to-end cases that plant a file in cli may lint. A wider target
 // is still correct, but it brings back the type-aware pass over `src` and `test`,
-// and on its own that shows up only as a timeout on the slowest runner.
+// and on its own that shows up only as a timeout on the slowest runner. The planted
+// files keep a `*.config.*` name so this target reaches them; renaming one means
+// re-deriving this list, not changing cli's lint script.
 const CLI_ROOT_FILE_TARGETS = ['*.config.*'];
-const WIDENED_TARGETS_MESSAGE =
-  "cli's lint script now reaches a root file through a wider target, so this case lints more " +
-  'than the one file it reads and can run past its timeout on a slow runner. Narrow the target, or ' +
-  'update CLI_ROOT_FILE_TARGETS and check the case still fits its budget';
+const changedTargetsMessage = (reaching) =>
+  `cli's lint target for a planted root file is no longer ${CLI_ROOT_FILE_TARGETS.join(' ')} ` +
+  `(got: ${reaching.join(' ')}). After an equivalent rewrite, update CLI_ROOT_FILE_TARGETS and ` +
+  'check the case still fits its budget. If the target got wider, narrow it: this case reads one ' +
+  'file, and linting `src` or `test` as well can run it past its timeout on a slow runner';
+const probeUncoveredHint =
+  'If this case renamed its probe, restore the name rather than widening the script';
 
 /**
  * Split the guarded packages by how they fail the config requirement. Pure over
@@ -3722,13 +3727,13 @@ describe('end to end: eslint run the way the lint script runs it finds a planted
       );
       expect(
         invocation,
-        `no eslint invocation in cli's lint script targets a new ${PROBE_FILE} in the package root`,
+        `no eslint invocation in cli's lint script targets a new ${PROBE_FILE} in the package root. ${probeUncoveredHint}`,
       ).toBeDefined();
       const { configName, targets } = /** @type {{configName?: string, targets: string[]}} */ (
         invocation
       );
       const reaching = targetsReaching(targets, PROBE_FILE);
-      expect(reaching, WIDENED_TARGETS_MESSAGE).toEqual(CLI_ROOT_FILE_TARGETS);
+      expect(reaching, changedTargetsMessage(reaching)).toEqual(CLI_ROOT_FILE_TARGETS);
 
       writeFileSync(probeAbs, `${NETWORK_SNIPPET}\n`);
       try {
@@ -3800,7 +3805,7 @@ describe('end to end: an ignore flag really does silence the run, and the guard 
       );
       expect(
         invocation,
-        `no eslint invocation in cli's lint script targets a new ${PROBE_FILE} in the package root`,
+        `no eslint invocation in cli's lint script targets a new ${PROBE_FILE} in the package root. ${probeUncoveredHint}`,
       ).toBeDefined();
       const { configName, targets } = /** @type {{configName?: string, targets: string[]}} */ (
         invocation
@@ -3814,7 +3819,7 @@ describe('end to end: an ignore flag really does silence the run, and the guard 
         `eslint ${configName ? `-c ${configName} ` : ''}${targets.join(' ')} ` +
         `--ignore-pattern ${PROBE_FILE}`;
       const reaching = targetsReaching(targets, PROBE_FILE);
-      expect(reaching, WIDENED_TARGETS_MESSAGE).toEqual(CLI_ROOT_FILE_TARGETS);
+      expect(reaching, changedTargetsMessage(reaching)).toEqual(CLI_ROOT_FILE_TARGETS);
 
       writeFileSync(probeAbs, `${NETWORK_SNIPPET}\n`);
       try {

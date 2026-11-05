@@ -1164,6 +1164,9 @@ describe('the versioned Release is a draft until the rest of the job has passed'
     const inputs = inputsOf(releaseStep());
     expect(inputs.draft, 'the upload step would publish before uploading').toBe('true');
     expect(releaseStep().id).toBe('draft');
+    // A re-run repairs a draft by replacing its files. With this off, the action keeps
+    // the old file and returns without an error, and that file is what gets published.
+    expect(inputs.overwrite_files ?? 'true').toBe('true');
   });
 
   it('publishes with nothing but the draft and prerelease flags', () => {

@@ -11,8 +11,10 @@
 // untouched, and a re-run gets past a version npm already holds only because the
 // npm step skips it. See "GitHub Releases are immutable" in conventions/releasing.md.
 
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { delimiter, dirname, join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -86,8 +88,14 @@ describe.each(WORKFLOWS)('%s: draft, then npm, then publish', (workflow) => {
   it('uploads its files to a draft, and fails when no file matches', () => {
     const inputs = inputsOf(stepNamed(job(), UPLOAD));
     expect(inputs.draft, 'the upload step would publish before uploading').toBe('true');
-    expect(inputs.files, 'the upload step names no files').toBeTruthy();
+    expect(inputs.files).toBe('${{ runner.temp }}/*.tgz');
     expect(inputs.fail_on_unmatched_files, 'no match would lock an empty Release').toBe('true');
+  });
+
+  // A re-run repairs a draft by replacing its files. With this off, the action keeps the
+  // old file and returns without an error, and that file is what gets published.
+  it('replaces the files of a draft it finds', () => {
+    expect(inputsOf(stepNamed(job(), UPLOAD)).overwrite_files ?? 'true').toBe('true');
   });
 
   it('publishes with nothing but the draft and prerelease flags', () => {
@@ -104,12 +112,55 @@ describe.each(WORKFLOWS)('%s: draft, then npm, then publish', (workflow) => {
     expect(inputsOf(publish).prerelease).toBe(inputsOf(upload).prerelease);
   });
 
-  it('skips npm for a version the public registry already holds', () => {
-    const script = scriptOf(stepNamed(job(), NPM));
-    const guard = script.indexOf('npm view');
-    expect(guard, 'a re-run would stop at E409 and strand the draft').toBeGreaterThanOrEqual(0);
-    expect(script).toContain('--@akasecurity:registry=https://registry.npmjs.org');
-    expect(guard).toBeLessThan(script.indexOf(' publish --no-git-checks'));
+  it('asks the public registry whether it holds the version', () => {
+    expect(scriptOf(stepNamed(job(), NPM))).toContain(
+      '--@akasecurity:registry=https://registry.npmjs.org',
+    );
+  });
+
+  // Executed, because the whole recovery story rests on the answer deciding the
+  // publish: reading the text passes on `npm view … || true` and an unconditional publish.
+  it.each([
+    ['holds the version', 'held', false],
+    ['does not hold it', 'absent', true],
+  ])('when the registry %s, publish=%s', (_label, registry, published, ctx) => {
+    if (process.platform === 'win32' || !existsSync('/bin/bash')) ctx.skip();
+    const dir = mkdtempSync(join(tmpdir(), 'aka-npm-guard-'));
+    try {
+      const log = join(dir, 'pnpm.log');
+      writeFileSync(log, '');
+      // `npm view @scope/name@1.2.3 version` answers the version, or nothing and exit 1,
+      // which is how npm answers for a version it does not have.
+      writeFileSync(
+        join(dir, 'npm'),
+        '#!/bin/sh\n[ "$REGISTRY" = held ] || exit 1\necho "${2##*@}"\n',
+      );
+      writeFileSync(join(dir, 'pnpm'), '#!/bin/sh\necho "$*" >> "$PNPM_LOG"\n');
+      chmodSync(join(dir, 'npm'), 0o755);
+      chmodSync(join(dir, 'pnpm'), 0o755);
+
+      const stdout = execFileSync('/bin/bash', ['-c', scriptOf(stepNamed(job(), NPM))], {
+        cwd: REPO_ROOT,
+        encoding: 'utf8',
+        env: {
+          PATH: [dir, dirname(process.execPath), '/usr/bin', '/bin'].join(delimiter),
+          PKG_VERSION: '1.2.3',
+          PNPM_LOG: log,
+          REGISTRY: registry,
+        },
+        timeout: 30_000,
+      });
+
+      const calls = readFileSync(log, 'utf8');
+      if (published) {
+        expect(calls).toContain(' publish --no-git-checks');
+      } else {
+        expect(calls, 'a re-run would stop at E409 and strand the draft').toBe('');
+        expect(stdout).toContain('::notice::');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('names a draft left unpublished in the log', () => {

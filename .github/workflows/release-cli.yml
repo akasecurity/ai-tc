@@ -21,13 +21,11 @@ on:
         default: false
 
 # One release per tag at a time. A single tag push can start more than one run.
-# A duplicate is already self-limiting here: npm rejects a re-publish of the same
-# (name, version), so the losing run fails at the publish step and never reaches the
-# `cli-latest` move or the Release. That safety is a consequence of publish running
-# first — this group holds whatever the step order, and stops two runs overlapping.
-# It does not make a duplicate disappear: the queued run still executes afterward and
-# still fails at publish. cancel-in-progress is false so a run is never interrupted
-# midway through publishing or force-moving a tag.
+# Once a run has published the Release, a duplicate stops at the draft upload, because a
+# published Release is locked, and never reaches npm or the `cli-latest` move. A duplicate
+# of a run that failed carries on from that run's draft, as a re-run does. This group
+# stops two runs overlapping; it does not make a duplicate disappear. cancel-in-progress
+# is false so a run is never interrupted midway through publishing or force-moving a tag.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
@@ -223,16 +221,77 @@ jobs:
       # `cli-latest` is kept as a stable alias for the npm CLI channel: a
       # successful stable publish moves it to this commit; pre-releases leave it
       # on the last stable release.
-      - name: Point cli-latest at this release
+      #
+      # It only ever moves FORWARD, the rule `release-binaries.yml` holds for
+      # `bin-latest`. The npm step skips a version already published, so a re-run of an
+      # older tag's failed job gets this far, and it would otherwise move the tag back.
+      # The SAME version is let through, because a re-run is how a draft left
+      # unpublished is repaired. The value origin holds for the tag is kept as the lease
+      # the move below pushes against.
+      - name: Decide whether cli-latest moves forward
+        id: advance
         if: github.event_name == 'push'
         run: |
-          case "${GITHUB_REF_NAME#cli-v}" in
-            *-*) echo "Pre-release — cli-latest stays on the last stable release" ;;
+          set -euo pipefail
+          version=$(node -p "require('./cli/package.json').version")
+
+          # --exit-code answers 2 for "no such ref"; anything else non-zero is a
+          # fault, and a fault read as "not there yet" would move the tag blind.
+          status=0
+          line=$(git ls-remote --exit-code --tags origin refs/tags/cli-latest) || status=$?
+          case "$status" in
+            0)
+              lease=$(printf '%s\n' "$line" | cut -f1)
+              git fetch --no-tags origin refs/tags/cli-latest
+              current=$(git show FETCH_HEAD:cli/package.json | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version')
+              ;;
+            2)
+              lease=''
+              current=''
+              ;;
             *)
-              git tag -f cli-latest
-              git push -f origin cli-latest
+              echo "::error::could not read cli-latest from origin (git ls-remote exited $status) — it is not moved without knowing what it names"
+              exit 1
               ;;
           esac
+
+          move=yes
+          case "$version" in
+            *-*)
+              move=no
+              echo "Pre-release — cli-latest stays on the last stable release"
+              ;;
+          esac
+          if [ "$move" = yes ] && [ -n "$current" ]; then
+            case "$current" in
+              *[!0-9.]* | *.*.*.* | *..* | .* | *.) bare=no ;;
+              *.*.*) bare=yes ;;
+              *) bare=no ;;
+            esac
+            if [ "$bare" != yes ]; then
+              echo "::error::cli-latest names ${current}, which is not a bare X.Y.Z — there is no order to move it forward in"
+              exit 1
+            fi
+            newest=$(printf '%s\n%s\n' "$current" "$version" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
+            if [ "$newest" != "$version" ]; then
+              move=no
+              echo "::notice::cli-latest names ${current}, which is newer than ${version} — it stays where it is"
+            fi
+          fi
+          echo "move=$move" >> "$GITHUB_OUTPUT"
+          echo "lease=$lease" >> "$GITHUB_OUTPUT"
+          echo "cli-latest: ${current:-none} -> ${version}: move=$move"
+
+      # A compare-and-swap against the value the step above read, so a release of
+      # another version that moved the tag in between fails this push rather than being
+      # overwritten. The draft is still unpublished then, and a re-run repairs it.
+      - name: Point cli-latest at this release
+        if: github.event_name == 'push' && steps.advance.outputs.move == 'yes'
+        env:
+          LEASE: ${{ steps.advance.outputs.lease }}
+        run: |
+          git tag -f cli-latest
+          git push --force-with-lease="refs/tags/cli-latest:${LEASE}" origin refs/tags/cli-latest
 
       - name: Publish GitHub Release
         if: github.event_name == 'push'

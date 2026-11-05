@@ -19,6 +19,7 @@
  *   standalone install to re-run — so the README and the tool's own advice
  *   are held to the same string rather than to two.
  */
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -127,20 +128,48 @@ const README_ENTRIES = Object.entries(README_PATHS);
 // would lock it and a locked Release refuses new ones. A link to it would serve an old
 // version for good. The tag itself is alive, and the one-liners read files through it.
 describe('nothing sends a reader to the frozen bin-latest Release', () => {
-  it.each([
-    ...README_ENTRIES,
-    ['tools/installer/README.md', INSTALLER_README],
-    ['llms.txt', join(REPO_ROOT, 'llms.txt')],
-  ])('%s links no file on it', (name, path) => {
-    expect(readFile(path), `${name} links the frozen Release`).not.toContain(
-      'releases/download/bin-latest',
-    );
+  // Over the whole tree, for its download links and its page. These tests are left out
+  // only because they have to spell the thing they forbid.
+  it('no tracked file outside the tests links it', () => {
+    let matches = '';
+    try {
+      matches = execFileSync(
+        'git',
+        [
+          'grep',
+          '-nE',
+          'releases/(download|tag)/bin-latest',
+          '--',
+          '.',
+          ':(exclude)packages/eslint-config/test/**',
+        ],
+        { cwd: REPO_ROOT, encoding: 'utf8', stdio: 'pipe' },
+      );
+    } catch (err) {
+      // `git grep` exits 1 for no match; anything else is a fault, not a pass.
+      if (err.status !== 1) throw err;
+    }
+    expect(matches).toBe('');
   });
 
   it.each(README_ENTRIES)('%s says where the archives are', (name, path) => {
     expect(readFile(path), `${name} no longer links the binary releases`).toContain(
       'https://github.com/akasecurity/ai-tc/releases?q=bin-v',
     );
+  });
+
+  // The READMEs spell out the platform in the archive names, so a target the build no
+  // longer produces would send a reader after a file that does not exist.
+  it.each(README_ENTRIES)('%s names every platform the build produces', (name, path) => {
+    const targets = [
+      ...jobBlock(readWorkflow(), 'build').matchAll(/^\s*-\s*\{[^}]*\btarget:\s*([a-z0-9-]+)/gm),
+    ].map((match) => match[1]);
+    expect(targets.length, 'the build job matrix declares no target').toBeGreaterThan(0);
+
+    const text = readFile(path);
+    for (const target of targets) {
+      expect(text, `${name} does not name ${target}`).toContain(`\`${target}\``);
+    }
   });
 });
 

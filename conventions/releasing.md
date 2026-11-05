@@ -170,8 +170,15 @@ channel: `--channel rc` is refused and a machine running an `rc` build reads as 
 
 ### GitHub Releases are immutable
 
-GitHub locks a Release the moment it is published: no file can be added, replaced or deleted after
-that, and the Release cannot be repaired, only superseded by a new version. Without `draft: true`,
+[Immutable releases](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases)
+are a setting GitHub offers per repository or organization, and every rule in this section holds only
+while it is on. To see whether it applied to a Release, read
+`gh api repos/akasecurity/ai-tc/releases/tags/<tag> --jq .immutable`: `cli-v0.9.21` says `false` and
+`cli-v0.9.23` says `true`.
+
+GitHub documents that a published immutable Release locks its files and its tag: no file can be added,
+replaced or deleted, the tag cannot move, and the Release cannot be repaired, only superseded by a new
+version. Its title and notes can still be edited. Without `draft: true`,
 `softprops/action-gh-release` publishes a prerelease before uploading, and every `0.x` tag is a
 prerelease, so the upload is refused. That is how every 0.9.23 Release ended up with no files, after
 npm had already published.
@@ -191,13 +198,21 @@ unpublished`). Re-running it replaces the draft's files, skips npm if the versio
   run fails with `E409`, and a later re-run gets through.
 - **A re-run after step 3 has passed** fails at step 1 on the locked Release, before npm, and changes
   nothing. That failure is expected.
+- **A manual dispatch with `publish: true`** (`release-cli`, `release-plugin-codex`,
+  `release-plugin-antigravity`) publishes to npm and cuts no Release, with a green log, because the
+  Release steps run on a tag push only. A later tag push of that version gets past the npm skip and
+  publishes a Release whose tarball is a new build, not the one on npm.
+- **`cli-latest` only moves forward**, so a re-run of an older tag's job publishes that tag's draft and
+  leaves the alias on the newer version.
 - **An older Release published before the setting was turned on** stays unlocked until it is edited.
   Replacing its files does not lock it, but any edit does, even of its name, and a locked Release
-  refuses the file replacement that follows. The action always edits first.
+  refuses the file replacement that follows. The action always edits first. GitHub's documentation
+  does not state this: it was measured on 5 November 2026 in a private repository with the setting on,
+  by editing, uploading to and moving the tag of older Releases. Re-measure it before relying on it.
 
 The Release on the `bin-latest` tag is one of those older ones, and it is retired: frozen on its
-aka 0.9.21 files. Nothing in the workflow touches it, and nothing in the tree links to it
-(`packages/eslint-config/test/install-links.test.js`). Links already out in the world keep serving
+aka 0.9.21 files. Nothing in the workflow touches it, and no tracked file outside the tests links to
+it (`packages/eslint-config/test/install-links.test.js`). Links already out in the world keep serving
 0.9.21. The tag still moves, and only the tag is in use.
 
 **Never edit that Release, not even its title or notes.** An edit locks it, and a locked Release's tag
@@ -279,7 +294,7 @@ release channel** from the `cli-v*` npm publish:
   and three files the release job RENDERS from that sums file with
   `tools/package-manifests/src/render-manifests.ts` (run under Node 24 type stripping, no pnpm
   install — the release job sets up Node 24 for it): `aka.rb` (the Homebrew formula), `aka.json`
-  (the Scoop manifest) and `VERSION`. Both release steps set `fail_on_unmatched_files: true`, so
+  (the Scoop manifest) and `VERSION`. The upload step sets `fail_on_unmatched_files: true`, so
   a missing asset fails the run instead of publishing a partial release. The
   renderer takes `--version`, `--repo` (required, no default — a fork's dispatch run must not
   render `akasecurity` URLs), `--sums` and `--out`, renders everything in memory and writes

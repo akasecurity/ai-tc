@@ -542,8 +542,8 @@ the attached `aka.json` does work.
 
 `bin-latest`, the tap and the bucket only move forward. Pushing an older `bin-v*` tag after a
 newer one, or re-running an older release, still cuts that version's own GitHub Release but leaves
-all three on the newer version. If the release job fails before its last step, the Release is
-still a draft and the job log says so (`Explain a draft Release left unpublished`): re-run it. The
+all three on the newer version. If the release job fails after uploading its draft and before
+publishing it, the job log says so (`Explain a draft Release left unpublished`): re-run it. The
 draft's files are replaced, the same version is let through, and the draft is published. Two
 releases finishing close together can also make the SLOWER one lose the race to move `bin-latest`
 itself. The job log names that case too (`Explain a bin-latest move that lost a race`), and the

@@ -538,6 +538,18 @@ const invocationsCoverFile = (invocations, file) =>
   coveringInvocation(invocations, file) !== undefined;
 
 /**
+ * The targets, out of one invocation's, that can reach `file`. An end-to-end case
+ * that plants one file lints only these: it reads the result for that one file,
+ * and eslint resolves each target on its own, so the others change nothing it
+ * asserts. They do cost it. In cli they are `src` and `test`, which take a full
+ * type-aware pass over every file, and the slowest CI runners spend the case's
+ * whole budget on that. `pnpm lint` still lints all of them.
+ * @param {string[]} targets
+ * @param {string} file package-relative posix path
+ */
+const targetsReaching = (targets, file) => targets.filter((t) => targetCoversFile(t, file));
+
+/**
  * Split the guarded packages by how they fail the config requirement. Pure over
  * its input so the failure paths are testable with synthetic packages — a real,
  * healthy tree produces none by construction.
@@ -3648,10 +3660,10 @@ describe('end to end: eslint run the way the lint script runs it finds a planted
   // network there but not that the `lint` script's own targets ENUMERATE it —
   // the half of the gap that let a `fetch()` in cli/tsup.config.ts pass
   // `pnpm lint`. So plant a real file in a package root and run eslint over the
-  // targets parsed out of the real script. cli is the package to do it in: it
-  // carries three top-level config files and the two-invocation script, so the
-  // targets have to be split by invocation or the scripts pass lints half the
-  // package under the wrong config.
+  // target parsed out of the real script that reaches it (targetsReaching). cli
+  // is the package to do it in: it carries three top-level config files and the
+  // two-invocation script, so the targets have to be split by invocation or the
+  // scripts pass lints half the package under the wrong config.
   const PROBE_FILE = '__aka_network_probe__.config.ts';
   const pkg = GUARDED_PACKAGES.find((p) => p.name === '@akasecurity/cli');
   const pkgDir = pkg ? join(REPO_ROOT, pkg.dir) : '';
@@ -3691,7 +3703,7 @@ describe('end to end: eslint run the way the lint script runs it finds a planted
           cwd: pkgDir,
           ...(configName ? { overrideConfigFile: join(pkgDir, configName) } : {}),
         });
-        const results = await eslint.lintFiles(targets);
+        const results = await eslint.lintFiles(targetsReaching(targets, PROBE_FILE));
         const probe = results.find((r) => r.filePath === probeAbs);
         expect(
           probe,
@@ -3773,7 +3785,7 @@ describe('end to end: an ignore flag really does silence the run, and the guard 
       try {
         const resultFor = async (options) => {
           const results = await new ESLint({ cwd: pkgDir, ...overrides, ...options }).lintFiles(
-            targets,
+            targetsReaching(targets, PROBE_FILE),
           );
           return results.find((r) => r.filePath === probeAbs);
         };

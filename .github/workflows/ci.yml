@@ -69,11 +69,18 @@ concurrency:
 # pull request into `dev` or `release/**` they report as skipped, which counts
 # as passing, so `main` can require a check that `dev` does not run.
 #
-# A pull request into any base opts into the full tier with the `full-ci`
-# label. Adding a label fires only `labeled`, which is why the `pull_request`
+# A pull request into any other base this workflow matches opts into the full
+# tier with the `full-ci` label. A stacked PR (one based on a feature branch)
+# matches no `pull_request` filter above, so it gets no run here, labelled or
+# not. Adding a label fires only `labeled`, which is why the `pull_request`
 # types above carry it; without it the label would change nothing until the
-# next push. Any other label re-runs the `ci` job too, the same cost `edited`
-# already pays for title and body edits.
+# next push. Any other label re-runs every job whose condition holds: only `ci`
+# on an unlabelled PR into `dev`, the whole tier on a PR into `main`. It also
+# cancels a run in flight, through the concurrency group above.
+#
+# The label is matched by NAME. Renamed or deleted in the repository settings,
+# it stops matching and every job here reports as skipped, which counts as
+# passing, so nothing goes red. CONTRIBUTING.md records the name as load-bearing.
 jobs:
   ci:
     name: Lint · Typecheck · Test · Build
@@ -487,7 +494,14 @@ jobs:
     name: macOS · Full suite
     if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
     runs-on: macos-latest
-    timeout-minutes: 25
+    # 35, the Windows leg's budget, rather than the 25 it had while it ran for
+    # `main` alone. A `full-ci` PR into `dev` always starts this leg COLD: a PR
+    # restores caches only from its own merge ref, its base and the default
+    # branch, and this leg never runs on a push to `dev`, so `dev` holds no
+    # turbo-macOS entry. The first labelled run measured 20 of the old 25
+    # minutes with `0 cached, 48 total`, and a timed-out run saves nothing, so
+    # the next push would be cold too (see the restore/save note in `ci`).
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -747,8 +761,9 @@ jobs:
   # package brings a tsup build with it on the first (cold-cache) run; the
   # plugin suites are the heaviest thing added and spend most of their time
   # spawning real child processes, which is the single slowest operation on this
-  # runner; and the macOS leg runs every package inside 25. Windows is the
-  # slowest of the three, so it gets more than macOS, not less.
+  # runner; and the macOS leg ran every package inside 25 at the time (it has
+  # since moved to 35 for cold `full-ci` runs; see its own note). Windows is the
+  # slowest of the three, so it never gets less than macOS.
   #
   # The one run that has completed with all four packages in it, cold:
   #

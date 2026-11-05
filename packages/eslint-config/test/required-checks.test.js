@@ -21,7 +21,7 @@ import {
   workspaceLintScripts,
   workspacePackageDirs,
 } from './helpers/lint-invocations.js';
-import { dropComments, expectMainTier, jobBlock } from './helpers/workflow.js';
+import { dropComments, expectMainTier, jobBlock, MAIN_TIER_IF } from './helpers/workflow.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const WORKFLOWS = join(REPO_ROOT, '.github', 'workflows');
@@ -531,8 +531,8 @@ describe('the workflows behind those checks', () => {
   // would end at a comment line instead, so a `branches:` filter written below
   // one would sit outside the captured block and be missed.
   // This is about the TRIGGER. CodeQL's `analyze` job then carries its own
-  // condition, pinned below, so on a pull request outside `main` it reports
-  // as skipped, which counts as passing.
+  // condition, pinned below, so on an unlabelled pull request outside `main` it
+  // reports as skipped, which counts as passing.
   it.each(['audit.yml', 'codeql.yml'])('%s is triggered by every PR, whatever its base', (file) => {
     const source = readWorkflow(file);
     const trigger = /^ {2}pull_request:[^\S\n]*$([\s\S]*?)^ {2}[^\s#]/m.exec(source);
@@ -548,23 +548,21 @@ describe('the workflows behind those checks', () => {
   // tree nobody will merge while reporting green. Both workflows carry the type
   // for those two different reasons; pin both, since the second is the one a
   // reader is likeliest to trim as redundant.
-  it.each(['ci.yml', 'codeql.yml'])('%s re-runs when a PR is retargeted', (file) => {
-    const trigger = /^ {2}pull_request:[^\S\n]*$([\s\S]*?)(?=^ {2}[^\s#])/m.exec(
-      dropComments(readWorkflow(file)),
-    );
-    expect(trigger, `${file} has no pull_request trigger block`).not.toBeNull();
-    expect(trigger[1]).toMatch(/types:\s*\[[^\]]*\bedited\b[^\]]*\]/);
-  });
-
+  //
   // Adding the `full-ci` label fires ONLY `labeled`. Without the type, labelling
   // a PR into `dev` changes the job conditions but starts no run, so the full
   // tier stays skipped until the next push.
-  it.each(['ci.yml', 'codeql.yml'])('%s re-runs when a PR is labelled', (file) => {
+  it.each([
+    ['ci.yml', 'edited'],
+    ['codeql.yml', 'edited'],
+    ['ci.yml', 'labeled'],
+    ['codeql.yml', 'labeled'],
+  ])('%s re-runs on the %s type', (file, type) => {
     const trigger = /^ {2}pull_request:[^\S\n]*$([\s\S]*?)(?=^ {2}[^\s#])/m.exec(
       dropComments(readWorkflow(file)),
     );
     expect(trigger, `${file} has no pull_request trigger block`).not.toBeNull();
-    expect(trigger[1]).toMatch(/types:\s*\[[^\]]*\blabeled\b[^\]]*\]/);
+    expect(trigger[1]).toMatch(new RegExp(`types:\\s*\\[[^\\]]*\\b${type}\\b[^\\]]*\\]`));
   });
 
   it('both run daily or weekly as well as on PRs', () => {
@@ -802,9 +800,11 @@ describe('the macOS leg', () => {
     expect(block).toMatch(/path: \.turbo\/cache$/m);
   });
 
-  // The leg runs for every pull request into `main` and is skipped elsewhere by
-  // the one main-tier condition. Any other job-level `if:` (draft PRs, a label
-  // gate, push-only) would narrow which `main` pull requests it covers.
+  // The leg runs for every pull request into `main`, and for one carrying the
+  // `full-ci` label, and is skipped elsewhere by the one main-tier condition.
+  // The label arm WIDENS that condition and belongs to it. Any other job-level
+  // `if:` (draft PRs, a gate on some other label, push-only) would narrow which
+  // `main` pull requests it covers.
   it('runs for every pull request into main, and is narrowed by nothing else', () => {
     expectMainTier(jobBlock(ci, 'macos'), 'macos');
   });
@@ -1240,8 +1240,9 @@ describe('the installer trust chain is wired into CI', () => {
 // restore-key is the whole of what prevents it, and it is one edit from being
 // dropped. It matters most on the Windows leg, which is the newest to take a
 // cache and the one whose packages differ most by platform.
-// Every ci.yml job but `ci` itself runs for `main` only. Each carries exactly the
-// main-tier condition, so a narrower one cannot skip a check `main` requires.
+// Every ci.yml job but `ci` itself runs for `main`, and for a pull request
+// labelled `full-ci`. Each carries exactly the main-tier condition, so a
+// narrower one cannot skip a check `main` requires.
 describe('the main-tier jobs in ci.yml', () => {
   const ci = readWorkflow('ci.yml');
 
@@ -1254,13 +1255,30 @@ describe('the main-tier jobs in ci.yml', () => {
   });
 });
 
-// CodeQL analyses `main`, plus its schedule and manual runs.
+// CodeQL analyses what the main tier covers, plus pushes to `dev` (the baseline
+// a labelled PR into `dev` is compared against), its schedule and manual runs.
+// Built from MAIN_TIER_IF so a future arm there is not retyped here.
 describe("the CodeQL job's condition", () => {
-  it('runs for main, for a PR labelled full-ci, and for its schedule and manual runs, and nothing narrower', () => {
+  it('runs for the main tier, for pushes to dev, and for its schedule and manual runs, and nothing narrower', () => {
     const conditions = jobBlock(readWorkflow('codeql.yml'), 'analyze').match(/^ {4}if:.*$/gm) ?? [];
+    const extraArms = [
+      "github.ref == 'refs/heads/dev'",
+      "github.event_name == 'schedule'",
+      "github.event_name == 'workflow_dispatch'",
+    ];
     expect(conditions).toEqual([
-      "    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') || contains(github.event.pull_request.labels.*.name, 'full-ci') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}",
+      `    ${MAIN_TIER_IF.replace(/ }}$/, ` || ${extraArms.join(' || ')} }}`)}`,
     ]);
+  });
+
+  // Without an analysis of `dev`, code scanning has nothing to compare a
+  // labelled PR into `dev` against, and its green tick proves nothing.
+  it('is pushed for dev as well as main, so a PR into dev has a baseline', () => {
+    const push = /^ {2}push:[^\S\n]*$([\s\S]*?)(?=^ {2}[^\s#])/m.exec(
+      dropComments(readWorkflow('codeql.yml')),
+    );
+    expect(push, 'codeql.yml has no push trigger block').not.toBeNull();
+    expect(push[1]).toMatch(/^ {4}branches: \[main, dev\]$/m);
   });
 });
 

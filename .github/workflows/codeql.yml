@@ -8,12 +8,18 @@ name: CodeQL
 # skipped, which counts as passing. Findings land in the repository's Security tab.
 
 on:
+  # `dev` is here as a BASELINE, not for its own sake. Code scanning decides
+  # which alerts a PR introduced by comparing the PR's analysis with one of its
+  # base, so a labelled PR into `dev` needs an analysis of `dev` to compare
+  # against; without one its green tick proves nothing.
   push:
-    branches: [main]
+    branches: [main, dev]
   # No `branches:` filter, so a stacked PR (one based on another feature branch
-  # rather than on main) is analysed too — a recorded decision, not an accident
-  # of the trigger. It is also what stops the deadlock `ci.yml` documents at
-  # length: there, retargeting a PR's BASE fires only `edited`, and the
+  # rather than on main) still triggers this workflow — a recorded decision, not
+  # an accident of the trigger. Its job is analysed only with the `full-ci`
+  # label, like any PR outside `main`. It is also what stops the deadlock
+  # `ci.yml` documents at length: there, retargeting a PR's BASE fires only
+  # `edited`, and the
   # `branches: [main]` filter means a stacked PR matches no event until it is
   # retargeted — so without `edited` the required check is permanently absent
   # and the merge is blocked with nothing to re-run. With no filter here the run
@@ -50,7 +56,7 @@ concurrency:
 jobs:
   analyze:
     name: CodeQL (${{ matrix.language }})
-    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') || contains(github.event.pull_request.labels.*.name, 'full-ci') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') || contains(github.event.pull_request.labels.*.name, 'full-ci') || github.ref == 'refs/heads/dev' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:

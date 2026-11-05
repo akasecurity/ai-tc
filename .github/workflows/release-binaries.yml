@@ -57,6 +57,15 @@ jobs:
     name: Verify the tag names a stable release
     runs-on: ubuntu-24.04
     steps:
+      # Every bin-v tag stops here until `bin-latest` works with immutable releases. The
+      # steps below would leave an empty Release that install.sh picks as newest, or lock
+      # `bin-latest` on old files. See "GitHub Releases are immutable" in conventions/releasing.md.
+      - name: Refuse a binary release until bin-latest works with immutable releases
+        if: github.event_name == 'push'
+        run: |
+          echo "::error::Binary releases are stopped until bin-latest works with immutable releases. See conventions/releasing.md."
+          exit 1
+
       # The tag arrives through GITHUB_REF_NAME in the environment. A `${{ }}`
       # expression would be pasted into the script before the shell reads it,
       # making the tag name part of the program rather than its input.

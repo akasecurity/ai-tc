@@ -1,4 +1,5 @@
-// The CLI and plugin release workflows upload to a draft and publish it afterwards.
+// The CLI and plugin release workflows upload to a draft, publish to npm, then
+// publish the draft.
 //
 // GitHub locks a Release the moment it is published and refuses any file added
 // after that. softprops/action-gh-release publishes a prerelease before it
@@ -6,9 +7,9 @@
 // without it fails after npm has already published and leaves an empty Release
 // that can never be repaired. That is what happened to all five 0.9.23 Releases.
 //
-// release-binaries.yml is not held to this yet: its rolling `bin-latest` Release
-// needs its own answer (see conventions/releasing.md), so its release job is left
-// out of the derived list below on purpose.
+// The order is what makes a failure recoverable: an upload that fails leaves npm
+// untouched, and a re-run gets past a version npm already holds only because the
+// npm step skips it. See "GitHub Releases are immutable" in conventions/releasing.md.
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -16,11 +17,19 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { REPO_ROOT } from './helpers/lint-invocations.js';
-import { releaseWorkflows } from './helpers/release-workflows.js';
-import { jobOf, parseWorkflow, stepsOf } from './helpers/workflow-yaml.js';
+import { CLI_AND_PLUGIN_WORKFLOW_PATH, releaseWorkflows } from './helpers/release-workflows.js';
+import {
+  inputsOf,
+  jobIds,
+  jobOf,
+  parseWorkflow,
+  scriptOf,
+  stepIndex,
+  stepNamed,
+  stepsOf,
+} from './helpers/workflow-yaml.js';
 
-const WORKFLOW_PATH = /^\.github\/workflows\/release-(?:plugin-[^/]+|cli)\.ya?ml$/;
-const WORKFLOWS = releaseWorkflows().filter((workflow) => WORKFLOW_PATH.test(workflow));
+const WORKFLOWS = releaseWorkflows().filter((f) => CLI_AND_PLUGIN_WORKFLOW_PATH.test(f));
 const KNOWN = [
   '.github/workflows/release-cli.yml',
   '.github/workflows/release-plugin-antigravity.yml',
@@ -29,14 +38,32 @@ const KNOWN = [
   '.github/workflows/release-plugin-copilot.yml',
 ];
 const RELEASE_ACTION = 'softprops/action-gh-release@';
+const UPLOAD = 'Create GitHub Release';
+const NPM = 'Publish to npm';
+const PUBLISH = 'Publish GitHub Release';
+const EXPLAIN = 'Explain a draft Release left unpublished';
 
 /** @param {string} workflow */
+const parsed = (workflow) => parseWorkflow(readFileSync(join(REPO_ROOT, workflow), 'utf8'));
+
+/**
+ * Every release step in the workflow, whichever job carries it.
+ * @param {string} workflow
+ */
 function releaseSteps(workflow) {
-  const parsed = parseWorkflow(readFileSync(join(REPO_ROOT, workflow), 'utf8'));
-  return stepsOf(jobOf(parsed, 'release')).filter(
-    (step) => typeof step.uses === 'string' && step.uses.startsWith(RELEASE_ACTION),
+  const source = parsed(workflow);
+  return jobIds(source).flatMap((id) =>
+    stepsOf(jobOf(source, id)).filter(
+      (step) => typeof step.uses === 'string' && step.uses.startsWith(RELEASE_ACTION),
+    ),
   );
 }
+
+/**
+ * A step's input names, lower-cased: GitHub matches input names without regard to case.
+ * @param {Record<string, unknown>} step
+ */
+const inputNames = (step) => Object.keys(inputsOf(step)).map((key) => key.toLowerCase());
 
 describe('the release workflows are derived, not listed', () => {
   it('finds every known workflow (positive control)', () => {
@@ -44,31 +71,60 @@ describe('the release workflows are derived, not listed', () => {
   });
 });
 
-describe.each(WORKFLOWS)('%s: a Release is uploaded as a draft, then published', (workflow) => {
-  it('runs exactly two release steps: upload, then publish', () => {
-    expect(releaseSteps(workflow).map((step) => step.name)).toEqual([
-      'Create GitHub Release',
-      'Publish GitHub Release',
-    ]);
+describe.each(WORKFLOWS)('%s: draft, then npm, then publish', (workflow) => {
+  const job = () => jobOf(parsed(workflow), 'release');
+
+  it('runs exactly two release steps in the whole workflow', () => {
+    expect(releaseSteps(workflow).map((step) => step.name)).toEqual([UPLOAD, PUBLISH]);
   });
 
-  it('uploads its files to a draft', () => {
-    const [upload] = releaseSteps(workflow);
-    expect(upload.with.draft, 'the upload step would publish before uploading').toBe(true);
-    expect(upload.with.files, 'the upload step names no files').toBeTruthy();
+  it('uploads before npm, and publishes the Release after it', () => {
+    expect(stepIndex(job(), UPLOAD)).toBeLessThan(stepIndex(job(), NPM));
+    expect(stepIndex(job(), NPM)).toBeLessThan(stepIndex(job(), PUBLISH));
   });
 
-  it('publishes without files, and without replacing the notes', () => {
-    const [, publish] = releaseSteps(workflow);
-    expect(publish.with.draft, 'the publish step leaves the Release a draft').toBe(false);
-    expect(publish.with, 'the publish step uploads files').not.toHaveProperty('files');
-    expect(publish.with, 'the publish step replaces the notes').not.toHaveProperty('body');
+  it('uploads its files to a draft, and fails when no file matches', () => {
+    const inputs = inputsOf(stepNamed(job(), UPLOAD));
+    expect(inputs.draft, 'the upload step would publish before uploading').toBe('true');
+    expect(inputs.files, 'the upload step names no files').toBeTruthy();
+    expect(inputs.fail_on_unmatched_files, 'no match would lock an empty Release').toBe('true');
+  });
+
+  it('publishes with nothing but the draft and prerelease flags', () => {
+    const step = stepNamed(job(), PUBLISH);
+    expect(inputNames(step).sort()).toEqual(['draft', 'prerelease']);
+    expect(inputsOf(step).draft, 'the publish step leaves the Release a draft').toBe('false');
   });
 
   it('gives both steps the same pin, gate and prerelease flag', () => {
-    const [upload, publish] = releaseSteps(workflow);
+    const upload = stepNamed(job(), UPLOAD);
+    const publish = stepNamed(job(), PUBLISH);
     expect(publish.uses).toBe(upload.uses);
     expect(publish.if).toBe(upload.if);
-    expect(publish.with.prerelease).toBe(upload.with.prerelease);
+    expect(inputsOf(publish).prerelease).toBe(inputsOf(upload).prerelease);
+  });
+
+  it('skips npm for a version the public registry already holds', () => {
+    const script = scriptOf(stepNamed(job(), NPM));
+    const guard = script.indexOf('npm view');
+    expect(guard, 'a re-run would stop at E409 and strand the draft').toBeGreaterThanOrEqual(0);
+    expect(script).toContain('--@akasecurity:registry=https://registry.npmjs.org');
+    expect(guard).toBeLessThan(script.indexOf(' publish --no-git-checks'));
+  });
+
+  it('names a draft left unpublished in the log', () => {
+    const step = stepNamed(job(), EXPLAIN);
+    expect(stepIndex(job(), EXPLAIN)).toBeGreaterThan(stepIndex(job(), PUBLISH));
+    expect(step.if).toBe("failure() && steps.draft.outcome == 'success'");
+    expect(stepNamed(job(), UPLOAD).id).toBe('draft');
+  });
+});
+
+describe('release-binaries.yml stays stopped until bin-latest works with immutable releases', () => {
+  it('refuses a tag push in the first step of the first job', () => {
+    const job = jobOf(parsed('.github/workflows/release-binaries.yml'), 'verify-tag');
+    const [first] = stepsOf(job);
+    expect(first.if).toBe("github.event_name == 'push'");
+    expect(scriptOf(first)).toMatch(/^\s*exit 1\s*$/m);
   });
 });

@@ -171,22 +171,34 @@ channel: `--channel rc` is refused and a machine running an `rc` build reads as 
 ### GitHub Releases are immutable
 
 GitHub locks a Release the moment it is published: no file can be added, replaced or deleted after
-that, and the release cannot be repaired, only superseded by a new version. So a release workflow
-uploads to a draft and publishes the draft as a separate step (`Create GitHub Release` with
-`draft: true`, then `Publish GitHub Release` with `draft: false` and no `files`). Without
-`draft: true`, `softprops/action-gh-release` publishes a prerelease before uploading, every `0.x`
-tag is a prerelease, and the upload is refused after npm has already published: that is how every
-0.9.23 Release ended up with no files.
+that, and the Release cannot be repaired, only superseded by a new version. Without `draft: true`,
+`softprops/action-gh-release` publishes a prerelease before uploading, and every `0.x` tag is a
+prerelease, so the upload is refused. That is how every 0.9.23 Release ended up with no files, after
+npm had already published.
 
-- A job that dies between the two steps leaves a draft. Re-running it overwrites the draft's files
-  and publishes it.
-- A re-run after `Publish GitHub Release` has passed fails on the locked Release and changes
+So the CLI and plugin workflows run in this order:
+
+1. `Create GitHub Release` uploads to a draft, which nobody outside the repository can see. A failure
+   here leaves npm untouched.
+2. `Publish to npm` publishes, or skips with a notice when the public registry already has the
+   version.
+3. `Publish GitHub Release` publishes the draft, with no `files`, so its notes stay as they are.
+
+- **A job that fails after step 1** names that state in the log (`Explain a draft Release left
+unpublished`). Re-running it replaces the draft's files, skips npm if the version is there, and
+  publishes the draft. The re-run rebuilds the tarball, so the Release's copy is not guaranteed to
+  match npm's byte for byte. npm's read lag can make the skip miss a version just published: that
+  run fails with `E409`, and a later re-run gets through.
+- **A re-run after step 3 has passed** fails at step 1 on the locked Release, before npm, and changes
   nothing. That failure is expected.
-- An older Release published before the setting was turned on stays unlocked until it is edited.
-  Any edit to it, even of its name, locks it, and a locked Release refuses the file replacement that
-  follows. The rolling `bin-latest` Release is one of these, and `release-binaries.yml` does not use
-  this shape yet: do not push a `bin-v*` tag until it does. The tag fails at `Create GitHub Release`
-  and leaves an empty `bin-v*` Release, which is the one `tools/installer/install.sh` picks as newest.
+- **An older Release published before the setting was turned on** stays unlocked until it is edited.
+  Replacing its files does not lock it, but any edit does, even of its name, and a locked Release
+  refuses the file replacement that follows. The action always edits first.
+
+The rolling `bin-latest` Release is one of those older ones, so `release-binaries.yml` refuses every
+`bin-v*` tag in its first job until `bin-latest` has an answer. Without that stop, the tag would leave
+an empty `bin-v*` Release, which `tools/installer/install.sh` picks as newest, or, with the same draft
+steps added, would lock `bin-latest` on its old files.
 
 ### Release branches
 

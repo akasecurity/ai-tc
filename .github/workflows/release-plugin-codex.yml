@@ -183,6 +183,19 @@ jobs:
       - name: Pack tarball (release asset)
         run: pnpm --filter @akasecurity/ai-tc-codex pack --pack-destination "$RUNNER_TEMP"
 
+      # A Release locks when published, so this uploads to a draft that a later step
+      # publishes. See "GitHub Releases are immutable" in conventions/releasing.md.
+      - name: Create GitHub Release
+        id: draft
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          draft: true
+          files: ${{ runner.temp }}/*.tgz
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          prerelease: ${{ startsWith(github.ref_name, 'plugin-codex-v0.') }}
+
       # OIDC trusted publishing: the id-token: write permission above lets npm
       # exchange this job's OIDC token for a short-lived publish credential — no
       # NPM_TOKEN needed. NPM_CONFIG_PROVENANCE has npm attach a Sigstore
@@ -193,6 +206,10 @@ jobs:
       - name: Publish to npm
         if: github.event_name == 'push' || inputs.publish
         run: |
+          if [ "$(npm view "@akasecurity/ai-tc-codex@$PKG_VERSION" version --@akasecurity:registry=https://registry.npmjs.org 2>/dev/null)" = "$PKG_VERSION" ]; then
+            echo "::notice::@akasecurity/ai-tc-codex@$PKG_VERSION is already on npm, so this run does not publish it again."
+            exit 0
+          fi
           case "$PKG_VERSION" in
             *-beta.*)    dist_tag="beta" ;;
             *-nightly.*) dist_tag="nightly" ;;
@@ -204,28 +221,17 @@ jobs:
           NPM_CONFIG_PROVENANCE: 'true'
           PKG_VERSION: ${{ steps.manifest.outputs.version }}
 
-      - name: Create GitHub Release
-        if: github.event_name == 'push'
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
-        with:
-          draft: true
-          files: ${{ runner.temp }}/*.tgz
-          generate_release_notes: true
-          prerelease: ${{ startsWith(github.ref_name, 'plugin-codex-v0.') }}
-
-      # Releases here are immutable: GitHub locks one the moment it is published, and
-      # refuses a file added after that. For a prerelease, which every 0.x tag is, this
-      # action publishes first and uploads second unless told `draft: true`, so the
-      # step above uploads to a draft and this one publishes it, with no `files`, which
-      # keeps the notes the draft has. A job that dies between the two steps leaves a
-      # draft, and a re-run overwrites its files and publishes it. A re-run after this
-      # step has passed fails on the locked Release and changes nothing.
       - name: Publish GitHub Release
         if: github.event_name == 'push'
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           draft: false
           prerelease: ${{ startsWith(github.ref_name, 'plugin-codex-v0.') }}
+
+      - name: Explain a draft Release left unpublished
+        if: failure() && steps.draft.outcome == 'success'
+        run: |
+          echo "::error::The draft Release for ${GITHUB_REF_NAME} is not published, and npm may already hold this version. Re-run this job: it skips npm if the version is there, replaces the draft's files and publishes the draft."
 
   # Publish the same package to the repo's GitHub Packages registry (requirement:
   # packages land in the org's GitHub registry). Kept a separate job so its GitHub

@@ -794,6 +794,16 @@ async function resolveConfig(pkgDir, relFile, configName = 'eslint.config.mjs') 
 /** Just the four network rules out of a resolved config. */
 const networkRulesOf = (config) => Object.fromEntries(KEYS.map((k) => [k, config?.rules?.[k]]));
 
+/**
+ * The rule ids a lint result reports as errors. A warning leaves the lint run
+ * green, and any error from an unrelated rule would make the run fail anyway
+ * (NETWORK_SNIPPET's unused `x` does), so a case claiming that a network rule
+ * fails the run has to read that rule's own severity rather than errorCount.
+ * @param {import('eslint').Linter.LintMessage[]} messages
+ */
+const errorRuleIds = (messages) =>
+  new Set(messages.filter((m) => m.severity === 2).map((m) => m.ruleId));
+
 /** A rule's resolved severity, normalized out of the `[severity, …options]` form. */
 const severityOf = (config, ruleId) => {
   const entry = config?.rules?.[ruleId];
@@ -3716,14 +3726,13 @@ describe('end to end: eslint run the way the lint script runs it finds a planted
           messages.filter((m) => m.fatal).map((m) => m.message),
           `${PROBE_FILE} did not parse, so no rule ran against it`,
         ).toEqual([]);
-        const fired = new Set(messages.map((m) => m.ruleId));
+        const errors = errorRuleIds(messages);
         for (const key of KEYS) {
-          expect(fired, `${PROBE_FILE} :: ${key}`).toContain(key);
+          expect(
+            errors,
+            `${PROBE_FILE} :: ${key} must fail the lint run, not merely warn`,
+          ).toContain(key);
         }
-        expect(
-          /** @type {ESLint.LintResult} */ (probe).errorCount,
-          'the planted file must fail the lint run, not merely warn',
-        ).toBeGreaterThan(0);
       } finally {
         rmSync(probeAbs, { force: true });
       }
@@ -3797,11 +3806,12 @@ describe('end to end: an ignore flag really does silence the run, and the guard 
           `eslint ${targets.join(' ')} never reached ${PROBE_FILE}, so the ignored run below ` +
             'would prove nothing',
         ).toBeDefined();
-        const fired = new Set(
-          /** @type {ESLint.LintResult} */ (linted).messages.map((m) => m.ruleId),
-        );
+        const errors = errorRuleIds(/** @type {ESLint.LintResult} */ (linted).messages);
         for (const key of KEYS) {
-          expect(fired, `${PROBE_FILE} :: ${key}`).toContain(key);
+          expect(
+            errors,
+            `${PROBE_FILE} :: ${key} must fail the lint run, not merely warn`,
+          ).toContain(key);
         }
 
         // The fault: one flag, and the same run stops failing on the same file.
@@ -3887,14 +3897,13 @@ describe('end to end: eslint run the way the root lint script runs it finds a pl
           messages.filter((m) => m.fatal).map((m) => m.message),
           `${PROBE_FILE} did not parse, so no rule ran against it`,
         ).toEqual([]);
-        const fired = new Set(messages.map((m) => m.ruleId));
+        const errors = errorRuleIds(messages);
         for (const key of KEYS) {
-          expect(fired, `${PROBE_FILE} :: ${key}`).toContain(key);
+          expect(
+            errors,
+            `${PROBE_FILE} :: ${key} must fail the lint run, not merely warn`,
+          ).toContain(key);
         }
-        expect(
-          /** @type {ESLint.LintResult} */ (probe).errorCount,
-          'the planted file must fail the lint run, not merely warn',
-        ).toBeGreaterThan(0);
       } finally {
         rmSync(probeAbs, { force: true });
       }

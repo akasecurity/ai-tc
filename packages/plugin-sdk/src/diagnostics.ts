@@ -16,10 +16,11 @@ export function diagnosticWriter(sink: DiagnosticSink | undefined): DiagnosticSi
   if (sink === undefined) return writeDiagnosticToStderr;
   return (line) => {
     try {
-      // The type lets an async function stand in for a sink.
+      // The type lets any thenable stand in for a sink's return, a promise from
+      // another realm included, which `instanceof Promise` would not recognise.
       const call: (line: string) => unknown = sink;
       const returned = call(line);
-      if (returned instanceof Promise) returned.catch(() => undefined);
+      if (returned !== undefined) Promise.resolve(returned).catch(() => undefined);
     } catch {
       // Dropped: the line is lost, and the caller's scan goes on unchanged.
     }

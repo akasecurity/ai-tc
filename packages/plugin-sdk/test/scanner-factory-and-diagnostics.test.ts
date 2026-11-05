@@ -3,11 +3,14 @@
  * the isolated scanner, and a sink for the diagnostic lines the runtime writes.
  * Absent, each falls back to the worker-thread scanner and to stderr.
  */
+import { runInNewContext } from 'node:vm';
+
 import { scan } from '@akasecurity/detections';
 import type { PolicyBundle, Rule, RuleProbeVerdict, WorkspaceSettings } from '@akasecurity/schema';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { CaptureRecord, DataGateway, RuleProbeVerdictEntry } from '../src/data-gateway.ts';
+import { diagnosticWriter } from '../src/diagnostics.ts';
 import { createGuardedScanner } from '../src/guarded-scan.ts';
 import type {
   IsolatedProbeOutcome,
@@ -699,6 +702,23 @@ describe('a diagnostics sink that rejects', () => {
       await new Promise((resolve) => setImmediate(resolve));
 
       expect(degraded).toBe(true);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
+  it('drops the rejection of a promise from another realm', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const crossRealm = (): unknown =>
+        runInNewContext('Promise.reject(new Error("sink rejected"))');
+      const write = diagnosticWriter(crossRealm);
+      write('[aka] a line');
+      await new Promise((resolve) => setImmediate(resolve));
+
       expect(unhandled).toEqual([]);
     } finally {
       process.off('unhandledRejection', onUnhandled);

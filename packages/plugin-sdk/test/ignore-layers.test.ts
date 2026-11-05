@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import {
   childRel,
   evaluateIgnore,
@@ -147,7 +148,7 @@ describe('readIgnoreLayer on a file that is not regular', () => {
         expect(readIgnoreLayer(dir, '.gitignore', 0)).toBeUndefined();
       });
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      removeTree(dir);
     }
   });
 });

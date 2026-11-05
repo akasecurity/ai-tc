@@ -1016,4 +1016,28 @@ describe('resolveConfigInventory — a config path that is not a regular file', 
       expect(scan.errors.find((e) => e.source === path)?.reason).toContain('not a regular file');
     });
   });
+
+  it.skipIf(process.platform === 'win32').each(['.mcp.json', 'CLAUDE.md', '.claude/settings.json'])(
+    'lists no config file row for a named pipe at %s',
+    (relative) => {
+      mkdirSync(join(project, '.claude'));
+      const path = join(project, relative);
+
+      withNamedPipe(path, '{}', () => {
+        const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+
+        expect(scan.configFiles.find((f) => f.path === path)).toBeUndefined();
+        expect(scan.errors.find((e) => e.source === path)?.reason).toContain('not a regular file');
+      });
+    },
+  );
+
+  it('still lists a row for a regular file that cannot be parsed', () => {
+    const path = join(project, '.mcp.json');
+    writeFileSync(path, 'not json');
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+
+    expect(scan.configFiles.find((f) => f.path === path)?.kind).toBe('MCP servers');
+  });
 });

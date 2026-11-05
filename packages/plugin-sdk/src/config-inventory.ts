@@ -508,6 +508,7 @@ function settingsConfigFile(
   const entry = configFileEntry(scan, path, scope, kind);
   if (!entry) return;
   const raw = readOptional(scan, path, false);
+  if (!isRegularFile(path)) return;
   if (raw !== undefined) {
     try {
       const parsed: unknown = JSON.parse(raw);
@@ -534,6 +535,7 @@ function memoryConfigFile(
   const entry = configFileEntry(scan, path, scope, kind);
   if (!entry) return;
   const raw = readOptional(scan, path);
+  if (!isRegularFile(path)) return;
   if (raw !== undefined) {
     // Line count only — memory content never leaves the machine's file. A
     // trailing newline terminates the last line rather than starting a new
@@ -549,6 +551,7 @@ function mcpJsonConfigFile(scan: ConfigScanResult, path: string): void {
   const entry = configFileEntry(scan, path, 'project', 'MCP servers');
   if (!entry) return;
   const raw = readOptional(scan, path, false);
+  if (!isRegularFile(path)) return;
   if (raw !== undefined) {
     try {
       const parsed: unknown = JSON.parse(raw);
@@ -871,6 +874,14 @@ function readOptional(scan: ConfigScanResult, path: string, record = true): stri
   } catch (err) {
     if (record && !isAbsent(err)) scan.errors.push({ source: path, reason: message(err) });
     return undefined;
+  }
+}
+
+function isRegularFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
   }
 }
 

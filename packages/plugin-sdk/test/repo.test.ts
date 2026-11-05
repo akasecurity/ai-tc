@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { canonicalRepoUrl } from '@akasecurity/persistence';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { resolveInventoryContext } from '../src/inventory-resolver.ts';
 import {
   remoteWithoutCredentials,
@@ -26,7 +27,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(root, { recursive: true, force: true });
+  removeTree(root);
 });
 
 // Lay down a `.git` directory with the given config body at `dir`.
@@ -652,7 +653,7 @@ describe('git metadata that is not a small regular file', () => {
     const dir = checkout();
 
     withNamedPipe(join(dir, '.git'), pointer, () => {
-      expect(resolveRepoIdentity(dir)?.url).not.toBe(REMOTE);
+      expect(resolveRepoIdentity(dir)?.url).toBe(posixPath(dir));
     });
   });
 
@@ -661,7 +662,7 @@ describe('git metadata that is not a small regular file', () => {
     mkdirSync(join(dir, '.git'));
 
     withNamedPipe(join(dir, '.git', 'config'), ORIGIN(REMOTE), () => {
-      expect(resolveRepoIdentity(dir)?.url).not.toBe(REMOTE);
+      expect(resolveRepoIdentity(dir)?.url).toBe(posixPath(dir));
     });
   });
 
@@ -670,7 +671,29 @@ describe('git metadata that is not a small regular file', () => {
     const padding = 'x'.repeat(1024 * 1024);
     writeFileSync(join(dir, '.git'), `gitdir: ${elsewhere()}\n${padding}\n`);
 
-    expect(resolveRepoIdentity(dir)?.url).not.toBe(REMOTE);
+    expect(resolveRepoIdentity(dir)?.url).toBe(posixPath(dir));
+  });
+
+  describe('a config at the size limit', () => {
+    const LIMIT = 1024 * 1024;
+
+    function checkoutWithConfigOf(bytes: number): string {
+      const dir = checkout();
+      mkdirSync(join(dir, '.git'));
+      const config = ORIGIN(REMOTE);
+      writeFileSync(join(dir, '.git', 'config'), config + '#'.repeat(bytes - config.length));
+      return dir;
+    }
+
+    it('identifies the repository by its remote at exactly the limit', () => {
+      expect(resolveRepoIdentity(checkoutWithConfigOf(LIMIT))?.url).toBe(REMOTE);
+    });
+
+    it('identifies the repository by its path one byte over the limit', () => {
+      const dir = checkoutWithConfigOf(LIMIT + 1);
+
+      expect(resolveRepoIdentity(dir)?.url).toBe(posixPath(dir));
+    });
   });
 
   it('still follows a pointer to a directory outside the checkout', () => {

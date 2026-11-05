@@ -434,6 +434,8 @@ function resolveGitContext(root: string): GitContext | undefined {
   return { configPath: join(commonGitDir, 'config'), headRoot };
 }
 
+// A larger file reads as absent, so a repository whose `config` exceeds this is identified by its
+// path instead of its remote.
 const MAX_GIT_METADATA_BYTES = 1024 * 1024;
 
 function safeRead(path: string): string | undefined {

@@ -78,8 +78,9 @@ Two security workflows run alongside the main build:
   it only adds a comment when a **new** advisory id appears, so a known long-lived
   finding does not ping daily.
 - **CodeQL** (`.github/workflows/codeql.yml`) — static analysis of the TypeScript
-  workspace and the workflow files on every PR (including a PR stacked on another
-  branch) and weekly; findings appear under the repository's **Security** tab.
+  workspace and the workflow files on every PR into `main`, on any PR carrying the
+  `full-ci` label (including a PR stacked on another branch), on pushes to `main` and
+  `dev`, and weekly; findings appear under the repository's **Security** tab.
 
 When the workspace audit fails, fix first: upgrade the dependency, or raise its floor
 via `pnpm.overrides` in the root `package.json` (the existing entries there are exactly
@@ -476,6 +477,24 @@ nowhere.
   The other `ci.yml` jobs, CodeQL and the binary builds run for pull requests into `main`, for
   pushes to `main` and for its merge queue; elsewhere the `ci.yml` and CodeQL jobs report as
   skipped, which counts as passing, so `main` can require a check that `dev` does not run.
+- Add the `full-ci` label to a pull request into `dev` or `release/**` to run those `ci.yml`
+  and CodeQL jobs on it as well, before it reaches `main`. The binary builds still run only
+  for `main`. A stacked pull request gets CodeQL from the label but no `ci.yml` run at all.
+  - Adding the label starts a new run, unless the pull request has a merge conflict: GitHub
+    starts no `pull_request` run then. The run tests the merge commit built at the last push
+    (see "Branch freshness"), so update the branch first on a pull request that has sat for a
+    while.
+  - Removing the label takes effect on the next run, and a title or body edit or any other
+    label starts one too. So after removing it, an edit can turn a red macOS check into
+    skipped, which counts as passing.
+  - Any label starts a new run and cancels the one in flight. On a pull request into `main`,
+    or one carrying `full-ci`, that restarts every job; otherwise it restarts only `ci`.
+  - Adding a label needs triage access, so a contributor from a fork asks a maintainer.
+    Read a fork's pull request before labelling it: whether a label from a maintainer
+    bypasses the "Approve and run" step for a first-time contributor is not documented.
+  - The workflows match the label by name. Renaming or deleting it in the repository
+    settings makes every labelled job report as skipped, which counts as passing, and
+    nothing goes red.
 
 ### Release branches
 
@@ -491,7 +510,8 @@ the same matching rules as a workflow filter — `*` does not cross a `/` — so
 `release/**` matches is `release/**/*`.
 
 After a merge, a release branch gets the main CI run but not the dependency audit, CodeQL or the
-internal-path guard, which still run post-merge for `main` only.
+internal-path guard. Those run post-merge for `main` only, except CodeQL, which also analyses
+pushes to `dev` so a labelled pull request into `dev` has a baseline to compare against.
 
 `pnpm check:diff-coverage` compares against `origin/main` unless told otherwise; on a branch cut
 from a release branch, pass `--base` with that branch.

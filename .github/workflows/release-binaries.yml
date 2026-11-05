@@ -57,15 +57,6 @@ jobs:
     name: Verify the tag names a stable release
     runs-on: ubuntu-24.04
     steps:
-      # Every bin-v tag stops here until `bin-latest` works with immutable releases. The
-      # steps below would leave an empty Release that install.sh picks as newest, or lock
-      # `bin-latest` on old files. See "GitHub Releases are immutable" in conventions/releasing.md.
-      - name: Refuse a binary release until bin-latest works with immutable releases
-        if: github.event_name == 'push'
-        run: |
-          echo "::error::Binary releases are stopped until bin-latest works with immutable releases. See conventions/releasing.md."
-          exit 1
-
       # The tag arrives through GITHUB_REF_NAME in the environment. A `${{ }}`
       # expression would be pasted into the script before the shell reads it,
       # making the tag name part of the program rather than its input.
@@ -178,6 +169,14 @@ jobs:
           rm -f aka-*.sha256
           cat SHA256SUMS
 
+      # An archive that disagrees with the checksum its build wrote is a short or
+      # corrupted transfer between two runners, and it stops here rather than on a
+      # user's machine. Not gated on the event, so the dry run exercises it too.
+      - name: Verify the archives against SHA256SUMS
+        run: |
+          cd dist
+          sha256sum -c SHA256SUMS
+
       # The Homebrew formula and the Scoop manifest, rendered from the checksums
       # the step above just wrote. The version comes from cli/package.json: on a
       # push the check at the top of this job has already proved the tag equals
@@ -197,77 +196,6 @@ jobs:
             --out dist
           cat dist/aka.rb dist/aka.json dist/VERSION
 
-      # `bin-latest` carries VERSION-LESS copies of the same archives, so a
-      # download link on a documentation page is a fixed URL. The names are
-      # stripped rather than re-derived, the checksum file is rewritten from the
-      # one the archives were hashed into, and `sha256sum -c` proves each copy
-      # landed — a short copy fails here rather than on a user's machine.
-      - name: Stage the rolling bin-latest assets
-        id: rolling
-        run: |
-          set -euo pipefail
-          version=$(node -p "require('./cli/package.json').version")
-          mkdir -p dist-latest
-
-          staged=0
-          for src in dist/aka-"$version"-*.tar.gz dist/aka-"$version"-*.zip; do
-            [ -e "$src" ] || continue
-            base=$(basename "$src")
-            suffix=${base#"aka-$version-"}
-            cp "$src" "dist-latest/aka-$suffix"
-            staged=$((staged + 1))
-          done
-          if [ "$staged" -ne 4 ]; then
-            echo "::error::staged $staged alias archives, expected 4 — the rolling bin-latest release would be incomplete"
-            exit 1
-          fi
-
-          : > dist-latest/SHA256SUMS
-          while read -r sum name || [ -n "$sum" ]; do
-            suffix=${name#"aka-$version-"}
-            printf '%s  %s\n' "$sum" "aka-$suffix" >> dist-latest/SHA256SUMS
-          done < dist/SHA256SUMS
-          named=$(wc -l < dist-latest/SHA256SUMS)
-          if [ "$named" -ne 4 ]; then
-            echo "::error::the alias checksum file names $named archives, expected 4"
-            exit 1
-          fi
-          ( cd dist-latest && sha256sum -c SHA256SUMS )
-
-          cp dist/aka.rb dist/aka.json dist/VERSION dist-latest/
-
-          {
-            printf 'aka %s — the same bytes as the bin-v%s release, under names that do not change.\n\n' "$version" "$version"
-            for asset in aka-darwin-arm64.tar.gz aka-linux-x64.tar.gz aka-linux-arm64.tar.gz aka-win32-x64.zip SHA256SUMS aka.rb aka.json VERSION; do
-              printf -- '- https://github.com/%s/releases/download/bin-latest/%s\n' "$GITHUB_REPOSITORY" "$asset"
-            done
-            printf '\nVerify a download against SHA256SUMS on this release, and its provenance with %s.\n' "\`gh attestation verify <file> -R ${GITHUB_REPOSITORY}\`"
-          } > dist-latest/RELEASE_NOTES.md
-
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
-          # The rolling release hangs off `bin-latest`, so it is published for
-          # exactly the tags that move it. The inner arms are the ones the
-          # refusal job uses; the outer one is what routes a BRANCH name — which
-          # is what GITHUB_REF_NAME holds on the workflow_dispatch dry run — away
-          # from the download surface a documentation page points at.
-          publish=no
-          case "$GITHUB_REF_NAME" in
-            bin-v*)
-              case "${GITHUB_REF_NAME#bin-v}" in
-                # Anything but digits and dots: a pre-release identifier, a build
-                # suffix, or a word such as `latest`.
-                *[!0-9.]*) publish=no ;;
-                # More or fewer than three components, or an empty one.
-                *.*.*.* | *..* | .* | *.) publish=no ;;
-                *.*.*) publish=yes ;;
-                *) publish=no ;;
-              esac
-              ;;
-          esac
-          echo "publish=$publish" >> "$GITHUB_OUTPUT"
-          echo "rolling publish: $publish"
-
       # Build-provenance attestation over the bytes this release publishes. The
       # action mints an OIDC token, Sigstore issues a short-lived certificate
       # against it, and the signed SLSA provenance is uploaded to this
@@ -275,14 +203,11 @@ jobs:
       # `gh attestation verify <asset> -R akasecurity/ai-tc`; the installers do
       # not, and require no `gh` (see tools/installer/README.md).
       #
-      # It attests exactly what the two Release steps below publish — the
-      # versioned archives and their SHA256SUMS, the rendered formula and
-      # manifest, and the rolling `bin-latest` copies — so every archive AND
-      # every checksum file the installers verify against is covered. The alias
-      # copies are named one by one rather than globbed: a glob shared with the
-      # versioned set would make the two lists agree while covering half of it.
-      # Running BEFORE either Release means a failure here publishes nothing
-      # rather than leaving unattested assets behind.
+      # It attests exactly what the Release step below uploads — the archives,
+      # their SHA256SUMS, and the rendered formula and manifest — so every archive
+      # AND the checksum file the installers verify against is covered. Running
+      # BEFORE the Release means a failure here publishes nothing rather than
+      # leaving unattested assets behind.
       #
       # `actions/attest` rather than `actions/attest-build-provenance`, whose
       # README documents itself as a wrapper and points new workflows here. With
@@ -306,22 +231,29 @@ jobs:
             dist/aka.rb
             dist/aka.json
             dist/VERSION
-            dist-latest/aka-darwin-arm64.tar.gz
-            dist-latest/aka-linux-x64.tar.gz
-            dist-latest/aka-linux-arm64.tar.gz
-            dist-latest/aka-win32-x64.zip
-            dist-latest/SHA256SUMS
-            dist-latest/aka.rb
-            dist-latest/aka.json
-            dist-latest/VERSION
 
-      # `fail_on_unmatched_files` makes a missing archive end the run rather than
-      # publish a partial release, which is a change to the path every binary
-      # release has taken so far.
+      # The two publish jobs below cannot render for themselves: the renderer
+      # reads the aggregated SHA256SUMS, which exists on this runner only.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: package-manifests
+          path: |
+            dist/aka.rb
+            dist/aka.json
+            dist/VERSION
+          if-no-files-found: error
+
+      # GitHub locks a Release the moment it is published and refuses any file added
+      # after that, so this uploads to a draft. See "GitHub Releases are immutable" in
+      # conventions/releasing.md. A draft is invisible to the installers, which list
+      # releases without a token. `fail_on_unmatched_files` makes a missing archive
+      # end the run rather than publish a partial release.
       - name: Create GitHub Release
+        id: draft
         if: github.event_name == 'push'
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
+          draft: true
           files: |
             dist/aka-*.tar.gz
             dist/aka-*.zip
@@ -333,12 +265,12 @@ jobs:
           generate_release_notes: true
           prerelease: ${{ startsWith(github.ref_name, 'bin-v0.') }}
 
-      # `bin-latest` serves both install one-liners and every one-click link, so
+      # `bin-latest` serves both install one-liners and both version checks, so
       # it only ever moves FORWARD. The concurrency group above is per tag, so
       # nothing else orders two releases: a re-run of an older tag's failed
       # release, or two tags pushed out of order, would otherwise move it back.
       # The SAME version is let through, because re-running this job is how a
-      # rolling upload that failed partway is repaired. The value origin holds
+      # draft left unpublished is repaired. The value origin holds
       # for the tag is kept as the lease the move below pushes against.
       - name: Decide whether bin-latest moves forward
         id: advance
@@ -415,72 +347,30 @@ jobs:
 
       # The other half of the same race: this push's lease was for the value
       # the decision step read, and a peer's move landed in between. That peer
-      # already won — this tag's own Release is published (Create GitHub
-      # Release ran above), but bin-latest, the rolling release and both
-      # package managers still serve whichever version got there first. No
-      # retry loop here: re-reading the tag and pushing again would only race
-      # the same peer a second time, and re-running this tag's whole workflow
-      # already is the safe repair, because it re-reads the tag from scratch
-      # and only ever moves forward — so if the peer's version is newer, the
-      # re-run is a no-op.
+      # already won, and this tag's Release is still a draft, because the publish
+      # step comes after this one. No retry loop here: re-reading the tag and
+      # pushing again would only race the same peer a second time, and re-running
+      # this job is the safe repair. It re-reads the tag from scratch and only ever
+      # moves forward, so a newer winner leaves the tag alone and the draft publishes.
       - name: Explain a bin-latest move that lost a race
         if: failure() && steps.move.outcome == 'failure'
         run: |
-          echo "::error::bin-latest was moved by another release between the decision and this push — ${GITHUB_REF_NAME} is published as its own GitHub Release, but bin-latest, the rolling release and both package managers still serve the other version. Re-run this tag's workflow: it re-reads the tag and only ever moves forward, so a newer winner makes the re-run a no-op."
+          echo "::error::bin-latest was moved by another release between the decision and this push, so ${GITHUB_REF_NAME} is still a draft, and bin-latest and both package managers still serve the other version. Re-run this job: it re-reads the tag and only ever moves forward, then publishes the draft."
 
-      # A rolling release on the tag the installers already bootstrap from, so a
-      # download link is a constant. It is published AFTER the tag move: the tag
-      # has carried no release until now, and one cut ahead of the move would
-      # name the previous commit. `target_commitish` is deliberately absent — the
-      # REST releases API ignores it when the tag already exists.
-      #
-      # BOTH halves of the gate are load-bearing. `prerelease` keeps this out of
-      # the repository's latest-release election, which seven tag prefixes share
-      # here, and `make_latest: false` says the same thing a second way; the
-      # event check is what keeps the workflow_dispatch dry run — whose build is
-      # attested by nothing — off the surface a documentation page links to.
-      - name: Publish the rolling bin-latest release
-        if: github.event_name == 'push' && steps.rolling.outputs.publish == 'yes' && steps.advance.outputs.move == 'yes'
+      # Last, because a re-run after this has passed stops at the locked Release: the
+      # tag move and the artifact the publish jobs read have to be behind it already.
+      # Not gated on the decision, because an older tag still gets its own Release.
+      - name: Publish GitHub Release
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          tag_name: bin-latest
-          name: aka ${{ steps.rolling.outputs.version }} — latest binaries
-          body_path: dist-latest/RELEASE_NOTES.md
-          files: |
-            dist-latest/aka-darwin-arm64.tar.gz
-            dist-latest/aka-linux-x64.tar.gz
-            dist-latest/aka-linux-arm64.tar.gz
-            dist-latest/aka-win32-x64.zip
-            dist-latest/SHA256SUMS
-            dist-latest/aka.rb
-            dist-latest/aka.json
-            dist-latest/VERSION
-          fail_on_unmatched_files: true
-          overwrite_files: true
-          prerelease: true
-          make_latest: false
+          draft: false
+          prerelease: ${{ startsWith(github.ref_name, 'bin-v0.') }}
 
-      # The tag moves first and its assets are uploaded one file at a time after,
-      # so a failure from here on leaves `bin-latest` naming this release while
-      # the files behind it are a mix of this release and the last one — a
-      # download there then fails its checksum. Re-running the job repairs it:
-      # the decision step lets the same version through and every asset is
-      # overwritten.
-      - name: Explain a bin-latest left half-published
-        if: failure() && steps.move.outcome == 'success'
+      - name: Explain a draft Release left unpublished
+        if: failure() && steps.draft.outcome == 'success'
         run: |
-          echo "::error::bin-latest now names ${GITHUB_REF_NAME}, but its rolling release did not finish uploading — the files under releases/download/bin-latest/ may disagree with each other until this job is re-run. Re-run it: the same version is let through and every asset is overwritten."
-
-      # The two publish jobs below cannot render for themselves: the renderer
-      # reads the aggregated SHA256SUMS, which exists on this runner only.
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: package-manifests
-          path: |
-            dist/aka.rb
-            dist/aka.json
-            dist/VERSION
-          if-no-files-found: error
+          echo "::error::The ${GITHUB_REF_NAME} Release is still a draft, so nothing installs it yet. Re-run this job: it replaces the draft's files, re-reads bin-latest and publishes the draft. See conventions/releasing.md."
 
   # Writes the rendered formula into the Homebrew tap with a token minted for
   # this one job from a GitHub App, scoped to that repository alone, valid for an

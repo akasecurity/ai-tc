@@ -102,8 +102,6 @@ Windows, with [Scoop](https://scoop.sh):
 ```powershell
 scoop bucket add akasecurity https://github.com/akasecurity/scoop-bucket
 scoop install aka
-# or, without adding the bucket:
-scoop install https://github.com/akasecurity/ai-tc/releases/download/bin-latest/aka.json
 ```
 
 Or the bootstrap installer, which downloads the same archive:
@@ -116,20 +114,13 @@ curl -fsSL https://raw.githubusercontent.com/akasecurity/ai-tc/bin-latest/tools/
 irm https://raw.githubusercontent.com/akasecurity/ai-tc/bin-latest/tools/installer/install.ps1 | iex
 ```
 
-Or download an archive directly — these four links always serve the newest binary release. The binary is ad-hoc signed and not notarized, so a browser download is quarantined and Gatekeeper refuses to run it, while `brew`, `curl` and command-line `tar` don't quarantine what they fetch.
-
-| Platform              | Download                                                                                                             |
-| --------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| macOS (Apple silicon) | [aka-darwin-arm64.tar.gz](https://github.com/akasecurity/ai-tc/releases/download/bin-latest/aka-darwin-arm64.tar.gz) |
-| Linux x64             | [aka-linux-x64.tar.gz](https://github.com/akasecurity/ai-tc/releases/download/bin-latest/aka-linux-x64.tar.gz)       |
-| Linux arm64           | [aka-linux-arm64.tar.gz](https://github.com/akasecurity/ai-tc/releases/download/bin-latest/aka-linux-arm64.tar.gz)   |
-| Windows x64           | [aka-win32-x64.zip](https://github.com/akasecurity/ai-tc/releases/download/bin-latest/aka-win32-x64.zip)             |
+Or download an archive directly from the [newest `bin-v*` release](https://github.com/akasecurity/ai-tc/releases?q=bin-v), named `aka-<version>-<platform>-<arch>`: `darwin-arm64`, `linux-x64` or `linux-arm64` (`.tar.gz`), or `win32-x64` (`.zip`). The binary is ad-hoc signed and not notarized, so a browser download is quarantined and Gatekeeper refuses to run it, while `brew`, `curl` and command-line `tar` don't quarantine what they fetch.
 
 Intel macOS (`darwin-x64`) has no binary build — install the CLI from npm there instead: `npm install -g @akasecurity/cli` (needs Node.js 24+).
 
 Each archive extracts to its own `aka-<platform>-<arch>/` directory; the binary has to stay inside it to find the files it loads at startup. Then run `aka init`.
 
-Check a download against [SHA256SUMS](https://github.com/akasecurity/ai-tc/releases/download/bin-latest/SHA256SUMS) and its build provenance with `gh attestation verify` — [tools/installer/README.md](tools/installer/README.md) sets out the trust chain and what each check does and does not establish. The Homebrew tap and Scoop bucket entries above are published by each binary release.
+Check a download against the `SHA256SUMS` on the same release and its build provenance with `gh attestation verify` — [tools/installer/README.md](tools/installer/README.md) sets out the trust chain and what each check does and does not establish. The Homebrew tap and Scoop bucket entries above are published by each binary release.
 
 Upgrade the way you installed: `brew upgrade aka`, `scoop update aka`, or re-run the one-liner.
 

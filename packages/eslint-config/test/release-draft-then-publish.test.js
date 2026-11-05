@@ -119,12 +119,3 @@ describe.each(WORKFLOWS)('%s: draft, then npm, then publish', (workflow) => {
     expect(stepNamed(job(), UPLOAD).id).toBe('draft');
   });
 });
-
-describe('release-binaries.yml stays stopped until bin-latest works with immutable releases', () => {
-  it('refuses a tag push in the first step of the first job', () => {
-    const job = jobOf(parsed('.github/workflows/release-binaries.yml'), 'verify-tag');
-    const [first] = stepsOf(job);
-    expect(first.if).toBe("github.event_name == 'push'");
-    expect(scriptOf(first)).toMatch(/^\s*exit 1\s*$/m);
-  });
-});

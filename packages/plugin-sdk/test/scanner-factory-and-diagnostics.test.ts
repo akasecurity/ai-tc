@@ -339,6 +339,64 @@ describe('the isolated scanner factory', () => {
     ]);
   });
 
+  it('excludes the pulled rules, persisting nothing, when its prober rejects', async () => {
+    const rejectingProbe: IsolatedScannerFactory = (data, opts) => ({
+      ...scriptedFactory().factory(data, opts),
+      probe: () => Promise.reject(new Error('probe down')),
+    });
+    const gateway = fakeGateway(bundle([PULLED]));
+    const { sink, lines } = collectLines();
+
+    const { result } = await captureWith(gateway, {
+      isolatedScanner: rejectingProbe,
+      diagnostics: sink,
+    });
+
+    expect(result.findings).toEqual([]);
+    expect(gateway.verdicts.size).toBe(0);
+    expect(lines).toEqual([
+      '[aka] 1 pulled/custom-pack rule(s) could not be time-checked: probe down. ' +
+        'That is a problem with this install, not with the rules — until it is fixed they are ' +
+        'excluded from every scan on this machine. Nothing was quarantined, so reinstalling AKA ' +
+        'brings them straight back.',
+    ]);
+  });
+
+  it('keeps the bundled packs detecting when its prober rejects', async () => {
+    const rejectingProbe: IsolatedScannerFactory = (data, opts) => ({
+      ...scriptedFactory().factory(data, opts),
+      probe: () => Promise.reject(new Error('probe down')),
+    });
+    const gateway = fakeGateway(bundle([PULLED]));
+
+    const { result } = await captureWith(
+      gateway,
+      { isolatedScanner: rejectingProbe, diagnostics: () => undefined },
+      'key AKIAIOSFODNN7EXAMPLE here',
+    );
+
+    expect(result.findings.length).toBeGreaterThan(0);
+  });
+
+  it('names a thrown value that is not an Error', async () => {
+    const throwsString: IsolatedScannerFactory = () => {
+      // eslint-disable-next-line @typescript-eslint/only-throw-error -- a host may throw a bare value
+      throw 'factory down';
+    };
+    const gateway = fakeGateway(bundle([PULLED]), clearedByPreflight(PULLED));
+    const { sink, lines } = collectLines();
+
+    await captureWith(gateway, {
+      isolatedScanner: throwsString,
+      diagnostics: sink,
+      largeInput: { thresholdChars: 8, budgetMs: 2_000, startBudgetMs: START_MS },
+    });
+
+    expect(lines).toEqual([
+      '[aka] a large input could not be scanned and was refused: factory down.',
+    ]);
+  });
+
   it('degrades to the verified rules when it throws building the scan scanner', async () => {
     const gateway = fakeGateway(bundle([PULLED]), clearedByPreflight(PULLED));
     const { sink, lines } = collectLines();

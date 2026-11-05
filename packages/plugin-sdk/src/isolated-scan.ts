@@ -266,7 +266,7 @@ export function buildIsolatedScanner(
   } catch (error) {
     const failure: IsolatedFailure = {
       status: 'unavailable',
-      reason: error instanceof Error ? error.message : 'the isolated scanner could not be built',
+      reason: messageOf(error),
     };
     return {
       scan: () => Promise.resolve(failure),
@@ -350,7 +350,7 @@ export function sourceTwin(url: URL): URL {
   return twin;
 }
 
-function messageOf(error: unknown): string {
+export function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 

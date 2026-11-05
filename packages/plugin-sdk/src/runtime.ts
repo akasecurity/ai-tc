@@ -36,7 +36,7 @@ import type {
   IsolatedScannerFactory,
   IsolatedScanOptions,
 } from './isolated-scan.ts';
-import { buildIsolatedScanner, createIsolatedScanner } from './isolated-scan.ts';
+import { buildIsolatedScanner, createIsolatedScanner, messageOf } from './isolated-scan.ts';
 import { bundledMaskingRules } from './mask.ts';
 import { dropShieldedFindings, shieldPointers } from './pointer-shield.ts';
 import type { PolicyResolver } from './policy-resolver.ts';
@@ -480,13 +480,19 @@ export function createPluginRuntime(
     let prober: IsolatedScanner | undefined;
     const gated = await filterUnsafeRules(needsGate, gateway, {
       prober: {
-        probe: (rule) => {
+        probe: async (rule) => {
           prober ??= buildIsolatedScanner(
             isolatedScanner ?? createIsolatedScanner,
             { verified: [], unverified: [] },
             opts?.scanIsolation,
           );
-          return prober.probe(rule);
+          // A rejection here would leave the runtime uninitialised, and every
+          // later scan would fail open with no line saying why.
+          try {
+            return await prober.probe(rule);
+          } catch (error) {
+            return { status: 'unavailable', reason: messageOf(error) };
+          }
         },
       },
       diagnostics,

@@ -251,6 +251,31 @@ export type IsolatedScannerFactory = (
   opts?: IsolatedScanOptions,
 ) => IsolatedScanner;
 
+/**
+ * Builds a scanner through `factory`. A throw from the factory becomes a
+ * scanner that answers every scan and probe `unavailable` with the thrown
+ * message, so a caller's degrade and refuse paths still decide the outcome.
+ */
+export function buildIsolatedScanner(
+  factory: IsolatedScannerFactory,
+  data: ScanWorkerData,
+  opts?: IsolatedScanOptions,
+): IsolatedScanner {
+  try {
+    return factory(data, opts);
+  } catch (error) {
+    const failure: IsolatedFailure = {
+      status: 'unavailable',
+      reason: error instanceof Error ? error.message : 'the isolated scanner could not be built',
+    };
+    return {
+      scan: () => Promise.resolve(failure),
+      probe: () => Promise.resolve(failure),
+      close: () => Promise.resolve(),
+    };
+  }
+}
+
 // Resolved lazily and once: a process that never isolates a scan never pays for
 // the probe, and one that does pays twice at most.
 let resolvedWorkerUrl: URL | null | undefined;

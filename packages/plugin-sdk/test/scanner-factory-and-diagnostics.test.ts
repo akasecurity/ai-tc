@@ -89,6 +89,10 @@ function scriptedFactory(
   return { factory, built };
 }
 
+const throwingFactory: IsolatedScannerFactory = () => {
+  throw new Error('factory failed');
+};
+
 function collectLines(): { sink: (line: string) => void; lines: string[] } {
   const lines: string[] = [];
   return { sink: (line) => lines.push(line), lines };
@@ -313,6 +317,58 @@ describe('the isolated scanner factory', () => {
     ]);
   });
 
+  it('excludes the pulled rules, persisting nothing, when it throws building the prober', async () => {
+    const gateway = fakeGateway(bundle([PULLED]));
+    const { sink, lines } = collectLines();
+
+    const { result } = await captureWith(gateway, {
+      isolatedScanner: throwingFactory,
+      diagnostics: sink,
+    });
+
+    expect(result.findings).toEqual([]);
+    expect(gateway.verdicts.size).toBe(0);
+    expect(lines).toEqual([
+      '[aka] 1 pulled/custom-pack rule(s) could not be time-checked: factory failed. ' +
+        'That is a problem with this install, not with the rules — until it is fixed they are ' +
+        'excluded from every scan on this machine. Nothing was quarantined, so reinstalling AKA ' +
+        'brings them straight back.',
+    ]);
+  });
+
+  it('degrades to the verified rules when it throws building the scan scanner', async () => {
+    const gateway = fakeGateway(bundle([PULLED]), clearedByPreflight(PULLED));
+    const { sink, lines } = collectLines();
+
+    const { result, degraded } = await captureWith(gateway, {
+      isolatedScanner: throwingFactory,
+      diagnostics: sink,
+    });
+
+    expect(result.findings).toEqual([]);
+    expect(degraded).toBe(true);
+    expect(lines).toEqual([
+      '[aka] isolated scanning is off for the rest of this process: factory failed. ' +
+        '1 pulled/custom-pack rule(s) are excluded; the built-in packs still run.',
+    ]);
+  });
+
+  it('refuses a large input when it throws building the bounded scanner', async () => {
+    const gateway = fakeGateway(bundle([PULLED]), clearedByPreflight(PULLED));
+    const { sink, lines } = collectLines();
+
+    const { result } = await captureWith(gateway, {
+      isolatedScanner: throwingFactory,
+      diagnostics: sink,
+      largeInput: { thresholdChars: 8, budgetMs: 2_000, startBudgetMs: START_MS },
+    });
+
+    expect(result.scanIncomplete).toBe('unavailable');
+    expect(lines).toEqual([
+      '[aka] a large input could not be scanned and was refused: factory failed.',
+    ]);
+  });
+
   it('keeps a scanner across runtimes only for the factory that built it', async () => {
     await reuseScanners(true);
     const gateway = fakeGateway(bundle([PULLED]), clearedByPreflight(PULLED));
@@ -333,6 +389,31 @@ describe('the isolated scanner factory', () => {
     expect([...first.built, ...second.built].every((entry) => entry.opts === scanIsolation)).toBe(
       true,
     );
+  });
+
+  it('keeps a scanner across runtimes only for the scan options it was built with', async () => {
+    await reuseScanners(true);
+    const gateway = fakeGateway(bundle([PULLED]), clearedByPreflight(PULLED));
+    const { factory, built } = scriptedFactory();
+    const first = { startBudgetMs: START_MS, workerUrl: new URL('./worker.js', import.meta.url) };
+    const sameValues = {
+      startBudgetMs: START_MS,
+      workerUrl: new URL('./worker.js', import.meta.url),
+    };
+    const otherWorker = {
+      startBudgetMs: START_MS,
+      workerUrl: new URL('./other.js', import.meta.url),
+    };
+    const smallerBudget = { startBudgetMs: START_MS, budgetMs: 50 };
+
+    await captureWith(gateway, { isolatedScanner: factory, scanIsolation: first });
+    await captureWith(gateway, { isolatedScanner: factory, scanIsolation: sameValues });
+    await captureWith(gateway, { isolatedScanner: factory, scanIsolation: otherWorker });
+    await captureWith(gateway, { isolatedScanner: factory, scanIsolation: smallerBudget });
+
+    expect(built.map((entry) => entry.opts)).toEqual([first, otherWorker, smallerBudget]);
+    expect(built[1]?.opts).toBe(otherWorker);
+    expect(built[2]?.opts).toBe(smallerBudget);
   });
 });
 
@@ -593,5 +674,34 @@ describe('a diagnostics sink that throws', () => {
       quarantineRule({ setRuleProbeVerdict }, PULLED, 5, 'hung.', throwingSink),
     ).resolves.toBeUndefined();
     expect(setRuleProbeVerdict).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('a diagnostics sink that rejects', () => {
+  it('leaves a scan that hit its bound degraded, with no unhandled rejection', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const { factory } = scriptedFactory({
+        scan: { status: 'timeout', culpritIndex: 0, elapsedMs: 1_500 },
+      });
+      const gateway = fakeGateway(bundle([PULLED]), clearedByPreflight(PULLED));
+
+      const { degraded } = await captureWith(gateway, {
+        isolatedScanner: factory,
+        // eslint-disable-next-line @typescript-eslint/no-misused-promises -- an async sink is the case under test
+        diagnostics: async () => {
+          await Promise.resolve();
+          throw new Error('sink rejected');
+        },
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(degraded).toBe(true);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
   });
 });

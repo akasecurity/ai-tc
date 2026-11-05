@@ -10,7 +10,7 @@ import type {
   IsolatedScanOptions,
   IsolatedScanOutcome,
 } from './isolated-scan.ts';
-import { createIsolatedScanner } from './isolated-scan.ts';
+import { buildIsolatedScanner, createIsolatedScanner } from './isolated-scan.ts';
 import type { RuleProbeGateway } from './rule-quarantine.ts';
 import { quarantineRule } from './rule-quarantine.ts';
 
@@ -158,7 +158,9 @@ export function createGuardedScanner(
   dependencies?: GuardedScanDependencies,
 ): GuardedScanner {
   const degradeScope = opts?.degradeScope ?? DEFAULT_DEGRADE_SCOPE;
-  const buildIsolated = dependencies?.isolatedScanner ?? createIsolatedScanner;
+  const factory = dependencies?.isolatedScanner ?? createIsolatedScanner;
+  const buildIsolated: IsolatedScannerFactory = (data, options) =>
+    buildIsolatedScanner(factory, data, options);
   const write = diagnosticWriter(dependencies?.diagnostics);
   const verified = partition.verified;
   let unverified = partition.unverified;

@@ -538,6 +538,34 @@ const invocationsCoverFile = (invocations, file) =>
   coveringInvocation(invocations, file) !== undefined;
 
 /**
+ * The targets, out of one invocation's, that can reach `file`. An end-to-end case
+ * that plants one file lints only these: it reads the result for that one file,
+ * and eslint resolves each target on its own, so the others change nothing it
+ * asserts. They do cost it. In cli they are `src` and `test`, which take a full
+ * type-aware pass over every file, and the slowest CI runners spend the case's
+ * whole budget on that. `pnpm lint` still lints all of them. Empty when no target
+ * reaches `file`, so a caller selects its invocation by coverage first: eslint
+ * refuses an empty target list.
+ * @param {string[]} targets
+ * @param {string} file package-relative posix path
+ */
+const targetsReaching = (targets, file) => targets.filter((t) => targetCoversFile(t, file));
+
+// What the two end-to-end cases that plant a file in cli may lint. A wider target
+// is still correct, but it brings back the type-aware pass over `src` and `test`,
+// and on its own that shows up only as a timeout on the slowest runner. The planted
+// files keep a `*.config.*` name so this target reaches them; renaming one means
+// re-deriving this list, not changing cli's lint script.
+const CLI_ROOT_FILE_TARGETS = ['*.config.*'];
+const changedTargetsMessage = (reaching) =>
+  `cli's lint target for a planted root file is no longer ${CLI_ROOT_FILE_TARGETS.join(' ')} ` +
+  `(got: ${reaching.join(' ')}). After an equivalent rewrite, update CLI_ROOT_FILE_TARGETS and ` +
+  'check the case still fits its budget. If the target got wider, narrow it: this case reads one ' +
+  'file, and linting `src` or `test` as well can run it past its timeout on a slow runner';
+const probeUncoveredHint =
+  'If this case renamed its probe, restore the name rather than widening the script';
+
+/**
  * Split the guarded packages by how they fail the config requirement. Pure over
  * its input so the failure paths are testable with synthetic packages — a real,
  * healthy tree produces none by construction.
@@ -781,6 +809,28 @@ async function resolveConfig(pkgDir, relFile, configName = 'eslint.config.mjs') 
 
 /** Just the four network rules out of a resolved config. */
 const networkRulesOf = (config) => Object.fromEntries(KEYS.map((k) => [k, config?.rules?.[k]]));
+
+/**
+ * The rule ids a lint result reports as errors. A warning leaves the lint run
+ * green, and any error from an unrelated rule would make the run fail anyway
+ * (NETWORK_SNIPPET's unused `x` does), so a case claiming that a network rule
+ * fails the run has to read that rule's own severity rather than errorCount.
+ * @param {import('eslint').Linter.LintMessage[]} messages
+ */
+const errorRuleIds = (messages) =>
+  new Set(messages.filter((m) => m.severity === 2).map((m) => m.ruleId));
+
+/**
+ * Asserts each network rule reported an error on `file`.
+ * @param {import('eslint').Linter.LintMessage[]} messages
+ * @param {string} file named in the failure
+ */
+const expectNetworkRulesError = (messages, file) => {
+  const errors = errorRuleIds(messages);
+  for (const key of KEYS) {
+    expect(errors, `${file} :: ${key} must fail the lint run, not merely warn`).toContain(key);
+  }
+};
 
 /** A rule's resolved severity, normalized out of the `[severity, …options]` form. */
 const severityOf = (config, ruleId) => {
@@ -2575,6 +2625,44 @@ describe('eslintTargets / targetCoversDir / targetCoversFile (the lint-coverage 
     // The pre-fix form: source dirs only, root files unreachable.
     expect(targetsCover('eslint src test', ['tsup.config.ts'])).toBe(false);
   });
+
+  it('targetsReaching keeps only the targets that reach the file', () => {
+    const reaching = (script, file) => targetsReaching(eslintTargets(script), file);
+    expect(reaching('eslint src test *.config.*', 'tsup.config.ts')).toEqual(['*.config.*']);
+    expect(reaching('eslint app middleware.ts test *.config.*', 'middleware.ts')).toEqual([
+      'middleware.ts',
+    ]);
+    expect(reaching('eslint .', 'tsup.config.ts')).toEqual(['.']);
+    expect(reaching('eslint src test', 'tsup.config.ts')).toEqual([]);
+  });
+});
+
+describe('errorRuleIds / expectNetworkRulesError (tested on synthetic messages)', () => {
+  const message = (ruleId, severity) => ({ ruleId, severity });
+
+  it('keeps errors and drops warnings', () => {
+    expect(errorRuleIds([message('a', 2), message('b', 1)])).toEqual(new Set(['a']));
+    expect(errorRuleIds([])).toEqual(new Set());
+  });
+
+  it('keeps a fatal parse error, which has no rule id', () => {
+    expect(errorRuleIds([message(null, 2)])).toEqual(new Set([null]));
+  });
+
+  it('passes only when every network rule reports an error', () => {
+    const allErrors = KEYS.map((key) => message(key, 2));
+    expect(() => expectNetworkRulesError(allErrors, 'f')).not.toThrow();
+    for (const key of KEYS) {
+      const others = allErrors.filter((m) => m.ruleId !== key);
+      expect(() => expectNetworkRulesError(others, 'f'), `${key} absent`).toThrow(key);
+      expect(
+        () => expectNetworkRulesError([...others, message(key, 1)], 'f'),
+        `${key} warns`,
+      ).toThrow(key);
+    }
+    // An unrelated error is what `errorCount > 0` used to accept.
+    expect(() => expectNetworkRulesError([message('unrelated', 2)], 'f')).toThrow();
+  });
 });
 
 describe('ignore flags subtract from what an invocation covers', () => {
@@ -3643,15 +3731,15 @@ describe('a planted network call in a file no workspace package owns is reported
   );
 });
 
-describe('end to end: eslint run the way the lint script runs it finds a planted root config file', () => {
+describe("end to end: eslint over the lint script's target that reaches it finds a planted root config file", () => {
   // The case above lints one path at a time, which proves the config bans the
   // network there but not that the `lint` script's own targets ENUMERATE it —
   // the half of the gap that let a `fetch()` in cli/tsup.config.ts pass
   // `pnpm lint`. So plant a real file in a package root and run eslint over the
-  // targets parsed out of the real script. cli is the package to do it in: it
-  // carries three top-level config files and the two-invocation script, so the
-  // targets have to be split by invocation or the scripts pass lints half the
-  // package under the wrong config.
+  // target parsed out of the real script that reaches it (targetsReaching). cli
+  // is the package to do it in: it carries three top-level config files and the
+  // two-invocation script, so the targets have to be split by invocation or the
+  // scripts pass lints half the package under the wrong config.
   const PROBE_FILE = '__aka_network_probe__.config.ts';
   const pkg = GUARDED_PACKAGES.find((p) => p.name === '@akasecurity/cli');
   const pkgDir = pkg ? join(REPO_ROOT, pkg.dir) : '';
@@ -3671,19 +3759,19 @@ describe('end to end: eslint run the way the lint script runs it finds a planted
   it(
     'reports the planted file with every network rule',
     async () => {
-      const invocations = packageLintInvocations(
-        /** @type {{ lintScript: string }} */ (pkg).lintScript,
-      );
-      const invocation = invocations.find((i) =>
-        i.targets.some((t) => targetCoversFile(t, PROBE_FILE)),
+      const invocation = coveringInvocation(
+        packageLintInvocations(/** @type {{ lintScript: string }} */ (pkg).lintScript),
+        PROBE_FILE,
       );
       expect(
         invocation,
-        `no eslint invocation in cli's lint script targets a new ${PROBE_FILE} in the package root`,
+        `no eslint invocation in cli's lint script lints a new ${PROBE_FILE} in the package root. ${probeUncoveredHint}`,
       ).toBeDefined();
       const { configName, targets } = /** @type {{configName?: string, targets: string[]}} */ (
         invocation
       );
+      const reaching = targetsReaching(targets, PROBE_FILE);
+      expect(reaching, changedTargetsMessage(reaching)).toEqual(CLI_ROOT_FILE_TARGETS);
 
       writeFileSync(probeAbs, `${NETWORK_SNIPPET}\n`);
       try {
@@ -3691,27 +3779,21 @@ describe('end to end: eslint run the way the lint script runs it finds a planted
           cwd: pkgDir,
           ...(configName ? { overrideConfigFile: join(pkgDir, configName) } : {}),
         });
-        const results = await eslint.lintFiles(targets);
+        const results = await eslint.lintFiles(reaching);
         const probe = results.find((r) => r.filePath === probeAbs);
         expect(
           probe,
-          `eslint ${targets.join(' ')} never reached ${PROBE_FILE} — the lint script's targets do ` +
-            'not enumerate top-level files, which is exactly how a fetch() in tsup.config.ts passed ' +
-            '`pnpm lint`',
+          `eslint ${reaching.join(' ')} never reached ${PROBE_FILE}, though the lint script's ` +
+            'target reads as covering it. Look for an `ignores` entry in the config this ' +
+            'invocation uses, or a glob that does not expand to a new top-level file: either ' +
+            'leaves a fetch() in a root file passing `pnpm lint`',
         ).toBeDefined();
         const messages = /** @type {ESLint.LintResult} */ (probe).messages;
         expect(
           messages.filter((m) => m.fatal).map((m) => m.message),
           `${PROBE_FILE} did not parse, so no rule ran against it`,
         ).toEqual([]);
-        const fired = new Set(messages.map((m) => m.ruleId));
-        for (const key of KEYS) {
-          expect(fired, `${PROBE_FILE} :: ${key}`).toContain(key);
-        }
-        expect(
-          /** @type {ESLint.LintResult} */ (probe).errorCount,
-          'the planted file must fail the lint run, not merely warn',
-        ).toBeGreaterThan(0);
+        expectNetworkRulesError(messages, PROBE_FILE);
       } finally {
         rmSync(probeAbs, { force: true });
       }
@@ -3750,12 +3832,10 @@ describe('end to end: an ignore flag really does silence the run, and the guard 
     'lints the planted file, stops once an ignore flag is added, and is reported as uncovered',
     async () => {
       const lintScript = /** @type {{ lintScript: string }} */ (pkg).lintScript;
-      const invocation = packageLintInvocations(lintScript).find((i) =>
-        i.targets.some((t) => targetCoversFile(t, PROBE_FILE)),
-      );
+      const invocation = coveringInvocation(packageLintInvocations(lintScript), PROBE_FILE);
       expect(
         invocation,
-        `no eslint invocation in cli's lint script targets a new ${PROBE_FILE} in the package root`,
+        `no eslint invocation in cli's lint script lints a new ${PROBE_FILE} in the package root. ${probeUncoveredHint}`,
       ).toBeDefined();
       const { configName, targets } = /** @type {{configName?: string, targets: string[]}} */ (
         invocation
@@ -3768,12 +3848,14 @@ describe('end to end: an ignore flag really does silence the run, and the guard 
       const mutatedScript =
         `eslint ${configName ? `-c ${configName} ` : ''}${targets.join(' ')} ` +
         `--ignore-pattern ${PROBE_FILE}`;
+      const reaching = targetsReaching(targets, PROBE_FILE);
+      expect(reaching, changedTargetsMessage(reaching)).toEqual(CLI_ROOT_FILE_TARGETS);
 
       writeFileSync(probeAbs, `${NETWORK_SNIPPET}\n`);
       try {
         const resultFor = async (options) => {
           const results = await new ESLint({ cwd: pkgDir, ...overrides, ...options }).lintFiles(
-            targets,
+            reaching,
           );
           return results.find((r) => r.filePath === probeAbs);
         };
@@ -3782,15 +3864,10 @@ describe('end to end: an ignore flag really does silence the run, and the guard 
         const linted = await resultFor({});
         expect(
           linted,
-          `eslint ${targets.join(' ')} never reached ${PROBE_FILE}, so the ignored run below ` +
+          `eslint ${reaching.join(' ')} never reached ${PROBE_FILE}, so the ignored run below ` +
             'would prove nothing',
         ).toBeDefined();
-        const fired = new Set(
-          /** @type {ESLint.LintResult} */ (linted).messages.map((m) => m.ruleId),
-        );
-        for (const key of KEYS) {
-          expect(fired, `${PROBE_FILE} :: ${key}`).toContain(key);
-        }
+        expectNetworkRulesError(/** @type {ESLint.LintResult} */ (linted).messages, PROBE_FILE);
 
         // The fault: one flag, and the same run stops failing on the same file.
         const ignored = await resultFor({ ignorePatterns: [PROBE_FILE] });
@@ -3875,14 +3952,7 @@ describe('end to end: eslint run the way the root lint script runs it finds a pl
           messages.filter((m) => m.fatal).map((m) => m.message),
           `${PROBE_FILE} did not parse, so no rule ran against it`,
         ).toEqual([]);
-        const fired = new Set(messages.map((m) => m.ruleId));
-        for (const key of KEYS) {
-          expect(fired, `${PROBE_FILE} :: ${key}`).toContain(key);
-        }
-        expect(
-          /** @type {ESLint.LintResult} */ (probe).errorCount,
-          'the planted file must fail the lint run, not merely warn',
-        ).toBeGreaterThan(0);
+        expectNetworkRulesError(messages, PROBE_FILE);
       } finally {
         rmSync(probeAbs, { force: true });
       }

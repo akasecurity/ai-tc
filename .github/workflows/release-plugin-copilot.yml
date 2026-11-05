@@ -277,6 +277,7 @@ jobs:
         if: github.event_name == 'push'
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
+          draft: true
           files: ${{ runner.temp }}/*.tgz
           generate_release_notes: true
           prerelease: ${{ startsWith(github.ref_name, 'plugin-copilot-v0.') }}
@@ -300,6 +301,20 @@ jobs:
             ```
 
             `copilot plugin update` re-copies that folder into the installed plugin; it does not fetch a newer version itself. The Copilot CLI warns that direct local-path installs are deprecated. Windows is unconfirmed. See the "Install — Copilot CLI" section of `plugins/copilot/skills/setup/SKILL.md` for the full notes.
+
+      # Releases here are immutable: GitHub locks one the moment it is published, and
+      # refuses a file added after that. For a prerelease, which every 0.x tag is, this
+      # action publishes first and uploads second unless told `draft: true`, so the
+      # step above uploads to a draft and this one publishes it, with no `files`, which
+      # keeps the notes the draft has. A job that dies between the two steps leaves a
+      # draft, and a re-run overwrites its files and publishes it. A re-run after this
+      # step has passed fails on the locked Release and changes nothing.
+      - name: Publish GitHub Release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          draft: false
+          prerelease: ${{ startsWith(github.ref_name, 'plugin-copilot-v0.') }}
 
   # Publish the same package to the repo's GitHub Packages registry (requirement:
   # packages land in the org's GitHub registry). Kept a separate job so its GitHub

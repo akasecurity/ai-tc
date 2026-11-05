@@ -168,6 +168,26 @@ per-host decision, and it has not been made. `rc` is a dist-tag the workflows pu
 channel: `--channel rc` is refused and a machine running an `rc` build reads as stable, so an
 `rc` is installed by exact version or `@rc`.
 
+### GitHub Releases are immutable
+
+GitHub locks a Release the moment it is published: no file can be added, replaced or deleted after
+that, and the release cannot be repaired, only superseded by a new version. So a release workflow
+uploads to a draft and publishes the draft as a separate step (`Create GitHub Release` with
+`draft: true`, then `Publish GitHub Release` with `draft: false` and no `files`). Without
+`draft: true`, `softprops/action-gh-release` publishes a prerelease before uploading, every `0.x`
+tag is a prerelease, and the upload is refused after npm has already published: that is how every
+0.9.23 Release ended up with no files.
+
+- A job that dies between the two steps leaves a draft. Re-running it overwrites the draft's files
+  and publishes it.
+- A re-run after `Publish GitHub Release` has passed fails on the locked Release and changes
+  nothing. That failure is expected.
+- An older Release published before the setting was turned on stays unlocked until it is edited.
+  Any edit to it, even of its name, locks it, and a locked Release refuses the file replacement that
+  follows. The rolling `bin-latest` Release is one of these, and `release-binaries.yml` does not use
+  this shape yet: do not push a `bin-v*` tag until it does. The tag fails at `Create GitHub Release`
+  and leaves an empty `bin-v*` Release, which is the one `tools/installer/install.sh` picks as newest.
+
 ### Release branches
 
 `ci.yml` triggers for `main`, `dev` and every `release/**` branch on both `push` and

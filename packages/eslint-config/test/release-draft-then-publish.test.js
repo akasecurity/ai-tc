@@ -104,6 +104,12 @@ describe.each(WORKFLOWS)('%s: draft, then npm, then publish', (workflow) => {
     expect(inputsOf(step).draft, 'the publish step leaves the Release a draft').toBe('false');
   });
 
+  // Without a `tag_name` the action takes the pushed tag. Naming one could put a Release on
+  // `cli-latest` or `bin-latest`, and a published Release locks its tag, so it stops moving.
+  it('names no tag on the upload step, so no Release lands on a moving tag', () => {
+    expect(inputNames(stepNamed(job(), UPLOAD))).not.toContain('tag_name');
+  });
+
   it('gives both steps the same pin, gate and prerelease flag', () => {
     const upload = stepNamed(job(), UPLOAD);
     const publish = stepNamed(job(), PUBLISH);

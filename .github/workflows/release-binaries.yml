@@ -356,7 +356,7 @@ jobs:
       - name: Explain a bin-latest move that lost a race
         if: failure() && steps.move.outcome == 'failure'
         run: |
-          echo "::error::bin-latest was moved by another release between the decision and this push, so ${GITHUB_REF_NAME} is still a draft, and bin-latest and both package managers still serve the other version. Re-run this job: it re-reads the tag and only ever moves forward, then publishes the draft. If the push says 'Cannot update this protected ref', the Release on bin-latest was locked and a re-run cannot help: see conventions/releasing.md."
+          echo "::error::bin-latest was moved by another release between the decision and this push, so ${GITHUB_REF_NAME} is still a draft, and bin-latest and both package managers still serve the other version. Re-run this job: it re-reads the tag and only ever moves forward, then publishes the draft. If the push says 'Cannot update this protected ref', a Release was published on bin-latest, which locked the tag for good: a re-run cannot help, the tag name cannot be reused, and no repair has been tested. Stop and get a second person: see conventions/releasing.md."
 
       # Last, because a re-run after this has passed stops at the locked Release: the
       # tag move and the artifact the publish jobs read have to be behind it already.

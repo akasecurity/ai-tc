@@ -220,8 +220,9 @@ bucket.
 **Never publish a Release on a tag that has to keep moving, which means `bin-latest` and `cli-latest`.**
 A published Release locks its tag: the push is refused with `GH013` and `Cannot update this protected
 ref`. On `bin-latest`, the one-liners and both version checks would then stay on the old tag, and
-every binary release would fail at the move. The lock cannot be undone, and GitHub documents that a
-locked Release's tag name can never be reused once the Release is deleted. Deleting an older,
+every binary release would fail at the move. The lock cannot be undone, and
+[GitHub's documentation](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases)
+says a locked Release's tag name can never be reused once the Release is deleted. Deleting an older,
 unlocked Release is different: measured on 6 November 2026 in the same private repository, its tag
 stayed and still moved.
 

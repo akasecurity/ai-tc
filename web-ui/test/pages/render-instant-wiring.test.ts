@@ -249,7 +249,7 @@ function collectLocale(node: unknown): string[] {
 }
 
 const LOCALE_ROUTES: readonly Route[] = [
-  ...ROUTES.filter((route) => route.name !== 'data-shares' && route.name !== 'vault'),
+  ...ROUTES.filter((route) => route.name !== 'data-shares'),
   {
     name: 'policies',
     prepare: () => undefined,

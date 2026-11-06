@@ -3,16 +3,23 @@ name: CodeQL
 # Static analysis via GitHub CodeQL over the TypeScript/JavaScript workspace
 # and the Actions workflow files themselves. Analyses PRs into main, main pushes
 # and main's merge queue, plus a weekly run so newly released queries sweep the
-# unchanged tree. On a PR into any other base the job reports as skipped, which
-# counts as passing. Findings land in the repository's Security tab.
+# unchanged tree. A PR into any other base is analysed only when it carries the
+# `full-ci` label (hence the `labeled` type below); otherwise the job reports as
+# skipped, which counts as passing. Findings land in the repository's Security tab.
 
 on:
+  # `dev` is here as a BASELINE, not for its own sake. Code scanning decides
+  # which alerts a PR introduced by comparing the PR's analysis with one of its
+  # base, so a labelled PR into `dev` needs an analysis of `dev` to compare
+  # against; without one its green tick proves nothing.
   push:
-    branches: [main]
+    branches: [main, dev]
   # No `branches:` filter, so a stacked PR (one based on another feature branch
-  # rather than on main) is analysed too — a recorded decision, not an accident
-  # of the trigger. It is also what stops the deadlock `ci.yml` documents at
-  # length: there, retargeting a PR's BASE fires only `edited`, and the
+  # rather than on main) still triggers this workflow — a recorded decision, not
+  # an accident of the trigger. Its job is analysed only with the `full-ci`
+  # label, like any PR outside `main`. It is also what stops the deadlock
+  # `ci.yml` documents at length: there, retargeting a PR's BASE fires only
+  # `edited`, and the
   # `branches: [main]` filter means a stacked PR matches no event until it is
   # retargeted — so without `edited` the required check is permanently absent
   # and the merge is blocked with nothing to re-run. With no filter here the run
@@ -25,7 +32,7 @@ on:
   # three — which the concurrency group below bounds, since it cancels a
   # superseded PR run per ref rather than queueing another.
   pull_request:
-    types: [opened, synchronize, reopened, edited]
+    types: [opened, synchronize, reopened, edited, labeled]
   # A merge queue reaches this workflow through `merge_group` and no other event.
   # These analyses are meant to be required checks, and a required check missing
   # this trigger does not fail in the queue — it never reports, so the entry waits
@@ -49,7 +56,7 @@ concurrency:
 jobs:
   analyze:
     name: CodeQL (${{ matrix.language }})
-    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.base_ref == 'main' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/') || contains(github.event.pull_request.labels.*.name, 'full-ci') || github.ref == 'refs/heads/dev' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:

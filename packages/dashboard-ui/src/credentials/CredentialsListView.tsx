@@ -3,10 +3,6 @@ import { CredentialStatus } from '@akasecurity/schema';
 import {
   Button,
   cn,
-  Pagination,
-  PaginationNext,
-  PaginationPrevious,
-  PaginationStatus,
   Table,
   TableBody,
   TableCell,
@@ -18,13 +14,14 @@ import {
 import { Ico } from '../inventory/Ico.tsx';
 import { relativeTime } from '../lib/relativeTime.ts';
 import { SearchField } from '../shared/SearchField.tsx';
+import { type TablePageProps, TablePagination } from '../shared/TablePagination.tsx';
 import { CredentialStatusBadge } from './CredentialStatusBadge.tsx';
 import { credentialDismissReasonLabel } from './dismissal.ts';
 import { credentialLabel, credentialName } from './name.ts';
 import { CREDENTIAL_STATUS, credentialStatusState } from './status.ts';
 import type { CredentialListItem, CredentialStatusCounts } from './types.ts';
 
-export interface CredentialsListViewProps {
+export interface CredentialsListViewProps extends TablePageProps {
   items: CredentialListItem[];
   /** Credentials matching the search and the status chip across every page. */
   total: number;
@@ -64,6 +61,11 @@ export interface CredentialsListViewProps {
   hasNextPage: boolean;
   hasPreviousPage: boolean;
   loadingPage?: boolean | undefined;
+  /**
+   * The locale the footer's counts are formatted in: the one the host resolved
+   * for this request. Required for the reason `renderedAt` is. See ../lib/locale.ts.
+   */
+  locale: string;
   /** 1-indexed position of `items[0]` in the whole result. */
   pageStart: number;
   isLoading?: boolean | undefined;
@@ -99,6 +101,21 @@ const chipClass = (on: boolean) =>
 const edgeClass = (index: number) =>
   index === 0 ? 'pl-5' : index === COLUMNS.length - 1 ? 'pr-5' : '';
 
+/**
+ * A chip's count. The separator is `sr-only` text rather than the flex gap
+ * alone: a gap is not part of the accessible name, so without it the button
+ * reads as one run-together word. It sits inside the count rather than beside
+ * it, so the chip's spacing does not depend on `sr-only` being out of flow.
+ */
+function ChipCount({ value }: { value: number }) {
+  return (
+    <span className="tabular-nums opacity-70">
+      <span className="sr-only">, </span>
+      {String(value)}
+    </span>
+  );
+}
+
 /** The credential ledger: one row per detected value, newest first. */
 export function CredentialsListView({
   items,
@@ -119,6 +136,11 @@ export function CredentialsListView({
   hasNextPage,
   hasPreviousPage,
   loadingPage = false,
+  page,
+  pageCount,
+  onPageChange,
+  pageError,
+  locale,
   pageStart,
   isLoading = false,
   error,
@@ -181,9 +203,7 @@ export function CredentialsListView({
               }}
             >
               Dismissed
-              {dismissedCount !== undefined && (
-                <span className="tabular-nums opacity-70">{String(dismissedCount)}</span>
-              )}
+              {dismissedCount !== undefined && <ChipCount value={dismissedCount} />}
             </button>
           )}
         </div>
@@ -288,19 +308,22 @@ export function CredentialsListView({
       </div>
 
       {!refused && !loadingEmpty && !emptyLedger && (
-        <Pagination className="justify-start gap-3 border-t border-border px-5 py-3">
-          <PaginationStatus className="flex-1">
-            {items.length === 0
-              ? `${String(total)} in all`
-              : `${String(pageStart)}–${String(pageStart + items.length - 1)} of ${String(total)}`}
-          </PaginationStatus>
-          <PaginationPrevious disabled={!hasPreviousPage || loadingPage} onClick={onPreviousPage} />
-          <PaginationNext
-            disabled={!hasNextPage || loadingPage}
-            loading={loadingPage}
-            onClick={onNextPage}
-          />
-        </Pagination>
+        <TablePagination
+          itemCount={items.length}
+          pageStart={pageStart}
+          total={total}
+          noun="credentials"
+          page={page}
+          pageCount={pageCount}
+          onPageChange={onPageChange}
+          pageError={pageError}
+          hasPreviousPage={hasPreviousPage}
+          hasNextPage={hasNextPage}
+          onPreviousPage={onPreviousPage}
+          onNextPage={onNextPage}
+          loading={loadingPage}
+          locale={locale}
+        />
       )}
     </div>
   );
@@ -338,9 +361,7 @@ function StatusChips({
             className={chipClass(on)}
           >
             {chip.label}
-            {chip.count !== undefined && (
-              <span className="tabular-nums opacity-70">{String(chip.count)}</span>
-            )}
+            {chip.count !== undefined && <ChipCount value={chip.count} />}
           </button>
         );
       })}

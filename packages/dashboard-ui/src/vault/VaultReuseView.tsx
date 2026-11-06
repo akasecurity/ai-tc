@@ -1,21 +1,11 @@
 'use client';
 import type { VaultInventoryEntry } from '@akasecurity/schema';
-import {
-  Pagination,
-  PaginationNext,
-  PaginationPrevious,
-  PaginationStatus,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@akasecurity/ui-kit';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@akasecurity/ui-kit';
 
 import { ScrubbedValue } from '../shared/ScrubbedValue.tsx';
+import { type TablePageProps, TablePagination } from '../shared/TablePagination.tsx';
 
-export interface VaultReuseViewProps {
+export interface VaultReuseViewProps extends TablePageProps {
   entries: VaultInventoryEntry[];
   // Whether the store holds reused values beyond the ones passed in.
   hasNextPage?: boolean;
@@ -25,6 +15,11 @@ export interface VaultReuseViewProps {
   loadingNextPage?: boolean;
   // 1-based position of this window's first row in the whole list.
   pageStart?: number | undefined;
+  /**
+   * The locale the footer's counts are formatted in: the one the host resolved
+   * for this request. Required for the reason `renderedAt` is. See ../lib/locale.ts.
+   */
+  locale: string;
   // Reused values across the whole store. Counted against the rows this view
   // actually renders — which is `entries` after `isReused`, not `entries` —
   // since a caller that paged an unfiltered list would otherwise show a
@@ -51,6 +46,11 @@ export function VaultReuseView({
   onNextPage,
   onPreviousPage,
   loadingNextPage = false,
+  page,
+  pageCount,
+  onPageChange,
+  pageError,
+  locale,
   pageStart,
   total,
 }: VaultReuseViewProps) {
@@ -109,24 +109,22 @@ export function VaultReuseView({
         </Table>
       )}
       {onNextPage ? (
-        <Pagination>
-          <PaginationPrevious
-            disabled={!hasPreviousPage || loadingNextPage}
-            onClick={onPreviousPage}
-          />
-          <PaginationStatus>
-            {total === undefined || pageStart === undefined
-              ? `${String(reused.length)} shown`
-              : isEmpty
-                ? `0 of ${String(total)} reused values`
-                : `${String(pageStart)}–${String(pageStart + reused.length - 1)} of ${String(total)} reused values`}
-          </PaginationStatus>
-          <PaginationNext
-            disabled={!hasNextPage || loadingNextPage}
-            loading={loadingNextPage}
-            onClick={onNextPage}
-          />
-        </Pagination>
+        <TablePagination
+          itemCount={reused.length}
+          pageStart={pageStart}
+          total={total}
+          noun="reused values"
+          page={page}
+          pageCount={pageCount}
+          onPageChange={onPageChange}
+          pageError={pageError}
+          hasPreviousPage={hasPreviousPage}
+          hasNextPage={hasNextPage}
+          onPreviousPage={onPreviousPage}
+          onNextPage={onNextPage}
+          loading={loadingNextPage}
+          locale={locale}
+        />
       ) : (
         hasNextPage && (
           <p className="mt-4 text-center text-xs text-text-3">

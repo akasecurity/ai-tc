@@ -1,6 +1,6 @@
 /**
  * README.md and cli/README.md both point at the binary release's Homebrew tap,
- * Scoop bucket, bootstrap one-liners and `bin-latest` download links. None of
+ * Scoop bucket and bootstrap one-liners. None of
  * those are checked by anything that reads a README as prose — a link is a
  * string that either resolves or does not, and nothing here renders a page.
  *
@@ -11,11 +11,6 @@
  * copies changes, and it drifts silently because nothing points back at the
  * source it was copied from.
  *
- * - The alias archive names come from the rolling step's own `files:` block
- *   scalar, so a fifth build target's alias entry is picked up here without a
- *   second edit — and a README that was not updated to match it fails on the
- *   "every alias archive is linked" case below, not on a count that moved in
- *   step with it.
  * - The Homebrew/Scoop targets come from the two publish jobs' `TARGET_REPO`/
  *   `TARGET_PATH` env, so a retargeted tap or bucket reddens the README
  *   comparison instead of leaving two copies of the same string to disagree.
@@ -24,13 +19,14 @@
  *   standalone install to re-run — so the README and the tool's own advice
  *   are held to the same string rather than to two.
  */
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { beforeAll, describe, expect, it } from 'vitest';
 
-import { blockScalarLines, jobBlock, stepNamed } from './helpers/workflow.js';
+import { jobBlock } from './helpers/workflow.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const WORKFLOW = join(REPO_ROOT, '.github', 'workflows', 'release-binaries.yml');
@@ -44,49 +40,8 @@ const INSTALLER_README = join(REPO_ROOT, 'tools', 'installer', 'README.md');
 const readFile = (path) => readFileSync(path, 'utf8');
 const readWorkflow = () => readFile(WORKFLOW);
 
-const releaseJob = () => jobBlock(readWorkflow(), 'release');
-const buildJob = () => jobBlock(readWorkflow(), 'build');
-const rollingStep = () => stepNamed(releaseJob(), 'Publish the rolling bin-latest release');
-
 /** The last `/`-separated segment of a path-like string. */
 const basename = (path) => path.split('/').pop();
-
-const BIN_LATEST_URL = 'https://github.com/akasecurity/ai-tc/releases/download/bin-latest/';
-
-/**
- * Every asset the rolling release publishes, as basenames — the alias
- * archives plus the checksum file and the two rendered package-manager
- * manifests and VERSION. Read from the step's own `files:` rather than a
- * literal, so an asset added or renamed there is what every case below
- * reacts to.
- */
-function rollingAssets() {
-  const entries = blockScalarLines(rollingStep(), 'files');
-  expect(
-    entries.filter((entry) => entry.includes('*')),
-    'the rolling step names a glob — a glob covers whatever a directory holds, ' +
-      'not the fixed set of names a download link can point at',
-  ).toEqual([]);
-  return entries.map(basename);
-}
-
-/** The alias ARCHIVES alone — a renamed `.tar.gz` or `.zip`, never the sums file or a manifest. */
-const aliasArchives = () => rollingAssets().filter((name) => /\.(?:tar\.gz|zip)$/.test(name));
-
-/**
- * How many targets the build fan-out produces, read from the matrix's own
- * `target:` entries. This is the positive control for the archive count
- * below: a fifth platform added to the matrix (and staged as a fifth alias
- * archive) is what has to move this number, or the count comparison would
- * pass by coincidence rather than by tracking the same fan-out.
- */
-function matrixTargetCount() {
-  const matches = [
-    ...buildJob().matchAll(/^[^\S\n]*-[^\S\n]*\{[^}]*\btarget:[^\S\n]*([a-z0-9-]+)/gm),
-  ];
-  expect(matches.length, 'the build job matrix declares no target').toBeGreaterThan(0);
-  return matches.length;
-}
 
 /**
  * The `TARGET_REPO`/`TARGET_PATH` a publish job pushes to, read from its own
@@ -159,11 +114,6 @@ function rawUrlOf(command, label) {
   return match[0];
 }
 
-/** Every `<name>` this text links under `releases/download/bin-latest/`. */
-function binLatestLinkedNames(text) {
-  return [...text.matchAll(/releases\/download\/bin-latest\/([A-Za-z0-9._-]+)/g)].map((m) => m[1]);
-}
-
 /** The value of a `const <name> = '…';` declaration, tolerating the value on its own line. */
 function stringConstant(source, name) {
   const match = new RegExp(`const ${name} =[^\\S\\n]*\\n?[^\\S\\n]*'([^']+)';`).exec(source);
@@ -174,38 +124,53 @@ function stringConstant(source, name) {
 
 const README_ENTRIES = Object.entries(README_PATHS);
 
-describe('the rolling release archives every README links', () => {
-  it('stages at least one archive, and as many as the build matrix produces (positive control)', () => {
-    const archives = aliasArchives();
-    expect(archives.length).toBeGreaterThan(0);
-    expect(archives.length).toBe(matrixTargetCount());
+// The Release on the `bin-latest` tag is frozen on its last files, because editing it
+// would lock it and a locked Release refuses new ones. A link to it would serve an old
+// version for good. The tag itself is alive, and the one-liners read files through it.
+describe('nothing sends a reader to the frozen bin-latest Release', () => {
+  // Over the whole tree, for its download links and its page. These tests are left out
+  // only because they have to spell the thing they forbid.
+  it('no tracked file outside the tests links it', () => {
+    let matches = '';
+    try {
+      matches = execFileSync(
+        'git',
+        [
+          'grep',
+          '-nE',
+          'releases/(download|tag)/bin-latest',
+          '--',
+          '.',
+          ':(exclude)packages/eslint-config/test/**',
+        ],
+        { cwd: REPO_ROOT, encoding: 'utf8', stdio: 'pipe' },
+      );
+    } catch (err) {
+      // `git grep` exits 1 for no match; anything else is a fault, not a pass.
+      if (err.status !== 1) throw err;
+    }
+    expect(matches).toBe('');
   });
 
-  it.each(README_ENTRIES)('%s links every alias archive the rolling step stages', (name, path) => {
+  it.each(README_ENTRIES)('%s says where the archives are', (name, path) => {
+    expect(readFile(path), `${name} no longer links the binary releases`).toContain(
+      'https://github.com/akasecurity/ai-tc/releases?q=bin-v',
+    );
+  });
+
+  // The READMEs spell out the platform in the archive names, so a target the build no
+  // longer produces would send a reader after a file that does not exist.
+  it.each(README_ENTRIES)('%s names every platform the build produces', (name, path) => {
+    const targets = [
+      ...jobBlock(readWorkflow(), 'build').matchAll(/^\s*-\s*\{[^}]*\btarget:\s*([a-z0-9-]+)/gm),
+    ].map((match) => match[1]);
+    expect(targets.length, 'the build job matrix declares no target').toBeGreaterThan(0);
+
     const text = readFile(path);
-    for (const archive of aliasArchives()) {
-      expect(text, `${name} carries no link to ${archive}`).toContain(
-        `${BIN_LATEST_URL}${archive}`,
-      );
+    for (const target of targets) {
+      expect(text, `${name} does not name ${target}`).toContain(`\`${target}\``);
     }
   });
-
-  it.each(README_ENTRIES)(
-    '%s names no bin-latest asset the rolling step does not stage',
-    (name, path) => {
-      const text = readFile(path);
-      const linked = binLatestLinkedNames(text);
-      expect(
-        linked.length,
-        `${name} carries no releases/download/bin-latest/ link at all`,
-      ).toBeGreaterThan(0);
-      const assets = rollingAssets();
-      expect(
-        linked.filter((linkedName) => !assets.includes(linkedName)),
-        `${name} links a bin-latest asset the rolling step never stages`,
-      ).toEqual([]);
-    },
-  );
 });
 
 describe('README install commands agree with the workflow they describe', () => {
@@ -283,8 +248,7 @@ describe('README install commands agree with the workflow they describe', () => 
   // The four cases above are "is the derived string present somewhere" —
   // satisfied by a README that keeps a STALE command alongside the current
   // one, which is exactly the shape a retargeted tap or bucket leaves behind
-  // if only the new spelling is added. Mirrored here in the other direction,
-  // the way the alias-archive case above already reads both ways: every
+  // if only the new spelling is added. Mirrored here in the other direction: every
   // command of that SHAPE the README carries must be the one the workflow
   // actually publishes to, not merely include it somewhere.
   it.each(README_ENTRIES)(

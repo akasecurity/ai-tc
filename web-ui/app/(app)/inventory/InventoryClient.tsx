@@ -184,6 +184,7 @@ export function InventoryClient({
                 rows={typeRows(active.type, projects, assetGroups)}
                 onOpen={open}
                 renderedAt={renderClock}
+                locale={locale}
               />
             )}
           </div>

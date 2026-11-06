@@ -50,6 +50,43 @@ export function formatNumber(value: number, locale: string): string {
   return formatterFor(locale).format(value);
 }
 
+/** The separator `locale` groups digits with, or null where it uses none. */
+function groupSeparator(locale: string): string | null {
+  const parts = formatterFor(locale).formatToParts(1_000_000);
+  return parts.find((part) => part.type === 'group')?.value ?? null;
+}
+
+/** `text` with the digits `locale` writes (`٥` in ar-EG) read as ASCII. */
+function toAsciiDigits(text: string, locale: string): string {
+  const formatter = formatterFor(locale);
+  const digits = Array.from({ length: 10 }, (_, digit) => formatter.format(digit));
+  return text.replace(/\p{Nd}/gu, (char) => {
+    const digit = digits.indexOf(char);
+    return digit === -1 ? char : String(digit);
+  });
+}
+
+/**
+ * The whole number typed text names, or null when it names none. Accepts bare
+ * digits, ASCII or the locale's own, and a grouped form only when it is exactly
+ * what {@link formatNumber} writes for that number: `1,000` is a thousand in
+ * en-US, while `1,00` and de-DE's `1.5` are refused rather than misread.
+ */
+export function parseCount(text: string, locale: string): number | null {
+  const trimmed = text.trim();
+  const ascii = toAsciiDigits(trimmed, locale);
+  if (/^\d+$/.test(ascii)) return Number(ascii);
+  const separator = groupSeparator(locale);
+  if (separator === null) return null;
+  const digits = ascii.split(separator).join('');
+  // Whitespace separators (fr-FR's narrow no-break space) are typed as a plain space.
+  const grouped = /^\s$/.test(separator) ? trimmed.replace(/\s/g, separator) : trimmed;
+  const bare = /^\s$/.test(separator) ? digits.replace(/\s/g, '') : digits;
+  if (!/^\d+$/.test(bare)) return null;
+  const value = Number(bare);
+  return formatNumber(value, locale) === grouped ? value : null;
+}
+
 /**
  * Compact notation is PINNED to en-US rather than following the reader. Its
  * K/M/B/T roll-up is a product-wide convention shared with the CLI and the

@@ -14,12 +14,15 @@ export function TypeInventory({
   rows,
   onOpen,
   renderedAt,
+  locale,
 }: {
   type: AssetType;
   rows: InventoryRow[];
   onOpen: (row: InventoryRow) => void;
   /** The instant relative times are measured against, in epoch milliseconds. */
   renderedAt: number;
+  /** The locale counts are formatted in, as the host resolved it. */
+  locale: string;
 }) {
   const meta = typeMeta(type);
   const attention = rows.filter(needsAttention).length;
@@ -41,6 +44,7 @@ export function TypeInventory({
       searchNoun={inlineLabel(meta.label)}
       onOpen={onOpen}
       renderedAt={renderedAt}
+      locale={locale}
     />
   );
 }

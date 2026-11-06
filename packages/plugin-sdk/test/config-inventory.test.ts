@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { resolveConfigInventory } from '../src/config-inventory.ts';
 import { bundledDetections } from '../src/index.ts';
 import { maskText } from '../src/mask.ts';
+import { withNamedPipe } from './helpers/named-pipe.ts';
 
 let home: string;
 let project: string;
@@ -1000,5 +1001,45 @@ describe('resolveConfigInventory — CLAUDE_CONFIG_DIR', () => {
 
     const scan = resolveConfigInventory({ cwd: project, homeDir: home, claudeConfigDir: file });
     expect(scan.errors.map((e) => e.source)).toContain(file);
+  });
+});
+
+describe('resolveConfigInventory — a config path that is not a regular file', () => {
+  it.skipIf(process.platform === 'win32')('records a named pipe rather than reading it', () => {
+    const path = join(project, '.mcp.json');
+    const servers = JSON.stringify({ mcpServers: { piped: { command: 'mcp-piped' } } });
+
+    withNamedPipe(path, servers, () => {
+      const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+
+      expect(scan.mcpServers.find((s) => s.name === 'piped')).toBeUndefined();
+      expect(scan.errors.find((e) => e.source === path)?.reason).toContain('not a regular file');
+    });
+  });
+
+  it.skipIf(process.platform === 'win32').each(['.mcp.json', 'CLAUDE.md', '.claude/settings.json'])(
+    'lists no config file row for a named pipe at %s',
+    (relative) => {
+      mkdirSync(join(project, '.claude'));
+      const path = join(project, relative);
+
+      withNamedPipe(path, '{}', () => {
+        const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+
+        expect(scan.configFiles.find((f) => f.path === path)).toBeUndefined();
+        const errors = scan.errors.filter((e) => e.source === path);
+        expect(errors).toHaveLength(1);
+        expect(errors[0]?.reason).toContain('not a regular file');
+      });
+    },
+  );
+
+  it('still lists a row for a regular file that cannot be parsed', () => {
+    const path = join(project, '.mcp.json');
+    writeFileSync(path, 'not json');
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+
+    expect(scan.configFiles.find((f) => f.path === path)?.kind).toBe('MCP servers');
   });
 });

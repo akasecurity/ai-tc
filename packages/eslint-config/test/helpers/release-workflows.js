@@ -20,6 +20,10 @@ import { dropComments } from './workflow.js';
 /** A release workflow's path: the files a `release-*` tag drives. */
 export const RELEASE_WORKFLOW_PATH = /^\.github\/workflows\/release-[^/]+\.ya?ml$/;
 
+/** The CLI's and each plugin's release workflow, which publish to npm and cut a Release. */
+export const CLI_AND_PLUGIN_WORKFLOW_PATH =
+  /^\.github\/workflows\/release-(?:plugin-[^/]+|cli)\.ya?ml$/;
+
 /**
  * Every git-tracked release workflow, repo-relative and posix, sorted.
  *

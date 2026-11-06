@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import {
   childRel,
   evaluateIgnore,
@@ -12,6 +13,7 @@ import {
   relToAnchor,
   withLayer,
 } from '../src/ignore-layers.ts';
+import { withNamedPipe } from './helpers/named-pipe.ts';
 
 // The layered ignore evaluation shared by all three tree walkers.
 //
@@ -135,5 +137,18 @@ describe('the pieces a walk threads through', () => {
     expect(grown).not.toBe(layers);
     expect(grown).toHaveLength(2);
     expect(layers).toHaveLength(1);
+  });
+});
+
+describe('readIgnoreLayer on a file that is not regular', () => {
+  it.skipIf(process.platform === 'win32')('yields no layer for a named pipe', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'aka-ignore-pipe-'));
+    try {
+      withNamedPipe(join(dir, '.gitignore'), '*', () => {
+        expect(readIgnoreLayer(dir, '.gitignore', 0)).toBeUndefined();
+      });
+    } finally {
+      removeTree(dir);
+    }
   });
 });

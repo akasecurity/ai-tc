@@ -38,6 +38,7 @@ const TAG_PUSH = "github.event_name == 'push'";
 const TAG_CHECK = 'Verify tag matches manifest versions';
 const NPM_PUBLISH = 'Publish to npm';
 const GITHUB_RELEASE = 'Create GitHub Release';
+const PUBLISH_RELEASE = 'Publish GitHub Release';
 
 // Listed rather than derived, on purpose: a new job in a release workflow runs
 // with the release's permissions, and the diff that adds one should have to
@@ -132,7 +133,7 @@ describe('a manual dispatch of the Claude Code plugin release is a dry run', () 
 describe('every publish runs behind the tag check, on a tag push only', () => {
   it('gates the tag check, the npm publish and the GitHub Release on the tag push exactly', () => {
     const release = jobBlock(readWorkflow(), 'release');
-    for (const name of [TAG_CHECK, NPM_PUBLISH, GITHUB_RELEASE]) {
+    for (const name of [TAG_CHECK, NPM_PUBLISH, GITHUB_RELEASE, PUBLISH_RELEASE]) {
       // Equal, not containing: `github.event_name == 'push' || <anything>`
       // contains the gate and publishes on the dispatch it was meant to refuse.
       expect(
@@ -142,10 +143,11 @@ describe('every publish runs behind the tag check, on a tag push only', () => {
     }
   });
 
-  it('checks the tag before it publishes, and publishes before it cuts the Release', () => {
+  it('checks the tag first, uploads a draft before npm, and publishes the Release after it', () => {
     const release = jobBlock(readWorkflow(), 'release');
-    expect(positionOf(release, TAG_CHECK)).toBeLessThan(positionOf(release, NPM_PUBLISH));
-    expect(positionOf(release, NPM_PUBLISH)).toBeLessThan(positionOf(release, GITHUB_RELEASE));
+    expect(positionOf(release, TAG_CHECK)).toBeLessThan(positionOf(release, GITHUB_RELEASE));
+    expect(positionOf(release, GITHUB_RELEASE)).toBeLessThan(positionOf(release, NPM_PUBLISH));
+    expect(positionOf(release, NPM_PUBLISH)).toBeLessThan(positionOf(release, PUBLISH_RELEASE));
   });
 
   it('keeps the release job waiting on verify', () => {

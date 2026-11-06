@@ -78,8 +78,9 @@ Two security workflows run alongside the main build:
   it only adds a comment when a **new** advisory id appears, so a known long-lived
   finding does not ping daily.
 - **CodeQL** (`.github/workflows/codeql.yml`) — static analysis of the TypeScript
-  workspace and the workflow files on every PR (including a PR stacked on another
-  branch) and weekly; findings appear under the repository's **Security** tab.
+  workspace and the workflow files on every PR into `main`, on any PR carrying the
+  `full-ci` label (including a PR stacked on another branch), on pushes to `main` and
+  `dev`, and weekly; findings appear under the repository's **Security** tab.
 
 When the workspace audit fails, fix first: upgrade the dependency, or raise its floor
 via `pnpm.overrides` in the root `package.json` (the existing entries there are exactly
@@ -396,8 +397,7 @@ tag may safely be cut from.
   with junk input, failing unless each exits 0 and prints nothing.
 - `bin-v<version>` — the native binaries, as GitHub Release assets with `SHA256SUMS`, plus the
   Homebrew formula and Scoop manifest rendered from that sums file, which the same run pushes to
-  the tap and the bucket and mirrors onto the rolling `bin-latest` release (see "Homebrew, Scoop
-  and the one-click links" below). Bare `X.Y.Z` only: a suffixed tag is refused before anything
+  the tap and the bucket (see "Homebrew and Scoop" below). Bare `X.Y.Z` only: a suffixed tag is refused before anything
   builds, because the install one-liners serve the newest `bin-v` release to everyone and there
   is no pre-release lane for them. The tag must equal `cli/package.json`'s version, and that is
   the ONLY thing verified: this workflow runs no lint, typecheck or tests. Cut it only from a
@@ -476,6 +476,24 @@ nowhere.
   The other `ci.yml` jobs, CodeQL and the binary builds run for pull requests into `main`, for
   pushes to `main` and for its merge queue; elsewhere the `ci.yml` and CodeQL jobs report as
   skipped, which counts as passing, so `main` can require a check that `dev` does not run.
+- Add the `full-ci` label to a pull request into `dev` or `release/**` to run those `ci.yml`
+  and CodeQL jobs on it as well, before it reaches `main`. The binary builds still run only
+  for `main`. A stacked pull request gets CodeQL from the label but no `ci.yml` run at all.
+  - Adding the label starts a new run, unless the pull request has a merge conflict: GitHub
+    starts no `pull_request` run then. The run tests the merge commit built at the last push
+    (see "Branch freshness"), so update the branch first on a pull request that has sat for a
+    while.
+  - Removing the label takes effect on the next run, and a title or body edit or any other
+    label starts one too. So after removing it, an edit can turn a red macOS check into
+    skipped, which counts as passing.
+  - Any label starts a new run and cancels the one in flight. On a pull request into `main`,
+    or one carrying `full-ci`, that restarts every job; otherwise it restarts only `ci`.
+  - Adding a label needs triage access, so a contributor from a fork asks a maintainer.
+    Read a fork's pull request before labelling it: whether a label from a maintainer
+    bypasses the "Approve and run" step for a first-time contributor is not documented.
+  - The workflows match the label by name. Renaming or deleting it in the repository
+    settings makes every labelled job report as skipped, which counts as passing, and
+    nothing goes red.
 
 ### Release branches
 
@@ -491,7 +509,8 @@ the same matching rules as a workflow filter — `*` does not cross a `/` — so
 `release/**` matches is `release/**/*`.
 
 After a merge, a release branch gets the main CI run but not the dependency audit, CodeQL or the
-internal-path guard, which still run post-merge for `main` only.
+internal-path guard. Those run post-merge for `main` only, except CodeQL, which also analyses
+pushes to `dev` so a labelled pull request into `dev` has a baseline to compare against.
 
 `pnpm check:diff-coverage` compares against `origin/main` unless told otherwise; on a branch cut
 from a release branch, pass `--base` with that branch.
@@ -510,11 +529,7 @@ gh attestation verify aka-<version>-<platform>.tar.gz -R akasecurity/ai-tc
 The macOS binary is ad-hoc signed and not notarized, and the Windows binary is unsigned.
 [tools/installer/README.md](tools/installer/README.md) has the full trust chain.
 
-The rolling `bin-latest` release carries the same archives under version-less names. Those are
-byte-for-byte copies, and `gh attestation verify` looks an artifact up by its digest, so the
-command above works on an alias file unchanged; the alias `SHA256SUMS` is attested separately.
-
-### Homebrew, Scoop and the one-click links
+### Homebrew and Scoop
 
 Every `bin-v*` release renders `aka.rb` and `aka.json` from its own `SHA256SUMS`
 (`tools/package-manifests`), attaches them to the release, and then:
@@ -522,9 +537,12 @@ Every `bin-v*` release renders `aka.rb` and `aka.json` from its own `SHA256SUMS`
 - pushes `Formula/aka.rb` to `akasecurity/homebrew-tap`, so `brew install akasecurity/tap/aka`
   installs that release on Apple-silicon macOS and on Linux;
 - pushes `bucket/aka.json` to `akasecurity/scoop-bucket`, so `scoop bucket add akasecurity
-https://github.com/akasecurity/scoop-bucket` and `scoop install aka` install it on Windows;
-- refreshes the rolling `bin-latest` release with version-less copies of the four archives, which
-  is where the download links on the README point.
+https://github.com/akasecurity/scoop-bucket` and `scoop install aka` install it on Windows.
+
+It also moves the `bin-latest` tag, which the install one-liners and both package managers' version
+checks read files through. The GitHub Release on that tag is frozen on aka 0.9.21: a published
+Release is locked, so it no longer takes new files (see "GitHub Releases are immutable" in
+`conventions/releasing.md`).
 
 Both pushes authenticate as a GitHub App owned by the `akasecurity` organization, not as a person:
 each job mints a one-hour token from the app's private key, scoped to the single repository it
@@ -544,12 +562,14 @@ the attached `aka.json` does work.
 
 `bin-latest`, the tap and the bucket only move forward. Pushing an older `bin-v*` tag after a
 newer one, or re-running an older release, still cuts that version's own GitHub Release but leaves
-all three on the newer version. If a run fails after it moved `bin-latest` — the job log says so
-— re-run it: the same version is let through and every rolling asset is overwritten. Two releases
-finishing close together can also make the SLOWER one lose the race to move `bin-latest` itself,
-even though its own GitHub Release has already published by then — the job log names that case too
-(`Explain a bin-latest move that lost a race`), and the repair is the same re-run, which is a
-no-op if the winner turns out to be newer. Each tap/bucket push only warns, rather than refusing
+all three on the newer version. If the release job fails after uploading its draft and before
+publishing it, the job log says so (`Explain a draft Release left unpublished`): re-run it. The
+draft's files are replaced, the same version is let through, and the draft is published. Two
+releases finishing close together can also make the SLOWER one lose the race to move `bin-latest`
+itself. The job log names that case too (`Explain a bin-latest move that lost a race`), and the
+repair is the same re-run, which leaves the tag alone if the winner turns out to be newer. A re-run
+of the release job after it has passed fails at the locked Release and changes nothing; to repair
+only a publish job, re-run that job. Each tap/bucket push only warns, rather than refusing
 outright, when the file it finds has nothing in it to compare a version against; and a write the
 contents API rejects fails the job with an error naming the same re-run repair, rather than a
 green run that quietly published nothing.

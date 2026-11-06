@@ -24,6 +24,7 @@ function type(over: Partial<FindingTypeSummary> = {}): FindingTypeSummary {
 function render(props: Partial<Parameters<typeof FindingTypesListView>[0]> = {}) {
   return renderToStaticMarkup(
     <FindingTypesListView
+      locale="en-US"
       types={[type()]}
       activeId=""
       onSelect={vi.fn()}
@@ -100,6 +101,21 @@ describe('FindingTypesListView', () => {
   // repeat when paging reaches its natural position can empty the page. Gated on
   // the row count, the footer carrying Previous vanished at exactly the moment
   // it was the only way out — a dead end, not a cosmetic gap.
+  it('hands the footer its counts, its page and its locale', () => {
+    const html = render({
+      pageStart: 1001,
+      total: 266775,
+      page: 21,
+      pageCount: 5336,
+      onPageChange: vi.fn(),
+      onNextPage: vi.fn(),
+      locale: 'de-DE',
+    });
+    expect(html).toContain('1.001–1.001 of 266.775 types');
+    expect(html).toContain('of 5.336');
+    expect(html).toContain('aria-label="Go to page"');
+  });
+
   it('keeps the paginator on an empty page so Previous is still reachable', () => {
     const html = render({
       types: [],
@@ -119,7 +135,7 @@ describe('FindingTypesListView', () => {
     // button that is the only way out. Reading the STATUS is the half the
     // original pair of cases omitted, which is how that shipped.
     const status = /pagination-status[^>]*>([^<]*)</.exec(html)?.[1];
-    expect(status).toBe('0 shown');
+    expect(status).toBe('0 of 51 types');
   });
 
   it('still omits the paginator when there is nowhere to go at all', () => {

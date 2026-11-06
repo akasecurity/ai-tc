@@ -28,13 +28,11 @@ on:
         default: false
 
 # One release per tag at a time. A single tag push can start more than one run.
-# A duplicate is already self-limiting here: npm and GitHub Packages both reject a
-# re-publish of the same (name, version), so the losing run fails at its publish step
-# and never reaches the Release. That safety is a consequence of publish running
-# before the Release step — this group holds whatever the step order, and stops two
-# runs overlapping. It does not make a duplicate disappear: the queued run still
-# executes afterward and still fails at publish. cancel-in-progress is false so a run
-# is never interrupted midway through publishing to either registry.
+# Once a run has published the Release, a duplicate stops at the draft upload, because a
+# published Release is locked, and never reaches npm. A duplicate of a run that failed
+# carries on from that run's draft, as a re-run does. This group stops two runs
+# overlapping; it does not make a duplicate disappear. cancel-in-progress is false so a
+# run is never interrupted midway through publishing to either registry.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
@@ -220,6 +218,19 @@ jobs:
       - name: Pack tarball (release asset)
         run: pnpm --filter @akasecurity/ai-tc-antigravity pack --pack-destination "$RUNNER_TEMP"
 
+      # A Release locks when published, so this uploads to a draft that a later step
+      # publishes. See "GitHub Releases are immutable" in conventions/releasing.md.
+      - name: Create GitHub Release
+        id: draft
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          draft: true
+          files: ${{ runner.temp }}/*.tgz
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          prerelease: ${{ startsWith(github.ref_name, 'plugin-antigravity-v0.') }}
+
       # OIDC trusted publishing: the id-token: write permission above lets npm
       # exchange this job's OIDC token for a short-lived publish credential — no
       # NPM_TOKEN needed. NPM_CONFIG_PROVENANCE has npm attach a Sigstore
@@ -231,6 +242,10 @@ jobs:
         if: github.event_name == 'push' || inputs.publish
         run: |
           version=$(node -p "require('./plugins/antigravity/package.json').version")
+          if [ "$(npm view "@akasecurity/ai-tc-antigravity@$version" version --@akasecurity:registry=https://registry.npmjs.org 2>/dev/null)" = "$version" ]; then
+            echo "::notice::@akasecurity/ai-tc-antigravity@$version is already on npm, so this run does not publish it again."
+            exit 0
+          fi
           case "$version" in
             *-beta.*)    dist_tag="beta" ;;
             *-nightly.*) dist_tag="nightly" ;;
@@ -241,13 +256,17 @@ jobs:
         env:
           NPM_CONFIG_PROVENANCE: 'true'
 
-      - name: Create GitHub Release
+      - name: Publish GitHub Release
         if: github.event_name == 'push'
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          files: ${{ runner.temp }}/*.tgz
-          generate_release_notes: true
+          draft: false
           prerelease: ${{ startsWith(github.ref_name, 'plugin-antigravity-v0.') }}
+
+      - name: Explain a draft Release left unpublished
+        if: failure() && steps.draft.outcome == 'success'
+        run: |
+          echo "::error::The draft Release for ${GITHUB_REF_NAME} is not published, and npm may already hold this version. Re-run this job: it skips npm if the version is there, replaces the draft's files and publishes the draft."
 
   # Publish the same package to the repo's GitHub Packages registry (requirement:
   # packages land in the org's GitHub registry). Kept a separate job so its GitHub

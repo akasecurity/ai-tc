@@ -30,7 +30,11 @@ import { dirname, join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 
 import { REPO_ROOT } from './helpers/lint-invocations.js';
-import { publishCommands, releaseWorkflows } from './helpers/release-workflows.js';
+import {
+  CLI_AND_PLUGIN_WORKFLOW_PATH,
+  publishCommands,
+  releaseWorkflows,
+} from './helpers/release-workflows.js';
 import {
   envOf,
   isMapping,
@@ -47,8 +51,7 @@ import {
 // Derived, so a plugin release workflow added later is held to the rule without
 // an edit here. The four listed are the positive control: a derivation that
 // matched nothing would leave every case below unwritten, which reads as green.
-const PLUGIN_WORKFLOW_PATH = /^\.github\/workflows\/release-(?:plugin-[^/]+|cli)\.ya?ml$/;
-const PLUGIN_WORKFLOWS = releaseWorkflows().filter((f) => PLUGIN_WORKFLOW_PATH.test(f));
+const PLUGIN_WORKFLOWS = releaseWorkflows().filter((f) => CLI_AND_PLUGIN_WORKFLOW_PATH.test(f));
 const KNOWN_PLUGIN_WORKFLOWS = [
   '.github/workflows/release-cli.yml',
   '.github/workflows/release-plugin-antigravity.yml',

@@ -2,8 +2,15 @@ import type { MatchResult, ScanContext } from '@akasecurity/detections';
 import { scan } from '@akasecurity/detections';
 import type { Rule } from '@akasecurity/schema';
 
-import type { IsolatedScanner, IsolatedScanOptions, IsolatedScanOutcome } from './isolated-scan.ts';
-import { createIsolatedScanner } from './isolated-scan.ts';
+import type { DiagnosticSink } from './diagnostics.ts';
+import { diagnosticWriter } from './diagnostics.ts';
+import type {
+  IsolatedScanner,
+  IsolatedScannerFactory,
+  IsolatedScanOptions,
+  IsolatedScanOutcome,
+} from './isolated-scan.ts';
+import { buildIsolatedScanner, createIsolatedScanner } from './isolated-scan.ts';
 import type { RuleProbeGateway } from './rule-quarantine.ts';
 import { quarantineRule } from './rule-quarantine.ts';
 
@@ -120,12 +127,27 @@ export interface GuardedScanOptions extends IsolatedScanOptions {
   degradeScope?: string | undefined;
 }
 
+/**
+ * What a {@link createGuardedScanner} builds its isolated scanners with and
+ * reports its lines to. Kept apart from {@link GuardedScanOptions}, which is
+ * handed unchanged to every isolated scanner it builds.
+ */
+export interface GuardedScanDependencies {
+  /** Builds each isolated scanner. Omitted, {@link createIsolatedScanner}. */
+  isolatedScanner?: IsolatedScannerFactory | undefined;
+  /**
+   * Receives each diagnostic line in place of stderr; a throw from it is
+   * dropped. Omitted, the lines go to stderr.
+   */
+  diagnostics?: DiagnosticSink | undefined;
+}
+
 const DEFAULT_DEGRADE_SCOPE = 'the rest of this process';
 
-function warnDegraded(scope: string, dropped: number, detail: string): void {
-  process.stderr.write(
+function warnDegraded(write: DiagnosticSink, scope: string, dropped: number, detail: string): void {
+  write(
     `[aka] isolated scanning is off for ${scope}: ${detail}. ` +
-      `${String(dropped)} pulled/custom-pack rule(s) are excluded; the built-in packs still run.\n`,
+      `${String(dropped)} pulled/custom-pack rule(s) are excluded; the built-in packs still run.`,
   );
 }
 
@@ -133,12 +155,17 @@ export function createGuardedScanner(
   partition: GuardedScanPartition,
   gateway: Pick<RuleProbeGateway, 'setRuleProbeVerdict'>,
   opts?: GuardedScanOptions,
+  dependencies?: GuardedScanDependencies,
 ): GuardedScanner {
   const degradeScope = opts?.degradeScope ?? DEFAULT_DEGRADE_SCOPE;
+  const factory = dependencies?.isolatedScanner ?? createIsolatedScanner;
+  const buildIsolated: IsolatedScannerFactory = (data, options) =>
+    buildIsolatedScanner(factory, data, options);
+  const write = diagnosticWriter(dependencies?.diagnostics);
   const verified = partition.verified;
   let unverified = partition.unverified;
   let isolated: IsolatedScanner | undefined =
-    unverified.length > 0 ? createIsolatedScanner({ verified, unverified }, opts) : undefined;
+    unverified.length > 0 ? buildIsolated({ verified, unverified }, opts) : undefined;
   let retired = false;
   // The bounded path's own worker, separate from `isolated` so that neither
   // path's failures change what the other does. Built on first use; each call
@@ -221,6 +248,7 @@ export function createGuardedScanner(
       // paying two budgets per field is the harness timeout this exists to
       // avoid. These findings are real — hand them back.
       warnDegraded(
+        write,
         degradeScope,
         dropped,
         'a scan overran its bound once and no rule could be held responsible',
@@ -240,9 +268,11 @@ export function createGuardedScanner(
           outcome.elapsedMs,
           `it did not finish within the ${outcome.elapsedMs.toFixed(0)}ms isolated-scan bound ` +
             `and was terminated; excluded from every later scan.`,
+          write,
         );
       }
       warnDegraded(
+        write,
         degradeScope,
         dropped,
         culprit
@@ -252,7 +282,7 @@ export function createGuardedScanner(
               `will try these rules again`,
       );
     } else {
-      warnDegraded(degradeScope, dropped, outcome.reason);
+      warnDegraded(write, degradeScope, dropped, outcome.reason);
     }
 
     await degrade();
@@ -272,7 +302,7 @@ export function createGuardedScanner(
       // NaN lands here too: a limit that cannot be read is treated as spent.
       outcome = { status: 'timeout', culpritIndex: undefined, elapsedMs: 0 };
     } else {
-      bounded ??= createIsolatedScanner({ verified, unverified }, opts);
+      bounded ??= buildIsolated({ verified, unverified }, opts);
       const deadlineAt = remainingMs === undefined ? undefined : performance.now() + remainingMs;
       try {
         outcome = await bounded.scan(text, context, {
@@ -294,10 +324,10 @@ export function createGuardedScanner(
       // Once per scanner: a hook can send many large fields, and one line says
       // what the rest would.
       boundedWarned = true;
-      process.stderr.write(
+      write(
         outcome.status === 'timeout'
-          ? `[aka] a large input could not be scanned within its time limit and was refused.\n`
-          : `[aka] a large input could not be scanned and was refused: ${outcome.reason}.\n`,
+          ? `[aka] a large input could not be scanned within its time limit and was refused.`
+          : `[aka] a large input could not be scanned and was refused: ${outcome.reason}.`,
       );
     }
     return outcome;

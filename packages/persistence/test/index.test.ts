@@ -156,6 +156,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'mayBePersonalDevice',
   'migrateLegacyLayout',
   'mintPointer',
+  'mintPointerWith',
   'modPolicyInputFromStore',
   'modPolicySnapshotPath',
   'namesARemoteAddress',

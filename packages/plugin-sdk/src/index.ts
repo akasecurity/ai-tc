@@ -31,6 +31,7 @@ export {
   offersCaptureStatusReader,
   offersMaintenance,
 } from './data-gateway.ts';
+export type { DiagnosticSink } from './diagnostics.ts';
 export type { BuildEventInput } from './events.ts';
 export { buildIngestEvent, contentHashOf } from './events.ts';
 export type { FindingContextHit, FindingLocator, FindingLocatorInput } from './finding-context.ts';
@@ -47,6 +48,7 @@ export {
 } from './fingerprint.ts';
 export type {
   BoundedScanRequest,
+  GuardedScanDependencies,
   GuardedScanner,
   GuardedScanOptions,
   GuardedScanPartition,
@@ -96,6 +98,7 @@ export type {
   IsolatedProbeOutcome,
   IsolatedScanJobOptions,
   IsolatedScanner,
+  IsolatedScannerFactory,
   IsolatedScanOptions,
   IsolatedScanOutcome,
 } from './isolated-scan.ts';

@@ -3,7 +3,8 @@
 //
 // `@akasecurity/plugin-sdk` imports these on the paths its runtime reaches, and
 // a vault core that keeps its values outside the store mints its pointers with
-// `mintPointer`. Both can be bundled into processes that never open the store.
+// `mintPointer`, or with `mintPointerWith` when it supplies the pointer id
+// itself. Both can be bundled into processes that never open the store.
 // Importing the root entry instead keeps every module it re-exports,
 // `database.ts` among them, because this package is not side-effect-free.
 //
@@ -38,4 +39,4 @@ export {
   settingsDir,
 } from './local-layout.ts';
 export { DATA_DIR_MODE, DATA_FILE_MODE } from './paths.ts';
-export { mintPointer } from './vault/crypto.ts';
+export { mintPointer, mintPointerWith } from './vault/crypto.ts';

@@ -241,6 +241,41 @@ export interface IsolatedScanner {
   close(): Promise<void>;
 }
 
+/**
+ * Builds an {@link IsolatedScanner} over a ruleset, with the same contract as
+ * {@link createIsolatedScanner}: a failure is reported as an outcome, never
+ * thrown, and `unavailable` means no answer rather than nothing found.
+ */
+export type IsolatedScannerFactory = (
+  data: ScanWorkerData,
+  opts?: IsolatedScanOptions,
+) => IsolatedScanner;
+
+/**
+ * Builds a scanner through `factory`. A throw from the factory becomes a
+ * scanner that answers every scan and probe `unavailable` with the thrown
+ * message, so a caller's degrade and refuse paths still decide the outcome.
+ */
+export function buildIsolatedScanner(
+  factory: IsolatedScannerFactory,
+  data: ScanWorkerData,
+  opts?: IsolatedScanOptions,
+): IsolatedScanner {
+  try {
+    return factory(data, opts);
+  } catch (error) {
+    const failure: IsolatedFailure = {
+      status: 'unavailable',
+      reason: messageOf(error),
+    };
+    return {
+      scan: () => Promise.resolve(failure),
+      probe: () => Promise.resolve(failure),
+      close: () => Promise.resolve(),
+    };
+  }
+}
+
 // Resolved lazily and once: a process that never isolates a scan never pays for
 // the probe, and one that does pays twice at most.
 let resolvedWorkerUrl: URL | null | undefined;
@@ -315,7 +350,7 @@ export function sourceTwin(url: URL): URL {
   return twin;
 }
 
-function messageOf(error: unknown): string {
+export function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 

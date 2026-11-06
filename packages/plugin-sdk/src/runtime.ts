@@ -22,16 +22,21 @@ import {
 import type { AtRestVault } from './at-rest-vault.ts';
 import { composeAtRestContent, isScanVaultable } from './at-rest-vault.ts';
 import type { DataGateway } from './data-gateway.ts';
+import type { DiagnosticSink } from './diagnostics.ts';
 import { buildIngestEvent, contentHashOf } from './events.ts';
 import { createFindingLocator, evidenceLookup } from './finding-context.ts';
 import { computeFindingKey } from './finding-key.ts';
 import type { FingerprintKey } from './fingerprint.ts';
 import { fingerprintValue, loadOrCreateFingerprintKey, readFingerprintKey } from './fingerprint.ts';
 import { cutForForward, reviewCandidatesOf } from './forward-cut.ts';
-import type { GuardedScanner } from './guarded-scan.ts';
+import type { GuardedScanDependencies, GuardedScanner } from './guarded-scan.ts';
 import { createGuardedScanner } from './guarded-scan.ts';
-import type { IsolatedScanner, IsolatedScanOptions } from './isolated-scan.ts';
-import { createIsolatedScanner } from './isolated-scan.ts';
+import type {
+  IsolatedScanner,
+  IsolatedScannerFactory,
+  IsolatedScanOptions,
+} from './isolated-scan.ts';
+import { buildIsolatedScanner, createIsolatedScanner, messageOf } from './isolated-scan.ts';
 import { bundledMaskingRules } from './mask.ts';
 import { dropShieldedFindings, shieldPointers } from './pointer-shield.ts';
 import type { PolicyResolver } from './policy-resolver.ts';
@@ -231,6 +236,16 @@ export interface PluginRuntimeOptions {
   // policy says, and then pass through the same degrade-then-cap step as any
   // resolved action. A finding the user excepted still resolves to `allow`.
   blockRules?: ReadonlySet<string> | undefined;
+  // Builds every isolated scanner this runtime uses: the timing pre-flight's
+  // prober, and the scanners behind a ruleset with a pulled or custom-pack
+  // regex rule. Each is passed `scanIsolation`. A throw from it reads as an
+  // unavailable scanner. Omitted, `createIsolatedScanner`. It does not reach
+  // the scanner `createSecretSpanScanner` builds.
+  isolatedScanner?: IsolatedScannerFactory | undefined;
+  // Receives each diagnostic line this runtime writes, without its trailing
+  // newline, in place of stderr. Omitted, the lines go to stderr. The lines of
+  // the scanner `createSecretSpanScanner` builds still go to stderr.
+  diagnostics?: DiagnosticSink | undefined;
 }
 
 // The remaining time a bounded scan may spend, or undefined for no caller limit.
@@ -255,8 +270,34 @@ let keepScanners = false;
 let keptScanner: {
   readonly key: string;
   readonly gateway: DataGateway;
+  readonly isolatedScanner: IsolatedScannerFactory | undefined;
+  readonly scanIsolation: IsolatedScanOptions | undefined;
+  readonly diagnostics: DiagnosticSink | undefined;
   readonly scanner: GuardedScanner;
 } | null = null;
+
+// Every key, so an option added to IsolatedScanOptions cannot be left out of
+// the comparison that decides whether a kept scanner was built under it.
+const SCAN_ISOLATION_KEYS = {
+  budgetMs: true,
+  probeBudgetMs: true,
+  startBudgetMs: true,
+  minAttributionMs: true,
+  workerUrl: true,
+  onWorkerStart: true,
+} satisfies Record<keyof IsolatedScanOptions, true>;
+
+// By value, since a hook builds its options afresh for each runtime.
+function sameScanIsolation(
+  kept: IsolatedScanOptions | undefined,
+  given: IsolatedScanOptions | undefined,
+): boolean {
+  return (Object.keys(SCAN_ISOLATION_KEYS) as (keyof IsolatedScanOptions)[]).every((key) => {
+    const a = kept?.[key];
+    const b = given?.[key];
+    return a instanceof URL && b instanceof URL ? a.href === b.href : a === b;
+  });
+}
 
 async function releaseKeptScanner(): Promise<void> {
   const kept = keptScanner;
@@ -328,6 +369,9 @@ export function createPluginRuntime(
   const dataDir = opts?.dataDir;
   const largeInput = opts?.largeInput;
   const blockRules = opts?.blockRules;
+  const isolatedScanner = opts?.isolatedScanner;
+  const diagnostics = opts?.diagnostics;
+  const scanDependencies: GuardedScanDependencies = { isolatedScanner, diagnostics };
   let rules: Rule[] = [];
   // Whether each rule's match is code or a value, over the effective ruleset —
   // rebuilt only when that ruleset is.
@@ -353,12 +397,18 @@ export function createPluginRuntime(
   });
 
   // The scanner for this ruleset: new, or the kept one when this process keeps
-  // scanners and the ruleset, the gateway and the scanner's health are all as
-  // they were. Only a ruleset with a pulled or custom-pack regex rule has a
-  // worker behind its scanner, which is what makes keeping one worthwhile.
+  // scanners and the ruleset, the gateway, the scanner factory, the scan options,
+  // the diagnostics sink and the scanner's health are all as they were. Only a ruleset with a
+  // pulled or custom-pack regex rule has a worker behind its scanner, which is
+  // what makes keeping one worthwhile.
   async function scannerFor(verified: Rule[], unverified: Rule[]): Promise<GuardedScanner> {
     if (!keepScanners) {
-      return createGuardedScanner({ verified, unverified }, gateway, opts?.scanIsolation);
+      return createGuardedScanner(
+        { verified, unverified },
+        gateway,
+        opts?.scanIsolation,
+        scanDependencies,
+      );
     }
     const key = createHash('sha256')
       .update(JSON.stringify([verified, unverified]))
@@ -367,13 +417,28 @@ export function createPluginRuntime(
       keptScanner !== null &&
       keptScanner.key === key &&
       keptScanner.gateway === gateway &&
+      keptScanner.isolatedScanner === isolatedScanner &&
+      sameScanIsolation(keptScanner.scanIsolation, opts?.scanIsolation) &&
+      keptScanner.diagnostics === diagnostics &&
       !keptScanner.scanner.degraded()
     ) {
       return keptScanner.scanner;
     }
     await releaseKeptScanner();
-    const created = createGuardedScanner({ verified, unverified }, gateway, opts?.scanIsolation);
-    keptScanner = { key, gateway, scanner: created };
+    const created = createGuardedScanner(
+      { verified, unverified },
+      gateway,
+      opts?.scanIsolation,
+      scanDependencies,
+    );
+    keptScanner = {
+      key,
+      gateway,
+      isolatedScanner,
+      scanIsolation: opts?.scanIsolation === undefined ? undefined : { ...opts.scanIsolation },
+      diagnostics,
+      scanner: created,
+    };
     return created;
   }
 
@@ -415,13 +480,24 @@ export function createPluginRuntime(
     let prober: IsolatedScanner | undefined;
     const gated = await filterUnsafeRules(needsGate, gateway, {
       prober: {
-        probe: (rule) => {
-          prober ??= createIsolatedScanner({ verified: [], unverified: [] }, opts?.scanIsolation);
-          return prober.probe(rule);
+        probe: async (rule) => {
+          prober ??= buildIsolatedScanner(
+            isolatedScanner ?? createIsolatedScanner,
+            { verified: [], unverified: [] },
+            opts?.scanIsolation,
+          );
+          // A rejection here would leave the runtime uninitialised, and every
+          // later scan would fail open with no line saying why.
+          try {
+            return await prober.probe(rule);
+          } catch (error) {
+            return { status: 'unavailable', reason: messageOf(error) };
+          }
         },
       },
+      diagnostics,
     });
-    await prober?.close();
+    await prober?.close().catch(() => undefined);
     // A rule that clears the timing gate has an EMPIRICAL verdict behind it: it
     // beat one fixed probe battery, which a pattern written against that battery
     // can do while still backtracking forever on real text. So the scan itself

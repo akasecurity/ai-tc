@@ -203,20 +203,11 @@ const writtenBy = (job) => writeScopes(job.permissions).map((scope) => scope.toL
 // to a literal here would put the drift straight back into a hand-maintained
 // list: this was that list, and a fourth asset added to the Release step alone
 // shipped unattested with all 22 cases green. Measured, not supposed.
-// `dist-latest/SHA256SUMS` is on it for the same reason and one more: the alias
-// archives are renamed copies, so the versioned attestation covers their bytes —
-// but the checksum file naming them is DIFFERENT bytes, produced here and
-// covered by nothing else.
-const SUBJECT_GLOBS = [
-  'dist/aka-*.tar.gz',
-  'dist/aka-*.zip',
-  'dist/SHA256SUMS',
-  'dist-latest/SHA256SUMS',
-];
+const SUBJECT_GLOBS = ['dist/aka-*.tar.gz', 'dist/aka-*.zip', 'dist/SHA256SUMS'];
 
 const attestStep = () => stepNamed(releaseJob(), 'Attest build provenance');
 const releaseStep = () => stepNamed(releaseJob(), 'Create GitHub Release');
-const rollingStep = () => stepNamed(releaseJob(), 'Publish the rolling bin-latest release');
+const publishStep = () => stepNamed(releaseJob(), 'Publish GitHub Release');
 
 /** The release job's one artifact upload: the rendered manifests. */
 function manifestUploadStep() {
@@ -240,7 +231,7 @@ const PINNED_RELEASE_ACTION = /^softprops\/action-gh-release@[0-9a-f]{40} # v\d+
  * publishes in total: a second publish step naming assets the first does not is
  * exactly the drift that leaves bytes downloadable with no provenance, and a
  * reader pinned to one step's name cannot see it. Two is the floor rather than
- * the count — a third would be read, not ignored.
+ * the count, the draft and its publish — a third would be read, not ignored.
  */
 function releasePublishSteps() {
   const matching = stepsOf(releaseJob()).filter(
@@ -258,7 +249,11 @@ const attestedGlobs = () => inputLines(attestStep(), 'subject-path');
 
 /** Everything this job publishes, as the union of every Release step's `files`. */
 const publishedGlobs = () => [
-  ...new Set(releasePublishSteps().flatMap((step) => inputLines(step, 'files'))),
+  ...new Set(
+    releasePublishSteps()
+      .filter((step) => hasKey(step, 'files'))
+      .flatMap((step) => inputLines(step, 'files')),
+  ),
 ];
 
 describe('the binary fan-out runs on supported runner images', () => {
@@ -298,9 +293,8 @@ describe('the release job attests the assets it publishes', () => {
   // DERIVED from the publishing steps rather than compared with a literal. That
   // is the whole repair: an extra `files:` entry is a real drift, and the
   // literal this used to compare against could not see one. Read as the UNION
-  // over every publishing step, because this job now cuts two Releases and a
-  // reader pinned to one of them calls the other's assets unpublished while
-  // they sit on a download page.
+  // over every publishing step, so a second step that uploads files is read too
+  // rather than left to sit on a download page unattested.
   it('attests exactly the assets the Releases publish, and nothing else', () => {
     const attested = attestedGlobs();
     const published = publishedGlobs();
@@ -347,40 +341,6 @@ describe('the release job attests the assets it publishes', () => {
       rendered.filter((file) => !versioned.includes(file)),
       'rendered and pushed to a package manager, but not on the versioned Release',
     ).toEqual([]);
-  });
-
-  // The alias archives are the versioned bytes under a name that does not
-  // change, so the versioned attestation already covers them by digest. Naming
-  // them one by one rather than by a shared glob is what keeps the two lists
-  // from AGREEING while covering half the set: `dist-latest/aka-*.tar.gz` on
-  // both sides reads as a match whatever the directory actually holds.
-  //
-  // EXACTLY the staged set, not a floor over it. The names are the ones the
-  // executing cases further down assert the staging block writes, so the two
-  // ends of this hand-off are held to one list: a rolling entry renamed on this
-  // side alone names a file the staging block never produces, which
-  // `fail_on_unmatched_files` would only report once a tag had been pushed.
-  it('names each rolling asset literally, so a glob cannot stand in for four', () => {
-    const rolling = inputLines(rollingStep(), 'files');
-
-    expect(
-      rolling.filter((entry) => entry.includes('*')),
-      'these rolling entries are globs — a glob covers whatever is there, not what was staged',
-    ).toEqual([]);
-    expect([...rolling].sort()).toEqual([...ALIAS_ASSETS].map(stagedPath).sort());
-    for (const entry of rolling) {
-      expect(attestedGlobs(), `${entry} is published on bin-latest and not attested`).toContain(
-        entry,
-      );
-    }
-  });
-
-  // The release body is written by the staging block too, and it is the one
-  // staged file `files:` does not carry — so the case above cannot see it, and a
-  // `body_path` naming something that block never writes fails the action at
-  // release time rather than here.
-  it('takes its release body from a file the staging block writes', () => {
-    expect(inputsOf(rollingStep()).body_path).toBe(stagedPath(ALIAS_NOTES));
   });
 
   // Without this the step runs on workflow_dispatch too, where no Release is cut:
@@ -982,41 +942,11 @@ describe('the Windows signature strip is best-effort and resolved by path', () =
   });
 });
 
-// The four targets the build fan-out produces, and the archive each one is
-// packed into — a zip on Windows and a tarball everywhere else.
-const TRIPLES = ['darwin-arm64', 'linux-x64', 'linux-arm64', 'win32-x64'];
-const archiveSuffix = (triple) => (triple.startsWith('win32-') ? 'zip' : 'tar.gz');
-
-// The version-less names the rolling release renames them to, derived from the
-// versioned ones rather than written out twice: a fixture whose archive names
-// do not match what the block strips would make it stage nothing, and every
-// assertion below would then be about a directory the block never filled.
-const versionedArchive = (version, triple) => `aka-${version}-${triple}.${archiveSuffix(triple)}`;
-const aliasArchive = (triple) => `aka-${triple}.${archiveSuffix(triple)}`;
-const ALIAS_ARCHIVES = TRIPLES.map(aliasArchive);
-
-// Everything the rolling release carries: the four renamed archives, the
-// checksum file naming them, and the two package-manager manifests plus the
-// plain-text version the tools' own update checks read.
-const ALIAS_ASSETS = [...ALIAS_ARCHIVES, 'SHA256SUMS', 'aka.rb', 'aka.json', 'VERSION'];
-
-// The body the rolling release is published with. Staged beside the assets and
-// deliberately not one of them — nothing downloads it, so the `files:` case
-// cannot see it and the `body_path` case reads it here instead.
-const ALIAS_NOTES = 'RELEASE_NOTES.md';
-
-// Where the staging block puts them, which is the one place this directory name
-// is spelled: the structural cases read the workflow's `files:`/`body_path` and
-// the executing cases read the fixture it filled, and they have to be the same
-// directory or neither is checking the other.
-const ALIAS_DIR = 'dist-latest';
-const stagedPath = (name) => `${ALIAS_DIR}/${name}`;
-
 // A search path the executing cases build for themselves rather than inheriting.
 //
 // The sibling refusal cases bind PATH to the empty string, which is right for a
-// block that runs on builtins alone and impossible here: staging copies files
-// and proves them with `sha256sum`, so the block needs real tools. Built rather
+// block that runs on builtins alone and impossible here: the checksum step runs
+// `sha256sum` and the decision step reads a version, so they need real tools. Built rather
 // than inherited so the answer cannot come out differently because of what a
 // developer happens to have earlier on their own PATH, and it carries the
 // running Node first because the block reads `cli/package.json` through it.
@@ -1084,80 +1014,6 @@ function readStepOutputs(file) {
   return out;
 }
 
-/**
- * A throwaway release directory the staging block can run against.
- *
- * The checksums are produced by the same `sha256sum` the block verifies with,
- * so what the case proves is that the copies the block made are the bytes the
- * file describes — not that two implementations of the digest agree.
- * @param {string} version
- * @param {string[]} triples the targets whose archives the build delivered
- */
-function releaseFixture(version, triples) {
-  const root = scratchDir('aka-rolling-');
-  mkdirSync(join(root, 'cli'), { recursive: true });
-  writeFileSync(
-    join(root, 'cli', 'package.json'),
-    `${JSON.stringify({ name: '@akasecurity/cli', version }, null, 2)}\n`,
-  );
-
-  const dist = join(root, 'dist');
-  mkdirSync(dist);
-  const archives = triples.map((triple) => versionedArchive(version, triple));
-  archives.forEach((name, index) => writeFileSync(join(dist, name), `archive ${index}\n`));
-  writeFileSync(
-    join(dist, 'SHA256SUMS'),
-    execFileSync(resolveTool('sha256sum'), archives, { cwd: dist, encoding: 'utf8' }),
-  );
-  for (const rendered of ['aka.rb', 'aka.json', 'VERSION']) {
-    writeFileSync(join(dist, rendered), `${rendered}\n`);
-  }
-  return { root, dist, archives };
-}
-
-/** The staging step's own `run:` script, as the workflow spells it. */
-const stagingScript = () => scriptOf(stepNamedAnywhere('Stage the rolling bin-latest assets'));
-
-/**
- * Run the staging block over a fresh fixture.
- * @param {{ tag: string, version?: string, corrupt?: boolean, triples?: string[] }} options
- */
-function runStaging({ tag, version = '0.9.12', corrupt = false, triples = TRIPLES }) {
-  const { root, dist, archives } = releaseFixture(version, triples);
-  // A SOURCE archive, disagreeing with the checksums the build wrote. The
-  // staged copies cannot be tampered with instead: the block is what creates
-  // them, so by the time they exist it has already finished.
-  if (corrupt) writeFileSync(join(dist, archives[0]), 'a short or truncated download\n');
-
-  const outputFile = join(root, 'step-output');
-  writeFileSync(outputFile, '');
-
-  const run = {
-    cwd: root,
-    encoding: 'utf8',
-    env: {
-      PATH: TOOL_PATH,
-      GITHUB_REF_NAME: tag,
-      GITHUB_OUTPUT: outputFile,
-      GITHUB_REPOSITORY: 'akasecurity/ai-tc',
-    },
-    timeout: 120_000,
-  };
-
-  try {
-    const stdout = execFileSync(BASH, ['-c', stagingScript()], run);
-    return { root, staged: true, status: 0, stdout, outputs: readStepOutputs(outputFile) };
-  } catch (err) {
-    return {
-      root,
-      staged: false,
-      status: err.status,
-      stdout: `${String(err.stdout ?? '')}${String(err.stderr ?? '')}`,
-      outputs: readStepOutputs(outputFile),
-    };
-  }
-}
-
 describe('the release job renders the package-manager manifests', () => {
   const renderStep = () => stepNamedAnywhere('Render the package-manager manifests');
 
@@ -1220,19 +1076,14 @@ describe('the release job renders the package-manager manifests', () => {
     expect(render).toBeLessThan(attest);
   });
 
-  // Staging copies the rendered files into the rolling set, and the artifact the
-  // publish jobs download is those same files: either one ahead of the render
-  // reads files that do not exist yet.
-  it('renders before anything that copies or uploads what it wrote', () => {
+  // The attestation and the artifact the publish jobs download both read the
+  // rendered files: either one ahead of the render reads files that do not exist yet.
+  it('renders before anything that attests or uploads what it wrote', () => {
     const job = releaseJob();
     const render = stepIndex(job, 'Render the package-manager manifests');
-    const stage = stepIndex(job, 'Stage the rolling bin-latest assets');
-    const attest = stepIndex(job, 'Attest build provenance');
-    const upload = usesIndex(job, 'actions/upload-artifact@');
 
-    expect(render).toBeLessThan(stage);
-    expect(stage).toBeLessThan(attest);
-    expect(render).toBeLessThan(upload);
+    expect(render).toBeLessThan(stepIndex(job, 'Attest build provenance'));
+    expect(render).toBeLessThan(usesIndex(job, 'actions/upload-artifact@'));
   });
 
   // The version comes from the manifest rather than from the tag, which is what
@@ -1259,200 +1110,108 @@ describe('the release job renders the package-manager manifests', () => {
   });
 });
 
-describe('the rolling bin-latest assets are the versioned bytes, renamed', () => {
-  it('carries a staging step, which every case below reads inside', () => {
-    // The structural control for the executing cases: a step with only a `name:`
-    // would leave `scriptOf` with nothing to return, and a shell handed an empty
-    // script exits 0 — which the acceptance case would read as a pass.
-    const script = stagingScript();
+describe('the archives are checked against SHA256SUMS before anything is published', () => {
+  const STEP = 'Verify the archives against SHA256SUMS';
 
-    expect(script).toContain('GITHUB_REF_NAME');
-    expect(script).toContain('sha256sum -c');
-    expect(script).toContain('GITHUB_OUTPUT');
-  });
-
-  // Ungated for the reason the renderer is: this block refuses a short copy and
-  // a source archive that no longer matches its checksum, and the dry run is
-  // where those refusals are worth having. The publish gate does not rest on it
-  // being skipped — the step below reads the EVENT as well as this step's
-  // answer, which is what keeps a dispatch from reaching bin-latest.
-  it('stages on the dry run too, so its refusals are exercised before a tag', () => {
-    expect(
-      Object.hasOwn(stepNamedAnywhere('Stage the rolling bin-latest assets'), 'if'),
-      'staging no longer runs on a workflow_dispatch',
-    ).toBe(false);
-  });
-
-  it('stages every alias asset and proves each copy against its checksum', (ctx) => {
-    requireTools(ctx, ['sha256sum', 'basename', 'cp', 'mkdir', 'wc']);
-    const { root, staged, status, stdout, outputs } = runStaging({ tag: 'bin-v0.9.12' });
-
-    expect(staged, `the staging block exited ${status}:\n${stdout}`).toBe(true);
-
-    for (const asset of ALIAS_ASSETS) {
-      expect(existsSync(join(root, ALIAS_DIR, asset)), `${asset} was not staged`).toBe(true);
-    }
-    // The body the rolling release is published with, which is not one of the
-    // assets and would go unnoticed by the loop above.
-    expect(existsSync(join(root, ALIAS_DIR, ALIAS_NOTES)), `${ALIAS_NOTES} was not staged`).toBe(
-      true,
+  /** Run the step over two archives and the sums of the bytes they first held. */
+  function verify({ corrupt }) {
+    const root = scratchDir('aka-sums-');
+    const dist = join(root, 'dist');
+    mkdirSync(dist);
+    const names = ['aka-0.9.12-linux-x64.tar.gz', 'aka-0.9.12-win32-x64.zip'];
+    names.forEach((name) => writeFileSync(join(dist, name), `archive ${name}\n`));
+    writeFileSync(
+      join(dist, 'SHA256SUMS'),
+      execFileSync(resolveTool('sha256sum'), names, { cwd: dist, encoding: 'utf8' }),
     );
+    if (corrupt) writeFileSync(join(dist, names[0]), 'a short download\n');
+    try {
+      execFileSync(BASH, ['-c', scriptOf(stepNamed(releaseJob(), STEP))], {
+        cwd: root,
+        encoding: 'utf8',
+        env: { PATH: TOOL_PATH },
+        stdio: 'pipe',
+        timeout: 60_000,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
 
-    // Verified again here, independently of the block's own check: dropping
-    // `sha256sum -c` from the script leaves every assertion above satisfied by
-    // four files of any content whatever.
-    const verified = execFileSync(resolveTool('sha256sum'), ['-c', 'SHA256SUMS'], {
-      cwd: join(root, ALIAS_DIR),
-      encoding: 'utf8',
-      env: { PATH: TOOL_PATH },
-      timeout: 60_000,
-    });
-    for (const archive of ALIAS_ARCHIVES) expect(verified).toContain(archive);
-
-    expect(outputs.publish).toBe('yes');
-    expect(outputs.version).toBe('0.9.12');
+  it('passes the archives the build wrote', (ctx) => {
+    requireTools(ctx, ['sha256sum']);
+    expect(verify({ corrupt: false })).toBe(true);
   });
 
-  // A source archive that disagrees with the checksums the build wrote is a
-  // short or corrupted download between two runners, and it must stop here
-  // rather than on a user's machine.
-  it('refuses to stage a source archive that no longer matches its checksum', (ctx) => {
-    requireTools(ctx, ['sha256sum', 'basename', 'cp', 'mkdir', 'wc']);
-    const { staged, status, outputs } = runStaging({ tag: 'bin-v0.9.12', corrupt: true });
-
-    expect(staged, 'a tampered source archive was staged anyway').toBe(false);
-    expect(status, 'the block ended some way other than a non-zero exit').toBeGreaterThan(0);
-    // And nothing downstream is told to publish it.
-    expect(outputs.publish ?? 'no').not.toBe('yes');
+  it('refuses an archive that no longer matches its checksum', (ctx) => {
+    requireTools(ctx, ['sha256sum']);
+    expect(verify({ corrupt: true })).toBe(false);
   });
 
-  // A target whose archive never arrived — its checksum line missing with it,
-  // which is what aggregating the uploads that DID land produces. Every file
-  // present verifies, so only the count stands between this and a rolling
-  // release a documentation link on the missing platform resolves to nothing on.
-  it('refuses a release that delivered fewer than four archives', (ctx) => {
-    requireTools(ctx, ['sha256sum', 'basename', 'cp', 'mkdir', 'wc']);
-    const delivered = TRIPLES.filter((triple) => triple !== 'win32-x64');
-    expect(delivered, 'the fixture dropped no target').toHaveLength(TRIPLES.length - 1);
-
-    const { staged, status, stdout, outputs } = runStaging({
-      tag: 'bin-v0.9.12',
-      triples: delivered,
-    });
-
-    expect(staged, 'a three-archive release was staged as complete').toBe(false);
-    expect(status, 'the block ended some way other than a non-zero exit').toBeGreaterThan(0);
-    expect(stdout).toMatch(/::error::/);
-    expect(outputs.publish ?? 'no').not.toBe('yes');
-  });
-
-  // The refs this step really receives. A tag push carries the tag; the only
-  // other trigger this workflow has carries a BRANCH name, and a branch is what
-  // the arm order has to route away — `main` has no hyphen in it, so a `case`
-  // that merely refuses a hyphen sends a feature build to the download surface
-  // a documentation page links to.
-  it.for([
-    ['bin-v0.9.12', 'yes'],
-    ['bin-v1.0.0', 'yes'],
-    ['bin-v0.10.0-beta.1', 'no'],
-    ['bin-v1.0.0-rc.1', 'no'],
-    ['bin-v0.9', 'no'],
-    ['bin-vlatest', 'no'],
-    ['main', 'no'],
-    ['feat/x-y', 'no'],
-  ])('%s routes to publish=%s', ([ref, expected], ctx) => {
-    requireTools(ctx, ['sha256sum', 'basename', 'cp', 'mkdir', 'wc']);
-    const { staged, status, stdout, outputs } = runStaging({ tag: ref });
-
-    expect(staged, `the staging block exited ${status} on ${ref}:\n${stdout}`).toBe(true);
-    expect(outputs.publish, `${ref} routed the wrong way`).toBe(expected);
+  // Ungated, so the dry run exercises the refusal before a tag does.
+  it('runs on the dry run too, ahead of the attestation', () => {
+    const job = releaseJob();
+    expect(Object.hasOwn(stepNamed(job, STEP), 'if')).toBe(false);
+    expect(stepIndex(job, STEP)).toBeLessThan(stepIndex(job, 'Attest build provenance'));
   });
 });
 
-describe('the rolling bin-latest release is published only by a real tag push', () => {
-  // BOTH halves, and the event half is the one that matters. The staging step
-  // is ungated so the dry run exercises it, which means its output alone is
-  // satisfied on a workflow_dispatch from a branch whose name happens to read
-  // like a version — and this job holds contents: write.
-  it('gates on the event, on what staging decided, and on bin-latest moving forward', () => {
-    const gate = ifOf(rollingStep(), 'the rolling release step');
-
-    expect(gate).toContain("github.event_name == 'push'");
-    expect(gate).toContain("steps.rolling.outputs.publish == 'yes'");
-    expect(gate).toContain("steps.advance.outputs.move == 'yes'");
-    expect(gate).toContain('&&');
-    // EXACTLY those three conjuncts. Containing all three is satisfied by a
-    // gate that ORs a fourth term onto them — `… || github.event_name ==
-    // 'workflow_dispatch'` keeps every substring above and publishes the dry
-    // run's unattested build.
-    expect(
-      gate
-        .split('&&')
-        .map((term) => term.trim())
-        .sort(),
-    ).toEqual([
-      "github.event_name == 'push'",
-      "steps.advance.outputs.move == 'yes'",
-      "steps.rolling.outputs.publish == 'yes'",
-    ]);
+// GitHub locks a Release the moment it is published, so the whole job is ordered
+// around a draft: a job that dies anywhere before the last step can be re-run.
+describe('the versioned Release is a draft until the rest of the job has passed', () => {
+  it('uploads its files to a draft', () => {
+    const inputs = inputsOf(releaseStep());
+    expect(inputs.draft, 'the upload step would publish before uploading').toBe('true');
+    expect(releaseStep().id).toBe('draft');
+    // A re-run repairs a draft by replacing its files. With this off, the action keeps
+    // the old file and returns without an error, and that file is what gets published.
+    expect(inputs.overwrite_files ?? 'true').toBe('true');
   });
 
-  // The same event the attestation fires on: the alias archives are attested by
-  // digest through the versioned subjects, and the alias checksum file in its
-  // own right, so publishing them on an event that attests nothing would put
-  // unsigned bytes behind a link a documentation page points at.
-  it('publishes on the same event the attestation covers', () => {
-    const gate = ifOf(rollingStep(), 'the rolling release step');
-
-    expect(gate.startsWith(ifOf(attestStep(), 'the attest step'))).toBe(true);
+  it('publishes with nothing but the draft and prerelease flags', () => {
+    const inputs = inputsOf(publishStep());
+    expect(Object.keys(inputs).sort()).toEqual(['draft', 'prerelease']);
+    expect(inputs.draft).toBe('false');
+    expect(inputs.prerelease).toBe(inputsOf(releaseStep()).prerelease);
+    expect(usesOf(publishStep())).toMatch(PINNED_RELEASE_ACTION);
   });
 
-  it('pins the release action by commit SHA, not by a movable tag', () => {
-    expect(usesOf(rollingStep())).toMatch(PINNED_RELEASE_ACTION);
+  // An older tag does not move bin-latest and still gets its own Release, so the
+  // publish must not read the decision.
+  it('publishes on every tag push, whatever bin-latest decided', () => {
+    expect(ifOf(publishStep(), 'the publish step')).toBe(ifOf(attestStep(), 'the attest step'));
   });
 
-  // `prerelease` keeps this out of the repository's latest-release election,
-  // which seven tag prefixes share here; `make_latest: false` says the same thing
-  // a second way and is what still holds if `prerelease` is ever flipped.
-  // `overwrite_files` is what makes the second release of the same tag replace
-  // the assets rather than fail.
-  it.each([
-    ['tag_name: bin-latest', 'tag_name', 'bin-latest'],
-    ['prerelease: true', 'prerelease', 'true'],
-    ['make_latest: false', 'make_latest', 'false'],
-    ['overwrite_files: true', 'overwrite_files', 'true'],
-    ['fail_on_unmatched_files: true', 'fail_on_unmatched_files', 'true'],
-  ])('declares %s', (_label, key, value) => {
-    expect(inputsOf(rollingStep())[key]).toBe(value);
-  });
-
-  // One tag carrying whatever the last release put there, so the release's own
-  // title is the only place the page says which version it holds. It reads the
-  // staging step's other output, which is what gives that output a consumer at
-  // all — the executing case below pins the value it carries.
-  it('titles itself with the version staging resolved', () => {
-    expect(inputsOf(rollingStep()).name).toMatch(
-      /^aka \$\{\{ steps\.rolling\.outputs\.version \}\}/,
-    );
-  });
-
-  // The REST releases API ignores this key when the tag already exists, so a
-  // value here reads as a decision the release does not make. The whole decoded
-  // step is read, so the key is refused wherever in the step it is written.
-  it('names no commitish, because the tag already exists by then', () => {
-    expect(hasKey(rollingStep(), 'target_commitish')).toBe(false);
-  });
-
-  // Ordering. The tag is moved by the step above; a release cut before that
-  // move names the previous commit.
-  it('is published after bin-latest has been moved to this commit', () => {
+  // Once the Release is locked a re-run stops at the upload, so anything the publish
+  // jobs need has to be behind the publish step already, or nothing could repair it.
+  it('leaves nothing the job needs after the publish step', () => {
     const job = releaseJob();
-    const move = stepIndex(job, 'Point bin-latest at this release');
-    const publish = stepIndex(job, 'Publish the rolling bin-latest release');
+    const publish = stepIndex(job, 'Publish GitHub Release');
+    const after = stepsOf(job).slice(publish + 1);
 
-    expect(move).toBeLessThan(publish);
+    expect(usesIndex(job, 'actions/upload-artifact@')).toBeLessThan(publish);
+    expect(stepIndex(job, 'Point bin-latest at this release')).toBeLessThan(publish);
+    expect(after.map((step) => step.name)).toEqual(['Explain a draft Release left unpublished']);
   });
 
+  it('names a draft left unpublished in the log', () => {
+    const step = stepNamed(releaseJob(), 'Explain a draft Release left unpublished');
+    expect(ifOf(step, 'the explanation step')).toBe(
+      "failure() && steps.draft.outcome == 'success'",
+    );
+    expect(scriptOf(step)).toMatch(/^echo "::error::.*re-run/im);
+  });
+
+  // The Release stays frozen on its last files: one edit would lock it, and the
+  // links to it are retired. See "GitHub Releases are immutable" in conventions/releasing.md.
+  it('publishes no Release on the bin-latest tag', () => {
+    expect(releasePublishSteps().filter((step) => hasKey(step, 'tag_name'))).toEqual([]);
+    expect(readWorkflow()).not.toContain('releases/download/bin-latest');
+  });
+});
+
+describe('the release job hands the rendered manifests on', () => {
   // The two publish jobs re-render nothing, so what they push has to leave this
   // runner as an artifact.
   it('uploads the rendered manifests for the jobs that publish them', () => {
@@ -1537,8 +1296,8 @@ describe('bin-latest only moves forward', () => {
 
   it.for([
     ['an older release', '0.9.11', 'yes'],
-    // The same version is a re-run, which is how a half-finished rolling
-    // upload is repaired — refusing it would leave that state for good.
+    // The same version is a re-run, which is how a draft left unpublished is
+    // repaired — refusing it would leave that state for good.
     ['the same release, re-run', '0.9.12', 'yes'],
     ['a newer release', '0.9.13', 'no'],
     // Ordered as numbers, not text: as text 0.9.9 sorts after 0.9.12.
@@ -1649,59 +1408,36 @@ describe('bin-latest only moves forward', () => {
     );
   });
 
-  it('decides, then moves, then publishes, then explains a failure, then uploads', () => {
+  it('uploads, then decides, then moves, then publishes', () => {
     const job = releaseJob();
     const order = [
+      usesIndex(job, 'actions/upload-artifact@'),
+      stepIndex(job, 'Create GitHub Release'),
       stepIndex(job, 'Decide whether bin-latest moves forward'),
       stepIndex(job, 'Point bin-latest at this release'),
       stepIndex(job, 'Explain a bin-latest move that lost a race'),
-      stepIndex(job, 'Publish the rolling bin-latest release'),
-      stepIndex(job, 'Explain a bin-latest left half-published'),
-      usesIndex(job, 'actions/upload-artifact@'),
+      stepIndex(job, 'Publish GitHub Release'),
+      stepIndex(job, 'Explain a draft Release left unpublished'),
     ];
 
     expect(order).toEqual([...order].sort((a, b) => a - b));
   });
 
   // The CAS loser: the move step's own push was rejected because a peer's
-  // push landed first. That peer's Release has already published by the time
-  // this one runs (the versioned `Create GitHub Release` step sits above the
-  // move), so nothing here should retry the push — only name the repair.
+  // push landed first. This tag's Release is still a draft (the publish step sits
+  // below the move), so nothing here should retry the push — only name the repair.
   it('explains a bin-latest move that lost a race, gated to the move step failing', () => {
     const step = stepNamed(releaseJob(), 'Explain a bin-latest move that lost a race');
 
     expect(ifOf(step, 'the explanation step')).toBe("failure() && steps.move.outcome == 'failure'");
     const script = scriptOf(step);
     expect(script).toMatch(/^echo "::error::/m);
-    expect(script, 'does not say the tag is already published').toContain('own GitHub Release');
+    expect(script, 'does not say the Release is still a draft').toContain('still a draft');
     expect(script, 'does not name what is still stale').toContain('package managers');
     expect(script, 'does not name the repair').toMatch(/re-run/i);
     // No retry loop: the fix is a re-run of the whole workflow, not another
     // push from inside this step.
     expect(script, 'retries the push instead of naming the repair').not.toContain('git push');
-  });
-
-  // Distinguished from its sibling explainer, which fires on the OTHER half of
-  // this same push: a step that fired on both conditions at once would leave
-  // either gate free to drift into the other's territory unnoticed.
-  it('fires on a different condition than the half-published explainer', () => {
-    const race = stepNamed(releaseJob(), 'Explain a bin-latest move that lost a race');
-    const halfPublished = stepNamed(releaseJob(), 'Explain a bin-latest left half-published');
-
-    expect(ifOf(race, 'the race explainer')).not.toBe(
-      ifOf(halfPublished, 'the half-published explainer'),
-    );
-  });
-
-  // The tag moves first and the assets follow one upload at a time, so the
-  // window between them is where a run can fail and leave the two disagreeing.
-  // `failure()` alone would also fire for a failure BEFORE the move, when
-  // nothing has been left half-done.
-  it('explains a failure only once the tag has moved', () => {
-    const step = stepNamed(releaseJob(), 'Explain a bin-latest left half-published');
-
-    expect(ifOf(step, 'the explanation step')).toBe("failure() && steps.move.outcome == 'success'");
-    expect(scriptOf(step)).toMatch(/^echo "::error::.*re-run/im);
   });
 });
 

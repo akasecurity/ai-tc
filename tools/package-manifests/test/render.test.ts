@@ -34,7 +34,7 @@ const FIXTURE = readFileSync(FIXTURE_PATH, 'utf8');
 const VERSION = '9.9.9';
 const REPO = 'akasecurity/ai-tc';
 const VERSIONED_TAG = `/releases/download/bin-v${VERSION}/`;
-const ROLLING_TAG = '/releases/download/bin-latest/';
+const VERSION_PROBE = `https://raw.githubusercontent.com/${REPO}/bin-latest/cli/package.json`;
 
 const input = (over: Partial<ManifestInput> = {}): ManifestInput => ({
   version: VERSION,
@@ -199,9 +199,9 @@ describe('the Homebrew formula', () => {
     }
   });
 
-  it('tracks new versions through the rolling tag', () => {
+  it('tracks new versions through the moving tag', () => {
     const block = rubyBlock(formula, 'livecheck do');
-    expect(onlyDirective(block, 'url')).toBe(`https://github.com/${REPO}${ROLLING_TAG}VERSION`);
+    expect(onlyDirective(block, 'url')).toBe(VERSION_PROBE);
     const trimmed = block.map((line) => line.trim());
     expect(trimmed).toContain('strategy :page_match');
     expect(trimmed.some((line) => line.startsWith('regex('))).toBe(true);
@@ -286,9 +286,8 @@ describe('the Scoop manifest', () => {
     expect(manifest.bin).toBe('aka.exe');
   });
 
-  it('checks for new versions against the rolling tag', () => {
-    expect(manifest.checkver.url).toBe(`https://github.com/${REPO}${ROLLING_TAG}VERSION`);
-    expect(new RegExp(manifest.checkver.regex).exec(VERSION)?.[1]).toBe(VERSION);
+  it('checks for new versions against the moving tag', () => {
+    expect(manifest.checkver.url).toBe(VERSION_PROBE);
   });
 
   it('keeps $version a literal token in both autoupdate URLs', () => {
@@ -357,16 +356,15 @@ describe('which tag each URL names', () => {
     }
   });
 
-  it('names the rolling tag in exactly the two version probes', () => {
-    const rolling = [
+  it('names the moving tag in exactly the two version probes', () => {
+    const probes = [
       onlyDirective(rubyBlock(formula, 'livecheck do'), 'url'),
       manifest.checkver.url,
     ];
-    expect(new Set(rolling).size).toBe(1);
-    for (const url of rolling) expect(url.endsWith(`${ROLLING_TAG}VERSION`)).toBe(true);
+    expect(new Set(probes)).toEqual(new Set([VERSION_PROBE]));
 
-    const rollingLines = formula.split('\n').filter((line) => line.includes('bin-latest'));
-    expect(rollingLines).toHaveLength(1);
+    const movingLines = formula.split('\n').filter((line) => line.includes('bin-latest'));
+    expect(movingLines).toHaveLength(1);
   });
 
   it('leaves the $version template in exactly the two autoupdate URLs', () => {
@@ -384,16 +382,21 @@ describe('VERSION', () => {
   it('is the bare version and a trailing newline', () => {
     expect(renderVersionFile(VERSION)).toBe(`${VERSION}\n`);
   });
+});
 
-  it('is matched by both version probes', () => {
+describe('the version probes', () => {
+  it('both find the version in the real CLI manifest', () => {
     // A shape control over JavaScript approximations of a Ruby and a .NET
-    // engine, not a proof about either of them.
+    // engine, not a proof about either of them. The real file, so a field added
+    // above `version` that also matches shows up here.
+    const text = readFileSync(join(import.meta.dirname, '../../../cli/package.json'), 'utf8');
+    const expected = (JSON.parse(text) as { version: string }).version;
     const formula = renderFormula(input());
     const rubyRegex = /regex\(\/(.*)\/i\)/.exec(formula)?.[1] ?? '';
     expect(rubyRegex, 'the livecheck block carries no regex').not.toBe('');
     const { checkver } = scoop(renderScoopManifest(input()));
     for (const source of [rubyRegex, checkver.regex]) {
-      expect(new RegExp(source).exec(renderVersionFile(VERSION).trim())?.[1], source).toBe(VERSION);
+      expect(new RegExp(source).exec(text)?.[1], source).toBe(expected);
     }
   });
 });

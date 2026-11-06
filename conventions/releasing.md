@@ -168,6 +168,61 @@ per-host decision, and it has not been made. `rc` is a dist-tag the workflows pu
 channel: `--channel rc` is refused and a machine running an `rc` build reads as stable, so an
 `rc` is installed by exact version or `@rc`.
 
+### GitHub Releases are immutable
+
+[Immutable releases](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases)
+are a setting GitHub offers per repository or organization, and every rule in this section holds only
+while it is on. To see whether it applied to a Release, read
+`gh api repos/akasecurity/ai-tc/releases/tags/<tag> --jq .immutable`: `cli-v0.9.21` says `false` and
+`cli-v0.9.23` says `true`.
+
+GitHub documents that a published immutable Release locks its files and its tag: no file can be added,
+replaced or deleted, the tag cannot move, and the Release cannot be repaired, only superseded by a new
+version. Its title and notes can still be edited. Without `draft: true`,
+`softprops/action-gh-release` publishes a prerelease before uploading, and every `0.x` tag is a
+prerelease, so the upload is refused. That is how every 0.9.23 Release ended up with no files, after
+npm had already published.
+
+So the CLI and plugin workflows run in this order:
+
+1. `Create GitHub Release` uploads to a draft, which nobody outside the repository can see. A failure
+   here leaves npm untouched.
+2. `Publish to npm` publishes, or skips with a notice when the public registry already has the
+   version.
+3. `Publish GitHub Release` publishes the draft, with no `files`, so its notes stay as they are.
+
+- **A job that fails after step 1** names that state in the log (`Explain a draft Release left
+unpublished`). Re-running it replaces the draft's files, skips npm if the version is there, and
+  publishes the draft. The re-run rebuilds the tarball, so the Release's copy is not guaranteed to
+  match npm's byte for byte. npm's read lag can make the skip miss a version just published: that
+  run fails with `E409`, and a later re-run gets through.
+- **A re-run after step 3 has passed** fails at step 1 on the locked Release, before npm, and changes
+  nothing. That failure is expected.
+- **A manual dispatch with `publish: true`** (`release-cli`, `release-plugin-codex`,
+  `release-plugin-antigravity`) publishes to npm and cuts no Release, with a green log, because the
+  Release steps run on a tag push only. A later tag push of that version gets past the npm skip and
+  publishes a Release whose tarball is a new build, not the one on npm.
+- **`cli-latest` only moves forward**, so a re-run of an older tag's job publishes that tag's draft and
+  leaves the alias on the newer version.
+- **An older Release published before the setting was turned on** stays unlocked until it is edited.
+  Replacing its files does not lock it, but any edit does, even of its name, and a locked Release
+  refuses the file replacement that follows. The action always edits first. GitHub's documentation
+  does not state this: it was measured on 5 November 2026 in a private repository with the setting on,
+  by editing, uploading to and moving the tag of older Releases. Re-measure it before relying on it.
+
+The Release on the `bin-latest` tag is one of those older ones, and it is retired: frozen on its
+aka 0.9.21 files. Nothing in the workflow touches it, and no tracked file outside the tests links to
+it (`packages/eslint-config/test/install-links.test.js`). Links already out in the world keep serving
+0.9.21. The tag still moves, and only the tag is in use.
+
+**Never edit that Release, not even its title or notes.** An edit locks it, and a locked Release's tag
+cannot move: the push is refused with `GH013` and `Cannot update this protected ref`. The one-liners
+and both version checks would then stay on the old tag, and every binary release would fail at the
+move. The lock cannot be undone. Never publish a Release on any tag that has to keep moving.
+
+`release-binaries.yml` follows the same draft order with no npm step, and it moves `bin-latest`
+between the draft and the publish, so that a job that dies at the move can still be re-run.
+
 ### Release branches
 
 `ci.yml` triggers for `main`, `dev` and every `release/**` branch on both `push` and
@@ -242,46 +297,39 @@ release channel** from the `cli-v*` npm publish:
   and three files the release job RENDERS from that sums file with
   `tools/package-manifests/src/render-manifests.ts` (run under Node 24 type stripping, no pnpm
   install — the release job sets up Node 24 for it): `aka.rb` (the Homebrew formula), `aka.json`
-  (the Scoop manifest) and `VERSION`. Both release steps set `fail_on_unmatched_files: true`, so
+  (the Scoop manifest) and `VERSION`. The upload step sets `fail_on_unmatched_files: true`, so
   a missing asset fails the run instead of publishing a partial release. The
   renderer takes `--version`, `--repo` (required, no default — a fork's dispatch run must not
   render `akasecurity` URLs), `--sums` and `--out`, renders everything in memory and writes
   nothing on any refusal. The formula and manifest point at the IMMUTABLE versioned asset URLs,
   never at `bin-latest`. The `tools/installer/` one-liners verify the download against
   `SHA256SUMS`, fail-closed.
-- **`bin-latest`:** on success the workflow force-moves `bin-latest` to the release commit; the
-  installer one-liners (`install.sh`/`install.ps1`) are fetched from `bin-latest`, not `main`.
-  It then updates a ROLLING GitHub Release on that tag (`Publish the rolling bin-latest release`,
-  gated on a push AND on the staging step having seen a bare `bin-vX.Y.Z`, so a dispatch dry run
-  cannot touch it) carrying VERSION-LESS alias copies of the four archives
-  (`aka-darwin-arm64.tar.gz`, `aka-linux-x64.tar.gz`, `aka-linux-arm64.tar.gz`,
-  `aka-win32-x64.zip`), a `SHA256SUMS` naming those aliases, and the three rendered files. That
-  is what makes `https://github.com/akasecurity/ai-tc/releases/download/bin-latest/<alias>` a
-  stable one-click URL: GitHub's own `/releases/latest` is unusable here — every release is
-  flagged pre-release, and seven tag prefixes share one Releases list, so its election could land
-  on a plugin release. The aliases are staged in `dist-latest/`, never in `dist/`, because the
-  versioned release's `dist/aka-*` globs would otherwise sweep them in under names it never
-  promised. The rolling release stays `prerelease: true` and `make_latest: false`.
+- **`bin-latest`:** the workflow force-moves the `bin-latest` tag to the release commit, ahead of
+  publishing the draft. The installer one-liners (`install.sh`/`install.ps1`) are fetched from
+  `bin-latest`, not `main`, and the Homebrew and Scoop version checks read `cli/package.json`
+  through it. No version-less download URL exists: GitHub's own `/releases/latest` is unusable
+  here, because every release is flagged pre-release and seven tag prefixes share one Releases
+  list, so its election could land on a plugin release, and a Release that took new files on each
+  version cannot exist under immutable releases. The READMEs link the `bin-v*` releases instead.
+- **The version checks run ahead of the Release.** The tag moves before the draft is published, so
+  if `Publish GitHub Release` fails after the move, `brew livecheck` and Scoop's `checkver` name a
+  version with no downloads until the job is re-run. Installs do not move: `brew upgrade` and
+  `scoop update` follow the tap and the bucket, which change only after the release job has passed,
+  and the one-liners take the newest published release.
 - **`bin-latest` only moves FORWARD.** The workflow's concurrency group is per tag, so nothing
   else orders two releases: a re-run of an older tag's failed release, or two tags pushed out of
   order, would otherwise move it back. `Decide whether bin-latest moves forward` reads the
   version the tag names on origin and lets through only one at least as new — the SAME version
-  included, because re-running is how a half-finished rolling upload is repaired — and the move
+  included, because re-running is how a draft left unpublished is repaired — and the move
   pushes `--force-with-lease` against the value it read, so a release of another version that
   moved the tag in between fails the push instead of being overwritten. A read that fails for
   any reason but "no such tag" refuses rather than moving blind. There is no fixed concurrency
   group: GitHub cancels a pending run when a newer one joins, which drops a whole release, and
-  the `queue: max` key that avoids that is rejected by the actionlint version CI pins. What the
-  lease does not cover is two releases whose rolling UPLOADS overlap after both moved the tag in
-  turn; the tag cannot go backward, the assets can end up mixed, and re-running the newer
-  release's job makes them whole. A failure after the tag moved is named in the log by
-  `Explain a bin-latest left half-published`. The CAS loser is the other half of the same race:
-  by the time its lease is rejected, its OWN versioned Release has already published (the
-  `Create GitHub Release` step runs before the move), so it ends with a real Release on a version
-  that `bin-latest`, the rolling release and both package managers do not yet serve.
-  `Explain a bin-latest move that lost a race` names that case in the log with no retry loop —
-  the repair is re-running this tag's whole workflow, which re-reads the tag from scratch and
-  only ever moves forward, so a newer winner makes the re-run a no-op.
+  the `queue: max` key that avoids that is rejected by the actionlint version CI pins.
+  The CAS loser's Release is still a draft when its lease is rejected, because the publish step
+  comes after the move. `Explain a bin-latest move that lost a race` names that case in the log
+  with no retry loop — the repair is re-running the job, which re-reads the tag from scratch and
+  only ever moves forward, so a newer winner leaves the tag alone and the draft publishes.
 - **Package managers.** Two jobs after `release`, `publish-homebrew-tap` and `publish-scoop-bucket`,
   push the rendered `Formula/aka.rb` to `akasecurity/homebrew-tap` and `bucket/aka.json` to
   `akasecurity/scoop-bucket` through the contents API, authenticating as a GitHub App rather than a
@@ -375,20 +423,16 @@ release channel** from the `cli-v*` npm publish:
   The order is load-bearing on both platforms (remove signature → inject → sign on
   macOS; remove → inject on Windows) and is pinned over a COMMENT-STRIPPED read of the script,
   since commenting a call out kept a plain text match green.
-- **Provenance.** Every asset the two releases publish — each archive, `SHA256SUMS`, the three
-  rendered files, and the rolling release's alias set — carries a build-provenance attestation,
-  made in the `release` job by `actions/attest` pinned to a commit SHA and gated on `push`, so
-  the `workflow_dispatch` dry run attests nothing. The alias ARCHIVES are byte-identical renames,
-  and `gh attestation verify` identifies an artifact by its digest, so they verify against the
-  same attestation under their new names; the alias `SHA256SUMS` is new bytes and is attested in
-  its own right. Only that job holds `id-token: write` and `attestations: write`; the build
+- **Provenance.** Every asset the release publishes — each archive, `SHA256SUMS` and the three
+  rendered files — carries a build-provenance attestation, made in the `release` job by
+  `actions/attest` pinned to a commit SHA and gated on `push`, so the `workflow_dispatch` dry run
+  attests nothing. Only that job holds `id-token: write` and `attestations: write`; the build
   fan-out and the two publish jobs hold neither, and the workflow's top-level block grants no
   write scope for any of them to inherit.
   `packages/eslint-config/test/release-binaries-integrity.test.js` holds all of that, slicing the
   attest STEP rather than the job (the release-creation steps name the same globs, so a job-wide
   match is inert) and requiring the attest subjects to EQUAL the union of every softprops step's
-  `files:` in both directions — which is why the aliases must be staged before the attest step
-  and why a rolling asset can never ship unattested. **The installers do not verify the attestation and never require `gh`** — they
+  `files:` in both directions, so an asset can never ship unattested. **The installers do not verify the attestation and never require `gh`** — they
   verify the checksum and stop. That checksum arrives from the same release as the archive, so it
   catches a corrupt download and not a replaced release; `gh attestation verify <asset> -R
 <owner>/<repo>` is the manual check that does. `install.sh`/`install.ps1` themselves come from

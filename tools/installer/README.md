@@ -49,9 +49,8 @@ manager checks the archive it downloads against the sums that release published 
 like the installers' check, catches a corrupt download rather than a substituted release.
 
 The same `aka.rb` and `aka.json` are attached to every release. The attached `aka.json` is
-an install path of its own —
-`scoop install https://github.com/akasecurity/ai-tc/releases/download/bin-latest/aka.json`
-works without adding the bucket. The attached `aka.rb` is a copy to read, not to install:
+an install path of its own: `scoop install <its URL on that bin-v<version> release>` works
+without adding the bucket. The attached `aka.rb` is a copy to read, not to install:
 current Homebrew refuses `brew install ./aka.rb`, so the tap is the only Homebrew route.
 Check the provenance of the archive a package manager downloaded exactly as for a direct
 download: `gh attestation verify aka-<version>-<triple>.tar.gz -R akasecurity/ai-tc`.
@@ -80,11 +79,7 @@ Every asset a `bin-v*` release publishes — each `.tar.gz`, the `.zip`, `SHA256
 itself, and the rendered `aka.rb`, `aka.json` and `VERSION` — carries a
 **build-provenance attestation**, generated in the release workflow and signed with a
 short-lived Sigstore certificate. It records which repository, workflow and commit
-produced those exact bytes. The `bin-latest` download links are covered too: the rolling
-release's archives are byte-identical renames of that release's versioned archives, and
-an attestation identifies an artifact by its digest, so they verify under their alias
-names; the `SHA256SUMS` beside them lists those alias names and is attested in its own
-right. Check one with the GitHub CLI:
+produced those exact bytes. Check one with the GitHub CLI:
 
 ```bash
 gh attestation verify aka-<version>-<triple>.tar.gz -R akasecurity/ai-tc
@@ -111,10 +106,10 @@ corrupt download from a substituted release.
   is what lets it run on Apple Silicon — and is neither Developer ID signed nor
   notarized, so a browser-downloaded archive would be refused where the
   `curl`-installed one runs.
-- **Which release the `bin-latest` links serve.** They always resolve to the newest
-  binary release — each release replaces the assets behind them. A link fetched
-  yesterday and one fetched today can be different versions, each correctly attested;
-  pin a version with its `bin-v<version>` release instead.
+- **The old `bin-latest` download links.** The GitHub Release on the `bin-latest` tag is
+  frozen on aka 0.9.21 and no longer updated, because a published Release is locked. A
+  link to a file on it still works and still serves 0.9.21. Take a current archive from
+  its `bin-v<version>` release instead. The tag itself still moves with every release.
 
 ## Uninstalling
 

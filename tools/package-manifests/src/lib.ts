@@ -40,9 +40,18 @@ export function downloadBase(repo: string, version: string): string {
   return `https://github.com/${repo}/releases/download/bin-v${version}`;
 }
 
-/** The moving tag the two version-tracking probes read. */
-export function rollingBase(repo: string): string {
-  return `https://github.com/${repo}/releases/download/bin-latest`;
+/**
+ * What the two version-tracking probes read: the CLI's manifest at the `bin-latest`
+ * tag, which each binary release moves forward and which names that release's version.
+ * A file on a moving Release cannot serve here, because a published Release is locked.
+ *
+ * The tag moves before the Release is published, so if that publish fails, these probes name a
+ * version with no downloads until the job is re-run. Only `brew livecheck` and Scoop's `checkver`
+ * read them: `brew upgrade` and `scoop update` follow the tap and the bucket, which do not change
+ * until the release job has passed.
+ */
+export function versionProbeUrl(repo: string): string {
+  return `https://raw.githubusercontent.com/${repo}/bin-latest/cli/package.json`;
 }
 
 /** The archive filename `cli/scripts/archive-sea.mjs` writes for a triple. */
@@ -160,7 +169,7 @@ export function renderFormula(input: ManifestInput): string {
   const repo = assertRepo(input.repo);
   const hashes = archiveHashes(input.sums, version);
   const base = downloadBase(repo, version);
-  const rolling = rollingBase(repo);
+  const probe = versionProbeUrl(repo);
 
   return [
     'class Aka < Formula',
@@ -171,8 +180,8 @@ export function renderFormula(input: ManifestInput): string {
     '',
     // Homebrew's component order puts livecheck ahead of every on_* block.
     '  livecheck do',
-    `    url "${rolling}/VERSION"`,
-    '    regex(/^(\\d+(?:\\.\\d+)+)$/i)',
+    `    url "${probe}"`,
+    '    regex(/"version":\\s*"(\\d+(?:\\.\\d+)+)"/i)',
     '    strategy :page_match',
     '  end',
     '',
@@ -240,7 +249,7 @@ export function renderScoopManifest(input: ManifestInput): string {
   const repo = assertRepo(input.repo);
   const hashes = archiveHashes(input.sums, version);
   const base = downloadBase(repo, version);
-  const rolling = rollingBase(repo);
+  const probe = versionProbeUrl(repo);
   const template = `https://github.com/${repo}/releases/download/bin-v$version`;
 
   const manifest = {
@@ -258,8 +267,8 @@ export function renderScoopManifest(input: ManifestInput): string {
     bin: 'aka.exe',
     notes: 'Run `aka init` to create the local store under %USERPROFILE%\\.aka.',
     checkver: {
-      url: `${rolling}/VERSION`,
-      regex: '^([\\d.]+)$',
+      url: probe,
+      regex: '"version":\\s*"([\\d.]+)"',
     },
     autoupdate: {
       architecture: {
@@ -277,7 +286,7 @@ export function renderScoopManifest(input: ManifestInput): string {
   return `${JSON.stringify(manifest, null, 2)}\n`;
 }
 
-/** What both version-tracking probes read off the rolling tag. */
+/** The bare version, attached to the Release and read by the two publish jobs. */
 export function renderVersionFile(version: string): string {
   return `${assertBareVersion(version)}\n`;
 }

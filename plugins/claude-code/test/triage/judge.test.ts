@@ -669,7 +669,7 @@ describe('runJudge', () => {
     const full: TriageHit = {
       ...hit,
       id: '7',
-      filePath: '/Users/dev/.claude/projects/acme-api/session.jsonl',
+      filePath: '/Users/alice/.claude/projects/acme-api/session.jsonl',
       valueFingerprint: 'HMAC-of-the-secret',
       keyVersion: 1,
     };
@@ -702,7 +702,7 @@ describe('runJudge', () => {
     expect(sent.context).not.toContain(hit.rawMatch);
     expect(sent.context).toContain('export KEY=');
     // The dropped provenance/correlator fields never reach the model.
-    expect(seenStdin).not.toContain('/Users/dev/.claude/projects/acme-api/session.jsonl');
+    expect(seenStdin).not.toContain('/Users/alice/.claude/projects/acme-api/session.jsonl');
     expect(seenStdin).not.toContain('HMAC-of-the-secret');
     expect(seenStdin).not.toContain('filePath');
     expect(seenStdin).not.toContain('valueFingerprint');

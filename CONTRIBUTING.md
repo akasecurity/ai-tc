@@ -290,6 +290,29 @@ A check dropping OUT of the required set is the other direction, and it is the o
 document can catch on its own: protection matches by name, so renaming a job stops it
 being required while nothing in any diff says so.
 
+### Checks that gate `dev`
+
+Pull requests into `dev` run the quick tier: every `ci.yml` job but `Lint · Typecheck · Test ·
+Build` is skipped by its own condition and reports as passing, so that is the `ci.yml` check worth
+requiring here. `Dependency audit` also runs on every pull request, whatever its base. The same
+daily `Required checks` job reads this table against a recent pull request into `dev`, with the
+same exact match in both directions.
+
+| Check                             | Workflow    | Enforced |
+| --------------------------------- | ----------- | -------- |
+| `Lint · Typecheck · Test · Build` | `ci.yml`    | ⛔       |
+| `Dependency audit`                | `audit.yml` | ⛔       |
+
+**Neither is enforced yet.** `dev`'s branch protection requires no status checks today, and a
+row records what protection does, not what it should. Requiring `Lint · Typecheck · Test ·
+Build` on `dev` is a repository-settings change; flip its row to ✅ in the change that makes it.
+
+Reading it works the same way as for `main`, against a pull request whose base is `dev`:
+
+```bash
+gh api graphql -f query='{repository(owner:"akasecurity",name:"ai-tc"){pullRequests(last:5,baseRefName:"dev"){nodes{number}}}}'
+```
+
 ### Branch freshness
 
 A `pull_request` check does not run against your branch. It runs against a merge commit

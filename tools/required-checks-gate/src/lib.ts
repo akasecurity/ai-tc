@@ -13,7 +13,7 @@
 // enforced set grow while the public record in CONTRIBUTING.md goes stale, and
 // a stale record about what is enforced is the defect this replaced.
 
-/** One row of CONTRIBUTING.md's "Checks that gate `main`" table. */
+/** One row of one of CONTRIBUTING.md's "Checks that gate `<branch>`" tables. */
 export interface GateRow {
   /** The check name GitHub reports, which is what protection matches on. */
   check: string;
@@ -37,8 +37,11 @@ export class GateConfigError extends Error {}
 const ENFORCED_MARK = '✅';
 const NOT_ENFORCED_MARK = '⛔';
 
-/** The section the gate table lives in, and the fence that closes it. */
-const SECTION_HEADING = '### Checks that gate `main`';
+/** The branches the gate reads, each with its own table and its own pull requests. */
+export const GATED_BRANCHES = ['main', 'dev'] as const;
+
+/** The section a branch's gate table lives in, and the fence that closes it. */
+const sectionHeading = (branch: string): string => `### Checks that gate \`${branch}\``;
 const SECTION_FENCE = '```bash';
 
 /** A separator row — `| --- | --- |` — in any spelling GFM accepts. */
@@ -70,20 +73,20 @@ function isTableRow(line: string): boolean {
  * would match a pin of nothing, the outstanding list would be empty, and the
  * job would report a clean bill of health having read no table at all.
  */
-export function parseGateTable(contributing: string): GateRow[] {
+export function parseGateTable(contributing: string, branch = 'main'): GateRow[] {
+  const heading = sectionHeading(branch);
   // Two indexOf calls and a slice rather than `HEADER([\s\S]*?)```bash`. The
   // lazy form is quadratic — the header can match at many positions and each
   // failed attempt scans to end of input, measured at 67x for 8x input — and
   // this is clearer besides: it says "from the heading to the next fence".
-  const start = contributing.indexOf(SECTION_HEADING);
-  const end =
-    start === -1 ? -1 : contributing.indexOf(SECTION_FENCE, start + SECTION_HEADING.length);
+  const start = contributing.indexOf(heading);
+  const end = start === -1 ? -1 : contributing.indexOf(SECTION_FENCE, start + heading.length);
   if (start === -1 || end === -1) {
     throw new GateConfigError(
-      'CONTRIBUTING.md has no "### Checks that gate `main`" section ending in a fenced block',
+      `CONTRIBUTING.md has no "${heading}" section ending in a fenced block`,
     );
   }
-  const body = contributing.slice(start + SECTION_HEADING.length, end);
+  const body = contributing.slice(start + heading.length, end);
 
   // Every line that LOOKS like a table row is counted first, and the parsed
   // rows are required to match that count exactly.
@@ -272,8 +275,13 @@ export function parseRollupResponse(stdout: string): RollupContext[] {
  * number is required" — once per node. Hence two round trips: pick a pull
  * request here, then read its rollup by number below.
  */
-export const prCandidatesQuery = (owner: string, repo: string, candidates: number): string =>
-  `{repository(owner:"${owner}",name:"${repo}"){pullRequests(last:${String(candidates)},baseRefName:"main",orderBy:{field:CREATED_AT,direction:ASC}){nodes{number commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{... on CheckRun{name} ... on StatusContext{context}}}}}}}}}}}`;
+export const prCandidatesQuery = (
+  owner: string,
+  repo: string,
+  candidates: number,
+  branch = 'main',
+): string =>
+  `{repository(owner:"${owner}",name:"${repo}"){pullRequests(last:${String(candidates)},baseRefName:"${branch}",orderBy:{field:CREATED_AT,direction:ASC}){nodes{number commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{... on CheckRun{name} ... on StatusContext{context}}}}}}}}}}}`;
 
 /** The second query: one pull request's rollup, with the required flag. */
 export const rollupQuery = (owner: string, repo: string, prNumber: number): string =>
@@ -362,8 +370,8 @@ export const isFailure = (drift: Drift): boolean =>
 const list = (names: string[]): string => names.map((name) => `\`${name}\``).join(', ');
 
 /** The Markdown the job writes to its step summary — and, on failure, the reason. */
-export function buildSummary(drift: Drift, prNumber: number): string {
-  const lines = ['# Required checks', ''];
+export function buildSummary(drift: Drift, prNumber: number, branch = 'main'): string {
+  const lines = [`# Required checks on \`${branch}\``, ''];
   lines.push(`Read from \`isRequired\` against PR #${String(prNumber)}.`, '');
 
   if (drift.noLongerRequired.length > 0) {
@@ -397,7 +405,7 @@ export function buildSummary(drift: Drift, prNumber: number): string {
       '',
       `${list(drift.untabled)} — branch protection requires these and CONTRIBUTING.md does not list them.`,
       '',
-      'Add a row, so the public record of what gates `main` is complete.',
+      `Add a row, so the public record of what gates \`${branch}\` is complete.`,
       '',
     );
   }
@@ -459,10 +467,16 @@ const messageOf = (error: unknown): string =>
  * process exit code rather than setting it, so a test can assert the mapping:
  * 0 matched · 1 drifted · 2 unreadable · 3 misconfigured.
  */
-export function runGate(io: GateIo, owner: string, repo: string, candidates: number): number {
+export function runGate(
+  io: GateIo,
+  owner: string,
+  repo: string,
+  candidates: number,
+  branch = 'main',
+): number {
   let rows: GateRow[];
   try {
-    rows = parseGateTable(io.readRecord());
+    rows = parseGateTable(io.readRecord(), branch);
   } catch (error) {
     io.print(`::error::${messageOf(error)}`);
     // A malformed record is deterministic — retrying it changes nothing — so it
@@ -479,7 +493,7 @@ export function runGate(io: GateIo, owner: string, repo: string, candidates: num
   let prNumber: number;
   try {
     const selected = selectPr(
-      parsePrResponse(io.graphql(prCandidatesQuery(owner, repo, candidates))),
+      parsePrResponse(io.graphql(prCandidatesQuery(owner, repo, candidates, branch))),
       rows.map((row) => row.check),
     );
     if (selected === undefined) {
@@ -487,7 +501,7 @@ export function runGate(io: GateIo, owner: string, repo: string, candidates: num
       // data cannot answer is not a regression, and reporting it as one is the
       // daily flake the coverage requirement exists to remove.
       io.print(
-        `::error::none of the last ${String(candidates)} pull requests reported every check in the table`,
+        `::error::none of the last ${String(candidates)} pull requests into ${branch} reported every check in its table`,
       );
       return 2;
     }
@@ -499,7 +513,7 @@ export function runGate(io: GateIo, owner: string, repo: string, candidates: num
   }
 
   const drift = compare(rows, readRollup(contexts));
-  const summary = buildSummary(drift, prNumber);
+  const summary = buildSummary(drift, prNumber, branch);
 
   io.appendSummary(summary);
   io.print(summary);
@@ -507,7 +521,7 @@ export function runGate(io: GateIo, owner: string, repo: string, candidates: num
 
   if (isFailure(drift)) return 1;
   io.print(
-    `Required checks match the record: ${String(rows.length - drift.outstanding.length)} enforced, ${String(drift.outstanding.length)} outstanding.`,
+    `Required checks on ${branch} match the record: ${String(rows.length - drift.outstanding.length)} enforced, ${String(drift.outstanding.length)} outstanding.`,
   );
   return 0;
 }

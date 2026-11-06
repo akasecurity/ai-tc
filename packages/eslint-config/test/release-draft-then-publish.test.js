@@ -120,10 +120,10 @@ describe.each(WORKFLOWS)('%s: draft, then npm, then publish', (workflow) => {
 
   // Executed, because the whole recovery story rests on the answer deciding the
   // publish: reading the text passes on `npm view … || true` and an unconditional publish.
-  it.each([
+  it.for([
     ['holds the version', 'held', false],
     ['does not hold it', 'absent', true],
-  ])('when the registry %s, publish=%s', (_label, registry, published, ctx) => {
+  ])('when the registry %s, publish=%s', ([, registry, published], ctx) => {
     if (process.platform === 'win32' || !existsSync('/bin/bash')) ctx.skip();
     const dir = mkdtempSync(join(tmpdir(), 'aka-npm-guard-'));
     try {

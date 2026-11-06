@@ -102,13 +102,13 @@ function decide({ version = '0.9.12', mode = 'found', current = '' }) {
 }
 
 describe('cli-latest only moves forward', () => {
-  it.each([
+  it.for([
     ['an older release', '0.9.11', 'yes'],
     ['the same release, re-run', '0.9.12', 'yes'],
     ['a newer release', '0.9.13', 'no'],
     ['0.9.9, which sorts after 0.9.12 as text', '0.9.9', 'yes'],
     ['0.10.0, which sorts before 0.9.12 as text', '0.10.0', 'no'],
-  ])('against %s (%s), decides move=%s for 0.9.12', (_label, current, expected, ctx) => {
+  ])('against %s (%s), decides move=%s for 0.9.12', ([, current, expected], ctx) => {
     requireBash(ctx);
     const outputs = decide({ current });
     expect(outputs.move).toBe(expected);

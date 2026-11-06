@@ -210,15 +210,21 @@ unpublished`). Re-running it replaces the draft's files, skips npm if the versio
   does not state this: it was measured on 5 November 2026 in a private repository with the setting on,
   by editing, uploading to and moving the tag of older Releases. Re-measure it before relying on it.
 
-The Release on the `bin-latest` tag is one of those older ones, and it is retired: frozen on its
-aka 0.9.21 files. Nothing in the workflow touches it, and no tracked file outside the tests links to
-it (`packages/eslint-config/test/install-links.test.js`). Links already out in the world keep serving
-0.9.21. The tag still moves, and only the tag is in use.
+The `bin-latest` tag has no Release. It used to have one, frozen on its aka 0.9.21 files, which was
+deleted on 6 November 2026 after `bin-v0.9.24` moved Homebrew and Scoop off it. Only the tag is in use,
+and it still moves. No tracked file outside the tests links to the old Release
+(`packages/eslint-config/test/install-links.test.js`), and links already out in the world return 404.
+A Scoop install made from that Release's old `aka.json` link has to be installed again from the
+bucket.
 
-**Never edit that Release, not even its title or notes.** An edit locks it, and a locked Release's tag
-cannot move: the push is refused with `GH013` and `Cannot update this protected ref`. The one-liners
-and both version checks would then stay on the old tag, and every binary release would fail at the
-move. The lock cannot be undone. Never publish a Release on any tag that has to keep moving.
+**Never publish a Release on a tag that has to keep moving, which means `bin-latest` and `cli-latest`.**
+A published Release locks its tag: the push is refused with `GH013` and `Cannot update this protected
+ref`. On `bin-latest`, the one-liners and both version checks would then stay on the old tag, and
+every binary release would fail at the move. The lock cannot be undone, and
+[GitHub's documentation](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases)
+says a locked Release's tag name can never be reused once the Release is deleted. Deleting an older,
+unlocked Release is different: measured on 6 November 2026 in the same private repository, its tag
+stayed and still moved.
 
 `release-binaries.yml` follows the same draft order with no npm step, and it moves `bin-latest`
 between the draft and the publish, so that a job that dies at the move can still be re-run.
@@ -304,8 +310,8 @@ release channel** from the `cli-v*` npm publish:
   nothing on any refusal. The formula and manifest point at the IMMUTABLE versioned asset URLs,
   never at `bin-latest`. The `tools/installer/` one-liners verify the download against
   `SHA256SUMS`, fail-closed.
-- **`bin-latest`:** the workflow force-moves the `bin-latest` tag to the release commit, ahead of
-  publishing the draft. The installer one-liners (`install.sh`/`install.ps1`) are fetched from
+- **`bin-latest`:** the workflow force-moves the `bin-latest` tag, which has no Release, to the release
+  commit, ahead of publishing the draft. The installer one-liners (`install.sh`/`install.ps1`) are fetched from
   `bin-latest`, not `main`, and the Homebrew and Scoop version checks read `cli/package.json`
   through it. No version-less download URL exists: GitHub's own `/releases/latest` is unusable
   here, because every release is flagged pre-release and seven tag prefixes share one Releases

@@ -1203,8 +1203,8 @@ describe('the versioned Release is a draft until the rest of the job has passed'
     expect(scriptOf(step)).toMatch(/^echo "::error::.*re-run/im);
   });
 
-  // The Release stays frozen on its last files: one edit would lock it, and the
-  // links to it are retired. See "GitHub Releases are immutable" in conventions/releasing.md.
+  // A published Release would lock the tag, so it would stop moving. See "GitHub
+  // Releases are immutable" in conventions/releasing.md.
   it('publishes no Release on the bin-latest tag', () => {
     expect(releasePublishSteps().filter((step) => hasKey(step, 'tag_name'))).toEqual([]);
     expect(readWorkflow()).not.toContain('releases/download/bin-latest');

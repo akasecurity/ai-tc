@@ -378,6 +378,31 @@ describe('the isolated scanner factory', () => {
     expect(result.findings.length).toBeGreaterThan(0);
   });
 
+  it('keeps the bundled packs detecting when its prober rejects, and rejects again on close', async () => {
+    let built = 0;
+    // The prober is the one scanner built with no rules of its own.
+    const rejectingProber: IsolatedScannerFactory = (data, opts) => {
+      const scanner = scriptedFactory().factory(data, opts);
+      if (data.verified.length + data.unverified.length > 0) return scanner;
+      built += 1;
+      return {
+        ...scanner,
+        probe: () => Promise.reject(new Error('probe down')),
+        close: () => Promise.reject(new Error('terminate failed')),
+      };
+    };
+    const gateway = fakeGateway(bundle([PULLED]));
+
+    const { result } = await captureWith(
+      gateway,
+      { isolatedScanner: rejectingProber, diagnostics: () => undefined },
+      'key AKIAIOSFODNN7EXAMPLE here',
+    );
+
+    expect(built).toBeGreaterThan(0);
+    expect(result.findings.length).toBeGreaterThan(0);
+  });
+
   it('names a thrown value that is not an Error', async () => {
     const throwsString: IsolatedScannerFactory = () => {
       // eslint-disable-next-line @typescript-eslint/only-throw-error -- a host may throw a bare value

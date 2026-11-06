@@ -497,7 +497,7 @@ export function createPluginRuntime(
       },
       diagnostics,
     });
-    await prober?.close();
+    await prober?.close().catch(() => undefined);
     // A rule that clears the timing gate has an EMPIRICAL verdict behind it: it
     // beat one fixed probe battery, which a pattern written against that battery
     // can do while still backtracking forever on real text. So the scan itself

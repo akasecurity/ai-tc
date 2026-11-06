@@ -540,9 +540,8 @@ Every `bin-v*` release renders `aka.rb` and `aka.json` from its own `SHA256SUMS`
 https://github.com/akasecurity/scoop-bucket` and `scoop install aka` install it on Windows.
 
 It also moves the `bin-latest` tag, which the install one-liners and both package managers' version
-checks read files through. The GitHub Release on that tag is frozen on aka 0.9.21: a published
-Release is locked, so it no longer takes new files (see "GitHub Releases are immutable" in
-`conventions/releasing.md`).
+checks read files through. That tag has no GitHub Release, and must not get one: a published Release
+would lock the tag (see "GitHub Releases are immutable" in `conventions/releasing.md`).
 
 Both pushes authenticate as a GitHub App owned by the `akasecurity` organization, not as a person:
 each job mints a one-hour token from the app's private key, scoped to the single repository it

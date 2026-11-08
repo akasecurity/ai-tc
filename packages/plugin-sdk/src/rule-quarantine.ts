@@ -183,9 +183,9 @@ function warnUnmeasurable(reason: string, count: number, write: DiagnosticSink):
  * (`guarded-scan.ts`). The verdict shares the battery's cache, so the next hook
  * process drops the rule before it ever reaches a scan.
  *
- * Best-effort on the write, loud on stderr either way: this runs on a recovery
- * path, and a store error here must not cost the caller its scan on top of the
- * hang it just absorbed. A non-regex rule has no probe key and so cannot be
+ * Best-effort on the write, reported either way: this runs on a recovery path,
+ * and a store error here must not cost the caller its scan on top of the hang
+ * it just absorbed. A non-regex rule has no probe key and so cannot be
  * cached; it is still reported, because the caller saw it hang. The line goes
  * to `diagnostics` when given, and to stderr otherwise; a throw from
  * `diagnostics` is dropped.

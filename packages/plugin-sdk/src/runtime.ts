@@ -36,7 +36,7 @@ import type {
   IsolatedScannerFactory,
   IsolatedScanOptions,
 } from './isolated-scan.ts';
-import { buildIsolatedScanner, createIsolatedScanner, messageOf } from './isolated-scan.ts';
+import { buildIsolatedScanner, createIsolatedScanner } from './isolated-scan.ts';
 import { bundledMaskingRules } from './mask.ts';
 import { dropShieldedFindings, shieldPointers } from './pointer-shield.ts';
 import type { PolicyResolver } from './policy-resolver.ts';
@@ -486,18 +486,15 @@ export function createPluginRuntime(
             { verified: [], unverified: [] },
             opts?.scanIsolation,
           );
-          // A rejection here would leave the runtime uninitialised, and every
-          // later scan would fail open with no line saying why.
-          try {
-            return await prober.probe(rule);
-          } catch (error) {
-            return { status: 'unavailable', reason: messageOf(error) };
-          }
+          // Built through `buildIsolatedScanner`, neither the probe nor the close
+          // can throw or reject. Either would leave the runtime uninitialised,
+          // and every later scan would fail open with no line saying why.
+          return prober.probe(rule);
         },
       },
       diagnostics,
     });
-    await prober?.close().catch(() => undefined);
+    await prober?.close();
     // A rule that clears the timing gate has an EMPIRICAL verdict behind it: it
     // beat one fixed probe battery, which a pattern written against that battery
     // can do while still backtracking forever on real text. So the scan itself

@@ -19,6 +19,7 @@ import type {
   IsolatedScanOptions,
   IsolatedScanOutcome,
 } from '../src/isolated-scan.ts';
+import { buildIsolatedScanner } from '../src/isolated-scan.ts';
 import { filterUnsafeRules, quarantineRule, ruleProbeKey } from '../src/rule-quarantine.ts';
 import { createPluginRuntime, reuseScanners } from '../src/runtime.ts';
 
@@ -649,6 +650,114 @@ describe('the scan building blocks', () => {
         '(clear it with `aka detections unquarantine`)',
     ]);
     expect(stderr.text()).toBe(`${lines[0] ?? ''}\n`);
+  });
+});
+
+describe('a scanner that breaks its contract', () => {
+  const NO_DATA = { verified: [], unverified: [] };
+  const misbehaving = (over: Partial<IsolatedScanner>): IsolatedScannerFactory => {
+    return (data, opts) => ({ ...scriptedFactory().factory(data, opts), ...over });
+  };
+
+  it('answers unavailable for a scan or probe that throws, rejects or answers nothing', async () => {
+    const throws = buildIsolatedScanner(
+      misbehaving({
+        scan: () => {
+          throw new Error('scan threw');
+        },
+        probe: () => Promise.reject(new Error('probe rejected')),
+      }),
+      NO_DATA,
+    );
+    const silent = buildIsolatedScanner(
+      misbehaving({
+        scan: () => Promise.resolve(undefined as unknown as IsolatedScanOutcome),
+        probe: () => Promise.resolve({ verdict: 'safe' } as unknown as IsolatedProbeOutcome),
+      }),
+      NO_DATA,
+    );
+
+    expect(await throws.scan(TOKEN_TEXT)).toEqual({ status: 'unavailable', reason: 'scan threw' });
+    expect(await throws.probe(PULLED)).toEqual({
+      status: 'unavailable',
+      reason: 'probe rejected',
+    });
+    const noOutcome = { status: 'unavailable', reason: 'the scanner answered no outcome' };
+    expect(await silent.scan(TOKEN_TEXT)).toEqual(noOutcome);
+    expect(await silent.probe(PULLED)).toEqual(noOutcome);
+  });
+
+  it('drops a close that throws or rejects', async () => {
+    const throwing = buildIsolatedScanner(
+      misbehaving({
+        close: () => {
+          throw new Error('close threw');
+        },
+      }),
+      NO_DATA,
+    );
+    const rejecting = buildIsolatedScanner(
+      misbehaving({ close: () => Promise.reject(new Error('terminate failed')) }),
+      NO_DATA,
+    );
+
+    await expect(throwing.close()).resolves.toBeUndefined();
+    await expect(rejecting.close()).resolves.toBeUndefined();
+  });
+
+  it('leaves a guarded scan its verified findings when the retired scanner rejects on close', async () => {
+    const { sink, lines } = collectLines();
+    const scanner = createGuardedScanner(
+      { verified: [OTHER], unverified: [PULLED] },
+      { setRuleProbeVerdict: () => Promise.resolve() },
+      undefined,
+      {
+        isolatedScanner: misbehaving({
+          scan: () => Promise.resolve({ status: 'timeout', culpritIndex: 0, elapsedMs: 1_500 }),
+          close: () => Promise.reject(new Error('terminate failed')),
+        }),
+        diagnostics: sink,
+      },
+    );
+    try {
+      const findings = await scanner.scan('note OTHER-TOKEN-123456 here');
+      expect(findings.map((finding) => finding.ruleId)).toEqual(['pulled/other-token']);
+    } finally {
+      await expect(scanner.close()).resolves.toBeUndefined();
+    }
+    expect(scanner.degraded()).toBe(true);
+    expect(lines.at(-1)).toContain('the built-in packs still run');
+  });
+
+  it('refuses a large input whose scanner answers no outcome', async () => {
+    const { sink, lines } = collectLines();
+    const scanner = createGuardedScanner(
+      { verified: [], unverified: [PULLED] },
+      { setRuleProbeVerdict: () => Promise.resolve() },
+      undefined,
+      {
+        isolatedScanner: misbehaving({
+          scan: () => Promise.resolve(undefined as unknown as IsolatedScanOutcome),
+        }),
+        diagnostics: sink,
+      },
+    );
+    try {
+      expect(
+        await scanner.scanBounded(TOKEN_TEXT, undefined, {
+          budgetMs: 2_000,
+          startBudgetMs: START_MS,
+        }),
+      ).toEqual({
+        status: 'unavailable',
+        reason: 'the scanner answered no outcome',
+      });
+    } finally {
+      await scanner.close();
+    }
+    expect(lines).toEqual([
+      '[aka] a large input could not be scanned and was refused: the scanner answered no outcome.',
+    ]);
   });
 });
 

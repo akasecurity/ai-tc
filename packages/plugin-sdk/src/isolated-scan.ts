@@ -252,17 +252,21 @@ export type IsolatedScannerFactory = (
 ) => IsolatedScanner;
 
 /**
- * Builds a scanner through `factory`. A throw from the factory becomes a
- * scanner that answers every scan and probe `unavailable` with the thrown
- * message, so a caller's degrade and refuse paths still decide the outcome.
+ * Builds a scanner through `factory` and holds it to the factory's contract. A
+ * throw from the factory becomes a scanner that answers every scan and probe
+ * `unavailable` with the thrown message. A scan or probe that throws, rejects,
+ * or resolves without an outcome answers `unavailable` too, and a `close()`
+ * that throws or rejects is dropped. A caller's degrade and refuse paths so
+ * decide every outcome.
  */
 export function buildIsolatedScanner(
   factory: IsolatedScannerFactory,
   data: ScanWorkerData,
   opts?: IsolatedScanOptions,
 ): IsolatedScanner {
+  let built: IsolatedScanner;
   try {
-    return factory(data, opts);
+    built = factory(data, opts);
   } catch (error) {
     const failure: IsolatedFailure = {
       status: 'unavailable',
@@ -274,6 +278,34 @@ export function buildIsolatedScanner(
       close: () => Promise.resolve(),
     };
   }
+  return {
+    scan: (text, context, jobOpts) => settleOutcome(() => built.scan(text, context, jobOpts)),
+    probe: (rule) => settleOutcome(() => built.probe(rule)),
+    async close() {
+      try {
+        await built.close();
+      } catch {
+        // Dropped: the scanner is gone either way.
+      }
+    },
+  };
+}
+
+const OUTCOME_STATUSES: ReadonlySet<unknown> = new Set(['ok', 'timeout', 'unavailable']);
+
+async function settleOutcome<T extends { status: string }>(
+  run: () => Promise<T>,
+): Promise<T | IsolatedFailure> {
+  let outcome: T;
+  try {
+    outcome = await run();
+  } catch (error) {
+    return { status: 'unavailable', reason: messageOf(error) };
+  }
+  const status: unknown = (outcome as Partial<T> | null | undefined)?.status;
+  return OUTCOME_STATUSES.has(status)
+    ? outcome
+    : { status: 'unavailable', reason: 'the scanner answered no outcome' };
 }
 
 // Resolved lazily and once: a process that never isolates a scan never pays for

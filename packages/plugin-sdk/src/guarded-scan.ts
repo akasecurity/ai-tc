@@ -46,7 +46,8 @@ import { quarantineRule } from './rule-quarantine.ts';
  *
  * Degradation never re-runs unverified rules in-process. Doing so would put back
  * the unbounded call the worker exists to prevent, so a scan that loses its
- * worker falls back to the verified rules only, and says so on stderr.
+ * worker falls back to the verified rules only, and says so on the diagnostic
+ * sink.
  */
 export interface GuardedScanner {
   scan(text: string, context?: ScanContext): Promise<MatchResult[]>;
@@ -99,7 +100,7 @@ export interface BoundedScanRequest {
   remainingMs?: number | undefined;
   /**
    * Whether the caller refuses a field whose scan does not finish. It changes
-   * only the stderr line, never the outcome. Omitted or true, a failed scan
+   * only the diagnostic line, never the outcome. Omitted or true, a failed scan
    * writes one line saying the field was refused — every caller that blocks,
    * denies or withholds on `scanIncomplete`. False is for a caller with no
    * channel to refuse on (a capture hook that observes, never stops): it tells
@@ -116,7 +117,7 @@ export interface GuardedScanPartition {
 
 export interface GuardedScanOptions extends IsolatedScanOptions {
   /**
-   * How long a degradation lasts, in the words the stderr warning uses. The
+   * How long a degradation lasts, in the words the degrade warning uses. The
    * default fits a process that builds ONE scanner and exits — every hook — so
    * "the rest of this process" and "the rest of this scanner" are the same
    * span. A caller that builds a scanner per unit of work says so here: the
@@ -133,7 +134,11 @@ export interface GuardedScanOptions extends IsolatedScanOptions {
  * handed unchanged to every isolated scanner it builds.
  */
 export interface GuardedScanDependencies {
-  /** Builds each isolated scanner. Omitted, {@link createIsolatedScanner}. */
+  /**
+   * Builds each isolated scanner. Omitted, {@link createIsolatedScanner}. A
+   * throw from it, or from a scan its scanner runs, reads as an unavailable
+   * scanner, and a failing `close()` is dropped.
+   */
   isolatedScanner?: IsolatedScannerFactory | undefined;
   /**
    * Receives each diagnostic line in place of stderr; a throw from it is
@@ -203,25 +208,6 @@ export function createGuardedScanner(
     await retire();
   }
 
-  // The scanner reports its failures rather than throwing them, so a throw here
-  // is the unforeseen case. Take the same exit as any other lost worker: this
-  // must not become the one path where a scan silently stops happening.
-  async function attempt(
-    active: IsolatedScanner,
-    text: string,
-    context: ScanContext | undefined,
-    attribute: boolean,
-  ): Promise<IsolatedScanOutcome> {
-    try {
-      return await active.scan(text, context, { attribute });
-    } catch (error) {
-      return {
-        status: 'unavailable',
-        reason: error instanceof Error ? error.message : 'the scan worker failed unexpectedly',
-      };
-    }
-  }
-
   async function guardedScan(
     text: string,
     context: ScanContext | undefined,
@@ -229,7 +215,9 @@ export function createGuardedScanner(
     const active = isolated;
     if (!active) return inProcess(text, context);
 
-    let outcome = await attempt(active, text, context, false);
+    // `buildIsolated` reports a throw, a rejection or a missing outcome as
+    // `unavailable`, so every failure takes the degrade path below.
+    let outcome = await active.scan(text, context, { attribute: false });
     if (outcome.status === 'ok') return outcome.findings;
 
     // A timeout is the one outcome worth a second look. The first pass runs the
@@ -238,7 +226,8 @@ export function createGuardedScanner(
     // "something hung" into a rule id that can be quarantined for good. It
     // costs a second budget, and only ever once — isolation is retired below
     // whatever this returns.
-    if (outcome.status === 'timeout') outcome = await attempt(active, text, context, true);
+    if (outcome.status === 'timeout')
+      outcome = await active.scan(text, context, { attribute: true });
 
     const dropped = unverified.length;
     if (outcome.status === 'ok') {
@@ -304,20 +293,11 @@ export function createGuardedScanner(
     } else {
       bounded ??= buildIsolated({ verified, unverified }, opts);
       const deadlineAt = remainingMs === undefined ? undefined : performance.now() + remainingMs;
-      try {
-        outcome = await bounded.scan(text, context, {
-          budgetMs: bound.budgetMs,
-          startBudgetMs: bound.startBudgetMs,
-          deadlineAt,
-        });
-      } catch (error) {
-        // Reported rather than thrown, like every other failure here: a throw
-        // would reach a fail-open catch and let the field through unscanned.
-        outcome = {
-          status: 'unavailable',
-          reason: error instanceof Error ? error.message : 'the scan worker failed unexpectedly',
-        };
-      }
+      outcome = await bounded.scan(text, context, {
+        budgetMs: bound.budgetMs,
+        startBudgetMs: bound.startBudgetMs,
+        deadlineAt,
+      });
     }
     // A caller that does not refuse reports the field itself (see `refuses`).
     if (outcome.status !== 'ok' && bound.refuses !== false && !boundedWarned) {

@@ -236,7 +236,7 @@ export function mintPointer(master: Uint8Array, keyVersion: number, category: st
 /**
  * {@link mintPointer} with the caller's pointer id in place of a random one.
  * The same master, key version, category and id always give the same pointer.
- * The id must be {@link POINTER_ID_BYTES} long and should be fresh random
+ * Throws when the id is not {@link POINTER_ID_BYTES} long. It should be fresh random
  * bytes, since two pointers minted with one id are the same pointer.
  */
 export function mintPointerWith(

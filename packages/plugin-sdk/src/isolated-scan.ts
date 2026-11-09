@@ -291,7 +291,13 @@ export function buildIsolatedScanner(
   };
 }
 
-const OUTCOME_STATUSES: ReadonlySet<unknown> = new Set(['ok', 'timeout', 'unavailable']);
+// Every status, so one added to either outcome union fails to compile here
+// instead of reading as no outcome.
+const OUTCOME_STATUSES = {
+  ok: true,
+  timeout: true,
+  unavailable: true,
+} satisfies Record<(IsolatedScanOutcome | IsolatedProbeOutcome)['status'], true>;
 
 async function settleOutcome<T extends { status: string }>(
   run: () => Promise<T>,
@@ -303,7 +309,7 @@ async function settleOutcome<T extends { status: string }>(
     return { status: 'unavailable', reason: messageOf(error) };
   }
   const status: unknown = (outcome as Partial<T> | null | undefined)?.status;
-  return OUTCOME_STATUSES.has(status)
+  return typeof status === 'string' && Object.hasOwn(OUTCOME_STATUSES, status)
     ? outcome
     : { status: 'unavailable', reason: 'the scanner answered no outcome' };
 }

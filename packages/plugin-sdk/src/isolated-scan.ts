@@ -241,6 +241,79 @@ export interface IsolatedScanner {
   close(): Promise<void>;
 }
 
+/**
+ * Builds an {@link IsolatedScanner} over a ruleset, with the same contract as
+ * {@link createIsolatedScanner}: a failure is reported as an outcome, never
+ * thrown, and `unavailable` means no answer rather than nothing found.
+ */
+export type IsolatedScannerFactory = (
+  data: ScanWorkerData,
+  opts?: IsolatedScanOptions,
+) => IsolatedScanner;
+
+/**
+ * Builds a scanner through `factory` and holds it to the factory's contract. A
+ * throw from the factory becomes a scanner that answers every scan and probe
+ * `unavailable` with the thrown message. A scan or probe that throws, rejects,
+ * or resolves without an outcome answers `unavailable` too, and a `close()`
+ * that throws or rejects is dropped. A caller's degrade and refuse paths so
+ * decide every outcome.
+ */
+export function buildIsolatedScanner(
+  factory: IsolatedScannerFactory,
+  data: ScanWorkerData,
+  opts?: IsolatedScanOptions,
+): IsolatedScanner {
+  let built: IsolatedScanner;
+  try {
+    built = factory(data, opts);
+  } catch (error) {
+    const failure: IsolatedFailure = {
+      status: 'unavailable',
+      reason: messageOf(error),
+    };
+    return {
+      scan: () => Promise.resolve(failure),
+      probe: () => Promise.resolve(failure),
+      close: () => Promise.resolve(),
+    };
+  }
+  return {
+    scan: (text, context, jobOpts) => settleOutcome(() => built.scan(text, context, jobOpts)),
+    probe: (rule) => settleOutcome(() => built.probe(rule)),
+    async close() {
+      try {
+        await built.close();
+      } catch {
+        // Dropped: the scanner is gone either way.
+      }
+    },
+  };
+}
+
+// Every status, so one added to either outcome union fails to compile here
+// instead of reading as no outcome.
+const OUTCOME_STATUSES = {
+  ok: true,
+  timeout: true,
+  unavailable: true,
+} satisfies Record<(IsolatedScanOutcome | IsolatedProbeOutcome)['status'], true>;
+
+async function settleOutcome<T extends { status: string }>(
+  run: () => Promise<T>,
+): Promise<T | IsolatedFailure> {
+  let outcome: T;
+  try {
+    outcome = await run();
+  } catch (error) {
+    return { status: 'unavailable', reason: messageOf(error) };
+  }
+  const status: unknown = (outcome as Partial<T> | null | undefined)?.status;
+  return typeof status === 'string' && Object.hasOwn(OUTCOME_STATUSES, status)
+    ? outcome
+    : { status: 'unavailable', reason: 'the scanner answered no outcome' };
+}
+
 // Resolved lazily and once: a process that never isolates a scan never pays for
 // the probe, and one that does pays twice at most.
 let resolvedWorkerUrl: URL | null | undefined;
@@ -315,7 +388,7 @@ export function sourceTwin(url: URL): URL {
   return twin;
 }
 
-function messageOf(error: unknown): string {
+export function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 

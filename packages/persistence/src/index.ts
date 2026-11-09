@@ -333,6 +333,7 @@ export {
   deriveSubkeys,
   formatPointer,
   mintPointer,
+  mintPointerWith,
   signPointer,
   verifyPointerTag,
 } from './vault/crypto.ts';

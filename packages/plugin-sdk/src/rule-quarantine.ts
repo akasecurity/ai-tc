@@ -3,6 +3,8 @@ import { checkRuleTiming } from '@akasecurity/detections';
 import type { Rule } from '@akasecurity/schema';
 
 import type { DataGateway } from './data-gateway.ts';
+import type { DiagnosticSink } from './diagnostics.ts';
+import { diagnosticWriter } from './diagnostics.ts';
 import { contentHashOf } from './events.ts';
 import type { IsolatedProbeOutcome } from './isolated-scan.ts';
 import { workClockMs } from './work-clock.ts';
@@ -56,9 +58,15 @@ export function ruleProbeKey(rule: Rule): string | undefined {
  * them tells a user to fix a rule when the ruleset is fine, or to clear a
  * quarantine row that was never written.
  */
-function warn(rule: Rule, verb: string, detail: string, recoverable: boolean): void {
+function warn(
+  rule: Rule,
+  verb: string,
+  detail: string,
+  recoverable: boolean,
+  write: DiagnosticSink,
+): void {
   const hint = recoverable ? ` (${UNQUARANTINE_HINT})` : '';
-  process.stderr.write(`[aka] ${verb} rule "${rule.id}": ${detail}${hint}\n`);
+  write(`[aka] ${verb} rule "${rule.id}": ${detail}${hint}`);
 }
 
 /**
@@ -72,7 +80,12 @@ function warn(rule: Rule, verb: string, detail: string, recoverable: boolean): v
  * still persisted, but it has no duration to quote and must not invent one
  * ("Infinityms" reads as a measurement rather than the absence of one).
  */
-function warnQuarantined(rule: Rule, worstMs: number, cached: boolean): void {
+function warnQuarantined(
+  rule: Rule,
+  worstMs: number,
+  cached: boolean,
+  write: DiagnosticSink,
+): void {
   warn(
     rule,
     'quarantined',
@@ -80,6 +93,7 @@ function warnQuarantined(rule: Rule, worstMs: number, cached: boolean): void {
       ? `regex matcher exceeded the ReDoS timing budget (${worstMs.toFixed(1)}ms); excluded from this scan.`
       : 'the timing battery failed while measuring its regex matcher; excluded from this scan.',
     cached,
+    write,
   );
 }
 
@@ -91,13 +105,14 @@ function warnQuarantined(rule: Rule, worstMs: number, cached: boolean): void {
  * the next pass. Says so without invoking the timing budget, and never carries
  * the unquarantine hint — there is no row to clear.
  */
-function warnUnmeasured(rule: Rule): void {
+function warnUnmeasured(rule: Rule, write: DiagnosticSink): void {
   warn(
     rule,
     'skipped',
     'the timing pre-flight ran out of time before this rule could be measured; ' +
       'excluded for the rest of this run, and measured again next time.',
     false,
+    write,
   );
 }
 
@@ -117,7 +132,12 @@ function warnUnmeasured(rule: Rule): void {
  * accusation against a pattern that may be perfectly ordinary. Both numbers are
  * quoted precisely so the claim can be checked rather than taken on trust.
  */
-function warnUncorroborated(rule: Rule, worstMs: number, corroboratedMs: number): void {
+function warnUncorroborated(
+  rule: Rule,
+  worstMs: number,
+  corroboratedMs: number,
+  write: DiagnosticSink,
+): void {
   warn(
     rule,
     'deferred',
@@ -126,6 +146,7 @@ function warnUncorroborated(rule: Rule, worstMs: number, corroboratedMs: number)
       'a slow pattern; excluded from this run and measured again next time, with nothing ' +
       'recorded against it.',
     false,
+    write,
   );
 }
 
@@ -147,12 +168,12 @@ function warnUncorroborated(rule: Rule, worstMs: number, corroboratedMs: number)
  * without qualification is that nothing was cached, so repairing the install is
  * the whole fix.
  */
-function warnUnmeasurable(reason: string, count: number): void {
-  process.stderr.write(
+function warnUnmeasurable(reason: string, count: number, write: DiagnosticSink): void {
+  write(
     `[aka] ${String(count)} pulled/custom-pack rule(s) could not be time-checked: ${reason}. ` +
       'That is a problem with this install, not with the rules — until it is fixed they are ' +
       'excluded from every scan on this machine. Nothing was quarantined, so reinstalling AKA ' +
-      'brings them straight back.\n',
+      'brings them straight back.',
   );
 }
 
@@ -162,16 +183,19 @@ function warnUnmeasurable(reason: string, count: number): void {
  * (`guarded-scan.ts`). The verdict shares the battery's cache, so the next hook
  * process drops the rule before it ever reaches a scan.
  *
- * Best-effort on the write, loud on stderr either way: this runs on a recovery
- * path, and a store error here must not cost the caller its scan on top of the
- * hang it just absorbed. A non-regex rule has no probe key and so cannot be
- * cached; it is still reported, because the caller saw it hang.
+ * Best-effort on the write, reported either way: this runs on a recovery path,
+ * and a store error here must not cost the caller its scan on top of the hang
+ * it just absorbed. A non-regex rule has no probe key and so cannot be
+ * cached; it is still reported, because the caller saw it hang. The line goes
+ * to `diagnostics` when given, and to stderr otherwise; a throw from
+ * `diagnostics` is dropped.
  */
 export async function quarantineRule(
   gateway: Pick<RuleProbeGateway, 'setRuleProbeVerdict'>,
   rule: Rule,
   worstMs: number,
   detail: string,
+  diagnostics?: DiagnosticSink,
 ): Promise<void> {
   const key = ruleProbeKey(rule);
   let cached = false;
@@ -184,7 +208,7 @@ export async function quarantineRule(
       // and may hang on it once more. Better than losing this scan too.
     }
   }
-  warn(rule, 'quarantined', detail, cached);
+  warn(rule, 'quarantined', detail, cached, diagnosticWriter(diagnostics));
 }
 
 /**
@@ -202,16 +226,24 @@ export async function quarantineRule(
  * can be killed. Without one the measurement falls back to this thread, which
  * has no upper bound; that path is for callers that already control the rules
  * they pass (tests, tooling), never for a pulled pack.
+ *
+ * `opts.diagnostics` receives each line in place of stderr; a throw from it is
+ * dropped.
  */
 export async function filterUnsafeRules(
   rules: Rule[],
   gateway: RuleProbeGateway,
   // `| undefined` explicitly: under exactOptionalPropertyTypes a caller
   // forwarding its own optional seam would otherwise have to strip the key.
-  opts?: { passBudgetMs?: number | undefined; prober?: RuleProber | undefined },
+  opts?: {
+    passBudgetMs?: number | undefined;
+    prober?: RuleProber | undefined;
+    diagnostics?: DiagnosticSink | undefined;
+  },
 ): Promise<Rule[]> {
   const passBudgetMs = opts?.passBudgetMs ?? PASS_BUDGET_MS;
   const prober = opts?.prober;
+  const write = diagnosticWriter(opts?.diagnostics);
   const passStart = performance.now();
   const safe: Rule[] = [];
   // Case 3 is one fact about the install rather than N facts about rules, so it
@@ -245,7 +277,7 @@ export async function filterUnsafeRules(
       }
       if (cached) {
         if (cached.verdict === 'safe') safe.push(rule);
-        else warnQuarantined(rule, cached.worstProbeMs, true);
+        else warnQuarantined(rule, cached.worstProbeMs, true, write);
         continue;
       }
 
@@ -255,7 +287,7 @@ export async function filterUnsafeRules(
         // 'quarantined' here would permanently quarantine a rule that was
         // never actually timed, just because it was unlucky enough to be late
         // in the list on a slow or cold-cache pass.
-        warnUnmeasured(rule);
+        warnUnmeasured(rule, write);
         continue;
       }
 
@@ -325,7 +357,7 @@ export async function filterUnsafeRules(
         // defect: the verdict is permanent, nothing re-measures, and the rule the
         // user installed is disabled for every later process because one moment
         // on a busy machine looked like backtracking.
-        warnUncorroborated(rule, worstMs, corroboratedMs);
+        warnUncorroborated(rule, worstMs, corroboratedMs, write);
         continue;
       }
 
@@ -339,10 +371,10 @@ export async function filterUnsafeRules(
         // wrong decision now — the verdict for THIS pass is already in hand.
       }
       if (isSafe) safe.push(rule);
-      else warnQuarantined(rule, worstMs, persisted);
+      else warnQuarantined(rule, worstMs, persisted, write);
     }
   } finally {
-    for (const [reason, count] of unmeasurable) warnUnmeasurable(reason, count);
+    for (const [reason, count] of unmeasurable) warnUnmeasurable(reason, count, write);
   }
 
   return safe;

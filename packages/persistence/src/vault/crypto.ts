@@ -230,7 +230,21 @@ export function formatPointer(
  * store; the token resolves only through whatever holds the value it stands for.
  */
 export function mintPointer(master: Uint8Array, keyVersion: number, category: string): string {
-  const pointerId = randomBytes(POINTER_ID_BYTES);
+  return mintPointerWith(master, keyVersion, category, randomBytes(POINTER_ID_BYTES));
+}
+
+/**
+ * {@link mintPointer} with the caller's pointer id in place of a random one.
+ * The same master, key version, category and id always give the same pointer.
+ * Throws when the id is not {@link POINTER_ID_BYTES} long. It should be fresh random
+ * bytes, since two pointers minted with one id are the same pointer.
+ */
+export function mintPointerWith(
+  master: Uint8Array,
+  keyVersion: number,
+  category: string,
+  pointerId: Uint8Array,
+): string {
   const tag = signPointer(deriveSubkeys(master).sign, keyVersion, pointerId, category);
   return formatPointer(category, keyVersion, pointerId, tag);
 }

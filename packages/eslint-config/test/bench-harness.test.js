@@ -541,15 +541,15 @@ describe('the benchmark workflow stays advisory', () => {
     expect(workflow).toMatch(/retention-days:\s*\d+/);
   });
 
-  it('is not listed as a check that gates main', () => {
+  it('is not listed as a check that gates any branch', () => {
     // required-checks.test.js drives the CONTRIBUTING.md table forwards — every
     // name in it must still belong to a real job. It cannot see the other
     // direction, so nothing there would notice this workflow being added to the
     // table and made required.
     const contributing = readFileSync(join(REPO_ROOT, 'CONTRIBUTING.md'), 'utf8');
-    const section = /### Checks that gate `main`([\s\S]*?)```bash/.exec(contributing);
-    expect(section, 'could not find the required-check table').not.toBeNull();
-    expect(section[1]).not.toContain('bench.yml');
+    const sections = [...contributing.matchAll(/### Checks that gate `[^`]+`([\s\S]*?)```bash/g)];
+    expect(sections.length, 'could not find the required-check tables').toBeGreaterThanOrEqual(2);
+    for (const [, section] of sections) expect(section).not.toContain('bench.yml');
   });
 });
 

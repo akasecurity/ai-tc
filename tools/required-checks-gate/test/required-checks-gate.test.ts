@@ -12,6 +12,7 @@ import {
   type GateIo,
   type GateRow,
   isFailure,
+  neverReported,
   parseGateTable,
   parsePrResponse,
   parseRollupResponse,
@@ -118,9 +119,9 @@ describe('the per-branch gate tables', () => {
     for (const branch of GATED_BRANCHES) {
       expect(parseGateTable(record, branch).length).toBeGreaterThan(0);
     }
-    expect(parseGateTable(record, 'dev').map((r) => r.check)).toEqual([
-      'Lint · Typecheck · Test · Build',
-      'Dependency audit',
+    expect(parseGateTable(record, 'dev')).toEqual([
+      { check: 'Lint · Typecheck · Test · Build', file: 'ci.yml', enforced: false },
+      { check: 'Dependency audit', file: 'audit.yml', enforced: false },
     ]);
   });
 
@@ -378,6 +379,32 @@ describe('selectPr', () => {
   it('finds nothing when no candidate reported a check', () => {
     expect(selectPr([pr(1), pr(2)], ['a'])).toBeUndefined();
     expect(selectPr([], ['a'])).toBeUndefined();
+  });
+});
+
+describe('neverReported', () => {
+  const pr = (number: number, ...contexts: RollupContext[]): PrNode => ({
+    number,
+    commits: {
+      nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: contexts } } } }],
+    },
+  });
+
+  it('names the tabled checks no candidate reported, in table order', () => {
+    const prs = [pr(1, { name: 'b' }), pr(2, { context: 'd' })];
+    expect(neverReported(prs, ['a', 'b', 'c', 'd'])).toEqual(['a', 'c']);
+  });
+
+  it('is empty when every check ran somewhere, even if never all on one', () => {
+    expect(neverReported([pr(1, { name: 'a' }), pr(2, { name: 'b' })], ['a', 'b'])).toEqual([]);
+  });
+
+  it('treats a null rollup as reporting nothing', () => {
+    const nullRollup: PrNode = {
+      number: 9,
+      commits: { nodes: [{ commit: { statusCheckRollup: null } }] },
+    };
+    expect(neverReported([nullRollup], ['a'])).toEqual(['a']);
   });
 });
 
@@ -683,6 +710,58 @@ describe('runGate', () => {
     });
     expect(code).toBe(2);
     expect(printed.join('\n')).toContain('reported every check in its table');
+  });
+
+  it('names the tabled checks none of the candidates reported', () => {
+    const { code, printed } = drive({
+      graphql: () =>
+        JSON.stringify({
+          data: {
+            repository: {
+              pullRequests: {
+                nodes: [
+                  {
+                    number: 1,
+                    commits: {
+                      nodes: [
+                        {
+                          commit: {
+                            statusCheckRollup: { contexts: { nodes: [{ name: 'flag-major' }] } },
+                          },
+                        },
+                      ],
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        }),
+    });
+    expect(code).toBe(2);
+    expect(printed.join('\n')).toContain('none of them reported `kept`, `pending`');
+  });
+
+  it('says so when every check ran somewhere but never all on one pull request', () => {
+    const record = table(row('A'), row('B'));
+    const prs = [1, 2].map((number) => ({
+      number,
+      commits: {
+        nodes: [
+          {
+            commit: {
+              statusCheckRollup: { contexts: { nodes: [{ name: number === 1 ? 'A' : 'B' }] } },
+            },
+          },
+        ],
+      },
+    }));
+    const { code, printed } = drive({
+      readRecord: () => record,
+      graphql: () => JSON.stringify({ data: { repository: { pullRequests: { nodes: prs } } } }),
+    });
+    expect(code).toBe(2);
+    expect(printed.join('\n')).toContain('each check ran on some of them, but never all on one');
   });
 });
 

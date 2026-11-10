@@ -1,9 +1,9 @@
-// CONTRIBUTING.md ("Checks that gate `main`") lists the status checks branch
-// protection matches on. Protection matches by NAME, so a renamed job does not
-// fail — it stops being produced, protection goes on waiting for a name nothing
-// emits, and the check is silently no longer required. That failure is invisible
-// in a diff and invisible in a green run, which is why the table is read here
-// and driven against the workflows rather than being trusted.
+// CONTRIBUTING.md ("Checks that gate `main`" and "Checks that gate `dev`") lists
+// the status checks branch protection matches on. Protection matches by NAME, so
+// a renamed job does not fail — it stops being produced, protection goes on
+// waiting for a name nothing emits, and the check is silently no longer required.
+// That failure is invisible in a diff and invisible in a green run, which is why
+// the tables are read here and driven against the workflows rather than trusted.
 //
 // What this cannot see is repository settings: whether each name is actually
 // configured as required lives outside the tree. This pins the half that is in
@@ -237,11 +237,20 @@ const readContributing = () => readText(join(REPO_ROOT, 'CONTRIBUTING.md'));
 // can afford to assert do so inside an `it`.
 const ENFORCED_MARKS = ['✅', '⛔'];
 
-function requiredCheckRows() {
-  const section = /## Pull requests[\s\S]*?### Checks that gate `main`([\s\S]*?)```bash/.exec(
-    readContributing(),
+// The branches CONTRIBUTING.md keeps a gate table for, in document order.
+const gateBranches = () =>
+  [...readContributing().matchAll(/^### Checks that gate `([^`]+)`$/gm)].map(
+    ([, branch]) => branch,
   );
-  if (section === null) return null;
+
+function requiredCheckRows(branch = 'main') {
+  const contributing = readContributing();
+  const heading = `### Checks that gate \`${branch}\``;
+  const start = contributing.indexOf('## Pull requests');
+  const from = start === -1 ? -1 : contributing.indexOf(heading, start);
+  const end = from === -1 ? -1 : contributing.indexOf('```bash', from + heading.length);
+  if (end === -1) return null;
+  const section = [null, contributing.slice(from + heading.length, end)];
   const rows = [...section[1].matchAll(/^\| `([^`]+)`\s*\| `([^`]+)`\s*\| *(\S+) *\|$/gm)].map(
     ([, check, file, enforced]) => ({
       check,
@@ -276,11 +285,16 @@ function requiredCheckRows() {
   return rows;
 }
 
-function requiredChecks() {
-  const rows = requiredCheckRows();
+function requiredChecks(branch = 'main') {
+  const rows = requiredCheckRows(branch);
   expect(rows).not.toBeNull();
   return rows;
 }
+
+// Every row of every gate table, for the properties that hold whichever branch a
+// row gates.
+const everyRequiredCheck = () =>
+  gateBranches().flatMap((branch) => requiredCheckRows(branch) ?? []);
 
 // A workflow's `on:` block. The positive control is that the block captured a
 // trigger AT ALL — a two-space key — rather than any particular one: this backs
@@ -330,7 +344,7 @@ function gatingWorkflows() {
 // The workflows behind the required checks, deduped from the table. Every one of
 // them must also be a gating workflow — a required check that does not run on
 // both events cannot be satisfied on a PR or cannot be re-verified on main.
-const requiredWorkflows = () => [...new Set((requiredCheckRows() ?? []).map((row) => row.file))];
+const requiredWorkflows = () => [...new Set(everyRequiredCheck().map((row) => row.file))];
 
 // The decision recorded in CONTRIBUTING.md's "Branch freshness" section. Returns
 // what it found rather than asserting, for the `describe`-body reason above.
@@ -426,14 +440,16 @@ describe('the required-check table in CONTRIBUTING.md', () => {
   // requiring it would block every PR for ever on a check that never reports.
   it('does not require the CodeQL alert-count job', () => {
     expect(checkNames('codeql-alerts.yml')).toContain('Open alerts match the baseline');
-    expect(requiredChecks().map((row) => row.check)).not.toContain(
+    expect(everyRequiredCheck().map((row) => row.check)).not.toContain(
       'Open alerts match the baseline',
     );
   });
 
   it('does not require the unattended advisory-reporting job', () => {
     expect(checkNames('audit.yml')).toContain('File advisory issue (unattended runs)');
-    expect(rows.map((row) => row.check)).not.toContain('File advisory issue (unattended runs)');
+    expect(everyRequiredCheck().map((row) => row.check)).not.toContain(
+      'File advisory issue (unattended runs)',
+    );
   });
 
   // The job's NAME is the claim; its `if:` is what decides. They drifted apart
@@ -451,6 +467,34 @@ describe('the required-check table in CONTRIBUTING.md', () => {
     // satisfied by an `if:` that fires on everything.
     expect(block).toMatch(/needs\.audit\.result == 'failure'/);
     expect(block).not.toMatch(/event_name == 'pull_request'/);
+  });
+});
+
+// `dev` runs the quick tier, so its table lists only the checks every pull
+// request into `dev` reports. The same per-row rules hold there: each name is a
+// real job, each mark parses, and every row-like line is read.
+describe('the required-check tables for every gated branch', () => {
+  it('finds a table for main and for dev', () => {
+    expect(gateBranches()).toEqual(['main', 'dev']);
+  });
+
+  const devRows = requiredCheckRows('dev') ?? [];
+
+  it('reads every row of the dev table', () => {
+    expect(requiredCheckRows('dev')).not.toBeNull();
+    expect(devRows.map((row) => row.check)).toEqual([
+      'Lint · Typecheck · Test · Build',
+      'Dependency audit',
+    ]);
+    expect(devRows).toHaveLength(devRows.rowLike);
+  });
+
+  it.each(devRows)('$check (dev) is a real job in $file', ({ check, file }) => {
+    expect(checkNames(file)).toContain(check);
+  });
+
+  it.each(devRows)('$check (dev) records an enforced mark this repo recognises', ({ enforced }) => {
+    expect(ENFORCED_MARKS).toContain(enforced);
   });
 });
 
@@ -486,7 +530,7 @@ describe('the job that holds the enforced column against reality', () => {
   // it would put a live GitHub query on the critical path of every merge, and
   // its red means a settings drift nobody's PR caused.
   it('is not itself one of the checks it gates on', () => {
-    expect(requiredChecks().map((row) => row.file)).not.toContain('required-checks.yml');
+    expect(everyRequiredCheck().map((row) => row.file)).not.toContain('required-checks.yml');
   });
 });
 

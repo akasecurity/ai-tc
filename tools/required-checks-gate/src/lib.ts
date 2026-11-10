@@ -230,6 +230,23 @@ export function parsePrResponse(stdout: string): PrNode[] {
 }
 
 /**
+ * The checks in `needed` that no candidate reported at all, in table order.
+ *
+ * When `selectPr` finds nothing, these are the rows to look at first: a name
+ * no recent pull request emits is usually a renamed or removed job. An empty
+ * result means every check ran somewhere, just never all on one pull request.
+ */
+export function neverReported(candidates: PrNode[], needed: readonly string[]): string[] {
+  const seen = new Set<string | undefined>();
+  for (const pr of candidates) {
+    for (const context of pr.commits.nodes[0]?.commit.statusCheckRollup?.contexts.nodes ?? []) {
+      seen.add(context.name ?? context.context);
+    }
+  }
+  return needed.filter((name) => !seen.has(name));
+}
+
+/**
  * The rollup contexts out of the second query's response body.
  *
  * Throws on an unreadable shape for the same reason `parsePrResponse` does, and
@@ -492,16 +509,20 @@ export function runGate(
   let contexts: RollupContext[];
   let prNumber: number;
   try {
-    const selected = selectPr(
-      parsePrResponse(io.graphql(prCandidatesQuery(owner, repo, candidates, branch))),
-      rows.map((row) => row.check),
-    );
+    const prs = parsePrResponse(io.graphql(prCandidatesQuery(owner, repo, candidates, branch)));
+    const needed = rows.map((row) => row.check);
+    const selected = selectPr(prs, needed);
     if (selected === undefined) {
       // Exit 2 rather than comparing against a partial rollup: a question the
       // data cannot answer is not a regression, and reporting it as one is the
       // daily flake the coverage requirement exists to remove.
+      const missing = neverReported(prs, needed);
+      const detail =
+        missing.length > 0
+          ? `; none of them reported ${list(missing)}`
+          : '; each check ran on some of them, but never all on one';
       io.print(
-        `::error::none of the last ${String(candidates)} pull requests into ${branch} reported every check in its table`,
+        `::error::none of the last ${String(candidates)} pull requests into ${branch} reported every check in its table${detail}`,
       );
       return 2;
     }

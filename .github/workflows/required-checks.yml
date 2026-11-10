@@ -1,7 +1,8 @@
 name: Required checks
 
-# Asserts that the checks branch protection ACTUALLY requires on `main` are the
-# ones CONTRIBUTING.md's gate table records in its Enforced column.
+# Asserts that the checks branch protection ACTUALLY requires on `main` and on
+# `dev` are the ones CONTRIBUTING.md's gate table for that branch records in its
+# Enforced column.
 #
 # Why this cannot be a test. Which checks are required is a repository setting:
 # not in this tree, not settable from a PR, and matched by NAME. Rename a job
@@ -27,7 +28,7 @@ on:
   # the Enforced column gets its answer within minutes of merging rather than
   # the next morning.
   push:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - 'CONTRIBUTING.md'
       - 'tools/required-checks-gate/**'

@@ -292,9 +292,11 @@ being required while nothing in any diff says so.
 
 ### Checks that gate `dev`
 
-Pull requests into `dev` run the quick tier: every `ci.yml` job but `Lint · Typecheck · Test ·
-Build` is skipped by its own condition and reports as passing, so that is the `ci.yml` check worth
-requiring here. `Dependency audit` also runs on every pull request, whatever its base. The same
+A pull request into `dev` without the `full-ci` label runs the quick tier: every `ci.yml` job but
+`Lint · Typecheck · Test · Build` is skipped by its own condition and reports as passing, so that is
+the `ci.yml` check worth requiring here. The label runs the other jobs as well (see "Branches"
+below), but only on the pull requests that carry it. On the rest those jobs skip, which counts as
+passing, so requiring one of them on `dev` would gate labelled pull requests only. `Dependency audit` also runs on every pull request, whatever its base. The same
 daily `Required checks` job reads this table against a recent pull request into `dev`, with the
 same exact match in both directions.
 
@@ -316,10 +318,11 @@ gh api graphql -f query='{repository(owner:"akasecurity",name:"ai-tc"){pullReque
 ### Branch freshness
 
 A `pull_request` check does not run against your branch. It runs against a merge commit
-GitHub builds by merging your branch into `main` — and GitHub rebuilds that commit when
-the **branch** is pushed, never when `main` moves. A branch that has sat for a few hours
-is therefore checked against a `main` that no longer exists, and its green tick describes
-a tree nobody will ever merge.
+GitHub builds by merging your branch into its base — `dev` for most pull requests, `main`
+for a promotion or a hotfix — and GitHub rebuilds that commit when the **branch** is pushed,
+never when the base moves. A branch that has sat for a few hours is therefore checked
+against a base that no longer exists, and its green tick describes a tree nobody will ever
+merge.
 
 For most changes that is harmless, because two diffs touching different files compose. It
 stops being harmless for the guards here that **derive** their expectations from the tree
@@ -334,7 +337,7 @@ read a base that has moved.
 
 So: add a workspace package on one branch, and on another add a file that the package
 guard would judge. Neither diff contains the mismatch. Both PRs go green, both merge, and
-the first run that ever sees both trees is the post-merge run on `main`. Review cannot
+the first run that ever sees both trees is the post-merge run on the base. Review cannot
 catch it, because there is nothing in either diff to review.
 
 Two repository settings close it, and they are settings — nothing in this tree can

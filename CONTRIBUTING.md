@@ -302,12 +302,12 @@ same exact match in both directions.
 
 | Check                             | Workflow    | Enforced |
 | --------------------------------- | ----------- | -------- |
-| `Lint · Typecheck · Test · Build` | `ci.yml`    | ⛔       |
+| `Lint · Typecheck · Test · Build` | `ci.yml`    | ✅       |
 | `Dependency audit`                | `audit.yml` | ⛔       |
 
-**Neither is enforced yet.** `dev`'s branch protection requires no status checks today, and a
-row records what protection does, not what it should. Requiring `Lint · Typecheck · Test ·
-Build` on `dev` is a repository-settings change; flip its row to ✅ in the change that makes it.
+**`Lint · Typecheck · Test · Build` blocks a merge into `dev`; `Dependency audit` runs and blocks
+nothing.** A row records what protection does, not what it should, so requiring the audit on `dev`
+is a repository-settings change and its row flips to ✅ in the change that makes it.
 
 Reading it works the same way as for `main`, against a pull request whose base is `dev`:
 

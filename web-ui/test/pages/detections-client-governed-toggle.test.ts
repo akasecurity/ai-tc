@@ -82,6 +82,7 @@ function render(floors: Record<string, DetectionPolicyFloor>): string {
         query: '',
         selectedId: DETECTION_ID,
         floors,
+        locale: 'en-US',
       }),
     ),
   );

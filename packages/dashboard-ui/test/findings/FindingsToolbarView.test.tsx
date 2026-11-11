@@ -25,6 +25,7 @@ function renderToolbar(props: Partial<Parameters<typeof FindingsToolbarView>[0]>
       facets={facets}
       filters={EMPTY_FILTERS}
       onFiltersChange={vi.fn()}
+      locale="en-US"
       query=""
       onQueryChange={vi.fn()}
       {...props}
@@ -38,6 +39,7 @@ function renderFindingLevel(props: Partial<Parameters<typeof FindingLevelFilters
       facets={facets}
       filters={EMPTY_FILTERS}
       onFiltersChange={vi.fn()}
+      locale="en-US"
       {...props}
     />,
   );

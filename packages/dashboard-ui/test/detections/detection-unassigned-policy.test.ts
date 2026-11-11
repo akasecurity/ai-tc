@@ -77,6 +77,7 @@ function list(
       onQueryChange: () => undefined,
       onFilterChange: () => undefined,
       onSelect: () => undefined,
+      locale: 'en-US',
       ...props,
     }),
   );

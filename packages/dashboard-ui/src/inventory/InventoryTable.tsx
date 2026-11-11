@@ -27,6 +27,7 @@ import {
 } from '@akasecurity/ui-kit';
 import { type ReactNode, useMemo, useState } from 'react';
 
+import { ChipCount } from '../shared/ChipCount.tsx';
 import { SearchField } from '../shared/SearchField.tsx';
 import { TablePagination } from '../shared/TablePagination.tsx';
 import { FlagChip, TrustPill } from './chips.tsx';
@@ -274,7 +275,13 @@ export function InventoryTable({
               }}
             >
               {typeCounts.map((t) => (
-                <Pill key={t.meta.type} value={t.meta.type} label={t.meta.label} count={t.count} />
+                <Pill
+                  key={t.meta.type}
+                  value={t.meta.type}
+                  label={t.meta.label}
+                  count={t.count}
+                  locale={locale}
+                />
               ))}
             </SegmentedControl>
           </>
@@ -288,11 +295,19 @@ export function InventoryTable({
               setPage(0);
             }}
           >
-            <Pill value="all" label="All" count={rows.length} />
+            <Pill value="all" label="All" count={rows.length} locale={locale} />
             {reasons.map((r) => (
-              <Pill key={r.key} value={r.key} label={STATUS[r.key].short} count={r.count} />
+              <Pill
+                key={r.key}
+                value={r.key}
+                label={STATUS[r.key].short}
+                count={r.count}
+                locale={locale}
+              />
             ))}
-            {(okCount > 0 || status === 'ok') && <Pill value="ok" label="OK" count={okCount} />}
+            {(okCount > 0 || status === 'ok') && (
+              <Pill value="ok" label="OK" count={okCount} locale={locale} />
+            )}
           </SegmentedControl>
         )}
       </div>
@@ -372,7 +387,17 @@ export function InventoryTable({
   );
 }
 
-function Pill({ value, label, count }: { value: string; label: string; count: number }) {
+function Pill({
+  value,
+  label,
+  count,
+  locale,
+}: {
+  value: string;
+  label: string;
+  count: number;
+  locale: string;
+}) {
   return (
     <SegmentedControlItem
       value={value}
@@ -382,7 +407,7 @@ function Pill({ value, label, count }: { value: string; label: string; count: nu
       )}
     >
       {label}
-      <span className="tabular-nums opacity-70">{count}</span>
+      <ChipCount value={count} locale={locale} className="tabular-nums opacity-70" />
     </SegmentedControlItem>
   );
 }

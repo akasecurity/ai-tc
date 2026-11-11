@@ -7,6 +7,7 @@
 import type { DetectionListItem } from '@akasecurity/schema';
 import { Card } from '@akasecurity/ui-kit';
 
+import { ChipCount } from '../shared/ChipCount.tsx';
 import { ArrowUpIcon } from '../shared/icons.tsx';
 import { SearchField } from '../shared/SearchField.tsx';
 import { OriginBadge, PolicyTag, UnassignedPolicyTag, UpdateBadge } from './atoms.tsx';
@@ -97,6 +98,7 @@ export function DetectionsListView({
   floorsById,
   unassignedPolicy,
   filterTabs = DETECTION_FILTER_TABS,
+  locale,
 }: {
   items: DetectionListItem[];
   counts: Record<string, number>;
@@ -126,6 +128,8 @@ export function DetectionsListView({
    */
   unassignedPolicy?: UnassignedPolicy | undefined;
   filterTabs?: readonly [string, string][] | undefined;
+  /** The locale the filter chips' counts are formatted in, as the host resolved it. */
+  locale: string;
 }) {
   return (
     <Card className="flex flex-col overflow-hidden shadow-sm">
@@ -163,7 +167,7 @@ export function DetectionsListView({
               >
                 {amber && <ArrowUpIcon aria-hidden focusable={false} className="size-3" />}
                 {lbl}
-                <span className="text-label font-bold opacity-70">{n}</span>
+                <ChipCount value={n} locale={locale} className="text-label font-bold opacity-70" />
               </button>
             );
           })}

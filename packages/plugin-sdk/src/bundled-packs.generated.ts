@@ -10,11 +10,12 @@
 // Regenerate after adding/removing a rule or pack under rules/:
 //   pnpm --filter @akasecurity/plugin-sdk gen:bundled-packs
 //
-// 10 packs / 128 rules.
+// 10 packs / 129 rules.
 /* eslint-disable simple-import-sort/imports */
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import agentEgressAgentProbeHost from '../../../rules/agent-egress/agent-probe-host.json';
 import agentEgressCloudMetadataAccess from '../../../rules/agent-egress/cloud-metadata-access.json';
+import agentEgressOastC2Host from '../../../rules/agent-egress/oast-c2-host.json';
 import agentEgressObjectStorageFileUpload from '../../../rules/agent-egress/object-storage-file-upload.json';
 import agentEgressUnshareUserNamespace from '../../../rules/agent-egress/unshare-user-namespace.json';
 import agentHarnessTamperAgentApprovalBypass from '../../../rules/agent-harness-tamper/agent-approval-bypass.json';
@@ -163,12 +164,14 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       agentEgressObjectStorageFileUpload,
       agentEgressAgentProbeHost,
       agentEgressUnshareUserNamespace,
+      agentEgressOastC2Host,
     ],
     shortNames: {
       'agent-egress/cloud-metadata-access': 'Cloud metadata access',
       'agent-egress/object-storage-file-upload': 'Object storage file upload',
       'agent-egress/agent-probe-host': 'Agent probe host',
       'agent-egress/unshare-user-namespace': 'User namespace unshare',
+      'agent-egress/oast-c2-host': 'Webhook-catcher host',
     },
   },
   {

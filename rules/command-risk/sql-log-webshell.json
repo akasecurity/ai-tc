@@ -1,0 +1,19 @@
+{
+  "specVersion": 1,
+  "id": "command-risk/sql-log-webshell",
+  "name": "SQL statement that writes a web-executable script file",
+  "category": "custom",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\bSET[ \\t]{1,8}GLOBAL[ \\t]{1,8}general_log_file[ \\t]{0,8}=[ \\t]{0,8}['\"][^'\"\\n]{1,200}\\.(?:jsp|jspx|php[0-9]?|phtml|pht|asp|aspx)\\b|\\bINTO[ \\t]{1,8}(?:OUTFILE|DUMPFILE)[ \\t]{1,8}['\"][^'\"\\n]{1,200}\\.(?:jsp|jspx|php[0-9]?|phtml|pht|asp|aspx)\\b",
+    "flags": "gim"
+  },
+  "examples": [
+    "SET GLOBAL general_log_file = '/var/www/html/x1.jsp'",
+    "SELECT '<?php system($_GET[0]); ?>' INTO OUTFILE '/var/www/html/s.php'"
+  ],
+  "appliesTo": {
+    "eventKinds": ["tool_use"]
+  }
+}

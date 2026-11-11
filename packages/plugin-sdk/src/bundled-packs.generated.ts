@@ -10,7 +10,7 @@
 // Regenerate after adding/removing a rule or pack under rules/:
 //   pnpm --filter @akasecurity/plugin-sdk gen:bundled-packs
 //
-// 10 packs / 128 rules.
+// 10 packs / 130 rules.
 /* eslint-disable simple-import-sort/imports */
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import agentEgressAgentProbeHost from '../../../rules/agent-egress/agent-probe-host.json';
@@ -62,10 +62,12 @@ import commandRiskDownloadThenExecute from '../../../rules/command-risk/download
 import commandRiskGitForcePush from '../../../rules/command-risk/git-force-push.json';
 import commandRiskGitResetHard from '../../../rules/command-risk/git-reset-hard.json';
 import commandRiskObjectStorageUpload from '../../../rules/command-risk/object-storage-upload.json';
+import commandRiskOffensiveSecurityTool from '../../../rules/command-risk/offensive-security-tool.json';
 import commandRiskPkillBroad from '../../../rules/command-risk/pkill-broad.json';
 import commandRiskProtectedPathAccess from '../../../rules/command-risk/protected-path-access.json';
 import commandRiskReconThenEgress from '../../../rules/command-risk/recon-then-egress.json';
 import commandRiskRmRfHomeOrShared from '../../../rules/command-risk/rm-rf-home-or-shared.json';
+import commandRiskSqlLogWebshell from '../../../rules/command-risk/sql-log-webshell.json';
 import coreCodeContextDbTableName from '../../../rules/core-code-context/db-table-name.json';
 import coreCodeContextFeatureFlag from '../../../rules/core-code-context/feature-flag.json';
 import coreCodeContextFilePath from '../../../rules/core-code-context/file-path.json';
@@ -280,6 +282,8 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       commandRiskAlibabaOssHost,
       commandRiskDownloadThenExecute,
       commandRiskReconThenEgress,
+      commandRiskOffensiveSecurityTool,
+      commandRiskSqlLogWebshell,
     ],
     shortNames: {
       'command-risk/pkill-broad': 'Broad pkill',
@@ -295,6 +299,8 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       'command-risk/alibaba-oss-host': 'Alibaba OSS host',
       'command-risk/download-then-execute': 'Download then execute',
       'command-risk/recon-then-egress': 'Recon with egress',
+      'command-risk/offensive-security-tool': 'Offensive security tool',
+      'command-risk/sql-log-webshell': 'SQL write of a web script',
     },
   },
   {

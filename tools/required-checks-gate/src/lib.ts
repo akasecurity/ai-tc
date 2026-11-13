@@ -198,12 +198,19 @@ export function selectPr(candidates: PrNode[], needed: readonly string[]): Selec
   for (let i = candidates.length - 1; i >= 0; i--) {
     const pr = candidates[i];
     if (pr === undefined) continue;
-    const contexts = pr.commits.nodes[0]?.commit.statusCheckRollup?.contexts.nodes ?? [];
-    const names = new Set(contexts.map((context) => context.name ?? context.context));
-    if (needed.every((name) => names.has(name))) return { number: pr.number, contexts };
+    const names = reportedNames(pr);
+    if (needed.every((name) => names.has(name)))
+      return { number: pr.number, contexts: contextsOf(pr) };
   }
   return undefined;
 }
+
+const contextsOf = (pr: PrNode): RollupContext[] =>
+  pr.commits.nodes[0]?.commit.statusCheckRollup?.contexts.nodes ?? [];
+
+/** The check names one pull request's rollup reported. */
+export const reportedNames = (pr: PrNode): Set<string | undefined> =>
+  new Set(contextsOf(pr).map((context) => context.name ?? context.context));
 
 /**
  * The pull requests out of a `gh api graphql` response body.
@@ -238,11 +245,7 @@ export function parsePrResponse(stdout: string): PrNode[] {
  */
 export function neverReported(candidates: PrNode[], needed: readonly string[]): string[] {
   const seen = new Set<string | undefined>();
-  for (const pr of candidates) {
-    for (const context of pr.commits.nodes[0]?.commit.statusCheckRollup?.contexts.nodes ?? []) {
-      seen.add(context.name ?? context.context);
-    }
-  }
+  for (const pr of candidates) for (const name of reportedNames(pr)) seen.add(name);
   return needed.filter((name) => !seen.has(name));
 }
 
@@ -466,8 +469,8 @@ export function buildSummary(drift: Drift, prNumber: number, branch = 'main'): s
  * the network call site is never reached instead of being intercepted.
  */
 export interface GateIo {
-  /** The raw CONTRIBUTING.md text. */
-  readRecord: () => string;
+  /** The raw CONTRIBUTING.md text as it stands on `branch`. */
+  readRecord: (branch: string) => string;
   /** Run one GraphQL query, returning `gh`'s raw stdout. */
   graphql: (query: string) => string;
   /** One line to the job log. */
@@ -493,7 +496,7 @@ export function runGate(
 ): number {
   let rows: GateRow[];
   try {
-    rows = parseGateTable(io.readRecord(), branch);
+    rows = parseGateTable(io.readRecord(branch), branch);
   } catch (error) {
     io.print(`::error::${messageOf(error)}`);
     // A malformed record is deterministic — retrying it changes nothing — so it
@@ -518,9 +521,11 @@ export function runGate(
       // daily flake the coverage requirement exists to remove.
       const missing = neverReported(prs, needed);
       const detail =
-        missing.length > 0
-          ? `; none of them reported ${list(missing)}`
-          : '; each check ran on some of them, but never all on one';
+        prs.length === 0
+          ? '; there were none to read'
+          : missing.length > 0
+            ? `; none of them reported ${list(missing)}`
+            : '; each check ran on some of them, but never all on one';
       io.print(
         `::error::none of the last ${String(candidates)} pull requests into ${branch} reported every check in its table${detail}`,
       );

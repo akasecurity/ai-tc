@@ -22,6 +22,7 @@ import {
   workspacePackageDirs,
 } from './helpers/lint-invocations.js';
 import { dropComments, expectMainTier, jobBlock, MAIN_TIER_IF } from './helpers/workflow.js';
+import { isMapping, jobsOf, parseWorkflow } from './helpers/workflow-yaml.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const WORKFLOWS = join(REPO_ROOT, '.github', 'workflows');
@@ -250,8 +251,8 @@ function requiredCheckRows(branch = 'main') {
   const from = start === -1 ? -1 : contributing.indexOf(heading, start);
   const end = from === -1 ? -1 : contributing.indexOf('```bash', from + heading.length);
   if (end === -1) return null;
-  const section = [null, contributing.slice(from + heading.length, end)];
-  const rows = [...section[1].matchAll(/^\| `([^`]+)`\s*\| `([^`]+)`\s*\| *(\S+) *\|$/gm)].map(
+  const body = contributing.slice(from + heading.length, end);
+  const rows = [...body.matchAll(/^\| `([^`]+)`\s*\| `([^`]+)`\s*\| *(\S+) *\|$/gm)].map(
     ([, check, file, enforced]) => ({
       check,
       file,
@@ -276,7 +277,7 @@ function requiredCheckRows(branch = 'main') {
   // every other suite in this file down and reading as green to anything
   // grepping for a failed test. The count rides along and one named `it`
   // asserts it.
-  rows.rowLike = section[1].split('\n').filter((line) => {
+  rows.rowLike = body.split('\n').filter((line) => {
     const trimmed = line.trim();
     if (!trimmed.startsWith('|') || !trimmed.endsWith('|')) return false;
     if (/^[|\-: ]+$/.test(trimmed)) return false;
@@ -285,8 +286,8 @@ function requiredCheckRows(branch = 'main') {
   return rows;
 }
 
-function requiredChecks(branch = 'main') {
-  const rows = requiredCheckRows(branch);
+function requiredChecks() {
+  const rows = requiredCheckRows();
   expect(rows).not.toBeNull();
   return rows;
 }
@@ -344,7 +345,7 @@ function gatingWorkflows() {
 // The workflows behind the required checks, deduped from the table. Every one of
 // them must also be a gating workflow — a required check that does not run on
 // both events cannot be satisfied on a PR or cannot be re-verified on main.
-const requiredWorkflows = () => [...new Set(everyRequiredCheck().map((row) => row.file))];
+const requiredWorkflows = () => [...new Set((requiredCheckRows() ?? []).map((row) => row.file))];
 
 // The decision recorded in CONTRIBUTING.md's "Branch freshness" section. Returns
 // what it found rather than asserting, for the `describe`-body reason above.
@@ -386,32 +387,13 @@ describe('the required-check table in CONTRIBUTING.md', () => {
   // audit, and CodeQL's two matrix legs.
   it('parses, and covers every gate the table is supposed to list', () => {
     expect(rows).toHaveLength(9);
-    // Every line that LOOKS like a row parsed as one. The length pin above
-    // catches a REFORMATTED row (9 become 8) and cannot catch an ADDED one: a
-    // tenth row whose Enforced cell does not parse leaves 9 here while
-    // `parseGateTable` refuses the table outright, so the gate goes red daily
-    // and this file stays green. Measured at 111 passed before this line.
-    expect(rows).toHaveLength(rows.rowLike);
     expect(rows.map((row) => row.file)).toEqual(
       expect.arrayContaining(['ci.yml', 'audit.yml', 'codeql.yml']),
     );
   });
 
-  it.each(rows)('$check is a real job in $file', ({ check, file }) => {
-    expect(checkNames(file)).toContain(check);
-  });
-
-  // The Enforced column is what `required-checks.yml` compares the live set
-  // against, and that gate reads an unrecognised mark as a configuration error
-  // rather than as `false` — so a cell holding anything else fails the daily job
-  // rather than silently downgrading the row. Catch it here, in the PR that
-  // wrote it, instead of tomorrow morning.
-  it.each(rows)('$check records an enforced mark this repo recognises', ({ enforced }) => {
-    expect(ENFORCED_MARKS).toContain(enforced);
-  });
-
   // The column has to be able to say both things. A table that had drifted to
-  // all-✅ or all-⛔ would satisfy every per-row check above while describing a
+  // all-✅ or all-⛔ would satisfy every per-row check while describing a
   // state nobody measured — and all-✅ in particular is the shape that reads as
   // "everything gates" while six checks block nothing.
   it('records both enforced and not-enforced checks, so the column is load-bearing', () => {
@@ -470,31 +452,60 @@ describe('the required-check table in CONTRIBUTING.md', () => {
   });
 });
 
-// `dev` runs the quick tier, so its table lists only the checks every pull
-// request into `dev` reports. The same per-row rules hold there: each name is a
-// real job, each mark parses, and every row-like line is read.
+// The per-row rules hold for every branch's table: each name is a real job, each
+// mark parses, and every row-like line is read.
 describe('the required-check tables for every gated branch', () => {
   it('finds a table for main and for dev', () => {
     expect(gateBranches()).toEqual(['main', 'dev']);
   });
 
-  const devRows = requiredCheckRows('dev') ?? [];
+  describe.each(gateBranches())('the table that gates %s', (branch) => {
+    const rows = requiredCheckRows(branch) ?? [];
 
-  it('reads every row of the dev table', () => {
-    expect(requiredCheckRows('dev')).not.toBeNull();
-    expect(devRows.map((row) => row.check)).toEqual([
-      'Lint · Typecheck · Test · Build',
-      'Dependency audit',
-    ]);
-    expect(devRows).toHaveLength(devRows.rowLike);
+    // Every line that LOOKS like a row parsed as one. A length pin catches a
+    // REFORMATTED row and cannot catch an ADDED one: a row whose Enforced cell
+    // does not parse would leave the parsed count unchanged while
+    // `parseGateTable` refuses the table outright, so the gate goes red daily
+    // and this file stays green.
+    it('parses every row-like line', () => {
+      expect(requiredCheckRows(branch)).not.toBeNull();
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows).toHaveLength(rows.rowLike);
+    });
+
+    it.each(rows)('$check is a real job in $file', ({ check, file }) => {
+      expect(checkNames(file)).toContain(check);
+    });
+
+    // The Enforced column is what `required-checks.yml` compares the live set
+    // against, and that gate reads an unrecognised mark as a configuration
+    // error rather than as `false` — so a cell holding anything else fails the
+    // daily job rather than silently downgrading the row. Catch it here, in the
+    // PR that wrote it, instead of tomorrow morning.
+    it.each(rows)('$check records an enforced mark this repo recognises', ({ enforced }) => {
+      expect(ENFORCED_MARKS).toContain(enforced);
+    });
   });
 
-  it.each(devRows)('$check (dev) is a real job in $file', ({ check, file }) => {
-    expect(checkNames(file)).toContain(check);
-  });
+  // `dev` runs the quick tier: a main-tier job skips there, a skip counts as
+  // passing, and so a `dev` row naming one would gate nothing on an unlabelled
+  // pull request. Each `dev` row must name a job with no job-level `if:`.
+  describe('the table that gates dev', () => {
+    const rows = requiredCheckRows('dev') ?? [];
 
-  it.each(devRows)('$check (dev) records an enforced mark this repo recognises', ({ enforced }) => {
-    expect(ENFORCED_MARKS).toContain(enforced);
+    it('lists the two checks every pull request into dev reports', () => {
+      expect(rows.map((row) => row.check)).toEqual([
+        'Lint · Typecheck · Test · Build',
+        'Dependency audit',
+      ]);
+    });
+
+    it.each(rows)('$check runs on every pull request into dev', ({ check, file }) => {
+      const jobs = jobsOf(parseWorkflow(readWorkflow(file)));
+      const matching = Object.values(jobs).filter((job) => isMapping(job) && job.name === check);
+      expect(matching, `no job named \`${check}\` in ${file}`).toHaveLength(1);
+      expect(Object.hasOwn(matching[0], 'if'), `${check} carries a job-level if:`).toBe(false);
+    });
   });
 });
 
@@ -524,6 +535,22 @@ describe('the job that holds the enforced column against reality', () => {
     const trigger = triggerBlock('required-checks.yml');
     expect(trigger).toMatch(/^ {6}- 'CONTRIBUTING\.md'$/m);
     expect(trigger).toMatch(/^ {6}- 'tools\/required-checks-gate\/\*\*'$/m);
+  });
+
+  // Pull requests land on `dev`, so a push there is where most edits to the
+  // record arrive.
+  it('runs on a push to every gated branch', () => {
+    const push = /^ {2}push:[^\S\n]*$([\s\S]*?)(?=^ {2}\S|$(?![\s\S]))/m.exec(
+      triggerBlock('required-checks.yml'),
+    );
+    expect(push).not.toBeNull();
+    expect(push[1]).toMatch(new RegExp(`^ {4}branches: \\[${gateBranches().join(', ')}\\]$`, 'm'));
+  });
+
+  // The gate reads each branch's table with `git show origin/<branch>:…`, and a
+  // checkout fetches only the ref it checks out.
+  it.each(gateBranches())('fetches %s before the gate reads its table', (branch) => {
+    expect(workflow()).toContain(`+refs/heads/${branch}:refs/remotes/origin/${branch}`);
   });
 
   // It reads the table it is checking, so it must not also be IN it: requiring

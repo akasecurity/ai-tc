@@ -318,8 +318,9 @@ gh api graphql -f query='{repository(owner:"akasecurity",name:"ai-tc"){pullReque
 ### Branch freshness
 
 A `pull_request` check does not run against your branch. It runs against a merge commit
-GitHub builds by merging your branch into its base — `dev` for most pull requests, `main`
-for a promotion or a hotfix — and GitHub rebuilds that commit when the **branch** is pushed,
+GitHub builds by merging your branch into its base — `dev` for most pull requests, a
+`release/**` branch for work kept off `dev`, `main` for a promotion or a hotfix — and GitHub
+rebuilds that commit when the **branch** is pushed,
 never when the base moves. A branch that has sat for a few hours is therefore checked
 against a base that no longer exists, and its green tick describes a tree nobody will ever
 merge.
@@ -357,6 +358,13 @@ as the answer.
 Chosen for the merge rate here: with several PRs landing on a busy day, the up-to-date
 setting turns every merge into an update-and-re-run for each remaining open PR, while the
 queue does that work with nobody in the loop.
+
+**The queue covers `main` only; on `dev` and `release/**` the hole stays open.** A pull
+request into either can go green against a base that has moved, and the push run on that
+branch after the merge is the first to see the combined tree. That is accepted there because
+neither branch publishes a stable release: every change reaches `main` through a promotion
+pull request, which runs the full suite against the current `main`, and a break that lands on
+`dev` this way shows as a red push run on `dev` to fix before the next promotion.
 
 Two consequences follow for `.github/workflows/`, and
 `packages/eslint-config/test/required-checks.test.js` holds both against this section. It

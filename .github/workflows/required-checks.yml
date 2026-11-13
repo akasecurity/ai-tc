@@ -2,7 +2,7 @@ name: Required checks
 
 # Asserts that the checks branch protection ACTUALLY requires on `main` and on
 # `dev` are the ones CONTRIBUTING.md's gate table for that branch records in its
-# Enforced column.
+# Enforced column, reading each branch's table from that branch.
 #
 # Why this cannot be a test. Which checks are required is a repository setting:
 # not in this tree, not settable from a PR, and matched by NAME. Rename a job
@@ -80,6 +80,14 @@ jobs:
       # GH_TOKEN is the default job token. `isRequired` is readable at ordinary
       # read permission — that is the whole reason this job can exist without an
       # admin PAT, and it is why the three admin-only endpoints are not used.
+      # The gate reads each branch's table from that branch, whichever ref this
+      # run checked out.
+      - name: Fetch each gated branch
+        run: >-
+          git fetch --no-tags --depth=1 origin
+          +refs/heads/main:refs/remotes/origin/main
+          +refs/heads/dev:refs/remotes/origin/dev
+
       - name: Compare the live required set against CONTRIBUTING.md
         env:
           GH_TOKEN: ${{ github.token }}

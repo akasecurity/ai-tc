@@ -18,7 +18,7 @@
 // without handing it an admin token.
 //
 // Every decision lives in lib.ts, where the suite drives it. What is here is
-// the `gh` spawn, two file operations and the exit-code mapping.
+// the `gh` and `git` spawns, the step-summary write and the exit-code mapping.
 //
 // Exit codes:
 //   0 — the live set matches the Enforced column (outstanding ⛔ rows are fine)
@@ -28,8 +28,7 @@
 //   3 — invalid gate configuration (the table is missing or malformed)
 
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { appendFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { GATED_BRANCHES, type GateIo, runGate } from './lib.ts';
@@ -70,7 +69,23 @@ function summaryFile(): string | undefined {
 // the suite drives it against fakes. What is left here is the four real
 // boundaries it needs.
 const io: GateIo = {
-  readRecord: () => readFileSync(join(REPO_ROOT, 'CONTRIBUTING.md'), 'utf8'),
+  // Each branch's table is read from that branch, not from the checkout, so
+  // the schedule (which runs on the default branch) and a push to either
+  // branch all compare a branch's protection against that branch's own record.
+  readRecord: (branch) => {
+    const result = spawnSync('git', ['show', `origin/${branch}:CONTRIBUTING.md`], {
+      encoding: 'utf8',
+      maxBuffer: 8 * 1024 * 1024,
+      cwd: REPO_ROOT,
+    });
+    if (result.error) throw new Error(`could not spawn git: ${result.error.message}`);
+    if (result.status !== 0) {
+      throw new Error(
+        `could not read CONTRIBUTING.md from origin/${branch}: ${result.stderr.trim().slice(0, 400)}`,
+      );
+    }
+    return result.stdout;
+  },
   graphql: (query) => {
     const result = spawnSync('gh', ['api', 'graphql', '-f', `query=${query}`], {
       encoding: 'utf8',

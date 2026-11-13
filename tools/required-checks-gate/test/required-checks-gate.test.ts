@@ -19,6 +19,7 @@ import {
   prCandidatesQuery,
   type PrNode,
   readRollup,
+  reportedNames,
   type RollupContext,
   rollupQuery,
   runGate,
@@ -399,6 +400,13 @@ describe('neverReported', () => {
     expect(neverReported([pr(1, { name: 'a' }), pr(2, { name: 'b' })], ['a', 'b'])).toEqual([]);
   });
 
+  it('counts a name the way selectPr does, from either context shape', () => {
+    const both = pr(1, { name: 'a' }, { context: 'b' });
+    expect(reportedNames(both)).toEqual(new Set(['a', 'b']));
+    expect(selectPr([both], ['a', 'b'])?.number).toBe(1);
+    expect(neverReported([both], ['a', 'b'])).toEqual([]);
+  });
+
   it('treats a null rollup as reporting nothing', () => {
     const nullRollup: PrNode = {
       number: 9,
@@ -709,7 +717,21 @@ describe('runGate', () => {
       graphql: () => JSON.stringify({ data: { repository: { pullRequests: { nodes: [] } } } }),
     });
     expect(code).toBe(2);
-    expect(printed.join('\n')).toContain('reported every check in its table');
+    expect(printed.join('\n')).toContain(
+      'none of the last 10 pull requests into main reported every check in its table; there were none to read',
+    );
+    expect(printed.join('\n')).not.toContain('none of them reported');
+  });
+
+  it('reads the record from the branch it is checking', () => {
+    const asked: string[] = [];
+    drive({
+      readRecord: (branch) => {
+        asked.push(branch);
+        return RECORD;
+      },
+    });
+    expect(asked).toEqual(['main']);
   });
 
   it('names the tabled checks none of the candidates reported', () => {

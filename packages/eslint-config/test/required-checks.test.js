@@ -23,6 +23,7 @@ import {
 } from './helpers/lint-invocations.js';
 import { dropComments, expectMainTier, jobBlock, MAIN_TIER_IF } from './helpers/workflow.js';
 import { isMapping, jobsOf, parseWorkflow } from './helpers/workflow-yaml.js';
+import { gateBranches as gateBranchesIn, gateRows } from './helpers/gate-tables.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const WORKFLOWS = join(REPO_ROOT, '.github', 'workflows');
@@ -218,8 +219,9 @@ function checkNames(file) {
 
 const readContributing = () => readText(join(REPO_ROOT, 'CONTRIBUTING.md'));
 
-// The table itself: | `Check name` | `workflow.yml` | <mark> |. Sliced to its own
-// section so a table further down the file cannot contribute rows — the
+// The table itself: | `Check name` | `workflow.yml` | <mark> |, read by
+// `helpers/gate-tables.js`. Sliced to its own section so a table further down the
+// file cannot contribute rows — the
 // branch-freshness section below carries one, and its rows are not two backticked
 // cells, but the slice is what makes that a fact about this reader rather than
 // about that table.
@@ -238,53 +240,9 @@ const readContributing = () => readText(join(REPO_ROOT, 'CONTRIBUTING.md'));
 // can afford to assert do so inside an `it`.
 const ENFORCED_MARKS = ['✅', '⛔'];
 
-// The branches CONTRIBUTING.md keeps a gate table for, in document order.
-const gateBranches = () =>
-  [...readContributing().matchAll(/^### Checks that gate `([^`]+)`$/gm)].map(
-    ([, branch]) => branch,
-  );
+const gateBranches = () => gateBranchesIn(readContributing());
 
-function requiredCheckRows(branch = 'main') {
-  const contributing = readContributing();
-  const heading = `### Checks that gate \`${branch}\``;
-  const start = contributing.indexOf('## Pull requests');
-  const from = start === -1 ? -1 : contributing.indexOf(heading, start);
-  const end = from === -1 ? -1 : contributing.indexOf('```bash', from + heading.length);
-  if (end === -1) return null;
-  const body = contributing.slice(from + heading.length, end);
-  const rows = [...body.matchAll(/^\| `([^`]+)`\s*\| `([^`]+)`\s*\| *(\S+) *\|$/gm)].map(
-    ([, check, file, enforced]) => ({
-      check,
-      file,
-      enforced,
-    }),
-  );
-  // The same completeness rule `parseGateTable` enforces, because this is a
-  // SECOND reader of one document and the two must not disagree about how many
-  // rows it has. Without it the pair diverges in the permissive direction: add
-  // a ninth row whose Enforced cell does not parse and the gate refuses the
-  // whole table (9 row-like, 8 parsed) while this file yields 8, satisfies its
-  // `toHaveLength(8)` pin, and stays green — measured at 111 passed. The count
-  // pin catches a REFORMATTED row and cannot catch an ADDED one.
-  //
-  // Duplicated rather than imported: `@akasecurity/required-checks-gate`
-  // devDepends on this package, so taking the reverse edge makes turbo report
-  // `x Cyclic dependency detected`. The guard travels with the copy instead.
-  //
-  // REPORTED, not asserted here. Collapsing a short count to `null` made
-  // `requiredChecks()` throw in a describe body, which vitest reports as a
-  // collection error — `Test Files 1 failed` with `Tests no tests`, taking
-  // every other suite in this file down and reading as green to anything
-  // grepping for a failed test. The count rides along and one named `it`
-  // asserts it.
-  rows.rowLike = body.split('\n').filter((line) => {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith('|') || !trimmed.endsWith('|')) return false;
-    if (/^[|\-: ]+$/.test(trimmed)) return false;
-    return !trimmed.startsWith('| Check');
-  }).length;
-  return rows;
-}
+const requiredCheckRows = (branch = 'main') => gateRows(readContributing(), branch);
 
 function requiredChecks() {
   const rows = requiredCheckRows();
@@ -342,8 +300,8 @@ function gatingWorkflows() {
     .sort();
 }
 
-// The workflows behind the required checks, deduped from the table. Every one of
-// them must also be a gating workflow — a required check that does not run on
+// The workflows behind `main`'s required checks, deduped from its table. Every one
+// of them must also be a gating workflow — a required check that does not run on
 // both events cannot be satisfied on a PR or cannot be re-verified on main.
 const requiredWorkflows = () => [...new Set((requiredCheckRows() ?? []).map((row) => row.file))];
 

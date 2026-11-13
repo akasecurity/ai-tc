@@ -296,9 +296,10 @@ A pull request into `dev` without the `full-ci` label runs the quick tier: every
 `Lint · Typecheck · Test · Build` is skipped by its own condition and reports as passing, so that is
 the `ci.yml` check worth requiring here. The label runs the other jobs as well (see "Branches"
 below), but only on the pull requests that carry it. On the rest those jobs skip, which counts as
-passing, so requiring one of them on `dev` would gate labelled pull requests only. `Dependency audit` also runs on every pull request, whatever its base. The same
-daily `Required checks` job reads this table against a recent pull request into `dev`, with the
-same exact match in both directions.
+passing, so requiring one of them on `dev` would gate labelled pull requests only.
+`Dependency audit` also runs on every pull request, whatever its base. The same daily `Required
+checks` job reads this table, from `dev`'s own copy of this file, against a recent pull request
+into `dev`, with the same exact match in both directions.
 
 | Check                             | Workflow    | Enforced |
 | --------------------------------- | ----------- | -------- |

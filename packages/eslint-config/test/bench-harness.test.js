@@ -29,6 +29,7 @@ import { join, posix } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { cardinalFor, countWordIn, readConventions, sectionOf } from './helpers/claude-md.js';
+import { gateBranches, gateSection } from './helpers/gate-tables.js';
 
 import {
   lintableTrackedFiles,
@@ -542,14 +543,18 @@ describe('the benchmark workflow stays advisory', () => {
   });
 
   it('is not listed as a check that gates any branch', () => {
-    // required-checks.test.js drives the CONTRIBUTING.md table forwards — every
-    // name in it must still belong to a real job. It cannot see the other
-    // direction, so nothing there would notice this workflow being added to the
-    // table and made required.
+    // required-checks.test.js drives each CONTRIBUTING.md gate table forwards —
+    // every name in them must still belong to a real job. It cannot see the
+    // other direction, so nothing there would notice this workflow being added
+    // to a table and made required.
     const contributing = readFileSync(join(REPO_ROOT, 'CONTRIBUTING.md'), 'utf8');
-    const sections = [...contributing.matchAll(/### Checks that gate `[^`]+`([\s\S]*?)```bash/g)];
-    expect(sections.length, 'could not find the required-check tables').toBeGreaterThanOrEqual(2);
-    for (const [, section] of sections) expect(section).not.toContain('bench.yml');
+    const branches = gateBranches(contributing);
+    expect(branches, 'could not find the required-check tables').toEqual(['main', 'dev']);
+    for (const branch of branches) {
+      const section = gateSection(contributing, branch);
+      expect(section, `no gate table for ${branch}`).not.toBeNull();
+      expect(section).not.toContain('bench.yml');
+    }
   });
 });
 

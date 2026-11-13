@@ -320,17 +320,28 @@ describe('buildSummary', () => {
   });
 });
 
+// A pull request as the candidates query returns it, reporting `contexts`.
+const pr = (number: number, ...contexts: RollupContext[]): PrNode => ({
+  number,
+  commits: {
+    nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: contexts } } } }],
+  },
+});
+
+// One whose rollup is null rather than empty.
+const nullRollup: PrNode = {
+  number: 9,
+  commits: { nodes: [{ commit: { statusCheckRollup: null } }] },
+};
+
+// The candidates query's response body for `prs`.
+const candidatesBody = (...prs: PrNode[]): string =>
+  JSON.stringify({ data: { repository: { pullRequests: { nodes: prs } } } });
+
 // The PR the live set is read from. Getting this wrong is not a silent wrong
 // answer — it is a loud one, since a PR that reported nothing makes every check
 // look unreported, which this gate fails on.
 describe('selectPr', () => {
-  const pr = (number: number, ...contexts: RollupContext[]): PrNode => ({
-    number,
-    commits: {
-      nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: contexts } } } }],
-    },
-  });
-
   // The input is oldest-first — the only order the connection offers — so the
   // search runs from the end. Reading it forwards would answer with the OLDEST
   // pull request, whose checks may predate the workflow being asked about.
@@ -367,10 +378,6 @@ describe('selectPr', () => {
   });
 
   it('skips one whose rollup is null rather than empty', () => {
-    const nullRollup: PrNode = {
-      number: 9,
-      commits: { nodes: [{ commit: { statusCheckRollup: null } }] },
-    };
     expect(selectPr([pr(1, { name: 'a' }), nullRollup], ['a'])?.number).toBe(1);
   });
 
@@ -384,13 +391,6 @@ describe('selectPr', () => {
 });
 
 describe('neverReported', () => {
-  const pr = (number: number, ...contexts: RollupContext[]): PrNode => ({
-    number,
-    commits: {
-      nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: contexts } } } }],
-    },
-  });
-
   it('names the tabled checks no candidate reported, in table order', () => {
     const prs = [pr(1, { name: 'b' }), pr(2, { context: 'd' })];
     expect(neverReported(prs, ['a', 'b', 'c', 'd'])).toEqual(['a', 'c']);
@@ -408,10 +408,6 @@ describe('neverReported', () => {
   });
 
   it('treats a null rollup as reporting nothing', () => {
-    const nullRollup: PrNode = {
-      number: 9,
-      commits: { nodes: [{ commit: { statusCheckRollup: null } }] },
-    };
     expect(neverReported([nullRollup], ['a'])).toEqual(['a']);
   });
 });
@@ -736,51 +732,16 @@ describe('runGate', () => {
 
   it('names the tabled checks none of the candidates reported', () => {
     const { code, printed } = drive({
-      graphql: () =>
-        JSON.stringify({
-          data: {
-            repository: {
-              pullRequests: {
-                nodes: [
-                  {
-                    number: 1,
-                    commits: {
-                      nodes: [
-                        {
-                          commit: {
-                            statusCheckRollup: { contexts: { nodes: [{ name: 'flag-major' }] } },
-                          },
-                        },
-                      ],
-                    },
-                  },
-                ],
-              },
-            },
-          },
-        }),
+      graphql: () => candidatesBody(pr(1, { name: 'flag-major' })),
     });
     expect(code).toBe(2);
     expect(printed.join('\n')).toContain('none of them reported `kept`, `pending`');
   });
 
   it('says so when every check ran somewhere but never all on one pull request', () => {
-    const record = table(row('A'), row('B'));
-    const prs = [1, 2].map((number) => ({
-      number,
-      commits: {
-        nodes: [
-          {
-            commit: {
-              statusCheckRollup: { contexts: { nodes: [{ name: number === 1 ? 'A' : 'B' }] } },
-            },
-          },
-        ],
-      },
-    }));
     const { code, printed } = drive({
-      readRecord: () => record,
-      graphql: () => JSON.stringify({ data: { repository: { pullRequests: { nodes: prs } } } }),
+      readRecord: () => table(row('A'), row('B')),
+      graphql: () => candidatesBody(pr(1, { name: 'A' }), pr(2, { name: 'B' })),
     });
     expect(code).toBe(2);
     expect(printed.join('\n')).toContain('each check ran on some of them, but never all on one');

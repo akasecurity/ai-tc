@@ -64,5 +64,59 @@
     "text": "mysql <<SQL\nSELECT 'x' INTO\nOUTFILE '/var/www/html/s.php'\nSQL",
     "shouldMatch": true,
     "eventKind": "tool_use"
+  },
+  {
+    "label": "trailing dot after the extension",
+    "text": "mysql -e \"SELECT 'x' INTO OUTFILE 'C:/inetpub/wwwroot/x.aspx.'\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "trailing space after the extension",
+    "text": "mysql -e \"SELECT 'x' INTO OUTFILE '/var/www/html/x.php '\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "alternate data stream suffix",
+    "text": "mysql -e \"SELECT 'x' INTO OUTFILE 'C:/xampp/htdocs/x.php::$DATA'\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "semicolon before a second extension",
+    "text": "mysql -e \"SELECT 'x' INTO OUTFILE '/var/www/html/x.asp;.jpg'\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "directory named like a script",
+    "text": "mysql -e \"SELECT 1 INTO OUTFILE '/tmp/reports.php/export.csv'\"",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "script extension inside a longer file name",
+    "text": "mysql -e \"SELECT 1 INTO OUTFILE '/tmp/x.php backup.txt'\"",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "semicolon in a directory name",
+    "text": "mysql -e \"SELECT 1 INTO OUTFILE '/tmp/reports.php;archive/export.csv'\"",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "stream suffix in a directory name",
+    "text": "mysql -e \"SELECT 1 INTO OUTFILE '/tmp/reports.php::$DATA/export.csv'\"",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "long suffix after the semicolon",
+    "text": "mysql -e \"SELECT 1 INTO OUTFILE 'C:/inetpub/wwwroot/x.asp;aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg'\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
   }
 ]

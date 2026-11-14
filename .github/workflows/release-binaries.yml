@@ -158,7 +158,7 @@ jobs:
         with:
           node-version: 24
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
           merge-multiple: true
@@ -401,7 +401,7 @@ jobs:
       # Pinned by commit SHA like the token action below: this job goes on to
       # hand a private key to a later step, and every step in a job runs as the
       # same user.
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: package-manifests
           path: manifests
@@ -531,7 +531,7 @@ jobs:
     env:
       RELEASE_APP_CONFIGURED: ${{ vars.AKA_RELEASE_APP_CLIENT_ID != '' && secrets.AKA_RELEASE_APP_PRIVATE_KEY != '' }}
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: package-manifests
           path: manifests

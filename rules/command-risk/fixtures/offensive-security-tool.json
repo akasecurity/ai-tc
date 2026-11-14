@@ -184,5 +184,23 @@
     "text": "hydra token client --endpoint http://localhost:4445",
     "shouldMatch": false,
     "eventKind": "tool_use"
+  },
+  {
+    "label": "Medusa.js version check",
+    "text": "medusa -v",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "hydra help alone",
+    "text": "hydra -h",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "medusa with its -h host option",
+    "text": "medusa -h 10.0.0.5 -u admin -P pw.txt -M ssh",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
   }
 ]

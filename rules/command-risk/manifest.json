@@ -17,6 +17,8 @@
     "object-storage-upload",
     "alibaba-oss-host",
     "download-then-execute",
-    "recon-then-egress"
+    "recon-then-egress",
+    "offensive-security-tool",
+    "sql-log-webshell"
   ]
 }

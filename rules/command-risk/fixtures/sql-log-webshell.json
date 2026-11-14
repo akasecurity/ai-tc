@@ -118,5 +118,35 @@
     "text": "mysql -e \"SELECT 1 INTO OUTFILE 'C:/inetpub/wwwroot/x.asp;aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg'\"",
     "shouldMatch": true,
     "eventKind": "tool_use"
+  },
+  {
+    "label": "nine trailing spaces after the extension",
+    "text": "mysql -e \"SELECT 'x' INTO OUTFILE '/var/www/html/x.php         '\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "twelve trailing dots after the extension",
+    "text": "mysql -e \"SELECT 'x' INTO OUTFILE 'C:/inetpub/wwwroot/a.aspx............'\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "sixty-four trailing spaces after the extension",
+    "text": "mysql -e \"SELECT 'x' INTO OUTFILE '/var/www/html/x.php                                                                '\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "two hundred fifty-six trailing dots after the extension",
+    "text": "mysql -e \"SELECT 'x' INTO OUTFILE '/var/www/html/x.php................................................................................................................................................................................................................................................................'\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "padding beyond the bound is not matched",
+    "text": "mysql -e \"SELECT 'x' INTO OUTFILE '/var/www/html/x.php............................................................................................................................................................................................................................................................................................................'\"",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
   }
 ]

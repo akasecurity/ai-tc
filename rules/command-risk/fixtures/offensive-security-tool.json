@@ -130,5 +130,77 @@
     "text": "psexec \\\\\\\\host cmd",
     "shouldMatch": false,
     "eventKind": "tool_use"
+  },
+  {
+    "label": "hydra with a scheme target first",
+    "text": "hydra ssh://10.0.0.5 -l admin -P pw.txt",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "hydra with a quoted scheme target",
+    "text": "hydra \"ssh://10.0.0.5\" -l admin -P pw.txt",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "hydra web-form module target",
+    "text": "hydra https-post-form://host.example/login:u=^USER^:F=bad -l a -P p",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "hydra with an IPv4 target first",
+    "text": "hydra 10.0.0.5 ssh -l root -P pw.txt",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "hydra with a bracketed IPv6 target first",
+    "text": "hydra [::1] ssh -l root -P pw.txt",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "hydra with a numeric option first",
+    "text": "hydra -6 -l root -P pw.txt ssh://host.example",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "hydra.exe with a flag",
+    "text": "hydra.exe -l admin -P pw.txt ssh://host.example",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "hydra version number",
+    "text": "hydra 2.2.0",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "Ory hydra token subcommand",
+    "text": "hydra token client --endpoint http://localhost:4445",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "Medusa.js version check",
+    "text": "medusa -v",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "hydra help alone",
+    "text": "hydra -h",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "medusa with its -h host option",
+    "text": "medusa -h 10.0.0.5 -u admin -P pw.txt -M ssh",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
   }
 ]

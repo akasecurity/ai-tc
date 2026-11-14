@@ -22,6 +22,7 @@
 // mismatch to be reported.
 import {
   HarnessInventory,
+  InventoryNav,
   PolicyStatsView,
   SyncPanelView,
   TablePagination,
@@ -47,6 +48,7 @@ vi.mock('next/navigation', () => ({
 }));
 
 const { ActivityClient } = await import('../../app/(app)/activity/ActivityClient.tsx');
+const { DetectionsClient } = await import('../../app/(app)/detections/DetectionsClient.tsx');
 const { FindingsClient } = await import('../../app/(app)/findings/FindingsClient.tsx');
 const { NavigationTransitionProvider } =
   await import('../../app/components/NavigationTransition.tsx');
@@ -371,6 +373,62 @@ describe('a de-DE reader on an en-US server', () => {
     );
     expect(result.errors).toEqual([]);
     expect(result.serverHtml).toContain('20:05');
+  });
+
+  it('hydrates the detections filter-chip counts without a mismatch', () => {
+    const result = hydrate(() =>
+      createElement(
+        NavigationTransitionProvider,
+        null,
+        createElement(DetectionsClient, {
+          list: {
+            items: [],
+            counts: { all: 1234, library: 1234, custom: 0, customized: 0, updates: 0 },
+          },
+          detail: null,
+          filter: 'all',
+          query: '',
+          selectedId: '',
+          floors: {},
+          locale: READER,
+        }),
+      ),
+    );
+    expect(result.errors).toEqual([]);
+    expect(result.serverHtml).toContain('1.234');
+    expect(result.serverHtml).not.toContain('1,234');
+  });
+
+  it('hydrates the inventory nav counts without a mismatch', () => {
+    const result = hydrate(() =>
+      createElement(InventoryNav, {
+        harnesses: [],
+        projects: [],
+        assetGroups: [],
+        view: 'type',
+        onView: () => undefined,
+        harness: null,
+        type: 'project',
+        onSelectHarness: () => undefined,
+        onSelectType: () => undefined,
+        links: [
+          {
+            key: 'credentials',
+            label: 'Credentials',
+            icon: 'key',
+            fg: 'text-sev-high-ink',
+            bg: 'bg-sev-high-fill',
+            count: 1234,
+            attention: 0,
+            onSelect: () => undefined,
+          },
+        ],
+        locale: READER,
+      }),
+    );
+    expect(result.errors).toEqual([]);
+    expect(result.serverHtml).toContain('1.234');
+    expect(result.serverHtml).not.toContain('1,234');
   });
 
   it('hydrates the policy and sync-panel counts without a mismatch', () => {

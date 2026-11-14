@@ -13,6 +13,7 @@ import {
 
 import { Ico } from '../inventory/Ico.tsx';
 import { relativeTime } from '../lib/relativeTime.ts';
+import { ChipCount } from '../shared/ChipCount.tsx';
 import { SearchField } from '../shared/SearchField.tsx';
 import { type TablePageProps, TablePagination } from '../shared/TablePagination.tsx';
 import { CredentialStatusBadge } from './CredentialStatusBadge.tsx';
@@ -101,21 +102,6 @@ const chipClass = (on: boolean) =>
 const edgeClass = (index: number) =>
   index === 0 ? 'pl-5' : index === COLUMNS.length - 1 ? 'pr-5' : '';
 
-/**
- * A chip's count. The separator is `sr-only` text rather than the flex gap
- * alone: a gap is not part of the accessible name, so without it the button
- * reads as one run-together word. It sits inside the count rather than beside
- * it, so the chip's spacing does not depend on `sr-only` being out of flow.
- */
-function ChipCount({ value }: { value: number }) {
-  return (
-    <span className="tabular-nums opacity-70">
-      <span className="sr-only">, </span>
-      {String(value)}
-    </span>
-  );
-}
-
 /** The credential ledger: one row per detected value, newest first. */
 export function CredentialsListView({
   items,
@@ -188,6 +174,7 @@ export function CredentialsListView({
               status={status}
               onStatus={onStatus}
               counts={refused || isLoading ? undefined : statusCounts}
+              locale={locale}
             />
           )}
           {onStatus !== undefined && onDismissedChange !== undefined && (
@@ -203,7 +190,13 @@ export function CredentialsListView({
               }}
             >
               Dismissed
-              {dismissedCount !== undefined && <ChipCount value={dismissedCount} />}
+              {dismissedCount !== undefined && (
+                <ChipCount
+                  value={dismissedCount}
+                  locale={locale}
+                  className="tabular-nums opacity-70"
+                />
+              )}
             </button>
           )}
         </div>
@@ -333,10 +326,12 @@ function StatusChips({
   status,
   onStatus,
   counts,
+  locale,
 }: {
   status: CredentialStatus | null;
   onStatus: (status: CredentialStatus | null) => void;
   counts: CredentialStatusCounts | undefined;
+  locale: string;
 }) {
   const chips: { key: CredentialStatus | null; label: string; count: number | undefined }[] = [
     { key: null, label: 'All', count: counts?.all },
@@ -361,7 +356,9 @@ function StatusChips({
             className={chipClass(on)}
           >
             {chip.label}
-            {chip.count !== undefined && <ChipCount value={chip.count} />}
+            {chip.count !== undefined && (
+              <ChipCount value={chip.count} locale={locale} className="tabular-nums opacity-70" />
+            )}
           </button>
         );
       })}

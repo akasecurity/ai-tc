@@ -178,11 +178,11 @@ describe('InventoryTable, one type', () => {
 
   it('keeps an active status pill on screen after its rows are gone', () => {
     mount({ type: 'skill', rows: [skill('a', { flags: ['update'] }), skill('b')] });
-    click(buttonNamed('Update1'));
+    click(buttonNamed('Update, 1'));
     mount({ type: 'skill', rows: [skill('a'), skill('b')] });
     expect(names()).toEqual([]);
-    expect(buttonNamed('Update0').getAttribute('data-state')).toBe('on');
-    click(buttonNamed('All2'));
+    expect(buttonNamed('Update, 0').getAttribute('data-state')).toBe('on');
+    click(buttonNamed('All, 2'));
     expect(names()).toEqual(['a', 'b']);
   });
 
@@ -207,11 +207,11 @@ describe('InventoryTable, one type', () => {
     const pills = [...mounted.host.querySelectorAll('[data-slot="segmented-control-item"]')].map(
       (p) => p.textContent,
     );
-    expect(pills).toEqual(['All3', 'Update1', 'Stale1', 'OK1']);
+    expect(pills).toEqual(['All, 3', 'Update, 1', 'Stale, 1', 'OK, 1']);
 
-    click(buttonNamed('Update1'));
+    click(buttonNamed('Update, 1'));
     expect(names()).toEqual(['a']);
-    click(buttonNamed('OK1'));
+    click(buttonNamed('OK, 1'));
     expect(names()).toEqual(['c']);
   });
 });
@@ -228,9 +228,9 @@ describe('InventoryTable, a harness', () => {
     expect(headers()).toEqual(['Name', 'Type', 'Detail', 'Status']);
     expect(cellsOf('p1')).toContain('acme/p1');
 
-    click(buttonNamed('Skills2'));
+    click(buttonNamed('Skills, 2'));
     expect(names()).toEqual(['s1', 's2']);
-    click(buttonNamed('Skills2'));
+    click(buttonNamed('Skills, 2'));
     expect(names()).toEqual(['p1', 's1', 's2']);
   });
 
@@ -303,12 +303,12 @@ describe('InventoryTable, a harness', () => {
 
   it('keeps an active type pill on screen after its rows are gone, so it can be cleared', () => {
     mount({ rows });
-    click(buttonNamed('Projects1'));
+    click(buttonNamed('Projects, 1'));
     expect(names()).toEqual(['p1']);
 
     mount({ rows: rows.slice(1) });
     expect(names()).toEqual([]);
-    click(buttonNamed('Projects0'));
+    click(buttonNamed('Projects, 0'));
     expect(names()).toEqual(['s1', 's2']);
   });
 

@@ -146,6 +146,7 @@ function list(floorsById?: ReadonlyMap<string, DetectionPolicyFloor>): string {
       onFilterChange: () => undefined,
       onSelect: () => undefined,
       floorsById,
+      locale: 'en-US',
     }),
   );
 }

@@ -4,6 +4,7 @@ import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { InventoryNav, type InventoryNavUnavailable } from '../../src/inventory/InventoryNav.tsx';
+import { accessibleName } from '../helpers/accessible-name.ts';
 import {
   type MountedRoot,
   mountRoot,
@@ -80,8 +81,9 @@ afterEach(() => {
   unmountMountedRoot(mounted);
 });
 
+/** Each row's accessible name: what a screen reader announces for it. */
 const entries = (): string[] =>
-  [...mounted.host.querySelectorAll('nav li button')].map((b) => b.textContent);
+  [...mounted.host.querySelectorAll('nav li button')].map(accessibleName);
 
 /** The attention summary beside the header label, whichever branch it took. */
 const headerTotal = (): string | null => {
@@ -103,6 +105,7 @@ function mount(
   renderRoot(
     mounted.root,
     <InventoryNav
+      locale="en-US"
       harnesses={HARNESSES}
       projects={[PROJECT]}
       assetGroups={GROUPS}
@@ -120,7 +123,7 @@ function mount(
 describe('InventoryNav', () => {
   it('lists only harnesses, each with its row count, and nothing nested under them', () => {
     mount('harness');
-    expect(entries()).toEqual(['CCClaude Code2', 'CuCursor0']);
+    expect(entries()).toEqual(['CCClaude Code, 1 need attention, 2', 'CuCursor, 0']);
     expect(mounted.host.querySelectorAll('nav li')).toHaveLength(2);
   });
 
@@ -138,7 +141,13 @@ describe('InventoryNav', () => {
 
   it('lists every type with its count under By type', () => {
     mount('type');
-    expect(entries()).toEqual(['Projects1', 'Skills0', 'MCP servers1', 'Hooks0', 'Configuration0']);
+    expect(entries()).toEqual([
+      'Projects, 1 need attention, 1',
+      'Skills, 0',
+      'MCP servers, 1 need attention, 1',
+      'Hooks, 0',
+      'Configuration, 0',
+    ]);
   });
 
   function withLink(
@@ -150,6 +159,7 @@ describe('InventoryNav', () => {
     renderRoot(
       mounted.root,
       <InventoryNav
+        locale="en-US"
         harnesses={loading ? [] : HARNESSES}
         projects={loading ? [] : [PROJECT]}
         assetGroups={loading ? [] : GROUPS}
@@ -182,7 +192,7 @@ describe('InventoryNav', () => {
   it('lists a host link after the types, counts its attention, and opens it on click', () => {
     const onSelect = vi.fn();
     const last = withLink('type', { onSelect });
-    expect(entries().at(-1)).toBe('Credentials7');
+    expect(entries().at(-1)).toBe('Credentials, 3 need attention, 7');
     expect(mounted.host.textContent).toContain('5 to review');
     expect(last.getAttribute('aria-current')).toBeNull();
     act(() => {
@@ -193,7 +203,7 @@ describe('InventoryNav', () => {
 
   it('leaves a host link out of the harness list, while still counting its attention', () => {
     withLink('harness');
-    expect(entries()).toEqual(['CCClaude Code2', 'CuCursor0']);
+    expect(entries()).toEqual(['CCClaude Code, 1 need attention, 2', 'CuCursor, 0']);
     expect(mounted.host.querySelector('nav ul[aria-label="Pages"]')).toBeNull();
     expect(mounted.host.textContent).toContain('5 to review');
   });
@@ -219,9 +229,9 @@ describe('InventoryNav', () => {
   it('leaves the type the host would return to unmarked while a host link is shown', () => {
     withLink('type', { selected: true });
     const current = [...mounted.host.querySelectorAll('nav li button[aria-current]')].map(
-      (b) => b.textContent,
+      accessibleName,
     );
-    expect(current).toEqual(['Credentials7']);
+    expect(current).toEqual(['Credentials, 3 need attention, 7']);
   });
 
   it('still counts the projects and host links it shows while the asset lists are refused', () => {
@@ -234,14 +244,15 @@ describe('InventoryNav', () => {
   it('shows a host link while the inventory is still loading', () => {
     withLink('type', {}, undefined, true);
     expect(mounted.host.textContent).toContain('Loading inventory');
-    expect(entries()).toEqual(['Credentials7']);
+    expect(entries()).toEqual(['Credentials, 3 need attention, 7']);
   });
 
   it('puts host links in a list of their own under By type', () => {
     withLink('type');
     const pages = mounted.host.querySelector('nav ul[aria-label="Pages"]');
     expect(pages?.querySelectorAll('li')).toHaveLength(1);
-    expect(pages?.textContent).toBe('Credentials7');
+    const link = pages?.querySelector('button');
+    expect(link && accessibleName(link)).toBe('Credentials, 3 need attention, 7');
   });
 
   it('selects a harness on click and marks the current one', () => {
@@ -269,6 +280,7 @@ describe('InventoryNav', () => {
       renderRoot(
         mounted.root,
         <InventoryNav
+          locale="en-US"
           harnesses={landed.harnesses ?? []}
           projects={landed.projects ?? []}
           assetGroups={landed.assetGroups ?? []}
@@ -299,17 +311,17 @@ describe('InventoryNav', () => {
     it('leaves a type count unknown rather than zero until that type\u2019s list lands', () => {
       mountPartial('type', { harnesses: HARNESSES, projects: [PROJECT] });
       expect(entries()).toEqual([
-        'Projects1',
-        'Skills\u2014',
-        'MCP servers\u2014',
-        'Hooks\u2014',
-        'Configuration\u2014',
+        'Projects, 1 need attention, 1',
+        'Skills',
+        'MCP servers',
+        'Hooks',
+        'Configuration',
       ]);
     });
 
     it('lists the harnesses as soon as they land, with the other reads still out', () => {
       mountPartial('harness', { harnesses: HARNESSES });
-      expect(entries()).toEqual(['CCClaude Code2', 'CuCursor0']);
+      expect(entries()).toEqual(['CCClaude Code, 1 need attention, 2', 'CuCursor, 0']);
       expect(mounted.host.textContent).not.toContain('Loading inventory');
     });
 
@@ -331,6 +343,7 @@ describe('InventoryNav', () => {
       renderRoot(
         mounted.root,
         <InventoryNav
+          locale="en-US"
           harnesses={[]}
           projects={[PROJECT]}
           assetGroups={[]}
@@ -362,11 +375,11 @@ describe('InventoryNav', () => {
     it('leaves the asset counts unknown and the total a lower bound', () => {
       mountFailed('type', { assets: FAILED });
       expect(entries()).toEqual([
-        'Projects1',
-        'Skills\u2014',
-        'MCP servers\u2014',
-        'Hooks\u2014',
-        'Configuration\u2014',
+        'Projects, 1 need attention, 1',
+        'Skills',
+        'MCP servers',
+        'Hooks',
+        'Configuration',
       ]);
       expect(mounted.host.textContent).toContain('At least 1 to review');
       expect(mounted.host.textContent).not.toContain('All clear');
@@ -376,6 +389,7 @@ describe('InventoryNav', () => {
       renderRoot(
         mounted.root,
         <InventoryNav
+          locale="en-US"
           harnesses={HARNESSES}
           projects={[]}
           assetGroups={GROUPS}
@@ -389,11 +403,11 @@ describe('InventoryNav', () => {
         />,
       );
       expect(entries()).toEqual([
-        'Projects\u2014',
-        'Skills0',
-        'MCP servers1',
-        'Hooks0',
-        'Configuration0',
+        'Projects',
+        'Skills, 0',
+        'MCP servers, 1 need attention, 1',
+        'Hooks, 0',
+        'Configuration, 0',
       ]);
       expect(mounted.host.textContent).toContain('At least 1 to review');
     });
@@ -413,6 +427,7 @@ describe('InventoryNav', () => {
       renderRoot(
         mounted.root,
         <InventoryNav
+          locale="en-US"
           harnesses={HARNESSES}
           projects={[]}
           assetGroups={GROUPS}
@@ -440,11 +455,11 @@ describe('InventoryNav', () => {
     it('counts projects but no asset type it could not read', () => {
       mount('type', {}, REASON);
       expect(entries()).toEqual([
-        'Projects1',
-        'Skills—',
-        'MCP servers—',
-        'Hooks—',
-        'Configuration—',
+        'Projects, 1 need attention, 1',
+        'Skills',
+        'MCP servers',
+        'Hooks',
+        'Configuration',
       ]);
     });
   });

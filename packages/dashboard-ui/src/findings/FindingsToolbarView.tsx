@@ -3,6 +3,7 @@
 import type { FindingFacets, FindingProvider } from '@akasecurity/schema';
 import { cn, Popover, PopoverContent, PopoverTrigger } from '@akasecurity/ui-kit';
 
+import { ChipCount } from '../shared/ChipCount.tsx';
 import { CheckIcon, ChevronDownIcon } from '../shared/icons.tsx';
 import { PROVIDERS } from '../shared/Provider.tsx';
 import { SearchField } from '../shared/SearchField.tsx';
@@ -64,12 +65,15 @@ export function FindingLevelFilters({
   filters,
   onFiltersChange,
   showDeployment = false,
+  locale,
 }: {
   facets: FindingFacets;
   filters: FindingsFilters;
   onFiltersChange: (next: FindingsFilters) => void;
   /** Render the Deployment filter. Only a machine attached to a deployment has one. */
   showDeployment?: boolean;
+  /** The locale the filters' counts are formatted in, as the host resolved it. */
+  locale: string;
 }) {
   const providerOptions = withSelected(
     facets.provider.map((f) => ({ value: f.value, label: providerLabel(f.value), count: f.count })),
@@ -106,6 +110,7 @@ export function FindingLevelFilters({
         label="Provider"
         options={providerOptions}
         selected={filters.provider}
+        locale={locale}
         onChange={(next) => {
           set('provider', next);
         }}
@@ -114,6 +119,7 @@ export function FindingLevelFilters({
         label="Action"
         options={actionOptions}
         selected={filters.action}
+        locale={locale}
         onChange={(next) => {
           set('action', next);
         }}
@@ -122,6 +128,7 @@ export function FindingLevelFilters({
         label="Status"
         options={statusOptions}
         selected={filters.status}
+        locale={locale}
         onChange={(next) => {
           set('status', next);
         }}
@@ -131,6 +138,7 @@ export function FindingLevelFilters({
           label="Deployment"
           options={deploymentOptions}
           selected={filters.deployment}
+          locale={locale}
           onChange={(next) => {
             set('deployment', next);
           }}
@@ -156,6 +164,7 @@ export function FindingsToolbarView({
   query,
   onQueryChange,
   showDeployment = false,
+  locale,
 }: {
   facets: FindingFacets;
   filters: FindingsFilters;
@@ -164,6 +173,8 @@ export function FindingsToolbarView({
   onQueryChange: (next: string) => void;
   /** Render the Deployment filter. Only a machine attached to a deployment has one. */
   showDeployment?: boolean;
+  /** The locale the filters' counts are formatted in, as the host resolved it. */
+  locale: string;
 }) {
   // Severity and type are here because in THIS view one list carries both
   // levels, so every dimension narrows the same rows. The master/detail view
@@ -206,6 +217,7 @@ export function FindingsToolbarView({
         label="Severity"
         options={severityOptions}
         selected={filters.severity}
+        locale={locale}
         onChange={(next) => {
           set('severity', next);
         }}
@@ -214,6 +226,7 @@ export function FindingsToolbarView({
         label="Type"
         options={typeOptions}
         selected={filters.type}
+        locale={locale}
         onChange={(next) => {
           set('type', next);
         }}
@@ -223,6 +236,7 @@ export function FindingsToolbarView({
         filters={filters}
         onFiltersChange={onFiltersChange}
         showDeployment={showDeployment}
+        locale={locale}
       />
     </div>
   );
@@ -233,11 +247,13 @@ function MultiSelectFilter({
   options,
   selected,
   onChange,
+  locale,
 }: {
   label: string;
   options: Option[];
   selected: string[];
   onChange: (next: string[]) => void;
+  locale: string;
 }) {
   const active = selected.length > 0;
   const toggle = (value: string) => {
@@ -256,9 +272,14 @@ function MultiSelectFilter({
       >
         {label}
         {active && (
-          <span className="flex size-4 items-center justify-center rounded-full bg-primary-solid text-[10px] font-semibold text-text-inv">
-            {selected.length}
-          </span>
+          <>
+            <ChipCount
+              value={selected.length}
+              locale={locale}
+              className="flex size-4 items-center justify-center rounded-full bg-primary-solid text-[10px] font-semibold text-text-inv"
+            />
+            <span className="sr-only"> selected</span>
+          </>
         )}
         <ChevronDownIcon className="size-3.5" />
       </PopoverTrigger>
@@ -284,7 +305,11 @@ function MultiSelectFilter({
               </span>
               <span className="flex-1">{opt.label}</span>
               {opt.count !== undefined && (
-                <span className="text-xs tabular-nums text-text-3">{opt.count}</span>
+                <ChipCount
+                  value={opt.count}
+                  locale={locale}
+                  className="text-xs tabular-nums text-text-3"
+                />
               )}
             </button>
           );

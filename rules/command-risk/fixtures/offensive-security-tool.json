@@ -1,0 +1,92 @@
+[
+  {
+    "label": "impacket secretsdump wrapper",
+    "text": "impacket-secretsdump -just-dc corp.example/admin@dc01.example",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "sqlmap against a URL",
+    "text": "sqlmap -u \"https://shop.example/item?id=1\" --batch",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "hydra against ssh",
+    "text": "hydra -l admin -P pw.txt ssh://host.example",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "mimikatz after sudo with a path",
+    "text": "sudo ./mimikatz.exe \"lsadump::dcsync /user:krbtgt\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "Invoke-Kerberoast in a pwsh command",
+    "text": "pwsh -c \"Invoke-Kerberoast | Out-File hashes.txt\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "crackmapexec inside bash -c",
+    "text": "bash -c 'crackmapexec smb 10.0.0.0/24 -u u -p p'",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "nxc, the netexec short name",
+    "text": "nxc smb 10.0.0.0/24 -u a -p b",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "evil-winrm session",
+    "text": "evil-winrm -i 10.0.0.5 -u admin -p pw",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "impacket script run through python",
+    "text": "python3 /opt/impacket/examples/GetUserSPNs.py corp.example/user:pw -request",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "install of the package, not a run",
+    "text": "pip install impacket",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "searching for the name",
+    "text": "rg -n hydra README.md",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "which lookup",
+    "text": "which sqlmap",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "echo of a tool name",
+    "text": "echo mimikatz is flagged by every scanner",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "unrelated hydra-named package path",
+    "text": "npm ls hydra-core",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "same command in a tool response",
+    "text": "sqlmap -u \"https://shop.example/item?id=1\" --batch",
+    "shouldMatch": false,
+    "eventKind": "response"
+  }
+]

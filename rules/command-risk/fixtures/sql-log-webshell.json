@@ -1,0 +1,44 @@
+[
+  {
+    "label": "general_log_file pointed at a jsp",
+    "text": "mysql -e \"SET GLOBAL general_log_file = '/var/www/html/x1.jsp'\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "INTO OUTFILE to a php path",
+    "text": "mysql -e \"SELECT '<?php system($_GET[0]); ?>' INTO OUTFILE '/var/www/html/s.php'\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "INTO DUMPFILE to an aspx path",
+    "text": "psql -c \"SELECT 1\" ; mysql -e \"SELECT 1 INTO DUMPFILE 'C:/inetpub/wwwroot/a.aspx'\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "OUTFILE to a phtml path",
+    "text": "mysql -e \"SELECT 'x' INTO OUTFILE '/var/www/html/s.phtml'\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "general_log_file to a log path",
+    "text": "mysql -e \"SET GLOBAL general_log_file = '/var/log/mysql/general.log'\"",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "INTO OUTFILE to a csv",
+    "text": "mysql -e \"SELECT * FROM t INTO OUTFILE '/tmp/export.csv'\"",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "same text in a tool response",
+    "text": "SET GLOBAL general_log_file = '/var/www/html/x1.jsp'",
+    "shouldMatch": false,
+    "eventKind": "response"
+  }
+]

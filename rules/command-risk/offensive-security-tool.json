@@ -1,0 +1,19 @@
+{
+  "specVersion": 1,
+  "id": "command-risk/offensive-security-tool",
+  "name": "Offensive security tool run from a command",
+  "category": "custom",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\b(?=(?:impacket-[a-z]{3,20}|(?:secretsdump|GetUserSPNs|GetNPUsers|ntlmrelayx|wmiexec|smbexec)(?:\\.py)?|mimikatz(?:\\.exe)?|Rubeus(?:\\.exe)?|SharpHound(?:\\.exe)?|bloodhound-python|kerbrute|(?:pypykatz|evil-winrm)|(?:crackmapexec|netexec|nxc)|(?:sqlmap|hydra|medusa|ncrack)(?:\\.py)?)(?![\\w-]))(?<=(?:^|[;&|({\\x60]|\\$\\(|\\b(?:ba|z|da)?sh[ \\t]{1,8}-l?c[ \\t]{1,8}['\"])[ \\t]*(?:(?:sudo|doas|command|exec|nohup|time|env|xargs)[ \\t]+(?:(?:-[A-Za-z0-9]{1,8}(?:[ \\t]+[^\\s;&|]{1,64})?|[A-Za-z_]\\w{0,63}=[^\\s;&|]{0,64})[ \\t]+){0,3})?(?:[\\w.~-]*/){0,8})(?:impacket-[a-z]{3,20}|(?:secretsdump|GetUserSPNs|GetNPUsers|ntlmrelayx|wmiexec|smbexec)(?:\\.py)?|mimikatz(?:\\.exe)?|Rubeus(?:\\.exe)?|SharpHound(?:\\.exe)?|bloodhound-python|kerbrute|(?:pypykatz|evil-winrm)|(?:crackmapexec|netexec|nxc)|(?:sqlmap|hydra|medusa|ncrack)(?:\\.py)?)(?![\\w-])|\\b(?=python[0-9.]{0,4}[ \\t])(?<=(?:^|[;&|({\\x60]|\\$\\(|\\b(?:ba|z|da)?sh[ \\t]{1,8}-l?c[ \\t]{1,8}['\"])[ \\t]*(?:(?:sudo|doas|command|exec|nohup|time|env|xargs)[ \\t]+(?:(?:-[A-Za-z0-9]{1,8}(?:[ \\t]+[^\\s;&|]{1,64})?|[A-Za-z_]\\w{0,63}=[^\\s;&|]{0,64})[ \\t]+){0,3})?(?:[\\w.~-]*/){0,8})python[0-9.]{0,4}[ \\t]+(?:[\\w.~-]*/){0,8}(?:secretsdump|GetUserSPNs|GetNPUsers|ntlmrelayx|wmiexec|smbexec|psexec)\\.py(?![\\w-])|\\b(?:Invoke-(?:Kerberoast|Mimikatz|DCSync)|lsadump::dcsync|sekurlsa::(?:logonpasswords|ekeys))(?![\\w-])",
+    "flags": "gim"
+  },
+  "examples": [
+    "impacket-secretsdump -just-dc corp.example/admin@dc01.example",
+    "sqlmap -u \"https://shop.example/item?id=1\" --batch"
+  ],
+  "appliesTo": {
+    "eventKinds": ["tool_use"]
+  }
+}

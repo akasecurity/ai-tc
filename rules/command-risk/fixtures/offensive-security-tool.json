@@ -88,5 +88,47 @@
     "text": "sqlmap -u \"https://shop.example/item?id=1\" --batch",
     "shouldMatch": false,
     "eventKind": "response"
+  },
+  {
+    "label": "Ory Hydra OAuth server subcommand",
+    "text": "hydra serve all --dev",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "Medusa e-commerce CLI subcommand",
+    "text": "medusa develop",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "script inside a directory named hydra",
+    "text": "./hydra/run.sh",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "impacket psexec script run directly",
+    "text": "./psexec.py corp.example/admin@10.0.0.5",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "sqlmap from a git clone through python",
+    "text": "python3 /opt/sqlmap/sqlmap.py -u \"https://shop.example/item?id=1\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "mimikatz ticket export module",
+    "text": "mimikatz.exe \"sekurlsa::tickets /export\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "Sysinternals PsExec is not impacket",
+    "text": "psexec \\\\\\\\host cmd",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
   }
 ]

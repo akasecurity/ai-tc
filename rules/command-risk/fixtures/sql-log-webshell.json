@@ -40,5 +40,29 @@
     "text": "SET GLOBAL general_log_file = '/var/www/html/x1.jsp'",
     "shouldMatch": false,
     "eventKind": "response"
+  },
+  {
+    "label": "php extension followed by a backup suffix",
+    "text": "mysql -e \"SELECT * FROM t INTO OUTFILE '/tmp/x.php.bak'\"",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "@@global form of general_log_file",
+    "text": "mysql -e \"SET @@global.general_log_file = '/var/www/html/x.php'\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "slow_query_log_file pointed at a php path",
+    "text": "mysql -e \"SET GLOBAL slow_query_log_file = '/var/www/html/x.php'\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "INTO OUTFILE split across lines",
+    "text": "mysql <<SQL\nSELECT 'x' INTO\nOUTFILE '/var/www/html/s.php'\nSQL",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
   }
 ]

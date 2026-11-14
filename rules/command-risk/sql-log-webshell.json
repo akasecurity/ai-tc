@@ -6,7 +6,7 @@
   "severity": "high",
   "matcher": {
     "type": "regex",
-    "pattern": "\\bSET[ \\t]{1,8}GLOBAL[ \\t]{1,8}general_log_file[ \\t]{0,8}=[ \\t]{0,8}['\"][^'\"\\n]{1,200}\\.(?:jsp|jspx|php[0-9]?|phtml|pht|asp|aspx)\\b|\\bINTO[ \\t]{1,8}(?:OUTFILE|DUMPFILE)[ \\t]{1,8}['\"][^'\"\\n]{1,200}\\.(?:jsp|jspx|php[0-9]?|phtml|pht|asp|aspx)\\b",
+    "pattern": "\\bSET[ \\t]{1,8}(?:(?:GLOBAL|PERSIST)[ \\t]{1,8}|@@(?:global|persist)\\.)(?:general|slow_query)_log_file[ \\t]{0,8}:?=[ \\t]{0,8}['\"][^'\"\\n]{1,200}\\.(?:jspx?|jspf|php[0-9]?|phtml|pht|phar|asp|aspx|ashx|asmx|cfm|shtml)(?=['\"])|\\bINTO\\s{1,8}(?:OUTFILE|DUMPFILE)\\s{1,8}['\"][^'\"\\n]{1,200}\\.(?:jspx?|jspf|php[0-9]?|phtml|pht|phar|asp|aspx|ashx|asmx|cfm|shtml)(?=['\"])",
     "flags": "gim"
   },
   "examples": [

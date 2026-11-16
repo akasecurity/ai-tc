@@ -2,21 +2,29 @@
  * Roles whose elements may not be named by their author: `aria-label` on one of
  * them is ignored, and the element contributes its content instead. `generic`
  * is the role of a bare `span` or `div`, so a label on one of those names
- * nothing.
+ * nothing. The list is WAI-ARIA 1.2's, plus the roles the 1.3 draft adds to
+ * it (`definition`, `mark`, `suggestion`, `term`, `time`, `tooltip`), so a
+ * label the newer rules ignore is not counted here either.
  */
 const NAME_PROHIBITED_ROLES = new Set([
   'caption',
   'code',
+  'definition',
   'deletion',
   'emphasis',
   'generic',
   'insertion',
+  'mark',
   'none',
   'paragraph',
   'presentation',
   'strong',
   'subscript',
+  'suggestion',
   'superscript',
+  'term',
+  'time',
+  'tooltip',
 ]);
 
 /** The implicit role of the elements these views render with no `role`. */

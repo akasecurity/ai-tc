@@ -136,6 +136,7 @@ export default async function DetectionsPage({
         query={query}
         selectedId={selectedId}
         floors={floors}
+        locale={locale}
       />
     </div>
   );

@@ -58,6 +58,7 @@ export function DetectionsClient({
   query: initialQuery,
   selectedId,
   floors,
+  locale,
 }: {
   list: ListDetectionsResponse;
   detail: DetectionDetail | null;
@@ -70,6 +71,8 @@ export function DetectionsClient({
    * which is every install that has not attached.
    */
   floors: Record<string, DetectionPolicyFloor>;
+  /** The reader's locale, resolved on the server, that the list's counts are formatted in. */
+  locale: string;
 }) {
   const pathname = usePathname();
   // Navigation transition (filter/search/selection pushes) — distinct from the
@@ -172,6 +175,7 @@ export function DetectionsClient({
           filterTabs={OSS_TABS}
           updatesById={updatesById}
           floorsById={floorsById}
+          locale={locale}
         />
 
         {/* detail */}

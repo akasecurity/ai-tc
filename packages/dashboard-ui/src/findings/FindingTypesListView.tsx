@@ -21,6 +21,7 @@ import type { FindingTypeSummary } from '@akasecurity/schema';
 import { Card, cn, SEVERITY_DOT_CLASS } from '@akasecurity/ui-kit';
 import type { ReactNode } from 'react';
 
+import { ChipCount, LIST_FILTER_COUNT_CLASS } from '../shared/ChipCount.tsx';
 import { KeyIcon } from '../shared/icons.tsx';
 import { SearchField } from '../shared/SearchField.tsx';
 import { type TablePageProps, TablePagination } from '../shared/TablePagination.tsx';
@@ -42,10 +43,12 @@ function SeverityFilter({
   counts,
   selected,
   onChange,
+  locale,
 }: {
   counts: ReadonlyMap<string, number>;
   selected: readonly string[];
   onChange: (next: string[]) => void;
+  locale: string;
 }) {
   return (
     <div className="mt-2.5 flex flex-wrap gap-1.5">
@@ -68,7 +71,11 @@ function SeverityFilter({
           >
             <span className={cn('size-1.5 rounded-full', SEVERITY_DOT_CLASS[sev])} />
             {sev}
-            <span className="text-label font-bold opacity-70">{counts.get(sev) ?? 0}</span>
+            <ChipCount
+              value={counts.get(sev) ?? 0}
+              locale={locale}
+              className={LIST_FILTER_COUNT_CLASS}
+            />
           </button>
         );
       })}
@@ -80,10 +87,12 @@ function TypeRow({
   type,
   sel,
   onClick,
+  locale,
 }: {
   type: FindingTypeSummary;
   sel: boolean;
   onClick: () => void;
+  locale: string;
 }) {
   const Icon = CATEGORY_ICON_FALLBACK[type.category] ?? KeyIcon;
   return (
@@ -109,11 +118,16 @@ function TypeRow({
           <span className="truncate text-sm font-semibold text-text" title={type.subtype}>
             {type.subtype}
           </span>
-          <span className="truncate text-xs text-text-3">{categoryLabel(type.category)}</span>
+          <span className="truncate text-xs text-text-3">
+            <span className="sr-only">, </span>
+            {categoryLabel(type.category)}
+          </span>
         </div>
-        <span className="shrink-0 text-xs font-semibold tabular-nums text-text-2">
-          {type.instanceCount}
-        </span>
+        <ChipCount
+          value={type.instanceCount}
+          locale={locale}
+          className="shrink-0 text-xs font-semibold tabular-nums text-text-2"
+        />
       </div>
     </button>
   );
@@ -205,6 +219,7 @@ export function FindingTypesListView({
           counts={severityCounts}
           selected={selectedSeverities}
           onChange={onSeverityChange}
+          locale={locale}
         />
       </div>
 
@@ -222,6 +237,7 @@ export function FindingTypesListView({
               onClick={() => {
                 onSelect(t);
               }}
+              locale={locale}
             />
           ))
         )}

@@ -4,7 +4,7 @@ import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { InventoryNav, type InventoryNavUnavailable } from '../../src/inventory/InventoryNav.tsx';
-import { accessibleName } from '../helpers/accessible-name.ts';
+import { accessibleName, visibleText } from '../helpers/accessible-name.ts';
 import {
   type MountedRoot,
   mountRoot,
@@ -81,7 +81,14 @@ afterEach(() => {
   unmountMountedRoot(mounted);
 });
 
-/** Each row's accessible name: what a screen reader announces for it. */
+/**
+ * Each row's accessible name: what a screen reader announces for it.
+ *
+ * A harness row's name starts with its `Provider` lettermark (`CC` in
+ * `CCClaude Code`), whose text is not hidden. That is a known gap in the shared
+ * lettermark, not intended behaviour: when it is fixed, these names lose the
+ * prefix.
+ */
 const entries = (): string[] =>
   [...mounted.host.querySelectorAll('nav li button')].map(accessibleName);
 
@@ -124,6 +131,11 @@ describe('InventoryNav', () => {
   it('lists only harnesses, each with its row count, and nothing nested under them', () => {
     mount('harness');
     expect(entries()).toEqual(['CCClaude Code, 1 need attention, 2', 'CuCursor, 0']);
+    // The separators are announced but not shown.
+    expect([...mounted.host.querySelectorAll('nav li button')].map(visibleText)).toEqual([
+      'CCClaude Code2',
+      'CuCursor0',
+    ]);
     expect(mounted.host.querySelectorAll('nav li')).toHaveLength(2);
   });
 

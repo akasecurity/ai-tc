@@ -263,6 +263,7 @@ function DetailBody({
               key={t.name}
               name={t.name}
               n={t.n}
+              locale={locale}
               {...(toolHref ? { href: toolHref(t.name) } : {})}
             />
           ))}

@@ -13,7 +13,7 @@ import {
 
 import { Ico } from '../inventory/Ico.tsx';
 import { relativeTime } from '../lib/relativeTime.ts';
-import { ChipCount } from '../shared/ChipCount.tsx';
+import { ChipCount, PILL_COUNT_CLASS } from '../shared/ChipCount.tsx';
 import { SearchField } from '../shared/SearchField.tsx';
 import { type TablePageProps, TablePagination } from '../shared/TablePagination.tsx';
 import { CredentialStatusBadge } from './CredentialStatusBadge.tsx';
@@ -191,11 +191,7 @@ export function CredentialsListView({
             >
               Dismissed
               {dismissedCount !== undefined && (
-                <ChipCount
-                  value={dismissedCount}
-                  locale={locale}
-                  className="tabular-nums opacity-70"
-                />
+                <ChipCount value={dismissedCount} locale={locale} className={PILL_COUNT_CLASS} />
               )}
             </button>
           )}
@@ -357,7 +353,7 @@ function StatusChips({
           >
             {chip.label}
             {chip.count !== undefined && (
-              <ChipCount value={chip.count} locale={locale} className="tabular-nums opacity-70" />
+              <ChipCount value={chip.count} locale={locale} className={PILL_COUNT_CLASS} />
             )}
           </button>
         );

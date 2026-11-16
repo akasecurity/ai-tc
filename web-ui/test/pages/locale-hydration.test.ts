@@ -162,7 +162,15 @@ const OVERVIEW: FindingsOverview = {
 };
 
 function findingsRoute(view: 'grouped' | 'files'): ReactElement {
-  const facets = { severity: [], subtype: [], provider: [], action: [], status: [] };
+  // A severity count past 999, so the type list's severity chips format a
+  // number that differs between locales.
+  const facets = {
+    severity: [{ value: 'critical', count: 2345 }],
+    subtype: [],
+    provider: [],
+    action: [],
+    status: [],
+  };
   const location: FindingLocationSummary = {
     id: 'loc-1',
     repo: 'acme/api',
@@ -229,6 +237,8 @@ describe('a de-DE reader on an en-US server', () => {
     expect(result.serverHtml).toContain('1.234');
     expect(result.text).toContain('6.456');
     expect(result.text).not.toContain('6,456');
+    // The severity filter chips.
+    expect(result.text).toContain('critical, 2.345');
   });
 
   it('hydrates the location list’s exact counts without a mismatch', () => {

@@ -7,7 +7,8 @@
 import type { DetectionListItem } from '@akasecurity/schema';
 import { Card } from '@akasecurity/ui-kit';
 
-import { ChipCount } from '../shared/ChipCount.tsx';
+import { formatNumber } from '../lib/numberFormat.ts';
+import { ChipCount, LIST_FILTER_COUNT_CLASS } from '../shared/ChipCount.tsx';
 import { ArrowUpIcon } from '../shared/icons.tsx';
 import { SearchField } from '../shared/SearchField.tsx';
 import { OriginBadge, PolicyTag, UnassignedPolicyTag, UpdateBadge } from './atoms.tsx';
@@ -29,6 +30,7 @@ function DetectionRow({
   floor,
   unassignedPolicy,
   onClick,
+  locale,
 }: {
   d: DetectionListItem;
   sel: boolean;
@@ -36,6 +38,7 @@ function DetectionRow({
   floor?: DetectionPolicyFloor | null | undefined;
   unassignedPolicy?: UnassignedPolicy | undefined;
   onClick: () => void;
+  locale: string;
 }) {
   const unassigned = unassignedPolicyFor(d.policyId, floor, unassignedPolicy);
   return (
@@ -66,7 +69,7 @@ function DetectionRow({
         <div className="flex items-center gap-1.5 justify-between">
           <span className="font-mono text-xs text-text-3">{d.id}</span>
           <span className="text-xs text-text-3 shrink-0">
-            {d.ruleCount} rule{d.ruleCount === 1 ? '' : 's'}
+            {formatNumber(d.ruleCount, locale)} rule{d.ruleCount === 1 ? '' : 's'}
           </span>
         </div>
         <div className="flex flex-wrap gap-1.5 mt-1">
@@ -167,7 +170,7 @@ export function DetectionsListView({
               >
                 {amber && <ArrowUpIcon aria-hidden focusable={false} className="size-3" />}
                 {lbl}
-                <ChipCount value={n} locale={locale} className="text-label font-bold opacity-70" />
+                <ChipCount value={n} locale={locale} className={LIST_FILTER_COUNT_CLASS} />
               </button>
             );
           })}
@@ -198,6 +201,7 @@ export function DetectionsListView({
               onClick={() => {
                 onSelect(d.id);
               }}
+              locale={locale}
             />
           ))
         )}

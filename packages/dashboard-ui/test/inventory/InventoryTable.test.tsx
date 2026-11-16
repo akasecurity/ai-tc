@@ -4,6 +4,7 @@ import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { InventoryTable, PAGE_SIZE } from '../../src/inventory/InventoryTable.tsx';
+import { visibleText } from '../helpers/accessible-name.ts';
 import {
   type MountedRoot,
   mountRoot,
@@ -208,6 +209,10 @@ describe('InventoryTable, one type', () => {
       (p) => p.textContent,
     );
     expect(pills).toEqual(['All, 3', 'Update, 1', 'Stale, 1', 'OK, 1']);
+    // The separator is announced but not shown.
+    expect(
+      [...mounted.host.querySelectorAll('[data-slot="segmented-control-item"]')].map(visibleText),
+    ).toEqual(['All3', 'Update1', 'Stale1', 'OK1']);
 
     click(buttonNamed('Update, 1'));
     expect(names()).toEqual(['a']);

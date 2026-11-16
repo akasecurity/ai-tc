@@ -6,6 +6,7 @@ import type { AssetGroup, AssetType, HarnessSummary, ProjectSummary } from '@aka
 import { Card, cn, SegmentedControl, SegmentedControlItem } from '@akasecurity/ui-kit';
 import { type ReactNode } from 'react';
 
+import { formatNumber } from '../lib/numberFormat.ts';
 import { ChipCount } from '../shared/ChipCount.tsx';
 import { Provider } from '../shared/Provider.tsx';
 import { EmptyState } from './chips.tsx';
@@ -147,7 +148,7 @@ export function InventoryNav({
                 title={totalReason}
               >
                 <Ico name="flag" className="size-3.5" />
-                {`At least ${String(knownAttention)} to review`}
+                {`At least ${formatNumber(knownAttention, locale)} to review`}
               </span>
             ) : (
               <span className="ml-auto text-xs text-text-3" title={totalReason}>
@@ -162,7 +163,7 @@ export function InventoryNav({
               )}
             >
               <Ico name={knownAttention ? 'flag' : 'check-circle'} className="size-3.5" />
-              {knownAttention ? `${String(knownAttention)} to review` : 'All clear'}
+              {knownAttention ? `${formatNumber(knownAttention, locale)} to review` : 'All clear'}
             </span>
           )}
         </div>
@@ -257,6 +258,9 @@ function TileIcon({ icon, fg, bg }: { icon: IconName; fg: string; bg: string }) 
   );
 }
 
+/** A row's count, known or not: the dash takes the place of the number. */
+const NAV_COUNT_CLASS = 'shrink-0 text-xs tabular-nums text-text-3';
+
 function NavRow({
   icon,
   label,
@@ -296,23 +300,19 @@ function NavRow({
             <span className="sr-only">, </span>
             <span
               role="img"
-              aria-label={`${String(attention)} need attention`}
-              title={`${String(attention)} need attention`}
+              aria-label={`${formatNumber(attention, locale)} need attention`}
+              title={`${formatNumber(attention, locale)} need attention`}
               className="size-1.5 shrink-0 rounded-full bg-sev-high"
             />
           </>
         )}
-        {count === null ? (
+        {count == null ? (
           // A count that is not known has nothing to announce.
-          <span aria-hidden="true" className="shrink-0 text-xs text-text-3">
+          <span aria-hidden="true" className={NAV_COUNT_CLASS}>
             —
           </span>
         ) : (
-          <ChipCount
-            value={count}
-            locale={locale}
-            className="shrink-0 text-xs tabular-nums text-text-3"
-          />
+          <ChipCount value={count} locale={locale} className={NAV_COUNT_CLASS} />
         )}
       </button>
     </li>

@@ -255,6 +255,11 @@ const LOCALE_ROUTES: readonly Route[] = [
     prepare: () => undefined,
     load: () => import('../../app/(app)/policies/page.tsx'),
   },
+  {
+    name: 'detections',
+    prepare: () => undefined,
+    load: () => import('../../app/(app)/detections/page.tsx'),
+  },
 ];
 
 describe.each(LOCALE_ROUTES)('the $name route resolves its locale per request', (route) => {

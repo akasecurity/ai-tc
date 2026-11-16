@@ -1,8 +1,14 @@
 // @vitest-environment jsdom
-import type { AssetSummary, FindingFacets } from '@akasecurity/schema';
+import type {
+  AssetSummary,
+  DetectionListItem,
+  FindingFacets,
+  FindingTypeSummary,
+} from '@akasecurity/schema';
 import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ToolChip } from '../../src/activity/atoms.tsx';
 import { CredentialsListView } from '../../src/credentials/CredentialsListView.tsx';
 import { DetectionsListView } from '../../src/detections/DetectionsListView.tsx';
 import { FindingsToolbarView } from '../../src/findings/FindingsToolbarView.tsx';
@@ -11,7 +17,7 @@ import { EMPTY_FILTERS } from '../../src/findings/meta.ts';
 import { InventoryNav } from '../../src/inventory/InventoryNav.tsx';
 import { InventoryTable } from '../../src/inventory/InventoryTable.tsx';
 import { ChipCount } from '../../src/shared/ChipCount.tsx';
-import { accessibleName } from '../helpers/accessible-name.ts';
+import { accessibleName, visibleText } from '../helpers/accessible-name.ts';
 import {
   type MountedRoot,
   mountRoot,
@@ -37,24 +43,17 @@ afterEach(() => {
   unmountMountedRoot(mounted);
 });
 
-/** The text a sighted reader sees: everything except `sr-only` content. */
-function visibleText(node: Node): string {
-  if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? '';
-  if (node instanceof Element && node.classList.contains('sr-only')) return '';
-  return [...node.childNodes].map(visibleText).join('');
-}
-
 /**
  * The one button whose name starts with `prefix`. Searched in the whole
  * document, because a popover's content is portalled out of the mounted host.
  */
-function control(prefix: string): HTMLButtonElement {
-  const matches = [...document.querySelectorAll('button')].filter((b) =>
+function control(prefix: string): HTMLElement {
+  const matches = [...document.querySelectorAll('button, a')].filter((b) =>
     accessibleName(b).startsWith(prefix),
   );
   expect(matches).toHaveLength(1);
   const [el] = matches;
-  if (!(el instanceof HTMLButtonElement)) throw new Error(`no "${prefix}" control`);
+  if (!(el instanceof HTMLElement)) throw new Error(`no "${prefix}" control`);
   return el;
 }
 
@@ -68,6 +67,32 @@ function expectControl(prefix: string, name: string, visible: string): void {
   expect(accessibleName(el)).toBe(name);
   expect(visibleText(el)).toBe(visible);
 }
+
+const DETECTION: DetectionListItem = {
+  id: 'aka/secrets',
+  name: 'Secrets',
+  version: '1.0.0',
+  enabled: true,
+  origin: 'library',
+  ruleCount: 1234,
+  namespace: 'aka',
+  packId: 'secrets',
+  policyId: 'monitor',
+};
+
+const FINDING_TYPE: FindingTypeSummary = {
+  id: 'aws-key',
+  category: 'secret',
+  subtype: 'aws-key',
+  severity: 'critical',
+  detection: { id: 'aws-key', name: null },
+  policy: { id: 'category:secret', name: 'secret' },
+  instanceCount: 1234,
+  providers: ['claudecode'],
+  aggregateAction: 'blocked',
+  latestDetectedAt: '2026-01-01T00:00:00.000Z',
+  status: 'open',
+};
 
 describe('ChipCount', () => {
   it("formats the count in the host's locale", () => {
@@ -185,16 +210,68 @@ describe('chip accessible names', () => {
             fg: 'text-sev-high-ink',
             bg: 'bg-sev-high-fill',
             count: 1234,
-            attention: 3,
+            attention: 1234,
+            onSelect: vi.fn(),
+          },
+          {
+            key: 'pending',
+            label: 'Pending',
+            icon: 'key',
+            fg: 'text-text-3',
+            bg: 'bg-surface-2',
+            // Outside the prop type, as a host built without it could pass.
+            count: undefined as unknown as null,
+            attention: 0,
             onSelect: vi.fn(),
           },
         ]}
       />,
     );
-    // The attention dot is named by its label, so it needs a separator of its own.
-    expectControl('Credentials', 'Credentials, 3 need attention, 1.234', 'Credentials1.234');
+    // The attention dot is named by its label, so it needs a separator of its own;
+    // its number is formatted like the count beside it.
+    expectControl('Credentials', 'Credentials, 1.234 need attention, 1.234', 'Credentials1.234');
+    // The dot is named only because it is an image: a bare span's label is ignored.
+    const dot = control('Credentials').querySelector('[aria-label$="need attention"]');
+    expect(dot?.getAttribute('role')).toBe('img');
+    expect(dot?.getAttribute('title')).toBe('1.234 need attention');
+    expectControl('Pending', 'Pending', 'Pending\u2014');
     // An unknown count is a visible dash with nothing to announce.
     expectControl('Skills', 'Skills', 'Skills\u2014');
+  });
+
+  it('inventory nav: the attention total, partial and whole, in the same convention', () => {
+    const nav = (unavailable?: { assets: string; projects: string }) => (
+      <InventoryNav
+        locale="de-DE"
+        harnesses={[]}
+        projects={[]}
+        assetGroups={[]}
+        view="type"
+        onView={vi.fn()}
+        harness={null}
+        type="project"
+        onSelectHarness={vi.fn()}
+        onSelectType={vi.fn()}
+        unavailable={unavailable}
+        links={[
+          {
+            key: 'credentials',
+            label: 'Credentials',
+            icon: 'key',
+            fg: 'text-sev-high-ink',
+            bg: 'bg-sev-high-fill',
+            count: 1,
+            attention: 1234,
+            onSelect: vi.fn(),
+          },
+        ]}
+      />
+    );
+    renderRoot(mounted.root, nav({ assets: 'Not permitted', projects: 'Not permitted' }));
+    expect(mounted.host.textContent).toContain('At least 1.234 to review');
+    renderRoot(mounted.root, nav());
+    expect(mounted.host.textContent).toContain('1.234 to review');
+    expect(mounted.host.textContent).not.toContain('At least');
   });
 
   it('findings toolbar: the filter trigger and its options', () => {
@@ -227,7 +304,7 @@ describe('chip accessible names', () => {
     renderRoot(
       mounted.root,
       <DetectionsListView
-        items={[]}
+        items={[DETECTION]}
         counts={{ all: 1234, updates: 3 }}
         activeId=""
         query=""
@@ -245,6 +322,8 @@ describe('chip accessible names', () => {
     expectControl('All', 'All, 1.234', 'All1.234');
     // The update arrow is aria-hidden and has no text, so it adds to neither.
     expectControl('Updates', 'Updates, 3', 'Updates3');
+    // The row's rule count is formatted like the chips above it.
+    expect(control('Secrets').textContent).toContain('1.234 rules');
   });
 
   it('finding types: the severity filters', () => {
@@ -252,7 +331,7 @@ describe('chip accessible names', () => {
       mounted.root,
       <FindingTypesListView
         locale="de-DE"
-        types={[]}
+        types={[FINDING_TYPE]}
         activeId=""
         onSelect={vi.fn()}
         query=""
@@ -264,5 +343,16 @@ describe('chip accessible names', () => {
     );
     expectControl('critical', 'critical, 1.234', 'critical1.234');
     expectControl('low', 'low, 0', 'low0');
+    // A type row joins three fields, each kept apart in the name.
+    expectControl('aws-key', 'aws-key, Secret, 1.234', 'aws-keySecret1.234');
+  });
+
+  it('session detail: a tool chip that links to its findings', () => {
+    renderRoot(
+      mounted.root,
+      <ToolChip name="Bash" n={1234} href="/findings?tool=Bash" locale="de-DE" />,
+    );
+    // `title` is not consulted: content names a link before its title does.
+    expectControl('Bash', 'Bash, 1.234', 'Bash1.234');
   });
 });

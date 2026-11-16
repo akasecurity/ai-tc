@@ -27,7 +27,7 @@ import {
 } from '@akasecurity/ui-kit';
 import { type ReactNode, useMemo, useState } from 'react';
 
-import { ChipCount } from '../shared/ChipCount.tsx';
+import { ChipCount, PILL_COUNT_CLASS } from '../shared/ChipCount.tsx';
 import { SearchField } from '../shared/SearchField.tsx';
 import { TablePagination } from '../shared/TablePagination.tsx';
 import { FlagChip, TrustPill } from './chips.tsx';
@@ -407,7 +407,7 @@ function Pill({
       )}
     >
       {label}
-      <ChipCount value={count} locale={locale} className="tabular-nums opacity-70" />
+      <ChipCount value={count} locale={locale} className={PILL_COUNT_CLASS} />
     </SegmentedControlItem>
   );
 }

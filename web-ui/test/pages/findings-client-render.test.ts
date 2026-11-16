@@ -442,6 +442,35 @@ describe('findings client — the other views', () => {
   });
 });
 
+// The filter triggers live inside this client component, so the route's locale
+// reaches them only through the props it passes here; neither the page suite nor
+// a hydration check can see that hop, since a literal locale renders the same on
+// both sides. ar-EG writes even a single digit differently from every
+// Latin-digit locale, so one selected filter is enough to tell them apart.
+describe('findings client — the filter triggers take the route’s locale', () => {
+  const BADGE =
+    /<span class="sr-only">, <\/span>([^<]+)<\/span><span class="sr-only"> selected<\/span>/g;
+  const badges = (html: string) => [...html.matchAll(BADGE)].map((m) => m[1]);
+
+  it('in the flat view’s toolbar', () => {
+    const html = render({
+      view: 'flat',
+      flat: instances([instance('f1')]),
+      filters: { ...EMPTY_FILTERS, severity: ['critical'] },
+      locale: 'ar-EG',
+    });
+    expect(badges(html)).toEqual(['\u0661']);
+  });
+
+  it('in the By-type view’s findings panel', () => {
+    const html = grouped({
+      filters: { ...EMPTY_FILTERS, provider: ['claudecode'] },
+      locale: 'ar-EG',
+    });
+    expect(badges(html)).toEqual(['\u0661']);
+  });
+});
+
 describe('findings client — the Deployment controls', () => {
   const delivered = (id: string): FindingInstanceDetail => ({
     ...instance(id),

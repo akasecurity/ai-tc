@@ -728,7 +728,7 @@ describe('the shares-ingest submission', () => {
 describe('routes', () => {
   const server = useLoopbackServer();
 
-  it('addresses each of the fifteen, and tolerates trailing slashes on the endpoint', async () => {
+  it('addresses each of the seventeen, and tolerates trailing slashes on the endpoint', async () => {
     // SEVERAL slashes, not one. The normalization is a scan rather than a
     // `replace(/\/+$/, '')` — that regex is quadratic on an all-slash string,
     // since the engine retries from every position and each attempt walks to the
@@ -760,7 +760,11 @@ describe('routes', () => {
                       ? json({ grants: 0, dismissals: 1 })
                       : req.url === '/v1/plugin/sessions/s-1/hold'
                         ? json({ held: false })
-                        : json({ accepted: 1, duplicates: 0, ok: true }),
+                        : req.url === '/v1/vault/available'
+                          ? json({ credentials: [] })
+                          : req.url === '/v1/vault/resolve'
+                            ? json({ resolved: [], refused: [] })
+                            : json({ accepted: 1, duplicates: 0, ok: true }),
       );
     });
 
@@ -791,6 +795,8 @@ describe('routes', () => {
     await client.recordCredentialSightings(sightingsRequest);
     await client.reportLabels(labelsRequest);
     await client.getSessionHold('s-1');
+    await client.listAvailableCredentials();
+    await client.resolveCredentials({ slugs: ['github'], sessionId: 's-1' });
 
     expect(server.received.map((r) => `${r.method ?? ''} ${r.url ?? ''}`)).toEqual([
       'POST /v1/events',
@@ -808,6 +814,8 @@ describe('routes', () => {
       'POST /v1/credential-sightings',
       'POST /v1/plugin/labels',
       'GET /v1/plugin/sessions/s-1/hold',
+      'GET /v1/vault/available',
+      'POST /v1/vault/resolve',
     ]);
   });
 
@@ -1506,5 +1514,92 @@ describe('the config-inventory route', () => {
     await expect(client.recordConfigInventory(configRequest)).rejects.toBeInstanceOf(
       RemoteResponseInvalid,
     );
+  });
+});
+
+describe('the vault credential routes', () => {
+  const server = useLoopbackServer();
+  const VALUE = 'ghp_vaultvalue0123456789abcdefABCDEF';
+
+  it('lists the available credentials with GET /v1/vault/available', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(json({ credentials: [{ slug: 'github', description: 'GitHub API token' }] }));
+    });
+
+    const answer = await client.listAvailableCredentials();
+
+    const seen = server.received.at(-1);
+    expect(`${seen?.method ?? ''} ${seen?.url ?? ''}`).toBe('GET /v1/vault/available');
+    expect(seen?.headers['x-api-key']).toBe(API_KEY);
+    expect(answer).toEqual({ credentials: [{ slug: 'github', description: 'GitHub API token' }] });
+  });
+
+  it('resolves with POST /v1/vault/resolve and parses resolved and refused', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        json({
+          resolved: [{ slug: 'github', value: VALUE }],
+          refused: [{ slug: 'stripe', reason: 'no_grant' }],
+        }),
+      );
+    });
+
+    const answer = await client.resolveCredentials({
+      slugs: ['github', 'stripe'],
+      sessionId: 'session-1',
+    });
+
+    const seen = server.received.at(-1);
+    expect(`${seen?.method ?? ''} ${seen?.url ?? ''}`).toBe('POST /v1/vault/resolve');
+    expect(JSON.parse(seen?.body ?? '')).toEqual({
+      slugs: ['github', 'stripe'],
+      sessionId: 'session-1',
+    });
+    expect(answer.resolved).toEqual([{ slug: 'github', value: VALUE }]);
+    expect(answer.refused).toEqual([{ slug: 'stripe', reason: 'no_grant' }]);
+  });
+
+  it('refuses a request with an invalid slug before it reaches the wire', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    const before = server.received.length;
+
+    await expect(
+      client.resolveCredentials({ slugs: ['Not A Slug'], sessionId: null }),
+    ).rejects.toMatchObject({ name: 'RemoteRequestInvalid' });
+    expect(server.received).toHaveLength(before);
+  });
+
+  it('names a deployment without the routes', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((_req, res) => {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(json({ error: { code: 'NOT_FOUND' } }));
+    });
+
+    await expect(client.listAvailableCredentials()).rejects.toBeInstanceOf(RemoteRouteAbsent);
+    await expect(
+      client.resolveCredentials({ slugs: ['github'], sessionId: null }),
+    ).rejects.toBeInstanceOf(RemoteRouteAbsent);
+  });
+
+  it('carries no part of an unreadable resolve body in its error', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(json({ resolved: [{ slug: 'github', value: VALUE, extra: true }], refused: [] }));
+    });
+
+    let error: Error | undefined;
+    try {
+      await client.resolveCredentials({ slugs: ['github'], sessionId: null });
+    } catch (caught) {
+      error = caught as Error;
+    }
+    expect(error).toBeInstanceOf(RemoteResponseInvalid);
+    expectNoEchoOf(error?.message, VALUE);
   });
 });

@@ -3,9 +3,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CredentialResolver } from '../../src/credentials/session-credentials.ts';
 import {
   forgetSessionCredentials,
+  hasPendingCalls,
   injectedValues,
   MAX_REMEMBERED_SESSIONS,
+  notePendingCall,
+  PENDING_CALL_MAX_MS,
   resolveForSession,
+  settlePendingCall,
 } from '../../src/credentials/session-credentials.ts';
 
 afterEach(() => {
@@ -66,5 +70,26 @@ describe('resolveForSession', () => {
     }
     expect(injectedValues('s0').size).toBe(0);
     expect(injectedValues(`s${String(MAX_REMEMBERED_SESSIONS)}`).size).toBe(1);
+  });
+});
+
+describe('pending calls', () => {
+  it('holds while a call given a value has not had its output seen', () => {
+    expect(hasPendingCalls()).toBe(false);
+    notePendingCall('toolu_1', 1_000);
+    expect(hasPendingCalls(2_000)).toBe(true);
+    settlePendingCall('toolu_1');
+    expect(hasPendingCalls(2_000)).toBe(false);
+  });
+
+  it('forgets a call whose output never came', () => {
+    notePendingCall('toolu_lost', 0);
+    expect(hasPendingCalls(PENDING_CALL_MAX_MS + 1)).toBe(false);
+  });
+
+  it('records nothing without a tool use id', () => {
+    notePendingCall(undefined);
+    notePendingCall('');
+    expect(hasPendingCalls()).toBe(false);
   });
 });

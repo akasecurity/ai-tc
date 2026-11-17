@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { reuseScanners } from '@akasecurity/plugin-sdk';
 
 import { version as PLUGIN_VERSION } from '../package.json';
+import { hasPendingCalls } from './credentials/session-credentials.ts';
 import { createTranscriptSweeper } from './credentials/transcript-restore.ts';
 import { postToolUseHandler, preToolUseHandler } from './hooks/hook-server/handlers.ts';
 import {
@@ -111,6 +112,7 @@ try {
     socketPath: socketPath(home, PLUGIN_VERSION),
     handlers,
     idleMs: IDLE_MS,
+    holdOpen: hasPendingCalls,
     maxAgeMs: MAX_AGE_MS,
     handlerTimeoutMs: HANDLER_TIMEOUT_MS,
     maxQueued: MAX_QUEUED,

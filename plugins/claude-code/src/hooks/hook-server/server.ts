@@ -41,6 +41,8 @@ export interface HookServerOptions {
   readonly clientGiveUpMs?: number;
   /** A client that sends nothing for this long is dropped. */
   readonly readTimeoutMs: number;
+  /** True while the server must not exit for being idle or old. */
+  readonly holdOpen?: () => boolean;
   /** True once the code this server runs has been replaced on disk. */
   readonly isStale: () => boolean;
   /** Directory mode for the socket's directory. */
@@ -124,7 +126,8 @@ export async function startHookServer(options: HookServerOptions): Promise<Runni
   const armIdle = (): void => {
     if (idleTimer !== undefined) clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
-      void stop('idle');
+      if (options.holdOpen?.() === true) armIdle();
+      else void stop('idle');
     }, options.idleMs);
     idleTimer.unref();
   };
@@ -225,7 +228,12 @@ export async function startHookServer(options: HookServerOptions): Promise<Runni
           }
         } finally {
           queued -= 1;
-          if (!stopping && queued === 0 && Date.now() - startedAt > options.maxAgeMs) {
+          if (
+            !stopping &&
+            queued === 0 &&
+            Date.now() - startedAt > options.maxAgeMs &&
+            options.holdOpen?.() !== true
+          ) {
             void stop('max-age');
           }
         }

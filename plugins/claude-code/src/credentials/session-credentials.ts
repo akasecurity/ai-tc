@@ -107,4 +107,31 @@ export function sessionsWithValues(): { sessionId: string; credentials: SessionC
 /** Drops every remembered value. */
 export function forgetSessionCredentials(): void {
   sessions.clear();
+  pendingCalls.clear();
+}
+
+/** How long a call given a value may wait for its PostToolUse before it is forgotten. */
+export const PENDING_CALL_MAX_MS = 2 * 60 * 60_000;
+
+const pendingCalls = new Map<string, number>();
+
+/** Records a tool call that was given a value and whose output is still to come. */
+export function notePendingCall(toolUseId: string | undefined, now = Date.now()): void {
+  if (toolUseId !== undefined && toolUseId !== '') pendingCalls.set(toolUseId, now);
+}
+
+/** The tool call's output has been seen. */
+export function settlePendingCall(toolUseId: string | undefined): void {
+  if (toolUseId !== undefined) pendingCalls.delete(toolUseId);
+}
+
+/**
+ * Whether a call given a value is still running. The process that injected the
+ * value is the only one that can replace it in the output, so it must outlive the call.
+ */
+export function hasPendingCalls(now = Date.now()): boolean {
+  for (const [id, since] of pendingCalls) {
+    if (now - since > PENDING_CALL_MAX_MS) pendingCalls.delete(id);
+  }
+  return pendingCalls.size > 0;
 }

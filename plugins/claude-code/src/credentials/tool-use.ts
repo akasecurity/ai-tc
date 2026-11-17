@@ -23,12 +23,24 @@ import {
   valueScrubber,
 } from './handles.ts';
 import type { CredentialResolver } from './session-credentials.ts';
-import { injectedValues, noteTranscript, resolveForSession } from './session-credentials.ts';
+import {
+  injectedValues,
+  notePendingCall,
+  noteTranscript,
+  resolveForSession,
+  settlePendingCall,
+} from './session-credentials.ts';
 
 type Emit = (output: HookOutput) => Promise<void>;
 
 export interface CredentialHookDeps {
   readonly resolve?: CredentialResolver;
+  /**
+   * True when this process stays up to see the call's PostToolUse. A one-shot
+   * hook process forgets the value on exit and could not replace it in the
+   * output, so it refuses the call instead of injecting.
+   */
+  readonly persistent?: boolean;
   /** Called with the session id after a value was injected or scrubbed. */
   readonly onValuesUsed?: (sessionId: string | undefined) => void;
 }
@@ -109,6 +121,17 @@ async function withValues(
 
   const sessionId = getString(input, 'session_id');
   const toolName = getString(input, 'tool_name') ?? 'tool';
+  if (deps.persistent !== true) {
+    return [
+      {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: `AKA's credential service is starting, so it did not supply ${handleList(slugs)}. Run the same call again.`,
+        },
+      },
+    ];
+  }
   const resolved = await resolveForSession(sessionId, slugs, deps.resolve ?? attachedResolver);
   noteTranscript(sessionId, getString(input, 'transcript_path'));
   const note = refusalNote(
@@ -126,6 +149,7 @@ async function withValues(
 
   const { value, substituted } = substituteHandles(base, resolved.values);
   const updatedInput = value as Record<string, unknown>;
+  notePendingCall(getString(input, 'tool_use_id'));
   deps.onValuesUsed?.(sessionId);
   const message = joinMessages(
     shown,
@@ -182,6 +206,7 @@ export async function postToolUseWithCredentials(
   deps: CredentialHookDeps = {},
 ): Promise<void> {
   const sessionId = getString(input, 'session_id');
+  settlePendingCall(getString(input, 'tool_use_id'));
   const injected = injectedValues(sessionId);
   if (injected.size === 0) {
     await run(input, emit);

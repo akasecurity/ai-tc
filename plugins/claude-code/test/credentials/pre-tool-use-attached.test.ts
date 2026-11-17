@@ -93,6 +93,7 @@ describe('credential handles through the real pipelines on an attached machine',
         return Promise.resolve();
       },
       (input, emit) => runPreToolUse(input, emit, { mode: 'hook' }),
+      { persistent: true },
     );
     expect(seen).toContain('POST /v1/vault/resolve');
     expect(pre).toHaveLength(1);

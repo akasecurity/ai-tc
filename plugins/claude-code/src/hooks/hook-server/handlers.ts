@@ -105,6 +105,7 @@ export function preToolUseHandler(
   return handlerFor(
     (input, emit) =>
       preToolUseWithCredentials(input, emit, (i, e) => runPreToolUse(i, e, { mode: 'hook' }), {
+        persistent: true,
         onValuesUsed: (sessionId) => sweeper?.schedule(sessionId),
       }),
     log,
@@ -118,6 +119,7 @@ export function postToolUseHandler(
   return handlerFor(
     (input, emit) =>
       postToolUseWithCredentials(input, emit, runPostToolUse, {
+        persistent: true,
         onValuesUsed: (sessionId) => sweeper?.schedule(sessionId),
       }),
     log,

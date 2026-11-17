@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CredentialResolver } from '../../src/credentials/session-credentials.ts';
 import {
   forgetSessionCredentials,
+  hasPendingCalls,
   resolveForSession,
 } from '../../src/credentials/session-credentials.ts';
 import {
@@ -56,12 +57,46 @@ async function runPre(
       scanned.push(seen.tool_input);
       if (decided !== undefined) await emit(decided);
     },
-    { resolve, onValuesUsed },
+    { resolve, onValuesUsed, persistent: true },
   );
   return { emitted, scanned, onValuesUsed };
 }
 
 describe('preToolUseWithCredentials', () => {
+  it('refuses a call with a handle outside the hook server, resolving nothing', async () => {
+    const resolve = vi.fn(grants);
+    const emitted: HookOutput[] = [];
+    await preToolUseWithCredentials(
+      payload({ command: 'x [[aka:cred:github]]' }),
+      (output) => {
+        emitted.push(output);
+        return Promise.resolve();
+      },
+      () => Promise.resolve(),
+      { resolve },
+    );
+    expect(resolve).not.toHaveBeenCalled();
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]).toMatchObject({
+      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' },
+    });
+    expect(JSON.stringify(emitted)).toContain('Run the same call again');
+  });
+
+  it('records a call it gave a value until its output is seen', async () => {
+    await runPre(
+      { ...payload({ command: 'x [[aka:cred:github]]' }), tool_use_id: 'toolu_9' },
+      undefined,
+    );
+    expect(hasPendingCalls()).toBe(true);
+    await postToolUseWithCredentials(
+      { session_id: 'session-1', tool_use_id: 'toolu_9', tool_name: 'Bash', tool_response: 'ok' },
+      () => Promise.resolve(),
+      () => Promise.resolve(),
+    );
+    expect(hasPendingCalls()).toBe(false);
+  });
+
   it('passes a call without handles straight through and resolves nothing', async () => {
     const resolve = vi.fn(grants);
     const { emitted } = await runPre(payload({ command: 'ls' }), undefined, resolve);
@@ -202,7 +237,7 @@ describe('preToolUseWithCredentials', () => {
           return Promise.resolve();
         },
         () => Promise.reject(new Error('store')),
-        { resolve: grants },
+        { resolve: grants, persistent: true },
       ),
     ).rejects.toThrow('store');
     expect(JSON.stringify(emitted)).toContain(`x ${GITHUB}`);

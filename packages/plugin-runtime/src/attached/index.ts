@@ -120,3 +120,10 @@ export {
   SYNC_THROTTLE_MS,
   triggerPolicySync,
 } from './sync-trigger.ts';
+export type { VaultCredentialClient, VaultCredentialDeps } from './vault-credentials.ts';
+export {
+  AVAILABLE_CREDENTIALS_TIMEOUT_MS,
+  CREDENTIAL_RESOLVE_TIMEOUT_MS,
+  listAvailableCredentials,
+  resolveCredentialValues,
+} from './vault-credentials.ts';

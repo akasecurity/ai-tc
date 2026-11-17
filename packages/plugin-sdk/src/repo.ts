@@ -3,7 +3,7 @@ import { basename, dirname, isAbsolute, join, sep } from 'node:path';
 
 import { canonicalRepoUrl, namesARemoteAddress } from '@akasecurity/persistence';
 
-import { readRegularFile } from './regular-file.ts';
+import { readRegularFile, readRegularFileTail } from './regular-file.ts';
 
 // Repo attribution for a captured event. The Security dashboard's Top-Sources
 // (by repo) and the recommendation engine both group findings by `repo`, but the
@@ -363,6 +363,82 @@ export function resolveGitBranch(cwd: string): string | undefined {
     // `ref: refs/heads/<branch>` on a normal checkout; a detached HEAD is a bare
     // sha with no `ref:` prefix, which we deliberately don't surface as a branch.
     return /^ref:\s*refs\/heads\/(.+?)\s*$/m.exec(head)?.[1];
+  } catch {
+    return undefined;
+  }
+}
+
+/** One commit a checkout's HEAD reached, read from its reflog. */
+export interface HeadCommit {
+  /** The commit id HEAD moved to. */
+  commit: string;
+  /** When HEAD moved, in epoch milliseconds. */
+  at: number;
+  /** What moved it: `commit`, `merge`, `rebase`, `cherry-pick`, `am` or `revert`. */
+  kind: HeadCommitKind;
+}
+
+export type HeadCommitKind = 'commit' | 'merge' | 'rebase' | 'cherry-pick' | 'am' | 'revert';
+
+const HEAD_COMMIT_KINDS: readonly HeadCommitKind[] = [
+  'commit',
+  'merge',
+  'rebase',
+  'cherry-pick',
+  'am',
+  'revert',
+];
+const REFLOG_TAIL_BYTES = 256 * 1024;
+// `<old> <new> <name> <<email>> <seconds> <zone>\t<message>`; only the ids, the time and the
+// message's first word are read.
+const REFLOG_LINE = /^[0-9a-f]{40,64} ([0-9a-f]{40,64}) .* (\d{1,12}) [+-]\d{4}\t([a-z-]+)/;
+const NULL_ID = /^0+$/;
+
+/**
+ * The commits the checkout at `cwd` reached between `from` and `to` (epoch milliseconds,
+ * inclusive), oldest first, from the worktree's own reflog (`logs/HEAD`). Only moves that make or
+ * replay commits count; a checkout, reset or pull does not. Reads at most the last 256 KiB of the
+ * reflog. Pure file I/O; returns an empty list outside a checkout or on any read failure.
+ */
+export function readHeadCommits(cwd: string, from: number, to: number): HeadCommit[] {
+  try {
+    const gitdir = worktreeGitdir(cwd);
+    if (gitdir === undefined) return [];
+    let text: string;
+    try {
+      text = readRegularFileTail(join(gitdir, 'logs', 'HEAD'), REFLOG_TAIL_BYTES);
+    } catch {
+      return [];
+    }
+    const lines = text.split('\n');
+    if (text.length >= REFLOG_TAIL_BYTES) lines.shift();
+    const seen = new Set<string>();
+    const commits: HeadCommit[] = [];
+    for (const line of lines) {
+      const match = REFLOG_LINE.exec(line);
+      if (!match) continue;
+      const [, commit = '', seconds = '', word = ''] = match;
+      const kind = HEAD_COMMIT_KINDS.find((k) => k === word);
+      if (kind === undefined || NULL_ID.test(commit) || seen.has(commit)) continue;
+      const at = Number(seconds) * 1000;
+      if (at < from || at > to) continue;
+      seen.add(commit);
+      commits.push({ commit, at, kind });
+    }
+    return commits;
+  } catch {
+    return [];
+  }
+}
+
+// The gitdir holding this checkout's own HEAD and reflog: `.git` itself for a clone, the
+// `gitdir:` target for a linked worktree or submodule.
+function worktreeGitdir(cwd: string): string | undefined {
+  const root = findGitRoot(cwd);
+  if (!root) return undefined;
+  const dotGit = join(root, '.git');
+  try {
+    return statSync(dotGit).isDirectory() ? dotGit : resolveWorktreeGitdir(root, dotGit);
   } catch {
     return undefined;
   }

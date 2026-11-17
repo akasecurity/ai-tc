@@ -93,6 +93,11 @@ export const AuditEventType = z
     // second process (aka extension status) and a restarted host both have
     // somewhere to read it back from.
     'capture_status',
+    // One row per commit a session's checkout reached through a git command the
+    // agent ran, hung off the session root. Carries the commit id, the branch
+    // and the kind of HEAD move in `attributes`; never the commit message,
+    // author or diff.
+    'git_commit',
   ])
   .meta({ id: 'AuditEventType' });
 export type AuditEventType = z.infer<typeof AuditEventType>;

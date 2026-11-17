@@ -156,6 +156,7 @@ export {
   captureId,
   captureWireId,
   classifiedDataId,
+  gitCommitId,
   inspectionDefinitionId,
   inspectionFindingId,
   inventoryId,

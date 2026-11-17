@@ -19,7 +19,7 @@
 // never from live env (which would mislabel backfilled history under today's env).
 import { sessionAccountsDir } from '@akasecurity/persistence';
 import { accountScopeOf, resolveDataGateway } from '@akasecurity/plugin-runtime';
-import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
+import type { DataGateway, PluginConfig, SessionCommand } from '@akasecurity/plugin-sdk';
 import {
   createPolicyResolver,
   createVaultGlue,
@@ -28,6 +28,7 @@ import {
   resolveRepoNwo,
   scanText,
   scopeKeyMemo,
+  sessionCommitEvents,
   sessionRootScopeKey,
   toolCallScopeKey,
   truncateTarget,
@@ -358,11 +359,27 @@ export async function reconcileSessionToolCalls(
 
   try {
     await gateway.recordToolCalls(inputs);
-    return inputs.length;
   } catch {
     // Fail-open (see reconcileSession): drop the whole pass; recovered idempotently.
     return 0;
   }
+  await recordSessionCommits(
+    gateway,
+    sessionId,
+    toolCalls.flatMap((tc) =>
+      tc.toolName === 'Bash'
+        ? [
+            {
+              cwd: tc.cwd,
+              occurredAt: tc.occurredAt,
+              command: tc.target,
+              scopeKey: stamp(scopeKeyOf(tc.cwd), tc.uuid),
+            },
+          ]
+        : [],
+    ),
+  );
+  return inputs.length;
 }
 
 // Group the flattened tool-call stream into per-session buckets (file order within
@@ -465,6 +482,23 @@ export async function reconcileHistory(
 //
 // Resolves its OWN gateway and always `close()`s it in a finally, so a
 // single worker invocation is self-contained. Fully fail-open.
+// The commits a session's git commands made, read from each command's checkout once the tool
+// calls are written, so the session root they hang off exists. Fail-open: a commit not recorded
+// on this pass is recorded on a later one while its command is still in the read tail.
+async function recordSessionCommits(
+  gateway: DataGateway,
+  sessionId: string,
+  commands: readonly SessionCommand[],
+): Promise<void> {
+  for (const event of sessionCommitEvents(sessionId, commands)) {
+    try {
+      await gateway.recordAuditEvent(event);
+    } catch {
+      return;
+    }
+  }
+}
+
 export async function reconcileSessionTail(
   config: PluginConfig,
   sessionId: string,

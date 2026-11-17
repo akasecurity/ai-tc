@@ -126,6 +126,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'formatPointer',
   'forwardCredentialSightings',
   'freshAttachmentScope',
+  'gitCommitId',
   'hashProjectKey',
   'historySyncStatePath',
   'holdsScopedFor',

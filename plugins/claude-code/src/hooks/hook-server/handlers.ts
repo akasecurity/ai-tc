@@ -5,6 +5,11 @@ import { chdir } from 'node:process';
 import { loadConfig } from '@akasecurity/plugin-sdk';
 import { isVaultConsentValid } from '@akasecurity/schema';
 
+import {
+  postToolUseWithCredentials,
+  preToolUseWithCredentials,
+} from '../../credentials/tool-use.ts';
+import type { TranscriptSweeper } from '../../credentials/transcript-restore.ts';
 import { runPostToolUse } from '../post-tool-use-run.ts';
 import { runPreToolUse } from '../pre-tool-use-run.ts';
 import type { HookOutput } from '../shared.ts';
@@ -93,10 +98,28 @@ function handlerFor(run: HookRun, log: (line: string) => void): HookHandler {
     });
 }
 
-export function preToolUseHandler(log: (line: string) => void): HookHandler {
-  return handlerFor((input, emit) => runPreToolUse(input, emit, { mode: 'hook' }), log);
+export function preToolUseHandler(
+  log: (line: string) => void,
+  sweeper?: TranscriptSweeper,
+): HookHandler {
+  return handlerFor(
+    (input, emit) =>
+      preToolUseWithCredentials(input, emit, (i, e) => runPreToolUse(i, e, { mode: 'hook' }), {
+        onValuesUsed: (sessionId) => sweeper?.schedule(sessionId),
+      }),
+    log,
+  );
 }
 
-export function postToolUseHandler(log: (line: string) => void): HookHandler {
-  return handlerFor(runPostToolUse, log);
+export function postToolUseHandler(
+  log: (line: string) => void,
+  sweeper?: TranscriptSweeper,
+): HookHandler {
+  return handlerFor(
+    (input, emit) =>
+      postToolUseWithCredentials(input, emit, runPostToolUse, {
+        onValuesUsed: (sessionId) => sweeper?.schedule(sessionId),
+      }),
+    log,
+  );
 }

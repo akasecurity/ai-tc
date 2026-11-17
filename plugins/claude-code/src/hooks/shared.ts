@@ -79,6 +79,15 @@ export type HookOutput =
   // can object: it is a silent downgrade rather than a cleanup.
   | { systemMessage: string }
   | PreToolUseOutput
+  // A tool input with credential handles replaced by their values and no
+  // permission decision, so the host's own permission flow still applies.
+  | {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse';
+        updatedInput: Record<string, unknown>;
+      };
+      systemMessage?: string;
+    }
   | PreModelSwitchOutput
   | {
       hookSpecificOutput: {

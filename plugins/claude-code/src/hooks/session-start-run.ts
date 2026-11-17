@@ -3,11 +3,13 @@
 // environment, and passes the session start, the reconcile trigger and the
 // emitter this runs with.
 import type { handleSessionStart } from '@akasecurity/plugin-runtime';
-import { sessionStartNotice } from '@akasecurity/plugin-runtime';
+import { listAvailableCredentials, sessionStartNotice } from '@akasecurity/plugin-runtime';
 import { loadConfig, recordSessionModel } from '@akasecurity/plugin-sdk';
+import type { AvailableCredential } from '@akasecurity/schema';
 import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { INSTALL_ROOT, PLUGIN_PACKAGE } from '../build-info.ts';
+import { credentialBrief } from '../credentials/brief.ts';
 import type { triggerReconcile } from '../history/reconcile-trigger.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { standingBrief } from '../protocol/notes.ts';
@@ -28,6 +30,9 @@ export interface SessionStartDeps {
   readonly emit: (output: HookOutput) => Promise<void>;
   /** The clock the session's boundary and login view are stamped with; the entry passes none. */
   readonly now?: (() => number) | undefined;
+  /** The credentials granted to this machine; the entry passes none and the attached client is asked. */
+  readonly availableCredentials?:
+    ((dataDir: string) => Promise<AvailableCredential[] | undefined>) | undefined;
 }
 
 /** One SessionStart, from its parsed stdin payload (null when it did not parse). */
@@ -125,19 +130,42 @@ export async function runSessionStart(
   // consent does this hook give the model anything — the brief teaches the
   // model what a pointer is and carries the per-session authenticity marker.
   // Without consent the vault is inert, and only the user notice (if any) goes
-  // out.
+  // out. On an attached machine with granted credentials, a note naming their
+  // handles rides alongside; it is skipped on any failure.
+  const briefs: string[] = [];
   if (isVaultConsentValid(config.settings.vaultConsent)) {
+    briefs.push(
+      standingBrief({
+        marker: sessionProtocolMarker(config.dataDir, sessionId),
+        inlineReveal: config.settings.vaultInlineReveal,
+      }),
+    );
+  }
+  const credentials = await availableCredentialsBrief(config.dataDir, deps);
+  if (credentials !== undefined) briefs.push(credentials);
+  if (briefs.length > 0) {
     await deps.emit({
       hookSpecificOutput: {
         hookEventName: 'SessionStart',
-        additionalContext: standingBrief({
-          marker: sessionProtocolMarker(config.dataDir, sessionId),
-          inlineReveal: config.settings.vaultInlineReveal,
-        }),
+        additionalContext: briefs.join('\n\n'),
       },
       ...(shown === undefined ? {} : { systemMessage: shown }),
     });
   } else if (shown !== undefined) {
     await deps.emit({ systemMessage: shown });
+  }
+}
+
+async function availableCredentialsBrief(
+  dataDir: string,
+  deps: SessionStartDeps,
+): Promise<string | undefined> {
+  try {
+    const available = deps.availableCredentials
+      ? await deps.availableCredentials(dataDir)
+      : await listAvailableCredentials({ dataDir });
+    return available === undefined ? undefined : credentialBrief(available);
+  } catch {
+    return undefined;
   }
 }

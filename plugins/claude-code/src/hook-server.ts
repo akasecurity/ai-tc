@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { reuseScanners } from '@akasecurity/plugin-sdk';
 
 import { version as PLUGIN_VERSION } from '../package.json';
+import { createTranscriptSweeper } from './credentials/transcript-restore.ts';
 import { postToolUseHandler, preToolUseHandler } from './hooks/hook-server/handlers.ts';
 import {
   logPath,
@@ -36,6 +37,7 @@ const HANDLER_TIMEOUT_MS = 8_000;
 const MAX_QUEUED = 16;
 const READ_TIMEOUT_MS = 2_000;
 const MAX_LOG_BYTES = 256 * 1024;
+const FINAL_TRANSCRIPT_PASS_MS = 3_000;
 
 const home = homedir();
 const log = (line: string): void => {
@@ -98,9 +100,12 @@ try {
   scrubPresenceOnlyEnv();
   await reuseGateways(true);
   await reuseScanners(true);
+  // Rewrites credential values this process injected back to their handles in
+  // the session transcripts, while the values are still in memory.
+  const sweeper = createTranscriptSweeper();
   const handlers = new Map<string, HookHandler>([
-    ['pre-tool-use', preToolUseHandler(log)],
-    ['post-tool-use', postToolUseHandler(log)],
+    ['pre-tool-use', preToolUseHandler(log, sweeper)],
+    ['post-tool-use', postToolUseHandler(log, sweeper)],
   ]);
   const running = await startHookServer({
     socketPath: socketPath(home, PLUGIN_VERSION),
@@ -116,7 +121,12 @@ try {
     onExit: (reason) => {
       log(`exit: ${reason}`);
       releaseStartLock();
-      void reuseScanners(false)
+      void Promise.race([
+        sweeper.flush(),
+        new Promise((resolve) => setTimeout(resolve, FINAL_TRANSCRIPT_PASS_MS)),
+      ])
+        .catch(() => undefined)
+        .then(() => reuseScanners(false))
         .then(dropHeldGateway)
         .finally(() => {
           process.exit(0);

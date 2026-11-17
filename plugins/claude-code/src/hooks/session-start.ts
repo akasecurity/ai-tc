@@ -15,7 +15,8 @@
  * has no decision to make). On an attached machine it shows the user, as
  * systemMessage, the line saying where this session's activity goes; with
  * vault consent it also injects the standing vault protocol brief as
- * additionalContext. Fully fail-open: any error → no output,
+ * additionalContext, and on an attached machine with granted credentials a
+ * note listing their handles. Fully fail-open: any error → no output,
  * exit 0.
  */
 import { readFileSync } from 'node:fs';

@@ -161,7 +161,9 @@ function skipHeredocBodies(command: string, at: number, heredocs: readonly Hered
 
 /**
  * A reader of each checkout's reflog commits that reads each directory once. A caller that
- * records commits for several sessions in one pass hands every call the same one.
+ * records commits for several sessions in one pass hands every call the same one. It never
+ * re-reads: a commit made after a directory's first read is not in its answer, so a memo lasts
+ * one pass and a later pass builds a new one.
  */
 export function headLogMemo(): (dir: string) => HeadCommit[] | null {
   const logs = new Map<string, HeadCommit[] | null>();

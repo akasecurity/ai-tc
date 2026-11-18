@@ -121,7 +121,7 @@ describe('the per-branch gate tables', () => {
       expect(parseGateTable(record, branch).length).toBeGreaterThan(0);
     }
     expect(parseGateTable(record, 'dev')).toEqual([
-      { check: 'Lint · Typecheck · Test · Build', file: 'ci.yml', enforced: false },
+      { check: 'Lint · Typecheck · Test · Build', file: 'ci.yml', enforced: true },
       { check: 'Dependency audit', file: 'audit.yml', enforced: false },
     ]);
   });

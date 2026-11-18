@@ -185,6 +185,7 @@ describe('committingGitDirs', () => {
     'git status',
     'cat <<EOF\ngit commit\nEOF',
     'cat <<-EOF\n\tgit merge main\n\tEOF',
+    'cat <<EOF\n\tEOF\ngit commit\nEOF',
     'cat <<A <<B\ngit commit\nA\ngit commit\nB',
     'git --git-dir=/x commit -m x',
     'git --git-dir /x commit -m x',

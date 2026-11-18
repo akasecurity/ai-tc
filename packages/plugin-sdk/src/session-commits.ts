@@ -82,13 +82,13 @@ function commandParts(command: string): string[][] {
   let word = '';
   let quote: '"' | "'" | null = null;
   let inWord = false;
-  let delimiterNext = false;
-  const heredocs: string[] = [];
+  let delimiterNext: Heredoc['stripTabs'] | null = null;
+  const heredocs: Heredoc[] = [];
   const endWord = () => {
     if (inWord) {
-      if (delimiterNext) heredocs.push(word);
-      else words.push(word);
-      delimiterNext = false;
+      if (delimiterNext === null) words.push(word);
+      else heredocs.push({ delimiter: word, stripTabs: delimiterNext });
+      delimiterNext = null;
     }
     word = '';
     inWord = false;
@@ -117,8 +117,9 @@ function commandParts(command: string): string[][] {
       if (command.startsWith('<<<', i)) {
         i += 2;
       } else {
-        i += command.startsWith('<<-', i) ? 2 : 1;
-        delimiterNext = true;
+        const stripTabs = command.startsWith('<<-', i);
+        i += stripTabs ? 2 : 1;
+        delimiterNext = stripTabs;
       }
     } else if (ch === '\n') {
       endPart();
@@ -136,17 +137,23 @@ function commandParts(command: string): string[][] {
   return parts;
 }
 
-// The index of the newline that ends the last of `delimiters`' bodies, starting after the newline
+interface Heredoc {
+  readonly delimiter: string;
+  /** True for `<<-`, whose lines, the delimiter's included, lose their leading tabs. */
+  readonly stripTabs: boolean;
+}
+
+// The index of the newline that ends the last of `heredocs`' bodies, starting after the newline
 // at `at`; the end of the command when a delimiter line never comes.
-function skipHeredocBodies(command: string, at: number, delimiters: readonly string[]): number {
+function skipHeredocBodies(command: string, at: number, heredocs: readonly Heredoc[]): number {
   let i = at;
-  for (const delimiter of delimiters) {
+  for (const { delimiter, stripTabs } of heredocs) {
     while (i < command.length) {
       const next = command.indexOf('\n', i + 1);
       const end = next === -1 ? command.length : next;
       const line = command.slice(i + 1, end);
       i = end;
-      if (line.replace(/^\t+/, '') === delimiter) break;
+      if ((stripTabs ? line.replace(/^\t+/, '') : line) === delimiter) break;
     }
   }
   return i;

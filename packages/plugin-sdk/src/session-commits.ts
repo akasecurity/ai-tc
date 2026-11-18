@@ -160,7 +160,9 @@ function skipHeredocBodies(command: string, at: number, heredocs: readonly Hered
 }
 
 /**
- * A reader of each checkout's reflog commits that reads each directory once. A caller that
+ * A reader of a checkout's reflog commits that reads each directory it is given once. It is
+ * keyed on the directory a command ran in, so two subdirectories of one checkout are two
+ * entries and two reads. A caller that
  * records commits for several sessions in one pass hands every call the same one. It never
  * re-reads: a commit made after a directory's first read is not in its answer, so a memo lasts
  * one pass and a later pass builds a new one.

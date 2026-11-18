@@ -385,12 +385,15 @@ const REFLOG_TAIL_BYTES = 256 * 1024;
 const REFLOG_LINE = /^[0-9a-f]{40,64} ([0-9a-f]{40,64}) .* (\d{1,12}) [+-]\d{4}\t(.*)$/;
 const NULL_ID = /^0+$/;
 // The HEAD moves that leave HEAD on a commit the move made. A rebase counts only at its last
-// step: the commits it replays on the way are not new work.
+// step: the commits it replays on the way are not new work. A fast-forward merge, cherry-pick
+// or rebase does not count: it moves HEAD onto a commit that already existed.
+const REBASE_START = /^rebase( -i)? \(start\):/;
+const REBASE_STEP = /^rebase( -i)? \((?!start\)|finish\))[a-z]+\):/;
 const KIND_OF_MESSAGE: readonly [RegExp, GitCommitKind][] = [
   [/^commit \(merge\):/, 'merge'],
   [/^commit( \([a-z]+\))?:/, 'commit'],
-  [/^merge /, 'merge'],
-  [/^cherry-pick:/, 'cherry-pick'],
+  [/^merge (?!.*: Fast-forward$)/, 'merge'],
+  [/^cherry-pick: (?!fast-forward$)/, 'cherry-pick'],
   [/^revert:/, 'revert'],
   [/^am:/, 'am'],
   [/^rebase( -i)? \(finish\):/, 'rebase'],
@@ -398,8 +401,8 @@ const KIND_OF_MESSAGE: readonly [RegExp, GitCommitKind][] = [
 
 /**
  * The commits the checkout at `cwd` reached, from the worktree's own reflog (`logs/HEAD`), oldest
- * first: only moves that make commits count; a checkout, reset, pull or a rebase's intermediate
- * step does not. Reads at most the last 256 KiB. Pure file I/O; null outside a checkout or when
+ * first: only moves that make commits count; a checkout, reset, pull, fast-forward or a rebase's
+ * intermediate step does not. Reads at most the last 256 KiB. Pure file I/O; null outside a checkout or when
  * the reflog cannot be read.
  */
 export function readHeadLog(cwd: string): HeadCommit[] | null {
@@ -416,13 +419,19 @@ export function readHeadLog(cwd: string): HeadCommit[] | null {
     if (tail.truncated) lines.shift();
     const seen = new Set<string>();
     const commits: HeadCommit[] = [];
+    // Steps since the last `rebase (start)`, or null before one is read. A rebase that finishes
+    // with none only fast-forwarded onto commits it did not make.
+    let rebaseSteps: number | null = null;
     for (const line of lines) {
       const match = REFLOG_LINE.exec(line);
       if (!match) continue;
       const [, commit = '', seconds = '', message = ''] = match;
       const at = Number(seconds) * 1000;
+      if (REBASE_START.test(message)) rebaseSteps = 0;
+      else if (REBASE_STEP.test(message) && rebaseSteps !== null) rebaseSteps += 1;
       const kind = KIND_OF_MESSAGE.find(([pattern]) => pattern.test(message))?.[1];
       if (kind === undefined || NULL_ID.test(commit) || seen.has(commit)) continue;
+      if (kind === 'rebase' && rebaseSteps === 0) continue;
       seen.add(commit);
       commits.push({ commit, at, kind });
     }

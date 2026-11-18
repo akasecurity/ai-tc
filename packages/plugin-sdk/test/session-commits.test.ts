@@ -36,6 +36,24 @@ afterEach(() => {
   removeTree(root);
 });
 
+/** Runs git in `dir` with a fixed identity and no user or system config. */
+function realGit(dir: string): (...args: string[]) => string {
+  return (...args) =>
+    execFileSync('git', args, {
+      cwd: dir,
+      encoding: 'utf8',
+      env: {
+        PATH: '/usr/bin:/bin:/usr/local/bin',
+        HOME: dir,
+        GIT_CONFIG_NOSYSTEM: '1',
+        GIT_AUTHOR_NAME: 'Dev',
+        GIT_AUTHOR_EMAIL: 'dev@example.com',
+        GIT_COMMITTER_NAME: 'Dev',
+        GIT_COMMITTER_EMAIL: 'dev@example.com',
+      },
+    }).trim();
+}
+
 function reflogLine(from: string, to: string, at: number, message: string, name = 'Dev'): string {
   return `${from} ${to} ${name} <dev@example.com> ${String(Math.floor(at / 1000))} +0000\t${message}\n`;
 }
@@ -90,7 +108,7 @@ describe('readHeadLog', () => {
       reflogLine(ZERO, A, T0 - 60_000, 'clone: from https://github.com/acme/api'),
       reflogLine(A, B, T0, 'commit: add retries'),
       reflogLine(B, A, T0 + 1_000, 'checkout: moving from feat/x to main'),
-      reflogLine(A, C, T0 + 2_000, 'merge feat/y: Fast-forward'),
+      reflogLine(A, C, T0 + 2_000, "merge feat/y: Merge made by the 'ort' strategy."),
       reflogLine(C, C, T0 + 3_000, 'reset: moving to HEAD'),
       reflogLine(C, D, T0 + 4_000, 'pull: Fast-forward'),
       reflogLine(D, A, T0 + 5_000, 'rebase (start): checkout main'),
@@ -102,6 +120,47 @@ describe('readHeadLog', () => {
       { commit: C, at: T0 + 2_000, kind: 'merge' },
       { commit: E, at: T0 + 5_000, kind: 'rebase' },
     ]);
+  });
+
+  it('leaves out a fast-forward merge, cherry-pick or rebase', () => {
+    cloneWithReflog(root, [
+      reflogLine(A, B, T0, 'merge main: Fast-forward'),
+      reflogLine(B, C, T0 + 1_000, 'cherry-pick: fast-forward'),
+      reflogLine(C, D, T0 + 2_000, 'rebase (start): checkout main'),
+      reflogLine(D, D, T0 + 3_000, 'rebase (finish): returning to refs/heads/feat/x'),
+      reflogLine(D, E, T0 + 4_000, 'rebase -i (start): checkout main'),
+      reflogLine(E, E, T0 + 5_000, 'rebase -i (finish): returning to refs/heads/feat/x'),
+    ]);
+    expect(readHeadLog(root)).toEqual([]);
+  });
+
+  it('leaves out the fast-forwards git itself wrote, and keeps a merge commit', () => {
+    const git = realGit(root);
+    git('init', '-q', '-b', 'main');
+    writeFileSync(join(root, 'a.txt'), 'a\n');
+    git('add', 'a.txt');
+    git('commit', '-q', '-m', 'one');
+    const upstream = join(root, '.upstream');
+    git('clone', '-q', root, upstream);
+    const other = realGit(upstream);
+    writeFileSync(join(upstream, 'a.txt'), 'b\n');
+    other('commit', '-q', '-am', 'two, made elsewhere');
+    git('fetch', '-q', upstream, 'main:elsewhere');
+    git('checkout', '-q', '-b', 'ff-merge', 'main');
+    git('merge', '-q', '--ff-only', 'elsewhere');
+    git('checkout', '-q', '-b', 'ff-pick', 'main');
+    git('cherry-pick', '--ff', 'elsewhere');
+    git('checkout', '-q', '-b', 'ff-rebase', 'main');
+    git('rebase', '-q', 'elsewhere');
+    git('checkout', '-q', '-b', 'no-ff', 'main');
+    writeFileSync(join(root, 'b.txt'), 'b\n');
+    git('add', 'b.txt');
+    git('commit', '-q', '-m', 'three');
+    git('merge', '-q', '--no-ff', '--no-edit', 'elsewhere');
+    const log = readHeadLog(root) ?? [];
+    expect(log.map((c) => c.commit)).not.toContain(git('rev-parse', 'elsewhere'));
+    expect(log.map((c) => c.kind)).toEqual(['commit', 'commit', 'merge']);
+    expect(log.at(-1)?.commit).toBe(git('rev-parse', 'HEAD'));
   });
 
   it("reads a linked worktree's own reflog", () => {
@@ -280,20 +339,7 @@ describe('sessionCommitEvents', () => {
   });
 
   it('reads a reflog git itself wrote', () => {
-    const git = (...args: string[]) =>
-      execFileSync('git', args, {
-        cwd: root,
-        encoding: 'utf8',
-        env: {
-          PATH: '/usr/bin:/bin:/usr/local/bin',
-          HOME: root,
-          GIT_CONFIG_NOSYSTEM: '1',
-          GIT_AUTHOR_NAME: 'Dev',
-          GIT_AUTHOR_EMAIL: 'dev@example.com',
-          GIT_COMMITTER_NAME: 'Dev',
-          GIT_COMMITTER_EMAIL: 'dev@example.com',
-        },
-      }).trim();
+    const git = realGit(root);
     git('init', '-q', '-b', 'main');
     writeFileSync(join(root, 'a.txt'), 'a\n');
     git('add', 'a.txt');

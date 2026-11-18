@@ -379,16 +379,6 @@ export interface HeadCommit {
   kind: GitCommitKind;
 }
 
-/** The commits a checkout's reflog holds, oldest first. */
-export interface HeadLog {
-  commits: HeadCommit[];
-  /**
-   * The earliest time the read covers: the reflog's first entry when it was read whole, or the
-   * first entry of the tail read. Nothing before it can be told apart from no commit.
-   */
-  coversFrom: number;
-}
-
 const REFLOG_TAIL_BYTES = 256 * 1024;
 // `<old> <new> <name> <<email>> <seconds> <zone>\t<message>`; only the new id, the time and the
 // message are read.
@@ -412,7 +402,7 @@ const KIND_OF_MESSAGE: readonly [RegExp, GitCommitKind][] = [
  * step does not. Reads at most the last 256 KiB. Pure file I/O; null outside a checkout or when
  * the reflog cannot be read.
  */
-export function readHeadLog(cwd: string): HeadLog | null {
+export function readHeadLog(cwd: string): HeadCommit[] | null {
   try {
     const gitdir = worktreeGitdir(cwd);
     if (gitdir === undefined) return null;
@@ -426,19 +416,17 @@ export function readHeadLog(cwd: string): HeadLog | null {
     if (tail.truncated) lines.shift();
     const seen = new Set<string>();
     const commits: HeadCommit[] = [];
-    let coversFrom = Number.POSITIVE_INFINITY;
     for (const line of lines) {
       const match = REFLOG_LINE.exec(line);
       if (!match) continue;
       const [, commit = '', seconds = '', message = ''] = match;
       const at = Number(seconds) * 1000;
-      coversFrom = Math.min(coversFrom, at);
       const kind = KIND_OF_MESSAGE.find(([pattern]) => pattern.test(message))?.[1];
       if (kind === undefined || NULL_ID.test(commit) || seen.has(commit)) continue;
       seen.add(commit);
       commits.push({ commit, at, kind });
     }
-    return { commits, coversFrom: tail.truncated ? coversFrom : Number.NEGATIVE_INFINITY };
+    return commits;
   } catch {
     return null;
   }

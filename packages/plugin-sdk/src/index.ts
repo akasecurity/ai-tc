@@ -180,7 +180,7 @@ export {
   RawEgressError,
   safeMaskedMatch,
 } from './raw-egress.ts';
-export type { HeadCommit, HeadLog, RepoAttribution } from './repo.ts';
+export type { HeadCommit, RepoAttribution } from './repo.ts';
 export {
   readHeadLog,
   remoteWithoutCredentials,

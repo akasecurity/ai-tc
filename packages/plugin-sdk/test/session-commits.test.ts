@@ -96,14 +96,11 @@ describe('readHeadLog', () => {
       reflogLine(A, B, T0 + 5_100, 'rebase (pick): someone else’s commit'),
       reflogLine(B, E, T0 + 5_200, 'rebase (finish): returning to refs/heads/feat/x'),
     ]);
-    expect(readHeadLog(root)).toEqual({
-      commits: [
-        { commit: B, at: T0, kind: 'commit' },
-        { commit: C, at: T0 + 2_000, kind: 'merge' },
-        { commit: E, at: T0 + 5_000, kind: 'rebase' },
-      ],
-      coversFrom: Number.NEGATIVE_INFINITY,
-    });
+    expect(readHeadLog(root)).toEqual([
+      { commit: B, at: T0, kind: 'commit' },
+      { commit: C, at: T0 + 2_000, kind: 'merge' },
+      { commit: E, at: T0 + 5_000, kind: 'rebase' },
+    ]);
   });
 
   it("reads a linked worktree's own reflog", () => {
@@ -113,7 +110,7 @@ describe('readHeadLog', () => {
     const checkout = join(root, 'wt');
     mkdirSync(checkout, { recursive: true });
     writeFileSync(join(checkout, '.git'), `gitdir: ${gitdir}\n`);
-    expect(readHeadLog(checkout)?.commits).toEqual([{ commit: B, at: T0, kind: 'commit' }]);
+    expect(readHeadLog(checkout)).toEqual([{ commit: B, at: T0, kind: 'commit' }]);
   });
 
   it('keeps the first line of a reflog of exactly the read size', () => {
@@ -123,21 +120,34 @@ describe('readHeadLog', () => {
     const fillers = Math.floor((size - first.length) / filler.length);
     const pad = size - first.length - fillers * filler.length;
     cloneWithReflog(root, [first, filler.repeat(fillers), ' '.repeat(pad)]);
-    expect(readHeadLog(root)?.commits.map((c) => c.commit)).toEqual([B]);
+    expect(readHeadLog(root)?.map((c) => c.commit)).toEqual([B]);
   });
 
-  it('reads the tail of a longer reflog, multi-byte names included, and says where it starts', () => {
+  it('drops a first line the read starts inside, even when what is left of it still parses', () => {
+    const old64 = 'f'.repeat(64);
+    const new64 = '1'.repeat(64);
+    const cut = 10;
+    const first = reflogLine(old64, new64, T0, 'commit: cut in its old id');
+    const filler = reflogLine(B, C, T0 + 1, 'checkout: moving from a to b');
+    const size = 256 * 1024 + cut;
+    const fillers = Math.floor((size - first.length) / filler.length);
+    const pad = size - first.length - fillers * filler.length;
+    cloneWithReflog(root, [first, filler.repeat(fillers), ' '.repeat(pad)]);
+    const fragment = first.slice(cut);
+    expect(fragment.startsWith('f'.repeat(54) + ' ')).toBe(true);
+    expect(readHeadLog(root)).toEqual([]);
+  });
+
+  it('reads the tail of a longer reflog, multi-byte names included', () => {
     cloneWithReflog(root, []);
     const log = join(root, '.git', 'logs', 'HEAD');
     const old = reflogLine(A, C, T0 - 10_000, 'commit: old', 'Zoë Ŝtrâße');
     appendFileSync(log, old.repeat(Math.ceil((300 * 1024) / old.length)));
     appendFileSync(log, reflogLine(C, B, T0, 'commit: newest', 'Zoë Ŝtrâße'));
-    const log2 = readHeadLog(root);
-    expect(log2?.commits).toEqual([
+    expect(readHeadLog(root)).toEqual([
       { commit: C, at: T0 - 10_000, kind: 'commit' },
       { commit: B, at: T0, kind: 'commit' },
     ]);
-    expect(log2?.coversFrom).toBe(T0 - 10_000);
   });
 
   it('answers null outside a checkout or without a reflog', () => {
@@ -157,6 +167,9 @@ describe('committingGitDirs', () => {
     'git cherry-pick abc123',
     'git am < patch',
     'git revert HEAD',
+    'git commit -F - <<EOF\nadd retries\nEOF',
+    "cat <<'EOF' > notes\ngit commit\nEOF\ngit commit -m x",
+    'git --work-tree=../wt commit -m x',
   ])('finds the commit in %s', (command) => {
     expect(committingGitDirs(command, '/w')).toEqual(['/w']);
   });
@@ -170,6 +183,11 @@ describe('committingGitDirs', () => {
     'cat docs/git-commit.txt',
     'echo "git merge main"',
     'git status',
+    'cat <<EOF\ngit commit\nEOF',
+    'cat <<-EOF\n\tgit merge main\n\tEOF',
+    'cat <<A <<B\ngit commit\nA\ngit commit\nB',
+    'git --git-dir=/x commit -m x',
+    'git --git-dir /x commit -m x',
   ])('finds none in %s', (command) => {
     expect(committingGitDirs(command, '/w')).toEqual([]);
   });
@@ -225,6 +243,15 @@ describe('sessionCommitEvents', () => {
     const first = sessionCommitEvents('s', commands);
     expect(first).toHaveLength(1);
     expect(sessionCommitEvents('s', commands)).toEqual(first);
+  });
+
+  it('stamps a commit two commands saw with the scope key of the first', () => {
+    cloneWithReflog(root, [reflogLine(A, B, T0 + 1_000, 'commit: x')]);
+    const events = sessionCommitEvents('s', [
+      call('git commit -m x', 0, 3_000, { scopeKey: 'first' }),
+      call('git commit --amend', 500, 2_000, { scopeKey: 'second' }),
+    ]);
+    expect(events.map((e) => e.attributes?.scope_key)).toEqual(['first']);
   });
 
   it('gives each of two sessions running in one checkout its own row for the same commit', () => {

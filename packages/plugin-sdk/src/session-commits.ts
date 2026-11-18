@@ -3,7 +3,7 @@ import { isAbsolute, resolve } from 'node:path';
 import { gitCommitId } from '@akasecurity/persistence';
 import type { AuditEventInput, GitCommitAttributes } from '@akasecurity/schema';
 
-import type { HeadLog } from './repo.ts';
+import type { HeadCommit } from './repo.ts';
 import { readHeadLog } from './repo.ts';
 
 /** A shell command a session ran, as its transcript records it. */
@@ -34,14 +34,15 @@ const COMMITTING_SUBCOMMANDS = new Set([
   'revert',
 ]);
 const NON_COMMITTING_FLAGS = new Set(['--help', '-h', '--dry-run']);
-// Global options that take the next word as their value.
+// Global options that take a value, as the next word or after `=`.
 const OPTIONS_WITH_VALUE = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace']);
 
 /**
  * The directory of each git invocation in `command` that can make commits, resolved against
  * `cwd` and any `-C` it carries. The command is split on unquoted `;`, `&`, `|` and newlines, and
- * each part is read word by word, so git named inside quotes, in an argument, or as another
- * program's input does not count, nor does a `--help` or `--dry-run` run.
+ * each part is read word by word, so git named inside quotes, in an argument, or in a heredoc's
+ * body does not count, nor does a `--help` or `--dry-run` run. An invocation given `--git-dir`
+ * does not count either: the repository it writes to is not the checkout at its directory.
  */
 export function committingGitDirs(command: string, cwd: string): string[] {
   const dirs: string[] = [];
@@ -51,15 +52,20 @@ export function committingGitDirs(command: string, cwd: string): string[] {
     if (words[i] !== 'git') continue;
     i += 1;
     let dir = cwd;
+    let ownGitDir = false;
     while (i < words.length && (words[i] ?? '').startsWith('-')) {
-      const option = words[i] ?? '';
-      if (OPTIONS_WITH_VALUE.has(option)) {
+      const word = words[i] ?? '';
+      const eq = word.indexOf('=');
+      const option = eq > 0 && word.startsWith('--') ? word.slice(0, eq) : word;
+      if (option === '--git-dir') ownGitDir = true;
+      if (OPTIONS_WITH_VALUE.has(option) && option === word) {
         if (option === '-C' && words[i + 1] !== undefined) dir = resolve(dir, words[i + 1] ?? '');
         i += 2;
       } else {
         i += 1;
       }
     }
+    if (ownGitDir) continue;
     const subcommand = words[i];
     if (subcommand === undefined || !COMMITTING_SUBCOMMANDS.has(subcommand)) continue;
     if (words.slice(i + 1).some((w) => NON_COMMITTING_FLAGS.has(w))) continue;
@@ -69,15 +75,21 @@ export function committingGitDirs(command: string, cwd: string): string[] {
 }
 
 // The words of each part of a shell command, quotes removed. Unquoted `;`, `&`, `|`, `(`, `)` and
-// newlines end a part.
+// newlines end a part. The body of a `<<` or `<<-` heredoc is skipped, through its delimiter line.
 function commandParts(command: string): string[][] {
   const parts: string[][] = [];
   let words: string[] = [];
   let word = '';
   let quote: '"' | "'" | null = null;
   let inWord = false;
+  let delimiterNext = false;
+  const heredocs: string[] = [];
   const endWord = () => {
-    if (inWord) words.push(word);
+    if (inWord) {
+      if (delimiterNext) heredocs.push(word);
+      else words.push(word);
+      delimiterNext = false;
+    }
     word = '';
     inWord = false;
   };
@@ -100,7 +112,18 @@ function commandParts(command: string): string[][] {
     } else if (ch === '\\' && i + 1 < command.length) {
       word += command.charAt(++i);
       inWord = true;
-    } else if (';&|()\n'.includes(ch)) {
+    } else if (ch === '<' && command.startsWith('<<', i)) {
+      endWord();
+      if (command.startsWith('<<<', i)) {
+        i += 2;
+      } else {
+        i += command.startsWith('<<-', i) ? 2 : 1;
+        delimiterNext = true;
+      }
+    } else if (ch === '\n') {
+      endPart();
+      i = skipHeredocBodies(command, i, heredocs.splice(0));
+    } else if (';&|()'.includes(ch)) {
       endPart();
     } else if (ch === ' ' || ch === '\t') {
       endWord();
@@ -111,6 +134,22 @@ function commandParts(command: string): string[][] {
   }
   endPart();
   return parts;
+}
+
+// The index of the newline that ends the last of `delimiters`' bodies, starting after the newline
+// at `at`; the end of the command when a delimiter line never comes.
+function skipHeredocBodies(command: string, at: number, delimiters: readonly string[]): number {
+  let i = at;
+  for (const delimiter of delimiters) {
+    while (i < command.length) {
+      const next = command.indexOf('\n', i + 1);
+      const end = next === -1 ? command.length : next;
+      const line = command.slice(i + 1, end);
+      i = end;
+      if (line.replace(/^\t+/, '') === delimiter) break;
+    }
+  }
+  return i;
 }
 
 /**
@@ -126,7 +165,7 @@ export function sessionCommitEvents(
   sessionId: string,
   commands: readonly SessionCommand[],
 ): AuditEventInput[] {
-  const logs = new Map<string, HeadLog | null>();
+  const logs = new Map<string, HeadCommit[] | null>();
   const logOf = (dir: string) => {
     if (!logs.has(dir)) logs.set(dir, readHeadLog(dir));
     return logs.get(dir) ?? null;
@@ -140,9 +179,7 @@ export function sessionCommitEvents(
     const to = Date.parse(call.completedAt) + GIT_COMMIT_SLACK_MS;
     if (!Number.isFinite(from) || !Number.isFinite(to)) continue;
     for (const dir of committingGitDirs(command, cwd)) {
-      const log = logOf(dir);
-      if (log === null) continue;
-      for (const { commit, at, kind } of log.commits) {
+      for (const { commit, at, kind } of logOf(dir) ?? []) {
         if (at < from || at > to) continue;
         const id = gitCommitId(sessionId, commit);
         if (events.has(id)) continue;

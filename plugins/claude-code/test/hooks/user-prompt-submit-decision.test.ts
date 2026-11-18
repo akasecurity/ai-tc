@@ -28,6 +28,7 @@ import type {
   UserPromptSubmitOutput,
 } from '../../src/hooks/user-prompt-submit-decision.ts';
 import {
+  decidePastedCredentialPrompt,
   decideUserPromptSubmit,
   pointerizedRewrite,
 } from '../../src/hooks/user-prompt-submit-decision.ts';
@@ -579,4 +580,49 @@ describe('decideUserPromptSubmit — a prompt whose bounded scan did not finish'
       expectNoEchoOf(blockReason(output), SECRET);
     },
   );
+});
+
+describe('decidePastedCredentialPrompt', () => {
+  const HANDLE = '[[aka:cred:github-demo]]';
+  // The prompt after the vaulted credential was swapped; SECRET is a second,
+  // unvaulted value still in it.
+  const SWAPPED = `use ${HANDLE} and this key: ${SECRET}`;
+  const swapped = { text: SWAPPED, handles: [HANDLE] };
+
+  function left(action: CaptureResult['action']): CaptureResult {
+    return { action, text: SWAPPED, findings: [finding(SECRET, SWAPPED)] };
+  }
+
+  it('blocks a secret left beside the credential under its own policy, keeping the handle', async () => {
+    const tokenize: PromptTokenizer = (text) =>
+      Promise.resolve({ text: text.replace(SECRET, POINTER), pointers: [POINTER] });
+
+    const reason = blockReason(
+      await decidePastedCredentialPrompt(swapped, left('block'), { tokenizePrompt: tokenize }),
+    );
+
+    expect(reason).toContain(`use ${HANDLE} and this key: ${POINTER}`);
+    expectNoEchoOf(reason, SECRET);
+  });
+
+  it('holds the prompt and offers the swap when nothing else would stop it', async () => {
+    const copied: string[] = [];
+    const output = await decidePastedCredentialPrompt(
+      { text: `use ${HANDLE}`, handles: [HANDLE] },
+      { action: 'log', text: `use ${HANDLE}`, findings: [] },
+      { writeClipboard: (text) => copied.push(text) > 0 },
+    );
+
+    const reason = blockReason(output);
+    expect(reason).toContain(HANDLE);
+    expect(reason).toContain('already on your clipboard');
+    expect(copied).toEqual([`use ${HANDLE}`]);
+  });
+
+  it('holds a prompt whose other secret only warns, since this hook cannot rewrite it', async () => {
+    const output = await decidePastedCredentialPrompt(swapped, left('warn'));
+
+    expect(output).toHaveProperty('decision', 'block');
+    expect(blockReason(output)).toContain(SWAPPED);
+  });
 });

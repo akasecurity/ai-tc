@@ -57,7 +57,6 @@ import { writeClipboard } from './clipboard.ts';
 import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
 import { handleProhibitedTurn } from './model-guard.ts';
 import { ONBOARDING_NUDGE } from './onboarding-nudge.ts';
-import { pastedCredentialResubmitMessage } from './resubmit-message.ts';
 import {
   baseMetadata,
   captureScopeKey,
@@ -74,7 +73,11 @@ import {
   storeDegradedMessage,
   warnIfStoreRedirected,
 } from './store-health.ts';
-import { decideUserPromptSubmit } from './user-prompt-submit-decision.ts';
+import type { UserPromptSubmitDeps } from './user-prompt-submit-decision.ts';
+import {
+  decidePastedCredentialPrompt,
+  decideUserPromptSubmit,
+} from './user-prompt-submit-decision.ts';
 
 async function main(): Promise<void> {
   const input = parseJson(await readStdin());
@@ -151,6 +154,7 @@ async function main(): Promise<void> {
     largeInput: largeInputBound(HOOK_SCAN_DEADLINE_MS),
   });
   let result: CaptureResult;
+  let pasted: ReturnType<typeof swapPastedCredentialsOnMachine>;
   try {
     const decided = await captureDeferredStamped(
       runtime,
@@ -159,43 +163,31 @@ async function main(): Promise<void> {
     );
     if (!handedOff) await decided.record();
     result = decided.result;
+    // A credential the organization vaulted, pasted where the mod could not swap
+    // it: what is left of the prompt is decided with each credential as its
+    // handle, so the local vault never pointerizes the credential's value.
+    pasted =
+      result.scanIncomplete === undefined
+        ? swapPastedCredentialsOnMachine(config.dataDir, prompt, result.findings)
+        : null;
+    if (pasted !== null) {
+      const swapped = await captureDeferredStamped(
+        runtime,
+        { kind: 'prompt', sourceTool: SOURCE_TOOL.ClaudeCode, text: pasted.text, metadata },
+        stampFor(gateway, account, scopeKey),
+      );
+      result = swapped.result;
+    }
   } finally {
     await runtime.close();
   }
-
-  // A credential the organization vaulted, pasted where the mod could not swap it.
-  // This hook cannot rewrite the prompt, so it holds it and offers the rewrite,
-  // but only when nothing else secret is left in it.
-  const pasted = swapPastedCredentialsOnMachine(config.dataDir, prompt, result.findings);
-  if (pasted !== null && result.scanIncomplete === undefined) {
-    const swappedValues = new Set(pasted.swapped.map(({ rawMatch }) => rawMatch));
-    const othersLeft = result.findings.some(
-      (finding) => finding.category === 'secret' && !swappedValues.has(finding.rawMatch),
-    );
-    if (!othersLeft) {
-      let clipboardWrote: boolean;
-      try {
-        clipboardWrote = writeClipboard(pasted.text);
-      } catch {
-        clipboardWrote = false;
-      }
-      await emit({
-        decision: 'block',
-        reason: pastedCredentialResubmitMessage({
-          handles: [...new Set(pasted.swapped.map(({ slug }) => formatCredentialHandle(slug)))],
-          rewrite: pasted.text,
-          clipboardWrote,
-        }),
-      });
-      return;
-    }
-  }
+  const subject = pasted?.text ?? prompt;
 
   // Consent is resolved HERE rather than inside the decision: an absent
   // tokenizer is what makes "no consent → the vault is never touched" a
   // structural property instead of a flag the decision could forget to read.
   let vaultedWith: ReadonlyMap<string, string> = new Map();
-  const decision = await decideUserPromptSubmit(prompt, result, {
+  const deps: UserPromptSubmitDeps = {
     tokenizePrompt: isVaultConsentValid(config.settings.vaultConsent)
       ? async (text, findings, reversible) => {
           const tokenized = await createVaultGlue().tokenizeText(text, {
@@ -215,7 +207,18 @@ async function main(): Promise<void> {
         }
       : undefined,
     writeClipboard,
-  });
+  };
+  const decision =
+    pasted === null
+      ? await decideUserPromptSubmit(prompt, result, deps)
+      : await decidePastedCredentialPrompt(
+          {
+            text: pasted.text,
+            handles: [...new Set(pasted.swapped.map(({ slug }) => formatCredentialHandle(slug)))],
+          },
+          result,
+          deps,
+        );
   // The widgets' record of what was found, unless the mod's helper already wrote
   // it. Nothing here may reach the decision, so a fault in any of it is dropped.
   if (!handedOff && sessionId !== undefined) {
@@ -231,7 +234,7 @@ async function main(): Promise<void> {
       recordModFindings(config.dataDir, sessionId, {
         sessionId,
         kind: 'prompt',
-        text: prompt,
+        text: subject,
         result,
         where: 'prompt',
         action: actionFromCapture(result.action, vaulted),

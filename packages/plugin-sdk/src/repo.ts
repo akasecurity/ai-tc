@@ -2,6 +2,7 @@ import { existsSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, sep } from 'node:path';
 
 import { canonicalRepoUrl, namesARemoteAddress } from '@akasecurity/persistence';
+import type { GitCommitKind } from '@akasecurity/schema';
 
 import { readRegularFile, readRegularFileTail } from './regular-file.ts';
 
@@ -374,60 +375,72 @@ export interface HeadCommit {
   commit: string;
   /** When HEAD moved, in epoch milliseconds. */
   at: number;
-  /** What moved it: `commit`, `merge`, `rebase`, `cherry-pick`, `am` or `revert`. */
-  kind: HeadCommitKind;
+  /** What moved it. */
+  kind: GitCommitKind;
 }
 
-export type HeadCommitKind = 'commit' | 'merge' | 'rebase' | 'cherry-pick' | 'am' | 'revert';
+/** The commits a checkout's reflog holds, oldest first. */
+export interface HeadLog {
+  commits: HeadCommit[];
+  /**
+   * The earliest time the read covers: the reflog's first entry when it was read whole, or the
+   * first entry of the tail read. Nothing before it can be told apart from no commit.
+   */
+  coversFrom: number;
+}
 
-const HEAD_COMMIT_KINDS: readonly HeadCommitKind[] = [
-  'commit',
-  'merge',
-  'rebase',
-  'cherry-pick',
-  'am',
-  'revert',
-];
 const REFLOG_TAIL_BYTES = 256 * 1024;
-// `<old> <new> <name> <<email>> <seconds> <zone>\t<message>`; only the ids, the time and the
-// message's first word are read.
-const REFLOG_LINE = /^[0-9a-f]{40,64} ([0-9a-f]{40,64}) .* (\d{1,12}) [+-]\d{4}\t([a-z-]+)/;
+// `<old> <new> <name> <<email>> <seconds> <zone>\t<message>`; only the new id, the time and the
+// message are read.
+const REFLOG_LINE = /^[0-9a-f]{40,64} ([0-9a-f]{40,64}) .* (\d{1,12}) [+-]\d{4}\t(.*)$/;
 const NULL_ID = /^0+$/;
+// The HEAD moves that leave HEAD on a commit the move made. A rebase counts only at its last
+// step: the commits it replays on the way are not new work.
+const KIND_OF_MESSAGE: readonly [RegExp, GitCommitKind][] = [
+  [/^commit \(merge\):/, 'merge'],
+  [/^commit( \([a-z]+\))?:/, 'commit'],
+  [/^merge /, 'merge'],
+  [/^cherry-pick:/, 'cherry-pick'],
+  [/^revert:/, 'revert'],
+  [/^am:/, 'am'],
+  [/^rebase( -i)? \(finish\):/, 'rebase'],
+];
 
 /**
- * The commits the checkout at `cwd` reached between `from` and `to` (epoch milliseconds,
- * inclusive), oldest first, from the worktree's own reflog (`logs/HEAD`). Only moves that make or
- * replay commits count; a checkout, reset or pull does not. Reads at most the last 256 KiB of the
- * reflog. Pure file I/O; returns an empty list outside a checkout or on any read failure.
+ * The commits the checkout at `cwd` reached, from the worktree's own reflog (`logs/HEAD`), oldest
+ * first: only moves that make commits count; a checkout, reset, pull or a rebase's intermediate
+ * step does not. Reads at most the last 256 KiB. Pure file I/O; null outside a checkout or when
+ * the reflog cannot be read.
  */
-export function readHeadCommits(cwd: string, from: number, to: number): HeadCommit[] {
+export function readHeadLog(cwd: string): HeadLog | null {
   try {
     const gitdir = worktreeGitdir(cwd);
-    if (gitdir === undefined) return [];
-    let text: string;
+    if (gitdir === undefined) return null;
+    let tail: { text: string; truncated: boolean };
     try {
-      text = readRegularFileTail(join(gitdir, 'logs', 'HEAD'), REFLOG_TAIL_BYTES);
+      tail = readRegularFileTail(join(gitdir, 'logs', 'HEAD'), REFLOG_TAIL_BYTES);
     } catch {
-      return [];
+      return null;
     }
-    const lines = text.split('\n');
-    if (text.length >= REFLOG_TAIL_BYTES) lines.shift();
+    const lines = tail.text.split('\n');
+    if (tail.truncated) lines.shift();
     const seen = new Set<string>();
     const commits: HeadCommit[] = [];
+    let coversFrom = Number.POSITIVE_INFINITY;
     for (const line of lines) {
       const match = REFLOG_LINE.exec(line);
       if (!match) continue;
-      const [, commit = '', seconds = '', word = ''] = match;
-      const kind = HEAD_COMMIT_KINDS.find((k) => k === word);
-      if (kind === undefined || NULL_ID.test(commit) || seen.has(commit)) continue;
+      const [, commit = '', seconds = '', message = ''] = match;
       const at = Number(seconds) * 1000;
-      if (at < from || at > to) continue;
+      coversFrom = Math.min(coversFrom, at);
+      const kind = KIND_OF_MESSAGE.find(([pattern]) => pattern.test(message))?.[1];
+      if (kind === undefined || NULL_ID.test(commit) || seen.has(commit)) continue;
       seen.add(commit);
       commits.push({ commit, at, kind });
     }
-    return commits;
+    return { commits, coversFrom: tail.truncated ? coversFrom : Number.NEGATIVE_INFINITY };
   } catch {
-    return [];
+    return null;
   }
 }
 

@@ -62,6 +62,7 @@ const PORT_METHODS = [
   'recordCapture',
   'ensureInventory',
   'recordAuditEvent',
+  'recordAuditEvents',
   'recordLlmCall',
   'recordLlmCalls',
   'recordToolCalls',
@@ -480,7 +481,7 @@ describe('every DataGateway method delegates to the inner local gateway', () => 
     const arg =
       name === 'recordConfigScan'
         ? { items: [], scanEvent: { id: 'c1', eventType: 'config_scan' } }
-        : name === 'recordLlmCalls' || name === 'recordToolCalls'
+        : name === 'recordLlmCalls' || name === 'recordToolCalls' || name === 'recordAuditEvents'
           ? []
           : 'arg';
     await Reflect.apply(methods[name] as (a?: unknown) => Promise<unknown>, gateway, [arg]);
@@ -2085,6 +2086,23 @@ describe('the scope verdict, method by method', () => {
       expect(readForwardDrops(dir)).toBeNull();
     },
   );
+
+  it('recordAuditEvents forwards in-scope commit rows in one batch and keeps refused ones local', async () => {
+    const { gateway, calls } = build({ attachment: SCOPED });
+    await gateway.recordAuditEvent(rootRow('s1', IN));
+    const commit = (id: string, key: string) => ({
+      id,
+      eventType: 'git_commit' as const,
+      parentId: 's1',
+      rootSessionId: 's1',
+      startedAt: '2026-08-19T10:00:00.000Z',
+      attributes: { commit: 'a'.repeat(40), kind: 'commit', scope_key: key },
+    });
+    await gateway.recordAuditEvents([commit('c-in', IN), commit('c-out', OUT)]);
+    expect(calls.order).toContain('local.recordAuditEvents');
+    expect(calls.batchSizes).toEqual([1]);
+    expect(calls.delivered).toEqual(['s1', 'c-in']);
+  });
 
   it('recordConfigScan stays local on a scoped attachment, even when stamped in scope', async () => {
     const scan: ConfigScanRecord = {

@@ -297,6 +297,25 @@ export const ToolCallAttributes = z
   .catchall(z.unknown());
 export type ToolCallAttributes = z.infer<typeof ToolCallAttributes>;
 
+// The kinds of HEAD move a `git_commit` row is recorded for. `rebase` is a rebase's last step
+// only, the commit it leaves HEAD on; the commits it replays on the way are not recorded.
+export const GitCommitKind = z.enum(['commit', 'merge', 'rebase', 'cherry-pick', 'am', 'revert']);
+export type GitCommitKind = z.infer<typeof GitCommitKind>;
+
+// The attribute bag of a `git_commit` row: a commit the session's checkout reached while one of
+// the session's git commands that makes commits was running. `attribution` says how the commit
+// was tied to the session: `command_window` is that timing, not proof of authorship, so two
+// sessions working in one checkout at the same moment can each record the same commit.
+export const GitCommitAttributes = z
+  .object({
+    commit: z.string().regex(/^[0-9a-f]{40}([0-9a-f]{24})?$/),
+    kind: GitCommitKind,
+    attribution: z.literal('command_window'),
+    scope_key: z.string().optional(),
+  })
+  .catchall(z.unknown());
+export type GitCommitAttributes = z.infer<typeof GitCommitAttributes>;
+
 // The attribute bag a capture (prompt / response / code_change / tool_use) rides
 // as an `audit_events` row. Mirrors the `ToolCallAttributes` style — every field
 // `.optional()`, `.catchall(z.unknown())`, and NO `.meta({ id })` (a validated

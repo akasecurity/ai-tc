@@ -1,6 +1,6 @@
 // A reconcile pass records the commits a session's `git commit` made, read from the checkout's
 // reflog, as `git_commit` rows under the session root in the real local store.
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -35,37 +35,50 @@ function config(dataDir: string): PluginConfig {
   };
 }
 
-function transcript(cwd: string, command: string): string {
+function transcript(
+  cwd: string,
+  command: string,
+  turn = 1,
+  opts: { issued?: string; done?: string; isError?: boolean } = {},
+): string {
+  const n = String(turn);
   const usage = { input_tokens: 100, output_tokens: 50 };
   const base = { sessionId: SESSION, cwd, version: '1.2.3', entrypoint: 'cli' };
   return [
     {
       type: 'user',
-      uuid: 'u-1',
-      promptId: 'p-1',
-      timestamp: '2026-10-20T10:00:01.000Z',
+      uuid: `u-${n}`,
+      promptId: `p-${n}`,
+      timestamp: opts.issued ?? ISSUED,
       message: { role: 'user', content: 'commit it' },
     },
     {
       type: 'assistant',
-      uuid: 'a-1',
-      parentUuid: 'u-1',
-      timestamp: ISSUED,
+      uuid: `a-${n}`,
+      parentUuid: `u-${n}`,
+      timestamp: opts.issued ?? ISSUED,
       message: {
-        id: 'msg_1',
+        id: `msg_${n}`,
         model: 'claude-sonnet-4-5-20250929',
         usage,
-        content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command } }],
+        content: [{ type: 'tool_use', id: `toolu_${n}`, name: 'Bash', input: { command } }],
       },
     },
     {
       type: 'user',
-      uuid: 'r-1',
-      parentUuid: 'a-1',
-      timestamp: '2026-10-20T10:00:03.000Z',
+      uuid: `r-${n}`,
+      parentUuid: `a-${n}`,
+      timestamp: opts.done ?? '2026-10-20T10:00:03.000Z',
       message: {
         role: 'user',
-        content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: '1 file changed' }],
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: `toolu_${n}`,
+            content: '1 file changed',
+            ...(opts.isError ? { is_error: true } : {}),
+          },
+        ],
       },
     },
   ]
@@ -106,10 +119,9 @@ describe('reconcileSessionTail — the commits a session made', () => {
     rmSync(workDir, { recursive: true, force: true });
   });
 
-  it('records the commit under the session, once however many passes read it', async () => {
+  it('records the commit under the session as a command_window row', async () => {
     const path = join(workDir, 'transcript.jsonl');
     writeFileSync(path, transcript(workDir, 'git add -A && git commit -m "add retries"'));
-    await reconcileSessionTail(config(dataDir), SESSION, path);
     await reconcileSessionTail(config(dataDir), SESSION, path);
     const rows = commitRows(dataDir);
     expect(rows).toHaveLength(1);
@@ -117,8 +129,30 @@ describe('reconcileSessionTail — the commits a session made', () => {
     expect(JSON.parse(rows[0]?.attributes ?? '{}')).toMatchObject({
       commit: COMMIT,
       kind: 'commit',
-      branch: 'feat/retries',
+      attribution: 'command_window',
     });
+  });
+
+  it('keeps one row when a later pass reads the same commit again through another command', async () => {
+    const path = join(workDir, 'transcript.jsonl');
+    writeFileSync(path, transcript(workDir, 'git commit -m "add retries"'));
+    await reconcileSessionTail(config(dataDir), SESSION, path);
+    appendFileSync(
+      path,
+      transcript(workDir, 'git commit --amend --no-edit', 2, {
+        issued: '2026-10-20T10:00:03.500Z',
+        done: '2026-10-20T10:00:04.000Z',
+      }),
+    );
+    await reconcileSessionTail(config(dataDir), SESSION, path);
+    expect(commitRows(dataDir)).toHaveLength(1);
+  });
+
+  it('records nothing for a git commit whose result was an error', async () => {
+    const path = join(workDir, 'transcript.jsonl');
+    writeFileSync(path, transcript(workDir, 'git commit -m x', 1, { isError: true }));
+    await reconcileSessionTail(config(dataDir), SESSION, path);
+    expect(commitRows(dataDir)).toEqual([]);
   });
 
   it('records nothing for a git command that makes no commit', async () => {

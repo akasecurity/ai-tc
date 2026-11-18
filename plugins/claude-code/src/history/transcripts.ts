@@ -396,6 +396,9 @@ export interface ToolCallRecord {
   inputSize: number | undefined;
   isError: boolean | undefined;
   outputSize: number | undefined;
+  // The ISO timestamp of the record holding the call's `tool_result`; undefined until that
+  // record is in the parsed text.
+  completedAt?: string | undefined;
   // The salient input, RAW and UNTRUNCATED — e.g. a WebFetch url or a Bash command.
   // The reconciler masks it and THEN size-caps the masked value (never persisted raw);
   // undefined when the input has no obvious target.
@@ -556,7 +559,10 @@ function contentSize(value: unknown): number | undefined {
 // addressed to a session root → dropped.
 export function parseTranscriptToolCalls(jsonl: string, sinceMs = 0): ToolCallRecord[] {
   const uses = new Map<string, ToolCallRecord>();
-  const results = new Map<string, { isError: boolean; outputSize: number | undefined }>();
+  const results = new Map<
+    string,
+    { isError: boolean; outputSize: number | undefined; completedAt: string | undefined }
+  >();
 
   for (const line of jsonl.split('\n')) {
     const trimmed = line.trim();
@@ -610,6 +616,7 @@ export function parseTranscriptToolCalls(jsonl: string, sinceMs = 0): ToolCallRe
         results.set(toolUseId, {
           isError: block.is_error === true,
           outputSize: contentSize(block.content),
+          completedAt: optString(rec.timestamp),
         });
       }
     }
@@ -621,6 +628,7 @@ export function parseTranscriptToolCalls(jsonl: string, sinceMs = 0): ToolCallRe
     if (result !== undefined) {
       record.isError = result.isError;
       record.outputSize = result.outputSize;
+      if (result.completedAt !== undefined) record.completedAt = result.completedAt;
     }
     out.push(record);
   }

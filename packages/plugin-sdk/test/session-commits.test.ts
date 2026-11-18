@@ -1,19 +1,28 @@
+import { execFileSync } from 'node:child_process';
 import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { gitCommitId } from '@akasecurity/persistence';
+import { GitCommitAttributes } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
-import { readHeadCommits } from '../src/repo.ts';
-import { GIT_COMMIT_WINDOW_MS, sessionCommitEvents } from '../src/session-commits.ts';
+import { readRegularFileTail } from '../src/regular-file.ts';
+import { readHeadLog } from '../src/repo.ts';
+import type { SessionCommand } from '../src/session-commits.ts';
+import {
+  committingGitDirs,
+  GIT_COMMIT_SLACK_MS,
+  sessionCommitEvents,
+} from '../src/session-commits.ts';
 
 const ZERO = '0'.repeat(40);
 const A = 'a'.repeat(40);
 const B = 'b'.repeat(40);
 const C = 'c'.repeat(40);
 const D = 'd'.repeat(40);
+const E = 'e'.repeat(40);
 const T0 = Date.parse('2026-11-17T10:00:00.000Z');
 
 let root: string;
@@ -26,8 +35,8 @@ afterEach(() => {
   removeTree(root);
 });
 
-function reflogLine(from: string, to: string, at: number, message: string): string {
-  return `${from} ${to} Dev Person <dev@example.com> ${String(Math.floor(at / 1000))} +0000\t${message}\n`;
+function reflogLine(from: string, to: string, at: number, message: string, name = 'Dev'): string {
+  return `${from} ${to} ${name} <dev@example.com> ${String(Math.floor(at / 1000))} +0000\t${message}\n`;
 }
 
 /** A clone at `dir` whose reflog holds `lines`. */
@@ -38,8 +47,44 @@ function cloneWithReflog(dir: string, lines: string[]): string {
   return dir;
 }
 
-describe('readHeadCommits', () => {
-  it('reads the commits HEAD reached in the window, oldest first, and skips other moves', () => {
+/** A command that ran from `T0 + issued` to `T0 + done` (milliseconds). */
+function call(
+  command: string,
+  issued: number,
+  done: number | undefined,
+  extra: Partial<SessionCommand> = {},
+): SessionCommand {
+  return {
+    cwd: root,
+    occurredAt: new Date(T0 + issued).toISOString(),
+    completedAt: done === undefined ? undefined : new Date(T0 + done).toISOString(),
+    command,
+    isError: false,
+    ...extra,
+  };
+}
+
+describe('readRegularFileTail', () => {
+  it('reads a file no larger than the cap whole, and says so', () => {
+    const path = join(root, 'f');
+    writeFileSync(path, 'x'.repeat(16));
+    expect(readRegularFileTail(path, 16)).toEqual({ text: 'x'.repeat(16), truncated: false });
+  });
+
+  it('reads the last bytes of a larger file and marks it cut', () => {
+    const path = join(root, 'f');
+    writeFileSync(path, 'old\nnewest\n');
+    expect(readRegularFileTail(path, 7)).toEqual({ text: 'newest\n', truncated: true });
+  });
+
+  it('throws for a missing file and for a directory', () => {
+    expect(() => readRegularFileTail(join(root, 'missing'), 8)).toThrow();
+    expect(() => readRegularFileTail(root, 8)).toThrow();
+  });
+});
+
+describe('readHeadLog', () => {
+  it('reads only the moves that make commits, and a rebase only at its last step', () => {
     cloneWithReflog(root, [
       reflogLine(ZERO, A, T0 - 60_000, 'clone: from https://github.com/acme/api'),
       reflogLine(A, B, T0, 'commit: add retries'),
@@ -47,16 +92,18 @@ describe('readHeadCommits', () => {
       reflogLine(A, C, T0 + 2_000, 'merge feat/y: Fast-forward'),
       reflogLine(C, C, T0 + 3_000, 'reset: moving to HEAD'),
       reflogLine(C, D, T0 + 4_000, 'pull: Fast-forward'),
-      reflogLine(D, A, T0 + 5_000, 'rebase (finish): returning to refs/heads/feat/x'),
+      reflogLine(D, A, T0 + 5_000, 'rebase (start): checkout main'),
+      reflogLine(A, B, T0 + 5_100, 'rebase (pick): someone else’s commit'),
+      reflogLine(B, E, T0 + 5_200, 'rebase (finish): returning to refs/heads/feat/x'),
     ]);
-    expect(readHeadCommits(root, T0 - 1_000, T0 + 10_000)).toEqual([
-      { commit: B, at: T0, kind: 'commit' },
-      { commit: C, at: T0 + 2_000, kind: 'merge' },
-      { commit: A, at: T0 + 5_000, kind: 'rebase' },
-    ]);
-    expect(readHeadCommits(root, T0 + 1_000, T0 + 3_000)).toEqual([
-      { commit: C, at: T0 + 2_000, kind: 'merge' },
-    ]);
+    expect(readHeadLog(root)).toEqual({
+      commits: [
+        { commit: B, at: T0, kind: 'commit' },
+        { commit: C, at: T0 + 2_000, kind: 'merge' },
+        { commit: E, at: T0 + 5_000, kind: 'rebase' },
+      ],
+      coversFrom: Number.NEGATIVE_INFINITY,
+    });
   });
 
   it("reads a linked worktree's own reflog", () => {
@@ -66,38 +113,79 @@ describe('readHeadCommits', () => {
     const checkout = join(root, 'wt');
     mkdirSync(checkout, { recursive: true });
     writeFileSync(join(checkout, '.git'), `gitdir: ${gitdir}\n`);
-    expect(readHeadCommits(checkout, T0, T0)).toEqual([{ commit: B, at: T0, kind: 'commit' }]);
+    expect(readHeadLog(checkout)?.commits).toEqual([{ commit: B, at: T0, kind: 'commit' }]);
   });
 
-  it('reads only the tail of a long reflog', () => {
+  it('keeps the first line of a reflog of exactly the read size', () => {
+    const first = reflogLine(A, B, T0, 'commit: the first line');
+    const filler = reflogLine(B, C, T0 + 1, 'checkout: moving from a to b');
+    const size = 256 * 1024;
+    const fillers = Math.floor((size - first.length) / filler.length);
+    const pad = size - first.length - fillers * filler.length;
+    cloneWithReflog(root, [first, filler.repeat(fillers), ' '.repeat(pad)]);
+    expect(readHeadLog(root)?.commits.map((c) => c.commit)).toEqual([B]);
+  });
+
+  it('reads the tail of a longer reflog, multi-byte names included, and says where it starts', () => {
     cloneWithReflog(root, []);
     const log = join(root, '.git', 'logs', 'HEAD');
-    const old = reflogLine(A, C, T0 - 1, 'commit: old');
+    const old = reflogLine(A, C, T0 - 10_000, 'commit: old', 'Zoë Ŝtrâße');
     appendFileSync(log, old.repeat(Math.ceil((300 * 1024) / old.length)));
-    appendFileSync(log, reflogLine(C, B, T0, 'commit: newest'));
-    expect(readHeadCommits(root, T0, T0)).toEqual([{ commit: B, at: T0, kind: 'commit' }]);
+    appendFileSync(log, reflogLine(C, B, T0, 'commit: newest', 'Zoë Ŝtrâße'));
+    const log2 = readHeadLog(root);
+    expect(log2?.commits).toEqual([
+      { commit: C, at: T0 - 10_000, kind: 'commit' },
+      { commit: B, at: T0, kind: 'commit' },
+    ]);
+    expect(log2?.coversFrom).toBe(T0 - 10_000);
   });
 
-  it('answers nothing outside a checkout or without a reflog', () => {
-    expect(readHeadCommits(root, 0, Number.MAX_SAFE_INTEGER)).toEqual([]);
+  it('answers null outside a checkout or without a reflog', () => {
+    expect(readHeadLog(root)).toBeNull();
     mkdirSync(join(root, '.git'));
-    expect(readHeadCommits(root, 0, Number.MAX_SAFE_INTEGER)).toEqual([]);
+    expect(readHeadLog(root)).toBeNull();
+  });
+});
+
+describe('committingGitDirs', () => {
+  it.each([
+    'git commit -m "x"',
+    'git add -A && git commit -m "add retries"',
+    'FOO=1 git -c user.name=x commit --amend --no-edit',
+    'git merge feat/y',
+    'git rebase main',
+    'git cherry-pick abc123',
+    'git am < patch',
+    'git revert HEAD',
+  ])('finds the commit in %s', (command) => {
+    expect(committingGitDirs(command, '/w')).toEqual(['/w']);
+  });
+
+  it.each([
+    'git log --grep=commit',
+    'git merge-base --is-ancestor a b',
+    'git commit --help',
+    'git commit --dry-run',
+    "echo 'remember to git commit' && ls",
+    'cat docs/git-commit.txt',
+    'echo "git merge main"',
+    'git status',
+  ])('finds none in %s', (command) => {
+    expect(committingGitDirs(command, '/w')).toEqual([]);
+  });
+
+  it('reads -C as the directory the commit lands in', () => {
+    expect(
+      committingGitDirs('git -C ../other commit -m x; git -C /abs merge y', '/w/repo'),
+    ).toEqual(['/w/other', '/abs']);
   });
 });
 
 describe('sessionCommitEvents', () => {
-  it('records the commits a committing git command reached, once each, under the session', () => {
-    cloneWithReflog(root, [
-      reflogLine(A, B, T0 + 5_000, 'commit: add retries'),
-      reflogLine(B, C, T0 + GIT_COMMIT_WINDOW_MS + 60_000, 'commit: much later'),
-    ]);
-    const at = new Date(T0).toISOString();
+  it('records each commit HEAD reached while the command ran, as a command_window row', () => {
+    cloneWithReflog(root, [reflogLine(A, B, T0 + 1_000, 'commit: add retries')]);
     const events = sessionCommitEvents('session-1', [
-      { cwd: root, occurredAt: at, command: 'git add . && git commit -m "x"', scopeKey: 'k1' },
-      { cwd: root, occurredAt: at, command: 'git commit --amend', scopeKey: 'k2' },
-      { cwd: root, occurredAt: at, command: 'git status' },
-      { cwd: 'relative/dir', occurredAt: at, command: 'git commit -m y' },
-      { cwd: root, occurredAt: at, command: undefined },
+      call('git commit -m x', 0, 3_000, { scopeKey: 'k1' }),
     ]);
     expect(events).toEqual([
       {
@@ -105,9 +193,84 @@ describe('sessionCommitEvents', () => {
         eventType: 'git_commit',
         parentId: 'session-1',
         rootSessionId: 'session-1',
-        startedAt: new Date(T0 + 5_000).toISOString(),
-        attributes: { commit: B, kind: 'commit', branch: 'feat/x', scope_key: 'k1' },
+        startedAt: new Date(T0 + 1_000).toISOString(),
+        attributes: { commit: B, kind: 'commit', attribution: 'command_window', scope_key: 'k1' },
       },
+    ]);
+    expect(GitCommitAttributes.safeParse(events[0]?.attributes).success).toBe(true);
+  });
+
+  it('records nothing for a command that errored or whose result is not in yet', () => {
+    cloneWithReflog(root, [reflogLine(A, B, T0 + 1_000, 'commit: x')]);
+    expect(
+      sessionCommitEvents('s', [
+        call('git commit -m x', 0, 3_000, { isError: true }),
+        call('git commit -m x', 0, undefined),
+      ]),
+    ).toEqual([]);
+  });
+
+  it('leaves out a commit another actor made in the checkout after the command finished', () => {
+    cloneWithReflog(root, [
+      reflogLine(A, B, T0 + 1_000, 'commit: the command'),
+      reflogLine(B, C, T0 + 3_000 + GIT_COMMIT_SLACK_MS + 1_000, 'commit: someone else, later'),
+    ]);
+    const events = sessionCommitEvents('s', [call('git commit -m x', 0, 3_000)]);
+    expect(events.map((e) => e.attributes?.commit)).toEqual([B]);
+  });
+
+  it('records a commit once for two commands that saw it, and the same rows on a second call', () => {
+    cloneWithReflog(root, [reflogLine(A, B, T0 + 1_000, 'commit: x')]);
+    const commands = [call('git commit -m x', 0, 3_000), call('git commit --amend', 500, 2_000)];
+    const first = sessionCommitEvents('s', commands);
+    expect(first).toHaveLength(1);
+    expect(sessionCommitEvents('s', commands)).toEqual(first);
+  });
+
+  it('gives each of two sessions running in one checkout its own row for the same commit', () => {
+    cloneWithReflog(root, [reflogLine(A, B, T0 + 1_000, 'commit: x')]);
+    const command = [call('git commit -m x', 0, 3_000)];
+    const one = sessionCommitEvents('session-1', command);
+    const two = sessionCommitEvents('session-2', command);
+    expect([one[0]?.id, two[0]?.id]).toEqual([
+      gitCommitId('session-1', B),
+      gitCommitId('session-2', B),
+    ]);
+    expect(two[0]?.attributes?.attribution).toBe('command_window');
+  });
+
+  it('reads a reflog git itself wrote', () => {
+    const git = (...args: string[]) =>
+      execFileSync('git', args, {
+        cwd: root,
+        encoding: 'utf8',
+        env: {
+          PATH: '/usr/bin:/bin:/usr/local/bin',
+          HOME: root,
+          GIT_CONFIG_NOSYSTEM: '1',
+          GIT_AUTHOR_NAME: 'Dev',
+          GIT_AUTHOR_EMAIL: 'dev@example.com',
+          GIT_COMMITTER_NAME: 'Dev',
+          GIT_COMMITTER_EMAIL: 'dev@example.com',
+        },
+      }).trim();
+    git('init', '-q', '-b', 'main');
+    writeFileSync(join(root, 'a.txt'), 'a\n');
+    git('add', 'a.txt');
+    const issued = Date.now() - 1_000;
+    git('commit', '-q', '-m', 'first');
+    const head = git('rev-parse', 'HEAD');
+    const events = sessionCommitEvents('s', [
+      {
+        cwd: root,
+        occurredAt: new Date(issued).toISOString(),
+        completedAt: new Date().toISOString(),
+        command: 'git commit -m first',
+        isError: false,
+      },
+    ]);
+    expect(events.map((e) => [e.attributes?.commit, e.attributes?.kind])).toEqual([
+      [head, 'commit'],
     ]);
   });
 });

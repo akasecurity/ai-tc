@@ -182,6 +182,9 @@ export interface DataGateway {
   // Append an audit-event fact (e.g. the Session root opened on SessionStart)
   // to the local store. Fail-open.
   recordAuditEvent(event: AuditEventInput): Promise<void>;
+  // The same write for several leaves of a session at once, forwarded in batches where the
+  // gateway forwards. Optional: a caller without it records each with `recordAuditEvent`.
+  recordAuditEvents?(events: readonly AuditEventInput[]): Promise<void>;
   // Append one transcript-derived `llm_call` leaf (token usage for one assistant
   // API response). Distinct from `recordAuditEvent` because the row id is minted
   // from the natural key (`sessionId` + `messageId`) inside the persistence layer

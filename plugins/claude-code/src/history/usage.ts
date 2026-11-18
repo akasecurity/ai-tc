@@ -372,7 +372,9 @@ export async function reconcileSessionToolCalls(
             {
               cwd: tc.cwd,
               occurredAt: tc.occurredAt,
+              completedAt: tc.completedAt,
               command: tc.target,
+              isError: tc.isError,
               scopeKey: stamp(scopeKeyOf(tc.cwd), tc.uuid),
             },
           ]
@@ -483,19 +485,20 @@ export async function reconcileHistory(
 // Resolves its OWN gateway and always `close()`s it in a finally, so a
 // single worker invocation is self-contained. Fully fail-open.
 // The commits a session's git commands made, read from each command's checkout once the tool
-// calls are written, so the session root they hang off exists. Fail-open: a commit not recorded
-// on this pass is recorded on a later one while its command is still in the read tail.
+// calls are written, so the session root they hang off exists. Only the commands in this pass's
+// tail are read, so a command whose result lands in a later tail records nothing. Fail-open.
 async function recordSessionCommits(
   gateway: DataGateway,
   sessionId: string,
   commands: readonly SessionCommand[],
 ): Promise<void> {
-  for (const event of sessionCommitEvents(sessionId, commands)) {
-    try {
-      await gateway.recordAuditEvent(event);
-    } catch {
-      return;
-    }
+  try {
+    const events = sessionCommitEvents(sessionId, commands);
+    if (events.length === 0) return;
+    if (gateway.recordAuditEvents) await gateway.recordAuditEvents(events);
+    else for (const event of events) await gateway.recordAuditEvent(event);
+  } catch {
+    // A commit not recorded here is not retried; the tool calls already written stand.
   }
 }
 

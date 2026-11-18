@@ -3,6 +3,8 @@
 // plugin swaps in the value immediately before a tool runs.
 import * as z from 'zod';
 
+import { SIGHTING_ALIASES_MAX } from './event.ts';
+
 export const CREDENTIAL_SLUG_SOURCE = '[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?';
 
 export const CredentialSlug = z
@@ -31,6 +33,15 @@ export const AvailableCredential = z
   .object({
     slug: CredentialSlug,
     description: z.string().max(500),
+    /**
+     * The value's sighting tokens under each accepted sighting-key version, so a
+     * machine can recognise the value when it is pasted. Absent when the store
+     * could not be read.
+     */
+    lookups: z
+      .array(z.string().max(200))
+      .max(SIGHTING_ALIASES_MAX + 1)
+      .optional(),
   })
   .strict();
 export type AvailableCredential = z.infer<typeof AvailableCredential>;

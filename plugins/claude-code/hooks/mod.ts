@@ -64,6 +64,21 @@ function snapshotPath(home: string): string {
   return [root, '.aka', 'data', 'mod-policy.json'].join(sep);
 }
 
+// Written by SessionStart when this machine is granted vaulted credentials; its
+// presence is what makes a prompt holding a secret worth handing to the helper.
+async function hasCredentialLookups($: Dollar): Promise<boolean> {
+  try {
+    const home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE'));
+    if (home === undefined || home === '') return false;
+    const sep = home.includes('\\') ? '\\' : '/';
+    const root = home.endsWith('/') || home.endsWith('\\') ? home.slice(0, -1) : home;
+    const stat = await $.fs.stat([root, '.aka', 'data', 'credential-lookups.json'].join(sep));
+    return stat.kind === 'file' && stat.size > 0;
+  } catch {
+    return false;
+  }
+}
+
 async function loadPolicy($: Dollar): Promise<ModPolicy | null> {
   try {
     const home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE'));
@@ -1190,9 +1205,11 @@ export const register: Register = (on) => {
 
   on('prompt.submit', async ($, e, next) => {
     await noteModRunning($);
-    // Nothing to redact: nothing is spawned.
+    // Nothing to redact and no vaulted credential to look for: nothing is spawned.
     const plan = planPromptWith(e.text, await loadPolicy($));
-    const answer = plan.values.length === 0 ? null : await rewriteWithHelper($, e.text);
+    const wanted =
+      plan.values.length > 0 || (plan.secret === true && (await hasCredentialLookups($)));
+    const answer = wanted ? await rewriteWithHelper($, e.text) : null;
     // The widgets update apart: a host call that hangs never holds the prompt.
     if (answer !== null) void takeFindings($, answer.findings);
     // A rewrite that leaves a value this module detected is not one to send.

@@ -10,6 +10,7 @@ import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { INSTALL_ROOT, PLUGIN_PACKAGE } from '../build-info.ts';
 import { credentialBrief } from '../credentials/brief.ts';
+import { saveCredentialLookups } from '../credentials/pasted.ts';
 import type { triggerReconcile } from '../history/reconcile-trigger.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { standingBrief } from '../protocol/notes.ts';
@@ -164,7 +165,13 @@ async function availableCredentialsBrief(
     const available = deps.availableCredentials
       ? await deps.availableCredentials(dataDir)
       : await listAvailableCredentials({ dataDir });
-    return available === undefined ? undefined : credentialBrief(available);
+    if (available === undefined) return undefined;
+    try {
+      saveCredentialLookups(dataDir, available);
+    } catch {
+      // Without the file a pasted credential is only not recognised.
+    }
+    return credentialBrief(available);
   } catch {
     return undefined;
   }

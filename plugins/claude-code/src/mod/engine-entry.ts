@@ -54,6 +54,8 @@ export function bundledActionFor(ruleId: string): ActionTaken {
 export interface PromptPlan {
   text: string;
   values: string[];
+  /** Whether any secret was found, whatever the policy does with it. */
+  secret?: boolean;
 }
 
 const ACTIONS: ReadonlySet<string> = new Set(['warn', 'redact', 'block', 'allow', 'log']);
@@ -145,14 +147,15 @@ export function createPromptPlanner(
       (f) => !spans.some((s) => f.span.start < s.end && f.span.end > s.start),
     );
     if (findings.length === 0) return { text, values: [] };
+    const secret = findings.some((f) => f.category === 'secret');
     const actions = findings.map((f) => {
       const action = actionFor(f.ruleId, f.category);
       return action === 'redact' && options.excepted?.has(f.ruleId) === true ? 'allow' : action;
     });
-    if (actions.includes('block')) return { text, values: [] };
+    if (actions.includes('block')) return { text, values: [], secret };
     const redacted = findings.filter((_, i) => actions[i] === 'redact');
-    if (redacted.length === 0) return { text, values: [] };
-    return { text: redact(text, redacted), values: redacted.map((f) => f.rawMatch) };
+    if (redacted.length === 0) return { text, values: [], secret };
+    return { text: redact(text, redacted), values: redacted.map((f) => f.rawMatch), secret };
   };
 }
 

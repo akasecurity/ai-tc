@@ -47,8 +47,9 @@ import {
   createVaultGlue,
   loadConfig,
 } from '@akasecurity/plugin-sdk';
-import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
+import { formatCredentialHandle, isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
+import { swapPastedCredentialsOnMachine } from '../credentials/pasted.ts';
 import { actionFromCapture, pointersByFinding, recordModFindings } from '../mod/findings-log.ts';
 import { consumeModHandoff } from '../mod/handoff.ts';
 import { resolveHookAccount, stampFor } from './account-stamp.ts';
@@ -56,6 +57,7 @@ import { writeClipboard } from './clipboard.ts';
 import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
 import { handleProhibitedTurn } from './model-guard.ts';
 import { ONBOARDING_NUDGE } from './onboarding-nudge.ts';
+import { pastedCredentialResubmitMessage } from './resubmit-message.ts';
 import {
   baseMetadata,
   captureScopeKey,
@@ -159,6 +161,34 @@ async function main(): Promise<void> {
     result = decided.result;
   } finally {
     await runtime.close();
+  }
+
+  // A credential the organization vaulted, pasted where the mod could not swap it.
+  // This hook cannot rewrite the prompt, so it holds it and offers the rewrite,
+  // but only when nothing else secret is left in it.
+  const pasted = swapPastedCredentialsOnMachine(config.dataDir, prompt, result.findings);
+  if (pasted !== null && result.scanIncomplete === undefined) {
+    const swappedValues = new Set(pasted.swapped.map(({ rawMatch }) => rawMatch));
+    const othersLeft = result.findings.some(
+      (finding) => finding.category === 'secret' && !swappedValues.has(finding.rawMatch),
+    );
+    if (!othersLeft) {
+      let clipboardWrote: boolean;
+      try {
+        clipboardWrote = writeClipboard(pasted.text);
+      } catch {
+        clipboardWrote = false;
+      }
+      await emit({
+        decision: 'block',
+        reason: pastedCredentialResubmitMessage({
+          handles: [...new Set(pasted.swapped.map(({ slug }) => formatCredentialHandle(slug)))],
+          rewrite: pasted.text,
+          clipboardWrote,
+        }),
+      });
+      return;
+    }
   }
 
   // Consent is resolved HERE rather than inside the decision: an absent

@@ -90,7 +90,7 @@ function commandParts(command: string): string[][] {
     const ch = command[i] ?? '';
     if (quote !== null) {
       if (ch === quote) quote = null;
-      else if (ch === '\\' && quote === '"' && i + 1 < command.length) word += command[++i];
+      else if (ch === '\\' && quote === '"' && i + 1 < command.length) word += command.charAt(++i);
       else word += ch;
       continue;
     }
@@ -98,7 +98,7 @@ function commandParts(command: string): string[][] {
       quote = ch;
       inWord = true;
     } else if (ch === '\\' && i + 1 < command.length) {
-      word += command[++i];
+      word += command.charAt(++i);
       inWord = true;
     } else if (';&|()\n'.includes(ch)) {
       endPart();

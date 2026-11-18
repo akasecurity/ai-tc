@@ -889,8 +889,7 @@ function attributeTail(
   trace: UsageAccountTrace,
   carry: Pick<UsageOffset, 'logOffset' | 'logStartedAt' | 'carried'> | undefined,
 ):
-  | (AttributionResult & { readonly logReset: boolean; readonly logStartedAt?: number })
-  | undefined {
+  (AttributionResult & { readonly logReset: boolean; readonly logStartedAt?: number }) | undefined {
   try {
     const scope = accountScopeOf(gateway);
     if (scope === undefined) return undefined;

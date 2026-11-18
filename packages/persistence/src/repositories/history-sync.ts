@@ -15,7 +15,7 @@ import { type SyncFailureReason } from '../sync-failure.ts';
  * by construction rather than by a filter someone could widen, which is why this
  * list is the single place the set is written down.
  */
-export const STRUCTURAL_EVENT_TYPES = ['session', 'llm_call', 'tool_call'] as const;
+export const STRUCTURAL_EVENT_TYPES = ['session', 'llm_call', 'tool_call', 'git_commit'] as const;
 
 const TYPE_LIST = STRUCTURAL_EVENT_TYPES.map((t) => `'${t}'`).join(', ');
 

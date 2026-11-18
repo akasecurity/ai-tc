@@ -19,10 +19,16 @@
 // never from live env (which would mislabel backfilled history under today's env).
 import { sessionAccountsDir } from '@akasecurity/persistence';
 import { accountScopeOf, resolveDataGateway } from '@akasecurity/plugin-runtime';
-import type { DataGateway, PluginConfig, SessionCommand } from '@akasecurity/plugin-sdk';
+import type {
+  DataGateway,
+  HeadCommit,
+  PluginConfig,
+  SessionCommand,
+} from '@akasecurity/plugin-sdk';
 import {
   createPolicyResolver,
   createVaultGlue,
+  headLogMemo,
   providerFromModelId,
   resolveInventoryContext,
   resolveRepoNwo,
@@ -120,6 +126,10 @@ export interface ReconcileSessionOptions {
   // directory shared across sessions is walked once and keyed identically
   // everywhere. When omitted, the call builds its own.
   scopeKeyOf?: ((cwd: string | undefined) => string | undefined) | undefined;
+  // The pass's reflog memo (plugin-sdk's headLogMemo), shared the same way so a
+  // checkout's reflog is read once for every session in the pass. When omitted,
+  // the call builds its own.
+  headLogOf?: ((dir: string) => HeadCommit[] | null) | undefined;
   // The account key each assistant line ran under, by its uuid. Each row is
   // stamped for that account through the gateway's account scope, and the session
   // root is keyed from the first line that has one; without one (backfill, a
@@ -380,6 +390,7 @@ export async function reconcileSessionToolCalls(
           ]
         : [],
     ),
+    opts.headLogOf,
   );
   return inputs.length;
 }
@@ -427,6 +438,7 @@ export async function reconcileHistory(
     // One scope-key memo for the whole sweep: sessions that share a directory
     // share its one `.git` walk and its one key.
     const scopeKeyOf = scopeKeyMemo();
+    const headLogOf = headLogMemo();
     // Group usage by `sessionId` so each session is reconciled as a unit (the root +
     // provider are per-session). uuids are globally unique, so the per-session
     // `parentUuid → promptId` map is correct regardless of cross-file interleave.
@@ -448,7 +460,7 @@ export async function reconcileHistory(
         sessionId,
         toolCallsBySession.get(sessionId) ?? [],
         records,
-        { scopeKeyOf },
+        { scopeKeyOf, headLogOf },
       );
     }
   } finally {
@@ -491,9 +503,10 @@ async function recordSessionCommits(
   gateway: DataGateway,
   sessionId: string,
   commands: readonly SessionCommand[],
+  headLogOf: ((dir: string) => HeadCommit[] | null) | undefined,
 ): Promise<void> {
   try {
-    const events = sessionCommitEvents(sessionId, commands);
+    const events = sessionCommitEvents(sessionId, commands, headLogOf);
     if (events.length === 0) return;
     if (gateway.recordAuditEvents) await gateway.recordAuditEvents(events);
     else for (const event of events) await gateway.recordAuditEvent(event);
@@ -876,7 +889,8 @@ function attributeTail(
   trace: UsageAccountTrace,
   carry: Pick<UsageOffset, 'logOffset' | 'logStartedAt' | 'carried'> | undefined,
 ):
-  (AttributionResult & { readonly logReset: boolean; readonly logStartedAt?: number }) | undefined {
+  | (AttributionResult & { readonly logReset: boolean; readonly logStartedAt?: number })
+  | undefined {
   try {
     const scope = accountScopeOf(gateway);
     if (scope === undefined) return undefined;

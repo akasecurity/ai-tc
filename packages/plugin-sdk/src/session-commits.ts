@@ -160,10 +160,23 @@ function skipHeredocBodies(command: string, at: number, heredocs: readonly Hered
 }
 
 /**
+ * A reader of each checkout's reflog commits that reads each directory once. A caller that
+ * records commits for several sessions in one pass hands every call the same one.
+ */
+export function headLogMemo(): (dir: string) => HeadCommit[] | null {
+  const logs = new Map<string, HeadCommit[] | null>();
+  return (dir) => {
+    if (!logs.has(dir)) logs.set(dir, readHeadLog(dir));
+    return logs.get(dir) ?? null;
+  };
+}
+
+/**
  * One `git_commit` row per commit a checkout reached while one of the session's git commands
  * that make commits was running in it: between the command's issue and its result, with
  * `GIT_COMMIT_SLACK_MS` either side. A command that errored, or whose result is not yet in the
- * transcript, records nothing. Each checkout's reflog is read once per call. A row is keyed on the
+ * transcript, records nothing. Each checkout's reflog is read once through `headLogOf`, a
+ * `headLogMemo` built per call unless one is given. A row is keyed on the
  * session and the commit, so a commit seen twice is one row, stamped with the scope key of the
  * command that first saw it. `attribution: 'command_window'` marks the tie as timing: a commit
  * another actor made in the same checkout while the command ran is recorded too.
@@ -171,12 +184,8 @@ function skipHeredocBodies(command: string, at: number, heredocs: readonly Hered
 export function sessionCommitEvents(
   sessionId: string,
   commands: readonly SessionCommand[],
+  headLogOf: (dir: string) => HeadCommit[] | null = headLogMemo(),
 ): AuditEventInput[] {
-  const logs = new Map<string, HeadCommit[] | null>();
-  const logOf = (dir: string) => {
-    if (!logs.has(dir)) logs.set(dir, readHeadLog(dir));
-    return logs.get(dir) ?? null;
-  };
   const events = new Map<string, AuditEventInput>();
   for (const call of commands) {
     const { cwd, command } = call;
@@ -186,7 +195,7 @@ export function sessionCommitEvents(
     const to = Date.parse(call.completedAt) + GIT_COMMIT_SLACK_MS;
     if (!Number.isFinite(from) || !Number.isFinite(to)) continue;
     for (const dir of committingGitDirs(command, cwd)) {
-      for (const { commit, at, kind } of logOf(dir) ?? []) {
+      for (const { commit, at, kind } of headLogOf(dir) ?? []) {
         if (at < from || at > to) continue;
         const id = gitCommitId(sessionId, commit);
         if (events.has(id)) continue;

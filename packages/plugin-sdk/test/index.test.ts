@@ -165,6 +165,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'gatePerKey',
   'hasLocalStoreMaintenance',
   'hasPointer',
+  'headLogMemo',
   'healthScore',
   'hookFailOpensPath',
   'hostCeilingNotice',

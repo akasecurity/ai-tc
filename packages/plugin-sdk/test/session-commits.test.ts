@@ -14,6 +14,7 @@ import type { SessionCommand } from '../src/session-commits.ts';
 import {
   committingGitDirs,
   GIT_COMMIT_SLACK_MS,
+  headLogMemo,
   sessionCommitEvents,
 } from '../src/session-commits.ts';
 
@@ -253,6 +254,17 @@ describe('sessionCommitEvents', () => {
       call('git commit --amend', 500, 2_000, { scopeKey: 'second' }),
     ]);
     expect(events.map((e) => e.attributes?.scope_key)).toEqual(['first']);
+  });
+
+  it('reads a checkout once through a shared memo, across sessions', () => {
+    cloneWithReflog(root, [reflogLine(A, B, T0 + 1_000, 'commit: x')]);
+    const headLogOf = headLogMemo();
+    const command = [call('git commit -m x', 0, 3_000)];
+    expect(sessionCommitEvents('session-1', command, headLogOf)).toHaveLength(1);
+    cloneWithReflog(root, [reflogLine(A, C, T0 + 1_000, 'commit: rewritten')]);
+    const second = sessionCommitEvents('session-2', command, headLogOf);
+    expect(second.map((e) => e.attributes?.commit)).toEqual([B]);
+    expect(sessionCommitEvents('session-2', command).map((e) => e.attributes?.commit)).toEqual([C]);
   });
 
   it('gives each of two sessions running in one checkout its own row for the same commit', () => {

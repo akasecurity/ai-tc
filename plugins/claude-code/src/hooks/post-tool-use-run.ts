@@ -16,7 +16,7 @@ import { postToolUseForward } from './capture-forward.ts';
 import { isMcpTool, MCP_OUTPUT_SESSION_MARKER } from './decoded-content.ts';
 import { warnIfHostBelowFloor } from './host-floor-notice.ts';
 import { largeInputBound } from './large-input.ts';
-import type { ResponseScanOutcome } from './scan-response.ts';
+import type { ResponseScanOutcome, ScanDeadline } from './scan-response.ts';
 import {
   RESPONSE_SCAN_DEADLINE_MS,
   responseEmitPayload,
@@ -35,8 +35,13 @@ import { markSession, openGateway, warnIfStoreRedirected } from './store-health.
 import { collectResponseFields } from './tool-response.ts';
 
 export interface PostToolUseRunDeps {
-  /** Replaces the response-scan deadline, which is measured from the process's start. */
-  readonly scanDeadline?: { at: number; now: () => number };
+  /** The response-scan deadline; measured from the process's start when omitted. */
+  readonly scanDeadline?: ScanDeadline;
+}
+
+/** A response-scan deadline measured from now, for a process that outlives one call. */
+export function callScanDeadline(now: () => number = () => performance.now()): ScanDeadline {
+  return { at: now() + RESPONSE_SCAN_DEADLINE_MS, now };
 }
 
 export async function runPostToolUse(
@@ -44,6 +49,10 @@ export async function runPostToolUse(
   emit: (output: HookOutput) => Promise<void>,
   deps: PostToolUseRunDeps = {},
 ): Promise<void> {
+  const deadline = deps.scanDeadline ?? {
+    at: RESPONSE_SCAN_DEADLINE_MS,
+    now: () => performance.now(),
+  };
   const rawToolName = getString(input, 'tool_name');
   const toolName = rawToolName ?? 'tool';
   // Field name differs across Claude Code versions; accept both — and when the
@@ -130,7 +139,7 @@ export async function runPostToolUse(
   // (see large-input.ts).
   const runtime = createPluginRuntime(gateway, config.settings, {
     dataDir: config.dataDir,
-    largeInput: largeInputBound(RESPONSE_SCAN_DEADLINE_MS),
+    largeInput: largeInputBound(deadline.at, deadline.now),
   });
   // Vaulting (and everything narrated about it) is consent-gated; without the
   // grant this hook behaves exactly as it did before the vault existed.
@@ -178,7 +187,7 @@ export async function runPostToolUse(
             return tokenized;
           }
         : undefined,
-      deps.scanDeadline ?? { at: RESPONSE_SCAN_DEADLINE_MS, now: () => performance.now() },
+      deadline,
     );
   } finally {
     await runtime.close();

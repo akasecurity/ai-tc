@@ -9,7 +9,7 @@ import {
   preToolUseWithCredentials,
 } from '../../credentials/tool-use.ts';
 import type { TranscriptSweeper } from '../../credentials/transcript-restore.ts';
-import { runPostToolUse } from '../post-tool-use-run.ts';
+import { callScanDeadline, runPostToolUse } from '../post-tool-use-run.ts';
 import { runPreToolUse } from '../pre-tool-use-run.ts';
 import type { HookOutput } from '../shared.ts';
 import { countFailOpen, parseJson } from '../shared.ts';
@@ -118,10 +118,15 @@ export function postToolUseHandler(
 ): HookHandler {
   return handlerFor(
     (input, emit) =>
-      postToolUseWithCredentials(input, emit, runPostToolUse, {
-        persistent: true,
-        onValuesUsed: (sessionId) => sweeper?.schedule(sessionId),
-      }),
+      postToolUseWithCredentials(
+        input,
+        emit,
+        (i, e) => runPostToolUse(i, e, { scanDeadline: callScanDeadline() }),
+        {
+          persistent: true,
+          onValuesUsed: (sessionId) => sweeper?.schedule(sessionId),
+        },
+      ),
     log,
   );
 }

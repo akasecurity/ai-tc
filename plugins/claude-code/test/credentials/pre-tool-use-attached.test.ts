@@ -14,6 +14,7 @@ import { forgetSessionCredentials } from '../../src/credentials/session-credenti
 import {
   postToolUseWithCredentials,
   preToolUseWithCredentials,
+  scrubbableCommand,
 } from '../../src/credentials/tool-use.ts';
 import { runPostToolUse } from '../../src/hooks/post-tool-use-run.ts';
 import { runPreToolUse } from '../../src/hooks/pre-tool-use-run.ts';
@@ -102,7 +103,7 @@ describe('credential handles through the real pipelines on an attached machine',
       systemMessage: string;
     };
     expect(decided.hookSpecificOutput.updatedInput.command).toBe(
-      `aws --key ${VALUE} --other [[aka:cred:denied]]`,
+      scrubbableCommand(`aws --key ${VALUE} --other [[aka:cred:denied]]`),
     );
     expect(decided.hookSpecificOutput.permissionDecision).toBeUndefined();
     expect(decided.systemMessage).not.toContain(VALUE);

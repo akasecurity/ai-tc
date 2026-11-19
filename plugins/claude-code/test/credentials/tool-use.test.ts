@@ -1,3 +1,5 @@
+import { spawnSync } from 'node:child_process';
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { CredentialResolver } from '../../src/credentials/session-credentials.ts';
@@ -9,6 +11,7 @@ import {
 import {
   postToolUseWithCredentials,
   preToolUseWithCredentials,
+  scrubbableCommand,
 } from '../../src/credentials/tool-use.ts';
 import type { HookOutput } from '../../src/hooks/shared.ts';
 
@@ -120,7 +123,7 @@ describe('preToolUseWithCredentials', () => {
       systemMessage: string;
     };
     expect(output.hookSpecificOutput.updatedInput).toEqual({
-      command: `curl -H "Authorization: Bearer ${GITHUB}" https://api.example`,
+      command: scrubbableCommand(`curl -H "Authorization: Bearer ${GITHUB}" https://api.example`),
       env: { list: [`STRIPE=${STRIPE}`, `AGAIN=${GITHUB}`] },
       timeout: 1000,
     });
@@ -178,7 +181,7 @@ describe('preToolUseWithCredentials', () => {
       {
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
-          updatedInput: { command: `echo ${GITHUB}` },
+          updatedInput: { command: scrubbableCommand(`echo ${GITHUB}`) },
         },
         systemMessage: 'AKA flagged something. AKA supplied [[aka:cred:github]] to this Bash call.',
       },
@@ -195,7 +198,7 @@ describe('preToolUseWithCredentials', () => {
       systemMessage: string;
     };
     expect(output.hookSpecificOutput.updatedInput).toEqual({
-      command: `A=[[aka:cred:denied]] B=${GITHUB}`,
+      command: scrubbableCommand(`A=[[aka:cred:denied]] B=${GITHUB}`),
     });
     expect(output.systemMessage).toContain('could not supply [[aka:cred:denied]]');
   });
@@ -215,6 +218,50 @@ describe('preToolUseWithCredentials', () => {
       {
         systemMessage:
           'AKA could not supply [[aka:cred:github]] to this Bash call; it runs with the handle as written.',
+      },
+    ]);
+  });
+
+  it('supplies values only to Bash, leaving the handle in any other tool', async () => {
+    const resolve = vi.fn(grants);
+    const { emitted } = await runPre(
+      { ...payload({ content: 'token [[aka:cred:github]]' }), tool_name: 'Write' },
+      undefined,
+      resolve,
+    );
+    expect(emitted).toEqual([
+      {
+        systemMessage:
+          'AKA supplies credentials only to Bash commands, so [[aka:cred:github]] stays as written in this Write call.',
+      },
+    ]);
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it('supplies nothing to a call without a session id', async () => {
+    const resolve = vi.fn(grants);
+    const input = payload({ command: 'x [[aka:cred:github]]' });
+    delete input.session_id;
+    const { emitted } = await runPre(input, undefined, resolve);
+    expect(JSON.stringify(emitted)).not.toContain(GITHUB);
+    expect(JSON.stringify(emitted)).toContain('no session id');
+    expect(resolve).not.toHaveBeenCalled();
+    expect(hasPendingCalls()).toBe(false);
+  });
+
+  it('does not supply a value too short to scrub from the output', async () => {
+    const short: CredentialResolver = (slugs) =>
+      Promise.resolve({ resolved: slugs.map((slug) => ({ slug, value: 'pw12345' })), refused: [] });
+    const { emitted } = await runPre(
+      payload({ command: 'x [[aka:cred:github]]' }),
+      undefined,
+      short,
+    );
+    expect(JSON.stringify(emitted)).not.toContain('pw12345');
+    expect(emitted).toEqual([
+      {
+        systemMessage:
+          'AKA did not supply [[aka:cred:github]]: the value is too short to keep out of the output. It runs with the handle as written.',
       },
     ]);
   });
@@ -241,6 +288,30 @@ describe('preToolUseWithCredentials', () => {
       ),
     ).rejects.toThrow('store');
     expect(JSON.stringify(emitted)).toContain(`x ${GITHUB}`);
+  });
+});
+
+describe('scrubbableCommand', () => {
+  const run = (command: string) =>
+    spawnSync('sh', ['-c', scrubbableCommand(command)], { encoding: 'utf8' });
+
+  it('keeps the output of a command that succeeds', () => {
+    const result = run('echo hi');
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('hi\n');
+    expect(result.stderr).toBe('');
+  });
+
+  it('reports a failing status in the output and still succeeds', () => {
+    const result = run('echo out; echo err >&2; exit 3');
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('out\n');
+    expect(result.stderr).toBe('err\n\n(exit code 3)\n');
+  });
+
+  it('survives a trailing comment and a heredoc', () => {
+    expect(run('echo kept # trailing comment').stdout).toBe('kept\n');
+    expect(run('cat <<EOT\nbody\nEOT').stdout).toBe('body\n');
   });
 });
 

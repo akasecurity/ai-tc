@@ -5,6 +5,12 @@
 // the call, the handles are replaced by their values in the input it answers
 // with. A handle that does not resolve stays as written and the call runs.
 //
+// Values are supplied only to Bash, only under a session id, and only when they
+// are long enough to scrub: anything else could leave a value where a later
+// PostToolUse cannot reach it (a file, a failed call's error, another session).
+// The command is wrapped so it always ends through PostToolUse, which can
+// rewrite its output; PostToolUseFailure cannot.
+//
 // PostToolUse: a value injected earlier in the session is replaced by its
 // handle in the tool's output BEFORE the pipeline scans it, so the value is
 // never scanned, recorded or shown to the model, and the replaced output is
@@ -18,6 +24,7 @@ import { getString } from '../hooks/shared.ts';
 import {
   handleList,
   handleSlugsIn,
+  MIN_SCRUBBED_VALUE_LENGTH,
   scrubValues,
   substituteHandles,
   valueScrubber,
@@ -87,6 +94,24 @@ function isDeny(output: HookOutput): boolean {
   );
 }
 
+const SUPPLIED_TOOL = 'Bash';
+
+/**
+ * `command` run in a subshell that reports a non-zero status in its output and
+ * then succeeds, so its output reaches PostToolUse and is scrubbed. The newline
+ * ends a trailing comment or heredoc before the closing parenthesis.
+ */
+export function scrubbableCommand(command: string): string {
+  return `(\n${command}\n); __aka_status=$?; [ "$__aka_status" -eq 0 ] || printf '\\n(exit code %s)\\n' "$__aka_status" >&2; :`;
+}
+
+function noteOnly(outputs: HookOutput[], note: string): HookOutput[] {
+  const output = outputs[0];
+  if (output === undefined) return [{ systemMessage: note }];
+  const shown = 'systemMessage' in output ? output.systemMessage : undefined;
+  return [{ ...output, systemMessage: joinMessages(shown, note) ?? note }];
+}
+
 function refusalNote(
   toolName: string,
   refused: readonly CredentialSlug[],
@@ -121,6 +146,18 @@ async function withValues(
 
   const sessionId = getString(input, 'session_id');
   const toolName = getString(input, 'tool_name') ?? 'tool';
+  if (toolName !== SUPPLIED_TOOL) {
+    return noteOnly(
+      outputs,
+      `AKA supplies credentials only to Bash commands, so ${handleList(slugs)} stays as written in this ${toolName} call.`,
+    );
+  }
+  if (sessionId === undefined || sessionId === '') {
+    return noteOnly(
+      outputs,
+      `AKA could not supply ${handleList(slugs)}: this call has no session id, so the value could not be kept out of its output. It runs with the handle as written.`,
+    );
+  }
   if (deps.persistent !== true) {
     return [
       {
@@ -134,22 +171,34 @@ async function withValues(
   }
   const resolved = await resolveForSession(sessionId, slugs, deps.resolve ?? attachedResolver);
   noteTranscript(sessionId, getString(input, 'transcript_path'));
-  const note = refusalNote(
-    toolName,
-    resolved.refused.map(({ slug }) => slug),
-    resolved.unanswered,
+  const values = new Map<CredentialSlug, string>();
+  const tooShort: CredentialSlug[] = [];
+  for (const [slug, value] of resolved.values) {
+    if (value.length < MIN_SCRUBBED_VALUE_LENGTH) tooShort.push(slug);
+    else values.set(slug, value);
+  }
+  const note = joinMessages(
+    refusalNote(
+      toolName,
+      resolved.refused.map(({ slug }) => slug),
+      resolved.unanswered,
+    ),
+    tooShort.length === 0
+      ? undefined
+      : `AKA did not supply ${handleList(tooShort)}: the value is too short to keep out of the output. It runs with the handle as written.`,
   );
   const shown =
     output !== undefined && 'systemMessage' in output ? output.systemMessage : undefined;
-  if (resolved.values.size === 0) {
-    if (note === undefined) return outputs;
-    if (output === undefined) return [{ systemMessage: note }];
-    return [{ ...output, systemMessage: joinMessages(shown, note) ?? note }];
+  if (values.size === 0) {
+    return note === undefined ? outputs : noteOnly(outputs, note);
   }
 
-  const { value, substituted } = substituteHandles(base, resolved.values);
-  const updatedInput = value as Record<string, unknown>;
-  notePendingCall(getString(input, 'tool_use_id'));
+  const { value, substituted } = substituteHandles(base, values);
+  const updatedInput = { ...(value as Record<string, unknown>) };
+  if (typeof updatedInput.command === 'string') {
+    updatedInput.command = scrubbableCommand(updatedInput.command);
+  }
+  notePendingCall(getString(input, 'tool_use_id'), sessionId);
   deps.onValuesUsed?.(sessionId);
   const message = joinMessages(
     shown,

@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 
 import type { SightingKeys } from '@akasecurity/persistence';
 import { readSightingKeys, sightingTokens, writeOwnerOnlyFileSync } from '@akasecurity/persistence';
+import { canReachVault } from '@akasecurity/plugin-runtime';
 import type { AvailableCredential } from '@akasecurity/schema';
 import { CredentialSlug, formatCredentialHandle } from '@akasecurity/schema';
 import * as z from 'zod';
@@ -99,7 +100,7 @@ export function swapPastedCredentials(
 
 /**
  * {@link swapPastedCredentials} with this machine's saved lookups and sighting
- * keys, or null when it has neither or nothing matched.
+ * keys, or null when it has neither, is not attached, or nothing matched.
  */
 export function swapPastedCredentialsOnMachine(
   dataDir: string,
@@ -108,7 +109,7 @@ export function swapPastedCredentialsOnMachine(
 ): { text: string; swapped: PastedCredential[] } | null {
   if (!findings.some((finding) => finding.category === 'secret')) return null;
   const lookups = readCredentialLookups(dataDir);
-  if (lookups.size === 0) return null;
+  if (lookups.size === 0 || !canReachVault(dataDir)) return null;
   const keys = readSightingKeys(dirname(dataDir));
   if (keys === undefined) return null;
   const result = swapPastedCredentials(text, findings, lookups, keys);

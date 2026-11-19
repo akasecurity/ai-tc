@@ -66,7 +66,7 @@ async function runPre(
 }
 
 describe('preToolUseWithCredentials', () => {
-  it('refuses a call with a handle outside the hook server, resolving nothing', async () => {
+  it('runs a call with a handle outside the hook server as written, resolving nothing', async () => {
     const resolve = vi.fn(grants);
     const emitted: HookOutput[] = [];
     await preToolUseWithCredentials(
@@ -80,10 +80,11 @@ describe('preToolUseWithCredentials', () => {
     );
     expect(resolve).not.toHaveBeenCalled();
     expect(emitted).toHaveLength(1);
-    expect(emitted[0]).toMatchObject({
-      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' },
-    });
-    expect(JSON.stringify(emitted)).toContain('Run the same call again');
+    expect(JSON.stringify(emitted)).not.toContain('permissionDecision');
+    expect(JSON.stringify(emitted)).not.toContain('updatedInput');
+    expect(JSON.stringify(emitted)).toContain(
+      'AKA could not supply [[aka:cred:github]]: this call did not reach',
+    );
   });
 
   it('records a call it gave a value until its output is seen', async () => {

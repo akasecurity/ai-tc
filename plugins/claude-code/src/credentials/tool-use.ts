@@ -45,7 +45,7 @@ export interface CredentialHookDeps {
   /**
    * True when this process stays up to see the call's PostToolUse. A one-shot
    * hook process forgets the value on exit and could not replace it in the
-   * output, so it refuses the call instead of injecting.
+   * output, so it leaves the handle as written and says so.
    */
   readonly persistent?: boolean;
   /** Called with the session id after a value was injected or scrubbed. */
@@ -98,11 +98,14 @@ const SUPPLIED_TOOL = 'Bash';
 
 /**
  * `command` run in a subshell that reports a non-zero status in its output and
- * then succeeds, so its output reaches PostToolUse and is scrubbed. The newline
- * ends a trailing comment or heredoc before the closing parenthesis.
+ * then succeeds, so its output reaches PostToolUse and is scrubbed: the call's
+ * own status is in its output, not its exit code. Everything runs in an outer
+ * subshell, so neither the status variable nor the command's `cd`, `export` or
+ * assignments reach the shell kept between calls. The newline ends a trailing
+ * comment or heredoc before the closing parenthesis.
  */
 export function scrubbableCommand(command: string): string {
-  return `(\n${command}\n); __aka_status=$?; [ "$__aka_status" -eq 0 ] || printf '\\n(exit code %s)\\n' "$__aka_status" >&2; :`;
+  return `( (\n${command}\n); __aka_status=$?; [ "$__aka_status" -eq 0 ] || printf '\\n(exit code %s)\\n' "$__aka_status" >&2; : )`;
 }
 
 function noteOnly(outputs: HookOutput[], note: string): HookOutput[] {
@@ -159,15 +162,10 @@ async function withValues(
     );
   }
   if (deps.persistent !== true) {
-    return [
-      {
-        hookSpecificOutput: {
-          hookEventName: 'PreToolUse',
-          permissionDecision: 'deny',
-          permissionDecisionReason: `AKA's credential service is starting, so it did not supply ${handleList(slugs)}. Run the same call again.`,
-        },
-      },
-    ];
+    return noteOnly(
+      outputs,
+      `AKA could not supply ${handleList(slugs)}: this call did not reach AKA's credential service, which runs in its hook server. It runs with the handle as written.`,
+    );
   }
   const resolved = await resolveForSession(sessionId, slugs, deps.resolve ?? attachedResolver);
   noteTranscript(sessionId, getString(input, 'transcript_path'));

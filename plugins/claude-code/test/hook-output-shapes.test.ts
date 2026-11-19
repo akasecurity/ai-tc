@@ -13,7 +13,7 @@
  *   this map → the doc    the assertions below
  *
  * Each link is enforced by something, so a seventh shape cannot land quietly at
- * any of them. What none of it covers is a hook that writes to stdout WITHOUT
+ * any of them, including a second variant of a hook that already has one. What none of it covers is a hook that writes to stdout WITHOUT
  * going through `emit` — that is `fail-open.e2e.test.ts`'s ground, which reads
  * what the built scripts really print.
  */
@@ -34,43 +34,47 @@ const SECTION_HEADING = '### 1. Fail-open everywhere in the plugin';
 const TOP_LEVEL_SHAPES = ['decision', 'systemMessage'] as const;
 
 /**
- * One `hookSpecificOutput` variant per hook, mapped to the field that carries
- * its opinion — which is how the doc names each one, and the only part of the
- * variant a reader needs to tell them apart. `hookEventName` is the
- * discriminant, not the shape.
+ * Each `hookSpecificOutput` variant, as `<hookEventName>:<field>`: the field is
+ * the one that carries its opinion, which is how the doc names each one.
+ * Keyed per variant rather than per hook, so a second variant of a hook that
+ * already has one is counted. PreToolUse and PreModelSwitch share a field name
+ * and stay separate: the host honors only the variant matching the event it fired.
  */
-const SHAPE_FIELD_BY_EVENT = {
-  PreToolUse: 'permissionDecision',
-  // Same field name as PreToolUse above, and not a duplicate to be collapsed:
-  // the two are separate variants carrying separate `hookEventName`s, and the
-  // host honors only the one matching the event it fired. The set assertion
-  // below dedupes the spans, so the doc names the field once while pairing it
-  // with both hooks.
-  PreModelSwitch: 'permissionDecision',
-  PostToolUse: 'updatedToolOutput',
-  MessageDisplay: 'displayContent',
-  SessionStart: 'additionalContext',
-} as const;
+const SHAPE_VARIANTS = [
+  'PreToolUse:permissionDecision',
+  'PreToolUse:updatedInput',
+  'PreModelSwitch:permissionDecision',
+  'PostToolUse:updatedToolOutput',
+  'MessageDisplay:displayContent',
+  'SessionStart:additionalContext',
+] as const;
 
-// ---------------------------------------------------------------------------
-// The compile-time half — `pnpm typecheck` covers test/, so these are gates
-// ---------------------------------------------------------------------------
+// The compile-time half: `pnpm typecheck` covers test/, so these are gates.
 
-type EmittedEventName = Extract<
+type RequiredKeys<T> = {
+  [K in keyof T]-?: Record<never, never> extends Pick<T, K> ? never : K;
+}[keyof T];
+
+/** A variant's opinion: its permission decision when it has one, else its one other required field. */
+type OpinionOf<H> = H extends { permissionDecision: unknown }
+  ? 'permissionDecision'
+  : Exclude<RequiredKeys<H>, 'hookEventName'>;
+
+type EmittedVariant = Extract<
   HookOutput,
-  { hookSpecificOutput: { hookEventName: string } }
->['hookSpecificOutput']['hookEventName'];
+  { hookSpecificOutput: unknown }
+>['hookSpecificOutput'] extends infer H
+  ? H extends { hookEventName: infer E extends string }
+    ? `${E}:${OpinionOf<H> & string}`
+    : never
+  : never;
 
 // Both directions, because they fail differently. A variant added to the union
-// and not to the map is a shape nothing counts (the drift that happened); a map
+// and not to the list is a shape nothing counts (the drift that happened); a list
 // entry whose variant is gone is an expectation outliving what it described,
 // which leaves the doc naming a shape no hook can emit.
-type EveryVariantNamed = [EmittedEventName] extends [keyof typeof SHAPE_FIELD_BY_EVENT]
-  ? true
-  : never;
-type EveryNameEmitted = [keyof typeof SHAPE_FIELD_BY_EVENT] extends [EmittedEventName]
-  ? true
-  : never;
+type EveryVariantNamed = [EmittedVariant] extends [(typeof SHAPE_VARIANTS)[number]] ? true : never;
+type EveryNameEmitted = [(typeof SHAPE_VARIANTS)[number]] extends [EmittedVariant] ? true : never;
 
 // And that `emit` still narrows at all: were its parameter widened back to
 // `unknown`, this stops being assignable and the union above becomes decoration
@@ -147,7 +151,7 @@ const CONVENTIONS_TEXT = [
 const SECTION = sectionOf(CONVENTIONS_TEXT, SECTION_HEADING);
 const SENTENCE = shapesSentence(SECTION);
 
-const EVENTS = Object.entries(SHAPE_FIELD_BY_EVENT);
+const EVENTS = SHAPE_VARIANTS.map((variant) => variant.split(':') as [string, string]);
 const SHAPE_COUNT = TOP_LEVEL_SHAPES.length + EVENTS.length;
 
 describe(`${CONVENTIONS_DOC} §1's emit() shape enumeration`, () => {

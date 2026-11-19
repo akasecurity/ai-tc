@@ -26,7 +26,7 @@ export function credentialBrief(credentials: readonly AvailableCredential[]): st
   return [
     'Credentials your organization has granted to this machine through AKA:',
     ...listed,
-    `To use one, write its handle literally where the secret goes in a tool call, for example \`curl -H "Authorization: Bearer ${example}" …\` or \`TOKEN=${example} ./script.sh\`. AKA puts the real value in just before the tool runs and turns it back into the handle in the output.`,
-    'Never ask the user for these values, and do not try to print or store them.',
+    `To use one, write its handle literally where the secret goes in a Bash command, for example \`curl -H "Authorization: Bearer ${example}" …\` or \`TOKEN=${example} ./script.sh\`. AKA puts the real value in just before the command runs and turns it back into the handle where the output shows it as written.`,
+    'Never ask the user for these values, and do not print, encode, transform or store them: a value that is base64-encoded, reversed or split in the output is not recognised and reaches you as it is.',
   ].join('\n');
 }

@@ -21,6 +21,9 @@ import { runPreToolUse } from '../../src/hooks/pre-tool-use-run.ts';
 import type { HookOutput } from '../../src/hooks/shared.ts';
 
 const server = useLoopbackServer();
+// The response scan's own deadline runs from process start; a slow worker would pass it before
+// the test body and scan nothing, which would make the no-value assertions vacuous.
+const NO_SCAN_DEADLINE = { scanDeadline: { at: Number.POSITIVE_INFINITY, now: () => 0 } };
 // Shaped like an AWS access key id, so the bundled rules would flag it if it
 // were ever scanned; not any rule's own example, which the store holds.
 const VALUE = ['AKIA', 'Q7RT2MXW9ZPLK4VB'].join('');
@@ -128,7 +131,7 @@ describe('credential handles through the real pipelines on an attached machine',
         post.push(output);
         return Promise.resolve();
       },
-      runPostToolUse,
+      (input, emit) => runPostToolUse(input, emit, NO_SCAN_DEADLINE),
     );
     expect(JSON.stringify(post)).toContain('key is [[aka:cred:aws]]');
     expect(JSON.stringify(post)).not.toContain(VALUE);
@@ -151,6 +154,7 @@ describe('credential handles through the real pipelines on an attached machine',
         },
       },
       () => Promise.resolve(),
+      NO_SCAN_DEADLINE,
     );
     expect(everyFileText(home)).toContain(VALUE);
   });

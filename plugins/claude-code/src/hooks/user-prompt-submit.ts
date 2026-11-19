@@ -161,15 +161,19 @@ async function main(): Promise<void> {
       { kind: 'prompt', sourceTool: SOURCE_TOOL.ClaudeCode, text: prompt, metadata },
       stampFor(gateway, account, scopeKey),
     );
-    if (!handedOff) await decided.record();
     result = decided.result;
     // A credential the organization vaulted, pasted where the mod could not swap
-    // it: what is left of the prompt is decided with each credential as its
-    // handle, so the local vault never pointerizes the credential's value.
-    pasted =
-      result.scanIncomplete === undefined
-        ? swapPastedCredentialsOnMachine(config.dataDir, prompt, result.findings)
-        : null;
+    // it: what is left of the prompt is decided and recorded with each
+    // credential as its handle, so neither the local vault nor the store ever
+    // holds the credential's value.
+    pasted = null;
+    try {
+      if (result.scanIncomplete === undefined) {
+        pasted = swapPastedCredentialsOnMachine(config.dataDir, prompt, result.findings);
+      }
+    } catch {
+      // The prompt is then recorded and decided as written.
+    }
     if (pasted !== null) {
       const swapped = await captureDeferredStamped(
         runtime,
@@ -177,6 +181,9 @@ async function main(): Promise<void> {
         stampFor(gateway, account, scopeKey),
       );
       result = swapped.result;
+      if (!handedOff) await swapped.record();
+    } else if (!handedOff) {
+      await decided.record();
     }
   } finally {
     await runtime.close();

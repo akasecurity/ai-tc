@@ -3,7 +3,11 @@
 // environment, and passes the session start, the reconcile trigger and the
 // emitter this runs with.
 import type { handleSessionStart } from '@akasecurity/plugin-runtime';
-import { listAvailableCredentials, sessionStartNotice } from '@akasecurity/plugin-runtime';
+import {
+  canReachVault,
+  listAvailableCredentials,
+  sessionStartNotice,
+} from '@akasecurity/plugin-runtime';
 import { loadConfig, recordSessionModel } from '@akasecurity/plugin-sdk';
 import type { AvailableCredential } from '@akasecurity/schema';
 import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
@@ -34,6 +38,8 @@ export interface SessionStartDeps {
   /** The credentials granted to this machine; the entry passes none and the attached client is asked. */
   readonly availableCredentials?:
     ((dataDir: string) => Promise<AvailableCredential[] | undefined>) | undefined;
+  /** Whether the machine is attached with a usable key; the entry passes none and settings are read. */
+  readonly canReachVault?: ((dataDir: string) => boolean) | undefined;
 }
 
 /** One SessionStart, from its parsed stdin payload (null when it did not parse). */
@@ -134,7 +140,8 @@ export async function runSessionStart(
   // out. On an attached machine with granted credentials, a note naming their
   // handles rides alongside; it is skipped on any failure.
   const briefs: string[] = [];
-  if (isVaultConsentValid(config.settings.vaultConsent)) {
+  const localVault = isVaultConsentValid(config.settings.vaultConsent);
+  if (localVault) {
     briefs.push(
       standingBrief({
         marker: sessionProtocolMarker(config.dataDir, sessionId),
@@ -142,7 +149,11 @@ export async function runSessionStart(
       }),
     );
   }
-  const credentials = await availableCredentialsBrief(config.dataDir, deps);
+  // With the local vault on, tool calls keep the one-shot hook, which cannot supply a value,
+  // so no handle is offered and no pasted value is swapped for one.
+  let credentials: string | undefined;
+  if (localVault) clearCredentialLookups(config.dataDir);
+  else credentials = await availableCredentialsBrief(config.dataDir, deps);
   if (credentials !== undefined) briefs.push(credentials);
   if (briefs.length > 0) {
     await deps.emit({
@@ -157,6 +168,14 @@ export async function runSessionStart(
   }
 }
 
+function clearCredentialLookups(dataDir: string): void {
+  try {
+    saveCredentialLookups(dataDir, []);
+  } catch {
+    // A file left behind only keeps a pasted value's swap.
+  }
+}
+
 async function availableCredentialsBrief(
   dataDir: string,
   deps: SessionStartDeps,
@@ -165,7 +184,12 @@ async function availableCredentialsBrief(
     const available = deps.availableCredentials
       ? await deps.availableCredentials(dataDir)
       : await listAvailableCredentials({ dataDir });
-    if (available === undefined) return undefined;
+    if (available === undefined) {
+      // Detached: lookups an earlier attached session saved would swap a pasted value for a
+      // handle nothing can resolve. A deployment that did not answer keeps the last list.
+      if (!(deps.canReachVault ?? canReachVault)(dataDir)) clearCredentialLookups(dataDir);
+      return undefined;
+    }
     try {
       saveCredentialLookups(dataDir, available);
     } catch {

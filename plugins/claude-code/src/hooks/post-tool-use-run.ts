@@ -34,9 +34,15 @@ import { captureStamped } from './stamped-capture.ts';
 import { markSession, openGateway, warnIfStoreRedirected } from './store-health.ts';
 import { collectResponseFields } from './tool-response.ts';
 
+export interface PostToolUseRunDeps {
+  /** Replaces the response-scan deadline, which is measured from the process's start. */
+  readonly scanDeadline?: { at: number; now: () => number };
+}
+
 export async function runPostToolUse(
   input: Record<string, unknown>,
   emit: (output: HookOutput) => Promise<void>,
+  deps: PostToolUseRunDeps = {},
 ): Promise<void> {
   const rawToolName = getString(input, 'tool_name');
   const toolName = rawToolName ?? 'tool';
@@ -172,7 +178,7 @@ export async function runPostToolUse(
             return tokenized;
           }
         : undefined,
-      { at: RESPONSE_SCAN_DEADLINE_MS, now: () => performance.now() },
+      deps.scanDeadline ?? { at: RESPONSE_SCAN_DEADLINE_MS, now: () => performance.now() },
     );
   } finally {
     await runtime.close();

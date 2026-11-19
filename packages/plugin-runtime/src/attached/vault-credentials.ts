@@ -39,19 +39,29 @@ export interface VaultCredentialDeps {
   client?: VaultCredentialClient;
 }
 
-/** The attached client for this machine, or undefined when it is not attached with a usable key. */
-function attachedClient(dataDir: string, timeoutMs: number): VaultCredentialClient | undefined {
+function attachedConnection(dataDir: string): { endpoint: string; apiKey: string } | undefined {
   const base = dirname(dataDir);
   const settings = readWorkspaceSettings(base);
   const connection = isAttached(settings) ? settings.controlPlane : undefined;
   if (connection === undefined) return undefined;
   const state = readControlPlaneCredentialFile(settingsDirOf(base), connection);
   if (!state.usable) return undefined;
-  return createRemoteClient({
-    endpoint: connection.endpoint,
-    apiKey: state.credential.apiKey,
-    timeoutMs,
-  });
+  return { endpoint: connection.endpoint, apiKey: state.credential.apiKey };
+}
+
+/** The attached client for this machine, or undefined when it is not attached with a usable key. */
+function attachedClient(dataDir: string, timeoutMs: number): VaultCredentialClient | undefined {
+  const connection = attachedConnection(dataDir);
+  return connection === undefined ? undefined : createRemoteClient({ ...connection, timeoutMs });
+}
+
+/** Whether this machine is attached with a usable key, so its vault calls can be answered. */
+export function canReachVault(dataDir: string): boolean {
+  try {
+    return attachedConnection(dataDir) !== undefined;
+  } catch {
+    return false;
+  }
 }
 
 /** The credentials granted to this machine, or undefined when not attached or on any fault. */

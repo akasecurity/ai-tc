@@ -123,6 +123,7 @@ export {
 export type { VaultCredentialClient, VaultCredentialDeps } from './vault-credentials.ts';
 export {
   AVAILABLE_CREDENTIALS_TIMEOUT_MS,
+  canReachVault,
   CREDENTIAL_RESOLVE_TIMEOUT_MS,
   listAvailableCredentials,
   resolveCredentialValues,

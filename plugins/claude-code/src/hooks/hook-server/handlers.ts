@@ -3,7 +3,6 @@
 import { chdir } from 'node:process';
 
 import { loadConfig } from '@akasecurity/plugin-sdk';
-import { isVaultConsentValid } from '@akasecurity/schema';
 
 import {
   postToolUseWithCredentials,
@@ -17,6 +16,7 @@ import { countFailOpen, parseJson } from '../shared.ts';
 import { closingGateways, dropHeldGateway } from '../store-health.ts';
 import { applyRequestEnv } from './request-env.ts';
 import type { HookHandler } from './server.ts';
+import { hookServerTakesToolCalls } from './serves.ts';
 
 /** The standard error text a hook wrote, to the server's log rather than to a terminal nobody reads. */
 async function capturingStderr<T>(
@@ -77,7 +77,7 @@ function handlerFor(run: HookRun, log: (line: string) => void): HookHandler {
       // A machine with the vault turned on keeps the node hook: that path opens
       // the vault's own store handle per call, which this process does not hold.
       try {
-        if (isVaultConsentValid(loadConfig().settings.vaultConsent)) return null;
+        if (!hookServerTakesToolCalls(loadConfig().settings)) return null;
       } catch {
         return null;
       }

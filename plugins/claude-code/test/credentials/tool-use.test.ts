@@ -1,4 +1,7 @@
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -85,6 +88,28 @@ describe('preToolUseWithCredentials', () => {
     expect(JSON.stringify(emitted)).toContain(
       'AKA could not supply [[aka:cred:github]]: this call did not reach',
     );
+  });
+
+  it('leaves a handle alone, with no note, on a machine that is not attached', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'aka-unattached-'));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+    try {
+      const emitted: HookOutput[] = [];
+      await preToolUseWithCredentials(
+        payload({ command: 'echo [[aka:cred:github]]' }),
+        (output) => {
+          emitted.push(output);
+          return Promise.resolve();
+        },
+        () => Promise.resolve(),
+        { persistent: true },
+      );
+      expect(emitted).toEqual([]);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it('records a call it gave a value until its output is seen', async () => {

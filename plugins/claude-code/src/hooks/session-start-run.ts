@@ -8,7 +8,7 @@ import {
   listAvailableCredentials,
   sessionStartNotice,
 } from '@akasecurity/plugin-runtime';
-import { loadConfig, recordSessionModel } from '@akasecurity/plugin-sdk';
+import { loadConfig, type PluginConfig, recordSessionModel } from '@akasecurity/plugin-sdk';
 import type { AvailableCredential } from '@akasecurity/schema';
 import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
@@ -19,6 +19,7 @@ import type { triggerReconcile } from '../history/reconcile-trigger.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { standingBrief } from '../protocol/notes.ts';
 import { recordSessionStartAccount } from './account-stamp.ts';
+import { credentialHandlesCanBeSupplied } from './hook-server/serves.ts';
 import type { HookOutput } from './shared.ts';
 import { getString } from './shared.ts';
 import { warnIfStoreRedirected } from './store-health.ts';
@@ -40,6 +41,9 @@ export interface SessionStartDeps {
     ((dataDir: string) => Promise<AvailableCredential[] | undefined>) | undefined;
   /** Whether the machine is attached with a usable key; the entry passes none and settings are read. */
   readonly canReachVault?: ((dataDir: string) => boolean) | undefined;
+  /** Whether a tool call can be given a credential's value; the entry passes none and checks this process. */
+  readonly credentialHandlesCanBeSupplied?:
+    ((settings: PluginConfig['settings']) => boolean) | undefined;
 }
 
 /** One SessionStart, from its parsed stdin payload (null when it did not parse). */
@@ -140,8 +144,7 @@ export async function runSessionStart(
   // out. On an attached machine with granted credentials, a note naming their
   // handles rides alongside; it is skipped on any failure.
   const briefs: string[] = [];
-  const localVault = isVaultConsentValid(config.settings.vaultConsent);
-  if (localVault) {
+  if (isVaultConsentValid(config.settings.vaultConsent)) {
     briefs.push(
       standingBrief({
         marker: sessionProtocolMarker(config.dataDir, sessionId),
@@ -149,11 +152,14 @@ export async function runSessionStart(
       }),
     );
   }
-  // With the local vault on, tool calls keep the one-shot hook, which cannot supply a value,
-  // so no handle is offered and no pasted value is swapped for one.
+  // Handles are offered only where a tool call can be given their values; elsewhere the
+  // saved lookups are cleared, so no pasted value is swapped for a handle.
   let credentials: string | undefined;
-  if (localVault) clearCredentialLookups(config.dataDir);
-  else credentials = await availableCredentialsBrief(config.dataDir, deps);
+  if ((deps.credentialHandlesCanBeSupplied ?? defaultCanSupply)(config.settings)) {
+    credentials = await availableCredentialsBrief(config.dataDir, deps);
+  } else {
+    clearCredentialLookups(config.dataDir);
+  }
   if (credentials !== undefined) briefs.push(credentials);
   if (briefs.length > 0) {
     await deps.emit({
@@ -166,6 +172,11 @@ export async function runSessionStart(
   } else if (shown !== undefined) {
     await deps.emit({ systemMessage: shown });
   }
+}
+
+function defaultCanSupply(settings: PluginConfig['settings']): boolean {
+  // eslint-disable-next-line n/no-process-env -- the hook client reads the same switches from this environment
+  return credentialHandlesCanBeSupplied(settings, process.env);
 }
 
 function clearCredentialLookups(dataDir: string): void {
@@ -185,8 +196,8 @@ async function availableCredentialsBrief(
       ? await deps.availableCredentials(dataDir)
       : await listAvailableCredentials({ dataDir });
     if (available === undefined) {
-      // Detached: lookups an earlier attached session saved would swap a pasted value for a
-      // handle nothing can resolve. A deployment that did not answer keeps the last list.
+      // Saved lookups are cleared when the machine cannot reach the vault, and kept when an
+      // attached deployment did not answer.
       if (!(deps.canReachVault ?? canReachVault)(dataDir)) clearCredentialLookups(dataDir);
       return undefined;
     }

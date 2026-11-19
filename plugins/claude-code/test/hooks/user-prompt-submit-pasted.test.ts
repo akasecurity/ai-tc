@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -7,6 +8,7 @@ import {
   applyOnboarding,
   createSightingKeyStore,
   keysDir,
+  openLocalDatabase,
   settingsDir as settingsDirOf,
   sightingKeyEndpointFingerprint,
   sightingToken,
@@ -16,7 +18,6 @@ import { formatCredentialHandle } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { saveCredentialLookups } from '../../src/credentials/pasted.ts';
-import { withTempHome } from '../helpers/run-hook.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HOOK_SCRIPT = join(HERE, '..', '..', 'scripts', 'user-prompt-submit.js');
@@ -62,10 +63,11 @@ function everyFileText(dir: string): string {
 }
 
 describe('user-prompt-submit with a pasted vaulted credential', () => {
-  it('records the prompt with the handle in place of the value', () => {
-    withTempHome((home) => {
+  it('records the finding with the pasted value masked, and never the value', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'aka-pasted-'));
+    try {
       attach(home);
-      execFileSync(process.execPath, [HOOK_SCRIPT], {
+      const stdout = execFileSync(process.execPath, [HOOK_SCRIPT], {
         env: { HOME: home, USERPROFILE: home },
         input: JSON.stringify({
           prompt: `use this token: ${VALUE}`,
@@ -75,9 +77,17 @@ describe('user-prompt-submit with a pasted vaulted credential', () => {
         }),
         encoding: 'utf8',
       });
-      const stored = everyFileText(join(home, '.aka', 'data'));
-      expect(stored).toContain(formatCredentialHandle('github-demo'));
-      expect(stored).not.toContain(VALUE);
-    });
+      expect(stdout).toContain(formatCredentialHandle('github-demo'));
+      const db = openLocalDatabase(join(home, '.aka', 'data'));
+      try {
+        const recent = await db.findings.recentFindings({ limit: 10 });
+        expect(JSON.stringify(recent)).toContain('secrets/github-pat');
+      } finally {
+        db.close();
+      }
+      expect(everyFileText(join(home, '.aka', 'data'))).not.toContain(VALUE);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

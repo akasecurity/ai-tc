@@ -15,7 +15,7 @@
 // handle in the tool's output BEFORE the pipeline scans it, so the value is
 // never scanned, recorded or shown to the model, and the replaced output is
 // returned as `updatedToolOutput`.
-import { resolveCredentialValues } from '@akasecurity/plugin-runtime';
+import { canReachVault, resolveCredentialValues } from '@akasecurity/plugin-runtime';
 import { dataDir } from '@akasecurity/plugin-sdk';
 import type { CredentialSlug } from '@akasecurity/schema';
 
@@ -146,6 +146,7 @@ async function withValues(
     decided?.updatedInput ?? (toolInput as Record<string, unknown>);
   const slugs = handleSlugsIn(base);
   if (slugs.length === 0) return outputs;
+  if (deps.resolve === undefined && !canReachVault(dataDir())) return outputs;
 
   const sessionId = getString(input, 'session_id');
   const toolName = getString(input, 'tool_name') ?? 'tool';

@@ -1,9 +1,15 @@
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 
 import { handleSessionStart } from '@akasecurity/plugin-runtime';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as Remote from '../../../../packages/remote/src/index.ts';
+import {
+  CREDENTIAL_LOOKUPS_FILENAME,
+  saveCredentialLookups,
+} from '../../src/credentials/pasted.ts';
 import type { SessionStartDeps } from '../../src/hooks/session-start-run.ts';
 import { runSessionStart } from '../../src/hooks/session-start-run.ts';
 import type { HookOutput } from '../../src/hooks/shared.ts';
@@ -30,6 +36,7 @@ afterEach(() => {
 
 async function start(
   availableCredentials: SessionStartDeps['availableCredentials'],
+  more: Partial<SessionStartDeps> = {},
 ): Promise<HookOutput[]> {
   const emitted: HookOutput[] = [];
   const t = dev.transcript(randomUUID());
@@ -52,6 +59,8 @@ async function start(
         return Promise.resolve();
       },
       availableCredentials,
+      credentialHandlesCanBeSupplied: () => true,
+      ...more,
     },
   );
   return emitted;
@@ -88,5 +97,32 @@ describe('the SessionStart credential brief', () => {
 
   it('asks the attached client by default and adds nothing on a standalone machine', async () => {
     expect(contextOf(await start(undefined))).toBeUndefined();
+  });
+});
+
+describe('the saved credential lookups at session start', () => {
+  const lookupsFile = () => join(dev.dataDir, CREDENTIAL_LOOKUPS_FILENAME);
+  const saveOne = () => {
+    saveCredentialLookups(dev.dataDir, [{ slug: 'github', description: '', lookups: ['t1'] }]);
+  };
+  const granted = () => Promise.resolve([{ slug: 'github', description: 'GitHub token' }]);
+
+  it('offers no handle and clears the lookups where a tool call cannot be given a value', async () => {
+    saveOne();
+    const emitted = await start(granted, { credentialHandlesCanBeSupplied: () => false });
+    expect(contextOf(emitted) ?? '').not.toContain('[[aka:cred:github]]');
+    expect(existsSync(lookupsFile())).toBe(false);
+  });
+
+  it('clears the lookups when the machine cannot reach the vault', async () => {
+    saveOne();
+    await start(() => Promise.resolve(undefined), { canReachVault: () => false });
+    expect(existsSync(lookupsFile())).toBe(false);
+  });
+
+  it('keeps the lookups when an attached deployment did not answer', async () => {
+    saveOne();
+    await start(() => Promise.resolve(undefined), { canReachVault: () => true });
+    expect(existsSync(lookupsFile())).toBe(true);
   });
 });

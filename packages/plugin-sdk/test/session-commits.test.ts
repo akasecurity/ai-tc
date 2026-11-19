@@ -43,17 +43,19 @@ afterEach(() => {
  * resolved against the inherited PATH first, and keeps `SystemRoot`, which
  * Windows programs need to start.
  */
-function gitRuntime(): { file: string; env: Record<string, string> } {
+function gitRuntime(): { file: string | undefined; env: Record<string, string> } {
   if (process.platform !== 'win32') {
     return { file: 'git', env: { PATH: '/usr/bin:/bin:/usr/local/bin' } };
   }
-  const file = resolveWindowsCommand('git', undefined, tmpdir()) ?? 'git';
+  const file = resolveWindowsCommand('git', undefined, tmpdir());
   const where = systemWhere(undefined);
   const system32 = where === undefined ? undefined : win32.dirname(where);
   return {
     file,
     env: {
-      PATH: [dirname(file), system32].filter((p) => p !== undefined).join(';'),
+      PATH: [file === undefined ? undefined : dirname(file), system32]
+        .filter((p) => p !== undefined)
+        .join(';'),
       ...(system32 === undefined ? {} : { SystemRoot: win32.dirname(system32) }),
     },
   };
@@ -63,8 +65,12 @@ const GIT = gitRuntime();
 
 /** Runs git in `dir` with a fixed identity and no user or system config. */
 function realGit(dir: string): (...args: string[]) => string {
+  const file = GIT.file;
+  if (file === undefined) {
+    throw new Error('git is not installed or not on PATH: `where git` found no executable');
+  }
   return (...args) =>
-    execFileSync(GIT.file, args, {
+    execFileSync(file, args, {
       cwd: dir,
       encoding: 'utf8',
       env: {

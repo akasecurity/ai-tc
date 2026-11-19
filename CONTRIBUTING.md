@@ -303,12 +303,12 @@ into `dev`, with the same exact match in both directions.
 
 | Check                             | Workflow    | Enforced |
 | --------------------------------- | ----------- | -------- |
-| `Lint · Typecheck · Test · Build` | `ci.yml`    | ⛔       |
+| `Lint · Typecheck · Test · Build` | `ci.yml`    | ✅       |
 | `Dependency audit`                | `audit.yml` | ⛔       |
 
-**Neither is enforced yet.** `dev`'s branch protection requires no status checks today, and a
-row records what protection does, not what it should. Requiring `Lint · Typecheck · Test ·
-Build` on `dev` is a repository-settings change; flip its row to ✅ in the change that makes it.
+**`Lint · Typecheck · Test · Build` blocks a merge into `dev`; `Dependency audit` runs and blocks
+nothing.** A row records what protection does, not what it should, so requiring the audit on `dev`
+is a repository-settings change, and its row flips to ✅ in the change that makes it.
 
 Reading it works the same way as for `main`, against a pull request whose base is `dev`:
 
@@ -363,8 +363,8 @@ queue does that work with nobody in the loop.
 **The queue covers `main` only; on `dev` and `release/**` the hole stays open.** A pull
 request into either can go green against a base that has moved, and the push run on that
 branch after the merge is the first to see the combined tree. That is accepted there because
-neither branch publishes a stable release: every change reaches `main` through a promotion
-pull request, which runs the full suite against the current `main`, and a break that lands on
+neither branch publishes a stable release: every change from `dev` reaches `main` through a
+promotion pull request, which runs the full suite against the current `main`, and a break that lands on
 `dev` this way shows as a red push run on `dev` to fix before the next promotion.
 
 Two consequences follow for `.github/workflows/`, and

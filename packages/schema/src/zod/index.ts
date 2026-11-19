@@ -12,6 +12,7 @@ export * from './activity.ts';
 export * from './agent-scope.ts';
 export * from './config-inventory.ts';
 export * from './control-plane.ts';
+export * from './credential-handles.ts';
 export * from './credential-label.ts';
 export * from './credential-rotation.ts';
 export * from './credential-status.ts';

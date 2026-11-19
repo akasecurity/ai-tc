@@ -1021,6 +1021,7 @@ export function createPluginRuntime(
     input: CaptureInput,
     opts: CaptureOptions,
     { decision, excepted, exceptionIds, timingStartedAt }: EvaluatedCapture,
+    alsoMasked: ReadonlySet<string> = new Set(),
   ): Promise<void> {
     const filePath = input.metadata?.filePath;
     // 'with-findings' (the historical backfill) only persists messages that
@@ -1063,8 +1064,10 @@ export function createPluginRuntime(
       const contentHash = contentHashOf(input.text);
       // Total over ActionTaken and free of anything that can throw — it runs
       // inside the catch-all below, where a fault would cost the row entirely.
-      const maskedFindings = decision.findings.filter((match) =>
-        isActionAtLeast(actionForFinding(match, excepted, opts.rewritable), 'redact'),
+      const maskedFindings = decision.findings.filter(
+        (match) =>
+          alsoMasked.has(match.rawMatch) ||
+          isActionAtLeast(actionForFinding(match, excepted, opts.rewritable), 'redact'),
       );
       // A REFUSED field (`scanIncomplete`) stores no content at all. It was
       // never scanned, so it has no findings to mask — and that is not the same
@@ -1286,10 +1289,10 @@ export function createPluginRuntime(
     let recorded = false;
     return {
       result: evaluated.decision,
-      record: async () => {
+      record: async (record = {}) => {
         if (recorded) return;
         recorded = true;
-        await persistCapture(input, opts, evaluated);
+        await persistCapture(input, opts, evaluated, new Set(record.maskValues ?? []));
       },
     };
   }
@@ -1422,9 +1425,10 @@ export interface DeferredCapture {
   /**
    * Writes the event and findings as `opts.persist` allows ('never' writes
    * nothing; 'with-findings' skips a clean capture). Idempotent; never throws
-   * (the write is best effort).
+   * (the write is best effort). A finding whose matched text is in
+   * `maskValues` is masked in the stored content whatever its action.
    */
-  record(): Promise<void>;
+  record(options?: { maskValues?: readonly string[] }): Promise<void>;
 }
 
 // What the first half of a capture leaves for the second.

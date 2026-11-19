@@ -180,8 +180,9 @@ export {
   RawEgressError,
   safeMaskedMatch,
 } from './raw-egress.ts';
-export type { RepoAttribution } from './repo.ts';
+export type { HeadCommit, RepoAttribution } from './repo.ts';
 export {
+  readHeadLog,
   remoteWithoutCredentials,
   resolveGitBranch,
   resolveHeadRoot,
@@ -231,6 +232,13 @@ export type { SecretSightings } from './secret-sightings.ts';
 export { secretSightingsOf } from './secret-sightings.ts';
 export type { SecretSpan, SecretSpanScanner } from './secret-spans.ts';
 export { createSecretSpanScanner, findSecretSpans, secretRulePartition } from './secret-spans.ts';
+export type { SessionCommand } from './session-commits.ts';
+export {
+  committingGitDirs,
+  GIT_COMMIT_SLACK_MS,
+  headLogMemo,
+  sessionCommitEvents,
+} from './session-commits.ts';
 export type { ExceptionWriter, SuppressionEntry } from './suppressions.ts';
 export { applySetupTriageSuppressions, THIRTY_DAYS_MS } from './suppressions.ts';
 export type { PerKeyGate } from './throttle.ts';

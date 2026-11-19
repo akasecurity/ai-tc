@@ -17,12 +17,13 @@
  * tool's output schema and falls back to the original output on mismatch.
  * Fail-open: any error → no output, exit 0.
  */
+import { postToolUseWithCredentials } from '../credentials/tool-use.ts';
 import { runPostToolUse } from './post-tool-use-run.ts';
 import { countFailOpen, emit, parseJson, readStdin } from './shared.ts';
 
 async function main(): Promise<void> {
   const input = parseJson(await readStdin());
-  if (input) await runPostToolUse(input, emit);
+  if (input) await postToolUseWithCredentials(input, emit, runPostToolUse);
 }
 
 try {

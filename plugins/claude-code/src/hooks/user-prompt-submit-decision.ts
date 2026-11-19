@@ -22,7 +22,7 @@ import type { CaptureResult } from '@akasecurity/plugin-sdk';
 import { uniqueRuleIds } from '@akasecurity/plugin-sdk';
 
 import { blockMessage, exceptionPointer, tooLargeToScanMessage } from '../exception-guidance.ts';
-import { resubmitMessage } from './resubmit-message.ts';
+import { pastedCredentialResubmitMessage, resubmitMessage } from './resubmit-message.ts';
 
 // The two payloads this hook may write. Both are already arms of `HookOutput`
 // in shared.ts, so this narrows what the entry can emit without widening what
@@ -131,6 +131,30 @@ export async function decideUserPromptSubmit(
   }
 
   return null;
+}
+
+/**
+ * The verdict for a prompt in which pasted vaulted credentials were swapped for
+ * their handles. The swapped prompt is decided as any other, so a secret left in
+ * it is blocked or pointerized under its own policy while each credential stays
+ * its handle. This hook cannot rewrite a prompt, so a swapped prompt is always
+ * held: a verdict that would let it through becomes a block offering the swap.
+ */
+export async function decidePastedCredentialPrompt(
+  swapped: { text: string; handles: readonly string[] },
+  swappedResult: CaptureResult,
+  deps: UserPromptSubmitDeps = {},
+): Promise<UserPromptSubmitOutput> {
+  const decision = await decideUserPromptSubmit(swapped.text, swappedResult, deps);
+  if (decision !== null && 'decision' in decision) return decision;
+  return {
+    decision: 'block',
+    reason: pastedCredentialResubmitMessage({
+      handles: swapped.handles,
+      rewrite: swapped.text,
+      clipboardWrote: writeClipboardSafely(swapped.text, deps.writeClipboard),
+    }),
+  };
 }
 
 // A best-effort clipboard write that cannot change the verdict: any fault (or

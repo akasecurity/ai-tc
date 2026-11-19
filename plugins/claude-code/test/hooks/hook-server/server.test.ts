@@ -241,6 +241,21 @@ describeUnix('the hook server', () => {
     expect(existsSync(socketPath)).toBe(false);
   });
 
+  it('stays up past its idle time while holdOpen says a call is still running', async () => {
+    let holding = true;
+    const { socketPath, exits } = await start(
+      { 'pre-tool-use': () => Promise.resolve('') },
+      { idleMs: 60, holdOpen: () => holding },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(exits).toEqual([]);
+    expect(existsSync(socketPath)).toBe(true);
+
+    holding = false;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(exits).toEqual(['idle']);
+  });
+
   it('declines a request and exits once the code it runs has been replaced', async () => {
     let stale = false;
     const { socketPath, exits } = await start(

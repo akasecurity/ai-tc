@@ -1267,6 +1267,7 @@ describe('existing-history consent', () => {
     await runAttach(['--url', ENDPOINT, '--machine'], deps(io));
     const shown = io.output();
     expect(shown).toContain('What that history sends:');
+    expect(shown).toContain('the ids of commits made while its git commands ran;');
     // The v2 widening, stated where the user is deciding.
     expect(shown).toContain('INCLUDES ITS TEXT');
     // The masking is conditional, and the prompt has to say so: a span is

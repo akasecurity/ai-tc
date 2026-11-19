@@ -15,7 +15,8 @@
  * has no decision to make). On an attached machine it shows the user, as
  * systemMessage, the line saying where this session's activity goes; with
  * vault consent it also injects the standing vault protocol brief as
- * additionalContext. Fully fail-open: any error → no output,
+ * additionalContext, and on an attached machine with granted credentials a
+ * note listing their handles. Fully fail-open: any error → no output,
  * exit 0.
  */
 import { readFileSync } from 'node:fs';
@@ -25,6 +26,7 @@ import { readClaudeAccountEnv } from '@akasecurity/plugin-sdk/account';
 
 import { pluginBuild } from '../build-info.ts';
 import { triggerReconcile } from '../history/reconcile-trigger.ts';
+import { credentialHandlesCanBeSupplied } from './hook-server/serves.ts';
 import { runSessionStart } from './session-start-run.ts';
 import { countFailOpen, emit, parseJson, readStdin } from './shared.ts';
 
@@ -75,6 +77,8 @@ async function main(): Promise<void> {
     handleSessionStart,
     triggerReconcile,
     emit,
+    credentialHandlesCanBeSupplied: (settings) =>
+      credentialHandlesCanBeSupplied(settings, process.env),
   });
 }
 

@@ -15,16 +15,21 @@
  *     → tool call blocked (also when a field is too large to scan in time)
  *   {"hookSpecificOutput":{...,"permissionDecision":"allow","updatedInput":{...}}}
  *     → tool runs with redacted input (Write/Edit only)
+ *   {"hookSpecificOutput":{...,"updatedInput":{...}}}
+ *     → tool runs with credential handles replaced by their values
  *   no output → allow unchanged
  *
  * Fail-open: any error → no output, exit 0.
  */
+import { preToolUseWithCredentials } from '../credentials/tool-use.ts';
 import { runPreToolUse } from './pre-tool-use-run.ts';
 import { countFailOpen, emit, parseJson, readStdin } from './shared.ts';
 
 async function main(): Promise<void> {
   const input = parseJson(await readStdin());
-  if (input) await runPreToolUse(input, emit, { mode: 'hook' });
+  if (input) {
+    await preToolUseWithCredentials(input, emit, (i, e) => runPreToolUse(i, e, { mode: 'hook' }));
+  }
 }
 
 try {

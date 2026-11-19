@@ -52,7 +52,7 @@ const SHAPE_VARIANTS = [
 // The compile-time half: `pnpm typecheck` covers test/, so these are gates.
 
 type RequiredKeys<T> = {
-  [K in keyof T]-?: Record<never, never> extends Pick<T, K> ? never : K;
+  [K in keyof T]-?: T extends Required<Pick<T, K>> ? K : never;
 }[keyof T];
 
 /** A variant's opinion: its permission decision when it has one, else its one other required field. */

@@ -2,21 +2,21 @@
 
 ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Thirteen places in shipped source genuinely need the host environment and opt out. Three kinds of file are out of this table's scope and carry inline disables of their own: test harnesses that spawn the real hooks, the real installer scripts, and `tools/` — repo tooling that is never shipped, where a CI gate reads the runner's own output channels. All three are inventoried by `packages/eslint-config/test/inline-disables.test.js` instead, which reads the whole tracked tree rather than only what this table calls shipped:
 
-| Site                                                       | Mechanism                         | Why                                                                    |
-| ---------------------------------------------------------- | --------------------------------- | ---------------------------------------------------------------------- |
-| `packages/plugin-sdk/src/provider.ts`                      | file-scoped ESLint config         | LLM-provider resolution at SessionStart                                |
-| `packages/plugin-sdk/src/provider-codex.ts`                | file-scoped ESLint config         | Codex LLM-provider resolution at SessionStart                          |
-| `cli/src/commands/dashboard.ts`                            | inline `eslint-disable-next-line` | spawning the dashboard server                                          |
-| `plugins/claude-code/src/backfill.ts`                      | inline `eslint-disable-next-line` | the host session id the self-contamination guard skips                 |
-| `plugins/claude-code/src/triage/judge.ts`                  | inline `eslint-disable-next-line` | the judge subprocess must inherit PATH/auth                            |
-| `plugins/codex/src/triage/judge.ts`                        | file-scoped ESLint config         | the judge subprocess must inherit PATH + `CODEX_HOME` auth             |
-| `plugins/antigravity/src/triage/judge.ts`                  | file-scoped ESLint config         | the judge subprocess must inherit PATH + `~/.gemini` auth              |
-| `packages/plugin-sdk/src/provider-antigravity.ts`          | file-scoped ESLint config         | LLM-provider resolution at Antigravity's first invocation              |
-| `packages/plugin-sdk/src/bare-command.ts`                  | file-scoped ESLint config         | the env an env-less Windows spawn inherits, for `where.exe`            |
-| `plugins/claude-code/src/hooks/session-start.ts`           | file-scoped ESLint config         | the interface the host stamps on its own subprocess env                |
-| `plugins/claude-code/src/hooks/remote-session.ts`          | file-scoped ESLint config         | whether the host marks a Remote Control session                        |
-| `plugins/claude-code/src/hooks/hook-server/request-env.ts` | file-scoped ESLint config         | the variables the account and session checks read, set for one request |
-| `packages/plugin-sdk/src/account/account-env.ts`           | file-scoped ESLint config         | Claude Code and Codex login env, compared in memory only               |
+| Site                                                       | Mechanism                         | Why                                                                                     |
+| ---------------------------------------------------------- | --------------------------------- | --------------------------------------------------------------------------------------- |
+| `packages/plugin-sdk/src/provider.ts`                      | file-scoped ESLint config         | LLM-provider resolution at SessionStart                                                 |
+| `packages/plugin-sdk/src/provider-codex.ts`                | file-scoped ESLint config         | Codex LLM-provider resolution at SessionStart                                           |
+| `cli/src/commands/dashboard.ts`                            | inline `eslint-disable-next-line` | spawning the dashboard server                                                           |
+| `plugins/claude-code/src/backfill.ts`                      | inline `eslint-disable-next-line` | the host session id the self-contamination guard skips                                  |
+| `plugins/claude-code/src/triage/judge.ts`                  | inline `eslint-disable-next-line` | the judge subprocess must inherit PATH/auth                                             |
+| `plugins/codex/src/triage/judge.ts`                        | file-scoped ESLint config         | the judge subprocess must inherit PATH + `CODEX_HOME` auth                              |
+| `plugins/antigravity/src/triage/judge.ts`                  | file-scoped ESLint config         | the judge subprocess must inherit PATH + `~/.gemini` auth                               |
+| `packages/plugin-sdk/src/provider-antigravity.ts`          | file-scoped ESLint config         | LLM-provider resolution at Antigravity's first invocation                               |
+| `packages/plugin-sdk/src/bare-command.ts`                  | file-scoped ESLint config         | the env an env-less Windows spawn inherits, for `where.exe`                             |
+| `plugins/claude-code/src/hooks/session-start.ts`           | file-scoped ESLint config         | the interface the host stamps on its own subprocess env, and the hook client's switches |
+| `plugins/claude-code/src/hooks/remote-session.ts`          | file-scoped ESLint config         | whether the host marks a Remote Control session                                         |
+| `plugins/claude-code/src/hooks/hook-server/request-env.ts` | file-scoped ESLint config         | the variables the account and session checks read, set for one request                  |
+| `packages/plugin-sdk/src/account/account-env.ts`           | file-scoped ESLint config         | Claude Code and Codex login env, compared in memory only                                |
 
 Prefer a file-scoped config opt-out over an inline disable — an inline disable is invisible to anyone auditing the ESLint configs. Adding another site means updating this table.
 

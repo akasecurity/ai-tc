@@ -3,15 +3,20 @@
 import { chdir } from 'node:process';
 
 import { loadConfig } from '@akasecurity/plugin-sdk';
-import { isVaultConsentValid } from '@akasecurity/schema';
 
-import { runPostToolUse } from '../post-tool-use-run.ts';
+import {
+  postToolUseWithCredentials,
+  preToolUseWithCredentials,
+} from '../../credentials/tool-use.ts';
+import type { TranscriptSweeper } from '../../credentials/transcript-restore.ts';
+import { callScanDeadline, runPostToolUse } from '../post-tool-use-run.ts';
 import { runPreToolUse } from '../pre-tool-use-run.ts';
 import type { HookOutput } from '../shared.ts';
 import { countFailOpen, parseJson } from '../shared.ts';
 import { closingGateways, dropHeldGateway } from '../store-health.ts';
 import { applyRequestEnv } from './request-env.ts';
 import type { HookHandler } from './server.ts';
+import { hookServerTakesToolCalls } from './serves.ts';
 
 /** The standard error text a hook wrote, to the server's log rather than to a terminal nobody reads. */
 async function capturingStderr<T>(
@@ -72,7 +77,7 @@ function handlerFor(run: HookRun, log: (line: string) => void): HookHandler {
       // A machine with the vault turned on keeps the node hook: that path opens
       // the vault's own store handle per call, which this process does not hold.
       try {
-        if (isVaultConsentValid(loadConfig().settings.vaultConsent)) return null;
+        if (!hookServerTakesToolCalls(loadConfig().settings)) return null;
       } catch {
         return null;
       }
@@ -93,10 +98,35 @@ function handlerFor(run: HookRun, log: (line: string) => void): HookHandler {
     });
 }
 
-export function preToolUseHandler(log: (line: string) => void): HookHandler {
-  return handlerFor((input, emit) => runPreToolUse(input, emit, { mode: 'hook' }), log);
+export function preToolUseHandler(
+  log: (line: string) => void,
+  sweeper?: TranscriptSweeper,
+): HookHandler {
+  return handlerFor(
+    (input, emit) =>
+      preToolUseWithCredentials(input, emit, (i, e) => runPreToolUse(i, e, { mode: 'hook' }), {
+        persistent: true,
+        onValuesUsed: (sessionId) => sweeper?.schedule(sessionId),
+      }),
+    log,
+  );
 }
 
-export function postToolUseHandler(log: (line: string) => void): HookHandler {
-  return handlerFor(runPostToolUse, log);
+export function postToolUseHandler(
+  log: (line: string) => void,
+  sweeper?: TranscriptSweeper,
+): HookHandler {
+  return handlerFor(
+    (input, emit) =>
+      postToolUseWithCredentials(
+        input,
+        emit,
+        (i, e) => runPostToolUse(i, e, { scanDeadline: callScanDeadline() }),
+        {
+          persistent: true,
+          onValuesUsed: (sessionId) => sweeper?.schedule(sessionId),
+        },
+      ),
+    log,
+  );
 }

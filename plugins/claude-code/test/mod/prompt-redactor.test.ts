@@ -150,6 +150,7 @@ describe('the prompt plan', () => {
     expect(plan(`use ${POINTER} and ${SECRET}`)).toEqual({
       text: `use ${POINTER} and [REDACTED:SECRET]`,
       values: [SECRET],
+      secret: true,
     });
   });
 });

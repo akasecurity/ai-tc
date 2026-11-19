@@ -102,6 +102,10 @@ export class StandaloneDataGateway
     return Promise.resolve(this.db.ensureInventory(ctx));
   }
 
+  async recordAuditEvents(events: readonly AuditEventInput[]): Promise<void> {
+    for (const event of events) await this.recordAuditEvent(event);
+  }
+
   recordAuditEvent(event: AuditEventInput): Promise<void> {
     // Plant the structural root before a row that FKs onto it — the same
     // ordering `recordCapture` keeps, for the same reason its own comment

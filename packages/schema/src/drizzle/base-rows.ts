@@ -132,7 +132,8 @@ export interface BaseAuditEventRow<TTime = number> {
     | 'model_refusal'
     | 'request_decision'
     | 'config_scan'
-    | 'capture_status';
+    | 'capture_status'
+    | 'git_commit';
   hostId: string | null;
   harnessId: string | null;
   sourceProjectId: string | null;

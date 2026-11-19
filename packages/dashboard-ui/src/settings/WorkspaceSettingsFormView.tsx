@@ -178,7 +178,8 @@ export const HISTORY_SYNC_SECTION_DESCRIPTION =
   'Whether activity this machine has not delivered to the deployment it is attached to may be ' +
   'sent later: what was already recorded before it attached. It is sent as: which sessions ran and when, in which project, repo ' +
   'and branch, token usage and model per call, which tools were called with their inputs ' +
-  'truncated and every detected secret already masked, what was detected in those inputs, and ' +
+  'truncated and every detected secret already masked, the ids of the commits made while a ' +
+  "session's git commands ran, what was detected in those inputs, and " +
   'the prompts, assistant replies and tool results themselves — for which a captured one ' +
   'INCLUDES ITS TEXT. What is masked in that text follows the policy assigned to ' +
   'the detection that flagged the value: it is masked only where that policy is redact or ' +
@@ -272,7 +273,8 @@ export const HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED =
   'here before you enrolled it, sent as: ' +
   'which sessions ran and when, in which project, repo and branch, token usage and model per ' +
   'call, which tools were called with their inputs truncated and every detected secret ' +
-  'already masked, what was detected in those inputs, and the prompts, assistant replies and ' +
+  "already masked, the ids of the commits made while a session's git commands ran, what was " +
+  'detected in those inputs, and the prompts, assistant replies and ' +
   'tool results themselves — for which a captured one INCLUDES ITS TEXT. What is masked in ' +
   'that text follows the policy assigned to the detection that flagged the value: it is ' +
   'masked only where that policy is redact or block, and under monitor or warn the value is ' +

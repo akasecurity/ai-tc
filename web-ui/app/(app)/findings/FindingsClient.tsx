@@ -410,6 +410,7 @@ export function FindingsClient(props: CommonProps & ViewProps) {
             query={query}
             onQueryChange={setQuery}
             showDeployment={deployment !== null}
+            locale={locale}
           />
         </div>
       )}
@@ -708,6 +709,7 @@ function TypesMasterDetail({
                   filters={filters}
                   onFiltersChange={onFiltersChange}
                   showDeployment={deployment !== null}
+                  locale={locale}
                 />
               </div>
             </div>

@@ -92,6 +92,13 @@ export function toolCallId(sessionId: string, toolUseId: string): string {
   return sha256Hex(canonicalIdentity(['audit_event_tool_call', sessionId, toolUseId]));
 }
 
+// sha256(['audit_event_git_commit', session_id, commit]): a session's commits are read from the
+// reflog again on every reconcile pass, so the row is keyed on the session and the commit id and
+// a re-read no-ops.
+export function gitCommitId(sessionId: string, commit: string): string {
+  return sha256Hex(canonicalIdentity(['audit_event_git_commit', sessionId, commit]));
+}
+
 // sha256(['inspection_finding', audit_event, rule, span_start, span_end]): a transcript-derived inspection finding
 // (one detected secret hit on a tool_call) is re-scanned on every reconcile pass, so
 // unlike the config-scan path (which mints randomUUID per fresh scan event) this MUST

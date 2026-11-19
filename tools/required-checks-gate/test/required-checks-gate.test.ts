@@ -8,15 +8,18 @@ import {
   buildSummary,
   compare,
   GateConfigError,
+  GATED_BRANCHES,
   type GateIo,
   type GateRow,
   isFailure,
+  neverReported,
   parseGateTable,
   parsePrResponse,
   parseRollupResponse,
   prCandidatesQuery,
   type PrNode,
   readRollup,
+  reportedNames,
   type RollupContext,
   rollupQuery,
   runGate,
@@ -83,6 +86,100 @@ describe('parseGateTable', () => {
       'Lint · Typecheck · Test · Build',
       'Windows · Unit tests (shipped surface)',
     ]);
+  });
+});
+
+// Each gated branch has its own table, read by heading, so `dev`'s table cannot
+// contribute rows to `main`'s comparison or the other way round.
+describe('the per-branch gate tables', () => {
+  const both = [
+    table(row('main-only')),
+    table(row('dev-only')).replace('### Checks that gate `main`', '### Checks that gate `dev`'),
+  ].join('\n\n');
+
+  it('reads only the named branch section', () => {
+    expect(parseGateTable(both, 'main').map((r) => r.check)).toEqual(['main-only']);
+    expect(parseGateTable(both, 'dev').map((r) => r.check)).toEqual(['dev-only']);
+  });
+
+  it('refuses, naming the branch, when a gated branch has no table', () => {
+    expect(() => parseGateTable(table(row('A')), 'dev')).toThrow(
+      'CONTRIBUTING.md has no "### Checks that gate `dev`" section',
+    );
+  });
+
+  it('asks for pull requests based on the branch it is reading', () => {
+    expect(prCandidatesQuery('o', 'r', 10, 'dev')).toContain('baseRefName:"dev"');
+  });
+
+  // The real record: every gated branch has a table, and dev's lists the two
+  // checks a dev pull request reports.
+  it('has a table in CONTRIBUTING.md for every gated branch', () => {
+    const record = readFileSync(`${REPO_ROOT}/CONTRIBUTING.md`, 'utf8');
+    expect(GATED_BRANCHES).toEqual(['main', 'dev']);
+    for (const branch of GATED_BRANCHES) {
+      expect(parseGateTable(record, branch).length).toBeGreaterThan(0);
+    }
+    expect(parseGateTable(record, 'dev')).toEqual([
+      { check: 'Lint · Typecheck · Test · Build', file: 'ci.yml', enforced: true },
+      { check: 'Dependency audit', file: 'audit.yml', enforced: false },
+    ]);
+  });
+
+  it('runs the comparison against the branch it is given', () => {
+    const queries: string[] = [];
+    const io: GateIo = {
+      readRecord: () => both,
+      graphql: (query) => {
+        queries.push(query);
+        return queries.length === 1
+          ? JSON.stringify({
+              data: {
+                repository: {
+                  pullRequests: {
+                    nodes: [
+                      {
+                        number: 3,
+                        commits: {
+                          nodes: [
+                            {
+                              commit: {
+                                statusCheckRollup: { contexts: { nodes: [{ name: 'dev-only' }] } },
+                              },
+                            },
+                          ],
+                        },
+                      },
+                    ],
+                  },
+                },
+              },
+            })
+          : JSON.stringify({
+              data: {
+                repository: {
+                  pullRequest: {
+                    commits: {
+                      nodes: [
+                        {
+                          commit: {
+                            statusCheckRollup: {
+                              contexts: { nodes: [{ name: 'dev-only', isRequired: true }] },
+                            },
+                          },
+                        },
+                      ],
+                    },
+                  },
+                },
+              },
+            });
+      },
+      print: () => undefined,
+      appendSummary: () => undefined,
+    };
+    expect(runGate(io, 'o', 'r', 10, 'dev')).toBe(0);
+    expect(queries[0]).toContain('baseRefName:"dev"');
   });
 });
 
@@ -223,17 +320,28 @@ describe('buildSummary', () => {
   });
 });
 
+// A pull request as the candidates query returns it, reporting `contexts`.
+const pr = (number: number, ...contexts: RollupContext[]): PrNode => ({
+  number,
+  commits: {
+    nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: contexts } } } }],
+  },
+});
+
+// One whose rollup is null rather than empty.
+const nullRollup: PrNode = {
+  number: 9,
+  commits: { nodes: [{ commit: { statusCheckRollup: null } }] },
+};
+
+// The candidates query's response body for `prs`.
+const candidatesBody = (...prs: PrNode[]): string =>
+  JSON.stringify({ data: { repository: { pullRequests: { nodes: prs } } } });
+
 // The PR the live set is read from. Getting this wrong is not a silent wrong
 // answer — it is a loud one, since a PR that reported nothing makes every check
 // look unreported, which this gate fails on.
 describe('selectPr', () => {
-  const pr = (number: number, ...contexts: RollupContext[]): PrNode => ({
-    number,
-    commits: {
-      nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: contexts } } } }],
-    },
-  });
-
   // The input is oldest-first — the only order the connection offers — so the
   // search runs from the end. Reading it forwards would answer with the OLDEST
   // pull request, whose checks may predate the workflow being asked about.
@@ -270,10 +378,6 @@ describe('selectPr', () => {
   });
 
   it('skips one whose rollup is null rather than empty', () => {
-    const nullRollup: PrNode = {
-      number: 9,
-      commits: { nodes: [{ commit: { statusCheckRollup: null } }] },
-    };
     expect(selectPr([pr(1, { name: 'a' }), nullRollup], ['a'])?.number).toBe(1);
   });
 
@@ -283,6 +387,28 @@ describe('selectPr', () => {
   it('finds nothing when no candidate reported a check', () => {
     expect(selectPr([pr(1), pr(2)], ['a'])).toBeUndefined();
     expect(selectPr([], ['a'])).toBeUndefined();
+  });
+});
+
+describe('neverReported', () => {
+  it('names the tabled checks no candidate reported, in table order', () => {
+    const prs = [pr(1, { name: 'b' }), pr(2, { context: 'd' })];
+    expect(neverReported(prs, ['a', 'b', 'c', 'd'])).toEqual(['a', 'c']);
+  });
+
+  it('is empty when every check ran somewhere, even if never all on one', () => {
+    expect(neverReported([pr(1, { name: 'a' }), pr(2, { name: 'b' })], ['a', 'b'])).toEqual([]);
+  });
+
+  it('counts a name the way selectPr does, from either context shape', () => {
+    const both = pr(1, { name: 'a' }, { context: 'b' });
+    expect(reportedNames(both)).toEqual(new Set(['a', 'b']));
+    expect(selectPr([both], ['a', 'b'])?.number).toBe(1);
+    expect(neverReported([both], ['a', 'b'])).toEqual([]);
+  });
+
+  it('treats a null rollup as reporting nothing', () => {
+    expect(neverReported([nullRollup], ['a'])).toEqual(['a']);
   });
 });
 
@@ -543,7 +669,7 @@ describe('runGate', () => {
     });
     expect(code).toBe(0);
     expect(printed.join('\n')).toContain(
-      'Required checks match the record: 1 enforced, 1 outstanding.',
+      'Required checks on main match the record: 1 enforced, 1 outstanding.',
     );
     // The step summary is the only place a maintainer reads this, so a run that
     // decided something must have written one.
@@ -587,7 +713,38 @@ describe('runGate', () => {
       graphql: () => JSON.stringify({ data: { repository: { pullRequests: { nodes: [] } } } }),
     });
     expect(code).toBe(2);
-    expect(printed.join('\n')).toContain('reported every check in the table');
+    expect(printed.join('\n')).toContain(
+      'none of the last 10 pull requests into main reported every check in its table; there were none to read',
+    );
+    expect(printed.join('\n')).not.toContain('none of them reported');
+  });
+
+  it('reads the record from the branch it is checking', () => {
+    const asked: string[] = [];
+    drive({
+      readRecord: (branch) => {
+        asked.push(branch);
+        return RECORD;
+      },
+    });
+    expect(asked).toEqual(['main']);
+  });
+
+  it('names the tabled checks none of the candidates reported', () => {
+    const { code, printed } = drive({
+      graphql: () => candidatesBody(pr(1, { name: 'flag-major' })),
+    });
+    expect(code).toBe(2);
+    expect(printed.join('\n')).toContain('none of them reported `kept`, `pending`');
+  });
+
+  it('says so when every check ran somewhere but never all on one pull request', () => {
+    const { code, printed } = drive({
+      readRecord: () => table(row('A'), row('B')),
+      graphql: () => candidatesBody(pr(1, { name: 'A' }), pr(2, { name: 'B' })),
+    });
+    expect(code).toBe(2);
+    expect(printed.join('\n')).toContain('each check ran on some of them, but never all on one');
   });
 });
 
@@ -657,7 +814,7 @@ describe('runGate against a partial rollup', () => {
       appendSummary: () => undefined,
     };
     expect(runGate(io, 'o', 'r', 10)).toBe(2);
-    expect(printed.join('\n')).toContain('reported every check in the table');
+    expect(printed.join('\n')).toContain('reported every check in its table');
     // And emphatically NOT the drift wording, which would be a wrong diagnosis.
     expect(printed.join('\n')).not.toContain('does not require them');
   });

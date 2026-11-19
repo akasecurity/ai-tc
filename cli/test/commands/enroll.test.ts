@@ -1353,6 +1353,7 @@ describe('aka enroll — what was recorded before', () => {
     expect(shown).toContain(
       'The history sync also sends the rest of its activity recorded before this machine attached',
     );
+    expect(flat(shown)).toContain('(sessions, tool calls, token usage, commit ids)');
     expect(flat(shown)).toContain(
       'other than those captures and what a Claude Code or Codex session of a recognised work subscription or of an account enrolled by hand there already sent, stays on this machine.',
     );

@@ -6,6 +6,8 @@ import type { AssetGroup, AssetType, HarnessSummary, ProjectSummary } from '@aka
 import { Card, cn, SegmentedControl, SegmentedControlItem } from '@akasecurity/ui-kit';
 import { type ReactNode } from 'react';
 
+import { formatNumber } from '../lib/numberFormat.ts';
+import { ChipCount } from '../shared/ChipCount.tsx';
 import { Provider } from '../shared/Provider.tsx';
 import { EmptyState } from './chips.tsx';
 import { GROUPS, harnessRows, type InventoryView, needsAttention, typeRows } from './data.ts';
@@ -67,6 +69,8 @@ export interface InventoryNavProps {
    * showing one of these pages keeps the nav in the By type view.
    */
   links?: readonly InventoryNavLink[] | undefined;
+  /** The locale each row's count is formatted in, as the host resolved it. */
+  locale: string;
 }
 
 export function InventoryNav({
@@ -82,6 +86,7 @@ export function InventoryNav({
   isLoading,
   unavailable,
   links = [],
+  locale,
 }: InventoryNavProps) {
   const loading = isLoading === true;
   // One state per list: a list still out reads as loading, an unavailable one
@@ -123,6 +128,7 @@ export function InventoryNav({
           attention={link.attention}
           selected={link.selected ?? false}
           onSelect={link.onSelect}
+          locale={locale}
         />
       ))}
     </ul>
@@ -142,7 +148,7 @@ export function InventoryNav({
                 title={totalReason}
               >
                 <Ico name="flag" className="size-3.5" />
-                {`At least ${String(knownAttention)} to review`}
+                {`At least ${formatNumber(knownAttention, locale)} to review`}
               </span>
             ) : (
               <span className="ml-auto text-xs text-text-3" title={totalReason}>
@@ -157,7 +163,7 @@ export function InventoryNav({
               )}
             >
               <Ico name={knownAttention ? 'flag' : 'check-circle'} className="size-3.5" />
-              {knownAttention ? `${String(knownAttention)} to review` : 'All clear'}
+              {knownAttention ? `${formatNumber(knownAttention, locale)} to review` : 'All clear'}
             </span>
           )}
         </div>
@@ -200,6 +206,7 @@ export function InventoryNav({
                     onSelect={() => {
                       onSelectHarness(h.id);
                     }}
+                    locale={locale}
                   />
                 );
               })}
@@ -223,6 +230,7 @@ export function InventoryNav({
                   onSelect={() => {
                     onSelectType(g.type);
                   }}
+                  locale={locale}
                 />
               );
             })}
@@ -250,6 +258,9 @@ function TileIcon({ icon, fg, bg }: { icon: IconName; fg: string; bg: string }) 
   );
 }
 
+/** A row's count, known or not: the dash takes the place of the number. */
+const NAV_COUNT_CLASS = 'shrink-0 text-xs tabular-nums text-text-3';
+
 function NavRow({
   icon,
   label,
@@ -257,6 +268,7 @@ function NavRow({
   attention,
   selected,
   onSelect,
+  locale,
 }: {
   icon: ReactNode;
   label: string;
@@ -265,6 +277,7 @@ function NavRow({
   attention: number;
   selected: boolean;
   onSelect: () => void;
+  locale: string;
 }) {
   return (
     <li>
@@ -282,14 +295,25 @@ function NavRow({
           {label}
         </span>
         {attention > 0 && (
-          <span
-            role="img"
-            aria-label={`${String(attention)} need attention`}
-            title={`${String(attention)} need attention`}
-            className="size-1.5 shrink-0 rounded-full bg-sev-high"
-          />
+          <>
+            {/* Keeps the label and the dot's name apart in the button's name. */}
+            <span className="sr-only">, </span>
+            <span
+              role="img"
+              aria-label={`${formatNumber(attention, locale)} need attention`}
+              title={`${formatNumber(attention, locale)} need attention`}
+              className="size-1.5 shrink-0 rounded-full bg-sev-high"
+            />
+          </>
         )}
-        <span className="shrink-0 text-xs tabular-nums text-text-3">{count ?? '—'}</span>
+        {count == null ? (
+          // A count that is not known has nothing to announce.
+          <span aria-hidden="true" className={NAV_COUNT_CLASS}>
+            —
+          </span>
+        ) : (
+          <ChipCount value={count} locale={locale} className={NAV_COUNT_CLASS} />
+        )}
       </button>
     </li>
   );

@@ -93,6 +93,12 @@ export const AuditEventType = z
     // second process (aka extension status) and a restarted host both have
     // somewhere to read it back from.
     'capture_status',
+    // One row per commit a session's checkout reached while a git command the
+    // agent ran was running, hung off the session root. Its `attributes` follow
+    // `GitCommitAttributes`: the commit id, the kind of HEAD move, the
+    // attribution, and `scope_key`, the repository the command ran in; never
+    // the branch, commit message, author or diff.
+    'git_commit',
   ])
   .meta({ id: 'AuditEventType' });
 export type AuditEventType = z.infer<typeof AuditEventType>;
@@ -291,6 +297,25 @@ export const ToolCallAttributes = z
   })
   .catchall(z.unknown());
 export type ToolCallAttributes = z.infer<typeof ToolCallAttributes>;
+
+// The kinds of HEAD move a `git_commit` row is recorded for. `rebase` is a rebase's last step
+// only, the commit it leaves HEAD on; the commits it replays on the way are not recorded.
+export const GitCommitKind = z.enum(['commit', 'merge', 'rebase', 'cherry-pick', 'am', 'revert']);
+export type GitCommitKind = z.infer<typeof GitCommitKind>;
+
+// The attribute bag of a `git_commit` row: a commit the session's checkout reached while one of
+// the session's git commands that makes commits was running. `attribution` says how the commit
+// was tied to the session: `command_window` is that timing, not proof of authorship, so two
+// sessions working in one checkout at the same moment can each record the same commit.
+export const GitCommitAttributes = z
+  .object({
+    commit: z.string().regex(/^[0-9a-f]{40}([0-9a-f]{24})?$/),
+    kind: GitCommitKind,
+    attribution: z.literal('command_window'),
+    scope_key: z.string().optional(),
+  })
+  .catchall(z.unknown());
+export type GitCommitAttributes = z.infer<typeof GitCommitAttributes>;
 
 // The attribute bag a capture (prompt / response / code_change / tool_use) rides
 // as an `audit_events` row. Mirrors the `ToolCallAttributes` style — every field

@@ -155,6 +155,26 @@ describe('SqliteHistorySyncRepository — what is pending', () => {
     expect(ids).toEqual(['s-1', 's-1-llm', 's-1-tool']);
   });
 
+  it("offers a session's git_commit rows after its root", () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.auditEvents.insertAuditEvent({
+      id: 's-1-commit',
+      eventType: 'git_commit',
+      rootSessionId: 's-1',
+      parentId: 's-1',
+      startedAt: at(3 * MINUTE),
+      attributes: { commit: 'a'.repeat(40), kind: 'commit' },
+    });
+
+    expect(db.historySync.pendingRows('s-1', 100, ALL).map((r) => r.id)).toEqual([
+      's-1',
+      's-1-llm',
+      's-1-tool',
+      's-1-commit',
+    ]);
+  });
+
   // Root first is not cosmetic: the receiving side has real self-referencing
   // foreign keys and stubs nothing, so a leaf that lands first is rejected.
   it('puts the session root before its leaves, whatever their times', () => {

@@ -4,6 +4,7 @@ import { Badge, cn } from '@akasecurity/ui-kit';
 import type { ReactNode } from 'react';
 
 import type { IconComponent } from '../lib/icons.ts';
+import { ChipCount } from '../shared/ChipCount.tsx';
 import { STATUS_META, TOOL_ICON_FALLBACK, TOOL_META } from './meta.ts';
 
 /** A status dot. `active` renders a pulsing "live" ring; others a solid token dot. */
@@ -42,13 +43,24 @@ export function Metric({ icon: Icon, children }: { icon: IconComponent; children
 
 /** A tool-call chip: glyph + tool name + tabular count. With `href` it renders
  * as a link (e.g. to the findings page filtered to that tool). */
-export function ToolChip({ name, n, href }: { name: string; n: number; href?: string }) {
+export function ToolChip({
+  name,
+  n,
+  href,
+  locale,
+}: {
+  name: string;
+  n: number;
+  href?: string;
+  /** The locale the count is formatted in, as the host resolved it. */
+  locale: string;
+}) {
   const Icon = TOOL_META[name] ?? TOOL_ICON_FALLBACK;
   const content = (
     <>
       <Icon aria-hidden focusable={false} className="size-3 text-text-3" />
       {name}
-      <span className="tabular-nums text-text">{n}</span>
+      <ChipCount value={n} locale={locale} className="tabular-nums text-text" />
     </>
   );
   const className =

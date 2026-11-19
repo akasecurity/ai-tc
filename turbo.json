@@ -296,7 +296,7 @@
         // exists to fire. No extension glob above reaches a .md.
         "$TURBO_ROOT$/CLAUDE.md",
         // CONTRIBUTING.md the same way: required-checks.test.js parses its
-        // "Checks that gate `main`" table and drives every row against the
+        // "Checks that gate `<branch>`" tables and drives every row against the
         // workflows.
         //
         // And EVERY other tracked .md for the same reason one step wider:

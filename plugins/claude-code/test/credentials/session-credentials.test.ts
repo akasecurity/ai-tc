@@ -71,25 +71,41 @@ describe('resolveForSession', () => {
     expect(injectedValues('s0').size).toBe(0);
     expect(injectedValues(`s${String(MAX_REMEMBERED_SESSIONS)}`).size).toBe(1);
   });
+
+  it('keeps a session whose call is still running past the bound', async () => {
+    const resolve: CredentialResolver = () =>
+      Promise.resolve({ resolved: [{ slug: 'github', value: VALUE }], refused: [] });
+    await resolveForSession('running', ['github'], resolve);
+    notePendingCall('toolu_long', 'running');
+    for (let i = 0; i < MAX_REMEMBERED_SESSIONS; i += 1) {
+      await resolveForSession(`s${String(i)}`, ['github'], resolve);
+    }
+    expect(injectedValues('running').get('github')).toBe(VALUE);
+    expect(injectedValues('s0').size).toBe(0);
+
+    settlePendingCall('toolu_long');
+    await resolveForSession('one-more', ['github'], resolve);
+    expect(injectedValues('running').size).toBe(0);
+  });
 });
 
 describe('pending calls', () => {
   it('holds while a call given a value has not had its output seen', () => {
     expect(hasPendingCalls()).toBe(false);
-    notePendingCall('toolu_1', 1_000);
+    notePendingCall('toolu_1', 's1', 1_000);
     expect(hasPendingCalls(2_000)).toBe(true);
     settlePendingCall('toolu_1');
     expect(hasPendingCalls(2_000)).toBe(false);
   });
 
   it('forgets a call whose output never came', () => {
-    notePendingCall('toolu_lost', 0);
+    notePendingCall('toolu_lost', 's1', 0);
     expect(hasPendingCalls(PENDING_CALL_MAX_MS + 1)).toBe(false);
   });
 
   it('records nothing without a tool use id', () => {
-    notePendingCall(undefined);
-    notePendingCall('');
+    notePendingCall(undefined, 's1');
+    notePendingCall('', 's1');
     expect(hasPendingCalls()).toBe(false);
   });
 });

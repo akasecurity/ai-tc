@@ -5,7 +5,10 @@
 // Nothing here writes to disk, logs or settings.
 import type { CredentialRefusalReason, CredentialSlug } from '@akasecurity/schema';
 
-/** Sessions remembered at once; the least recently used is dropped past this. */
+/**
+ * Sessions remembered at once. Past this the least recently used session with no
+ * call still running is dropped; a running call needs its values to scrub its output.
+ */
 export const MAX_REMEMBERED_SESSIONS = 32;
 
 export interface SessionCredentials {
@@ -44,9 +47,11 @@ function sessionEntry(sessionId: string): SessionCredentials {
   }
   sessions.set(sessionId, entry);
   while (sessions.size > MAX_REMEMBERED_SESSIONS) {
-    const oldest = sessions.keys().next().value;
-    if (oldest === undefined) break;
-    sessions.delete(oldest);
+    const evictable = [...sessions.keys()].find(
+      (id) => id !== sessionId && !sessionHasPendingCall(id),
+    );
+    if (evictable === undefined) break;
+    sessions.delete(evictable);
   }
   return entry;
 }
@@ -113,11 +118,21 @@ export function forgetSessionCredentials(): void {
 /** How long a call given a value may wait for its PostToolUse before it is forgotten. */
 export const PENDING_CALL_MAX_MS = 2 * 60 * 60_000;
 
-const pendingCalls = new Map<string, number>();
+const pendingCalls = new Map<string, { since: number; sessionId: string | undefined }>();
 
 /** Records a tool call that was given a value and whose output is still to come. */
-export function notePendingCall(toolUseId: string | undefined, now = Date.now()): void {
-  if (toolUseId !== undefined && toolUseId !== '') pendingCalls.set(toolUseId, now);
+export function notePendingCall(
+  toolUseId: string | undefined,
+  sessionId: string | undefined,
+  now = Date.now(),
+): void {
+  if (toolUseId !== undefined && toolUseId !== '')
+    pendingCalls.set(toolUseId, { since: now, sessionId });
+}
+
+function sessionHasPendingCall(sessionId: string): boolean {
+  for (const call of pendingCalls.values()) if (call.sessionId === sessionId) return true;
+  return false;
 }
 
 /** The tool call's output has been seen. */
@@ -130,7 +145,7 @@ export function settlePendingCall(toolUseId: string | undefined): void {
  * value is the only one that can replace it in the output, so it must outlive the call.
  */
 export function hasPendingCalls(now = Date.now()): boolean {
-  for (const [id, since] of pendingCalls) {
+  for (const [id, { since }] of pendingCalls) {
     if (now - since > PENDING_CALL_MAX_MS) pendingCalls.delete(id);
   }
   return pendingCalls.size > 0;

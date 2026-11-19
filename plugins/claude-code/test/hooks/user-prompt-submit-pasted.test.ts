@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,6 +17,7 @@ import {
 import { formatCredentialHandle } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { saveCredentialLookups } from '../../src/credentials/pasted.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -87,7 +88,7 @@ describe('user-prompt-submit with a pasted vaulted credential', () => {
       }
       expect(everyFileText(join(home, '.aka', 'data'))).not.toContain(VALUE);
     } finally {
-      rmSync(home, { recursive: true, force: true });
+      removeTree(home);
     }
   });
 });

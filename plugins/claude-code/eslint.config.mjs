@@ -57,7 +57,8 @@ export default [
     // environment (terminal, the VS Code panel, the desktop app). Nothing else
     // in a hook's payload distinguishes them, and the transcript cannot: the
     // record carrying `entrypoint` does not exist yet when a fresh session
-    // starts.
+    // starts. It also reads the hook client's own switches (AKA_HOOK_SERVER,
+    // PATH for perl), to offer credential handles only where they can be supplied.
     files: ['src/hooks/session-start.ts'],
     rules: {
       'n/no-process-env': 'off',

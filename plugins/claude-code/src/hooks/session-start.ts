@@ -26,6 +26,7 @@ import { readClaudeAccountEnv } from '@akasecurity/plugin-sdk/account';
 
 import { pluginBuild } from '../build-info.ts';
 import { triggerReconcile } from '../history/reconcile-trigger.ts';
+import { credentialHandlesCanBeSupplied } from './hook-server/serves.ts';
 import { runSessionStart } from './session-start-run.ts';
 import { countFailOpen, emit, parseJson, readStdin } from './shared.ts';
 
@@ -76,6 +77,8 @@ async function main(): Promise<void> {
     handleSessionStart,
     triggerReconcile,
     emit,
+    credentialHandlesCanBeSupplied: (settings) =>
+      credentialHandlesCanBeSupplied(settings, process.env),
   });
 }
 

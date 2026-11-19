@@ -19,7 +19,6 @@ import type { triggerReconcile } from '../history/reconcile-trigger.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { standingBrief } from '../protocol/notes.ts';
 import { recordSessionStartAccount } from './account-stamp.ts';
-import { credentialHandlesCanBeSupplied } from './hook-server/serves.ts';
 import type { HookOutput } from './shared.ts';
 import { getString } from './shared.ts';
 import { warnIfStoreRedirected } from './store-health.ts';
@@ -41,7 +40,7 @@ export interface SessionStartDeps {
     ((dataDir: string) => Promise<AvailableCredential[] | undefined>) | undefined;
   /** Whether the machine is attached with a usable key; the entry passes none and settings are read. */
   readonly canReachVault?: ((dataDir: string) => boolean) | undefined;
-  /** Whether a tool call can be given a credential's value; the entry passes none and checks this process. */
+  /** Whether a tool call can be given a credential's value; the entry reads it from the host env. */
   readonly credentialHandlesCanBeSupplied?:
     ((settings: PluginConfig['settings']) => boolean) | undefined;
 }
@@ -155,7 +154,7 @@ export async function runSessionStart(
   // Handles are offered only where a tool call can be given their values; elsewhere the
   // saved lookups are cleared, so no pasted value is swapped for a handle.
   let credentials: string | undefined;
-  if ((deps.credentialHandlesCanBeSupplied ?? defaultCanSupply)(config.settings)) {
+  if (deps.credentialHandlesCanBeSupplied?.(config.settings) ?? true) {
     credentials = await availableCredentialsBrief(config.dataDir, deps);
   } else {
     clearCredentialLookups(config.dataDir);
@@ -172,11 +171,6 @@ export async function runSessionStart(
   } else if (shown !== undefined) {
     await deps.emit({ systemMessage: shown });
   }
-}
-
-function defaultCanSupply(settings: PluginConfig['settings']): boolean {
-  // eslint-disable-next-line n/no-process-env -- the hook client reads the same switches from this environment
-  return credentialHandlesCanBeSupplied(settings, process.env);
 }
 
 function clearCredentialLookups(dataDir: string): void {

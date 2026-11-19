@@ -35,7 +35,11 @@ const OPEN_PROJECT: InventorySelection = {
   item: { type: 'project', id: PROJECT.id },
 };
 
-function render(blockedError: string | null, sensitiveData: SensitiveDataClass[] = []): string {
+function render(
+  blockedError: string | null,
+  sensitiveData: SensitiveDataClass[] = [],
+  locale = 'en-US',
+): string {
   const client = createElement(InventoryClient, {
     harnesses: [],
     assetGroups: [],
@@ -48,12 +52,24 @@ function render(blockedError: string | null, sensitiveData: SensitiveDataClass[]
     sensitiveDataError: null,
     harnessEvents: { counts: { block: 0, redact: 0, warn: 0 }, items: [] },
     renderedAt: Date.parse('2026-10-15T12:00:00.000Z'),
-    locale: 'en-US',
+    locale,
   });
   return renderToStaticMarkup(
     createElement(NavigationTransitionProvider, null, client as React.ReactElement),
   );
 }
+
+// The nav lives inside this client component, so the route's locale reaches it
+// only through the prop passed here. ar-EG writes even `1` differently from
+// every Latin-digit locale, so the one project's row count tells them apart.
+describe('the nav takes the route’s locale', () => {
+  it('formats the Projects row count in it', () => {
+    const html = render(null, [], 'ar-EG');
+    const nav = html.slice(html.indexOf('<nav'), html.indexOf('</nav>'));
+    const row = /Projects<\/span>[\s\S]*?<span class="sr-only">, <\/span>([^<]+)<\/span>/.exec(nav);
+    expect(row?.[1]).toBe('\u0661');
+  });
+});
 
 describe('the opened project’s withheld files', () => {
   it('shows a failed read as a failure, not as files withheld by policy', () => {

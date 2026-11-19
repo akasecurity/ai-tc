@@ -27,6 +27,18 @@ describe('shieldPointers', () => {
     expect(shielded.spans).toEqual([]);
   });
 
+  it('blanks a credential handle', () => {
+    const handle = '[[aka:cred:github-token]]';
+    const text = `Authorization: Bearer ${handle}`;
+    const shielded = shieldPointers(text);
+    expect(shielded.spans).toEqual([{ start: 22, end: 22 + handle.length }]);
+    expect(shielded.text).toBe(`Authorization: Bearer ${' '.repeat(handle.length)}`);
+  });
+
+  it('does not blank a handle whose slug breaks the grammar', () => {
+    expect(shieldPointers('[[aka:cred:Not_A_Slug]]').spans).toEqual([]);
+  });
+
   it('does not blank a lookalike with an invented category', () => {
     const lookalike = `[[aka:bogus:AE.${'A'.repeat(26)}.${'B'.repeat(16)}]]`;
     expect(shieldPointers(lookalike).spans).toEqual([]);

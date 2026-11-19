@@ -35,6 +35,7 @@ import { createPluginRuntime, createVaultGlue, loadConfig } from '@akasecurity/p
 import type { ModFinding, ModFindingWhere } from '@akasecurity/schema';
 import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
+import { pastedCredentialNote, swapPastedCredentialsOnMachine } from '../credentials/pasted.ts';
 import { locateSessionTranscript, resolveHookAccount, stampFor } from '../hooks/account-stamp.ts';
 import {
   baseMetadata,
@@ -180,31 +181,49 @@ async function tokenize(stdin: string): Promise<HelperRun> {
     cwd: getString(input, 'cwd'),
   });
   let answer: { text: string; note: string | null; findings: ModFinding[] } | null;
-  try {
-    const deferred = await captureDeferredStamped(
+  const decideText = (subject: string) =>
+    captureDeferredStamped(
       runtime,
       {
         kind: isRow ? 'response' : 'prompt',
         sourceTool: SOURCE_TOOL.ClaudeCode,
-        text,
+        text: subject,
         metadata: baseMetadata(hookInput),
       },
       stampFor(opened.gateway, account, captureScopeKey(hookInput)),
       isRow ? { persist: 'with-findings' } : undefined,
     );
+  try {
+    let deferred = await decideText(text);
+    // A pasted credential the organization vaulted becomes its handle before any
+    // policy sees the prompt, so the local vault never keeps it as its own; the
+    // rest of the prompt is then decided as if the user had typed the handle.
+    const pasted = isRow
+      ? null
+      : swapPastedCredentialsOnMachine(config.dataDir, text, deferred.result.findings);
+    const subject = pasted?.text ?? text;
+    if (pasted !== null) deferred = await decideText(subject);
     const { result } = deferred;
 
     // Only a redact verdict is a rewrite. A block, or a policy that changed since
     // the mod's snapshot, is the command hook's to decide on the raw prompt.
     const enforced: Finding[] = result.enforcedFindings ?? result.findings;
     if (result.action !== 'redact' || enforced.length === 0) {
-      answer = null;
+      if (pasted === null || result.action === 'block') {
+        answer = null;
+      } else {
+        // The only change is the swapped credential: recorded with the handle in
+        // it, and handed off so the command hook does not record it again.
+        await deferred.record();
+        recordModHandoff(config.dataDir, subject);
+        answer = { text: subject, note: pastedCredentialNote(pasted.swapped), findings: [] };
+      }
     } else {
       let rewritten: string;
       let note: string | null = null;
       let pointers: ReadonlyMap<string, string> = new Map();
       if (isVaultConsentValid(config.settings.vaultConsent)) {
-        const tokenized = await createVaultGlue().tokenizeText(text, {
+        const tokenized = await createVaultGlue().tokenizeText(subject, {
           findings: enforced,
           reversible: new Set(result.reversibleFindings ?? []),
           sighting: isRow
@@ -231,7 +250,7 @@ async function tokenize(stdin: string): Promise<HelperRun> {
               },
             });
       } else {
-        rewritten = redact(text, enforced);
+        rewritten = redact(subject, enforced);
       }
       // The never-leak gate of the hook's pointerized rewrite: a value still in
       // the text means the rewrite is not one to hand the model.
@@ -251,7 +270,7 @@ async function tokenize(stdin: string): Promise<HelperRun> {
             : recordModFindings(config.dataDir, sessionId, {
                 sessionId,
                 kind: isRow ? 'response' : 'prompt',
-                text,
+                text: subject,
                 result,
                 where: isRow
                   ? whereOfRow(
@@ -263,7 +282,14 @@ async function tokenize(stdin: string): Promise<HelperRun> {
                 pointers,
               });
         if (!isRow) recordModHandoff(config.dataDir, rewritten);
-        answer = { text: rewritten, note, findings: records };
+        answer = {
+          text: rewritten,
+          note:
+            pasted === null
+              ? note
+              : [pastedCredentialNote(pasted.swapped), note].filter((n) => n !== null).join('\n\n'),
+          findings: records,
+        };
       }
     }
   } finally {

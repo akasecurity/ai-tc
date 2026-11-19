@@ -156,6 +156,7 @@ export {
   captureId,
   captureWireId,
   classifiedDataId,
+  gitCommitId,
   inspectionDefinitionId,
   inspectionFindingId,
   inventoryId,
@@ -333,6 +334,7 @@ export {
   deriveSubkeys,
   formatPointer,
   mintPointer,
+  mintPointerWith,
   signPointer,
   verifyPointerTag,
 } from './vault/crypto.ts';

@@ -179,12 +179,18 @@ describe('chart legend toggles', () => {
       />,
     );
     expect(swatch('Critical').style.boxShadow).toBe('');
-    expect(swatch('Critical').style.background).not.toBe('transparent');
+    // The fill is read off the LONGHAND: jsdom 31 serializes the `background`
+    // shorthand as `none` even when the component set only a colour, so the
+    // shorthand no longer round-trips whether the fill is there.
+    expect(swatch('Critical').style.backgroundColor).not.toBe('transparent');
+    // …and it is really a fill, not merely un-transparent: the series' own
+    // colour reaches the element, which is what the ring has to match later.
+    expect(swatch('Critical').style.background).toContain(SEVERITY_STROKES.Critical);
 
     click('Critical');
 
     expect(swatch('Critical').style.boxShadow).toContain('inset');
-    expect(swatch('Critical').style.background).toBe('transparent');
+    expect(swatch('Critical').style.backgroundColor).toBe('transparent');
     // A neighbour is untouched, so the case cannot pass on a legend that
     // hollowed every swatch at once.
     expect(swatch('High').style.boxShadow).toBe('');

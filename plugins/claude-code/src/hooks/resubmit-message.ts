@@ -40,3 +40,22 @@ export function resubmitMessage(opts: {
       exceptionPointer(opts.blockedRef ? [opts.blockedRef] : undefined),
   ].join('\n');
 }
+
+/** The block reason when the prompt's only secrets are credentials the organization vaulted. */
+export function pastedCredentialResubmitMessage(opts: {
+  handles: readonly string[];
+  rewrite: string;
+  clipboardWrote: boolean;
+}): string {
+  const paste = opts.clipboardWrote
+    ? 'It is already on your clipboard — paste and resubmit.'
+    : 'Copy it, then paste and resubmit.';
+  return [
+    `AKA held this prompt: it contains a credential your organization keeps in its vault. The value never reached the model.`,
+    `Here is your prompt with the credential replaced by its handle (${opts.handles.join(', ')}). ${paste}`,
+    REWRITE_OPEN,
+    opts.rewrite,
+    REWRITE_CLOSE,
+    'The model works with the handle; AKA supplies the real value when a tool runs.',
+  ].join('\n');
+}

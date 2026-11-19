@@ -124,10 +124,10 @@ function stringConstant(source, name) {
 
 const README_ENTRIES = Object.entries(README_PATHS);
 
-// The Release on the `bin-latest` tag is frozen on its last files, because editing it
-// would lock it and a locked Release refuses new ones. A link to it would serve an old
-// version for good. The tag itself is alive, and the one-liners read files through it.
-describe('nothing sends a reader to the frozen bin-latest Release', () => {
+// The `bin-latest` tag has no Release, because a published one would lock the tag. A
+// link to a file on it returns 404. The tag itself is alive, and the one-liners read
+// files through it.
+describe('nothing sends a reader to a bin-latest Release', () => {
   // Over the whole tree, for its download links and its page. These tests are left out
   // only because they have to spell the thing they forbid.
   it('no tracked file outside the tests links it', () => {

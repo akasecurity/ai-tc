@@ -31,6 +31,7 @@ export {
   offersCaptureStatusReader,
   offersMaintenance,
 } from './data-gateway.ts';
+export type { DiagnosticSink } from './diagnostics.ts';
 export type { BuildEventInput } from './events.ts';
 export { buildIngestEvent, contentHashOf } from './events.ts';
 export type { FindingContextHit, FindingLocator, FindingLocatorInput } from './finding-context.ts';
@@ -47,6 +48,7 @@ export {
 } from './fingerprint.ts';
 export type {
   BoundedScanRequest,
+  GuardedScanDependencies,
   GuardedScanner,
   GuardedScanOptions,
   GuardedScanPartition,
@@ -96,6 +98,7 @@ export type {
   IsolatedProbeOutcome,
   IsolatedScanJobOptions,
   IsolatedScanner,
+  IsolatedScannerFactory,
   IsolatedScanOptions,
   IsolatedScanOutcome,
 } from './isolated-scan.ts';
@@ -177,8 +180,9 @@ export {
   RawEgressError,
   safeMaskedMatch,
 } from './raw-egress.ts';
-export type { RepoAttribution } from './repo.ts';
+export type { HeadCommit, RepoAttribution } from './repo.ts';
 export {
+  readHeadLog,
   remoteWithoutCredentials,
   resolveGitBranch,
   resolveHeadRoot,
@@ -228,6 +232,13 @@ export type { SecretSightings } from './secret-sightings.ts';
 export { secretSightingsOf } from './secret-sightings.ts';
 export type { SecretSpan, SecretSpanScanner } from './secret-spans.ts';
 export { createSecretSpanScanner, findSecretSpans, secretRulePartition } from './secret-spans.ts';
+export type { SessionCommand } from './session-commits.ts';
+export {
+  committingGitDirs,
+  GIT_COMMIT_SLACK_MS,
+  headLogMemo,
+  sessionCommitEvents,
+} from './session-commits.ts';
 export type { ExceptionWriter, SuppressionEntry } from './suppressions.ts';
 export { applySetupTriageSuppressions, THIRTY_DAYS_MS } from './suppressions.ts';
 export type { PerKeyGate } from './throttle.ts';

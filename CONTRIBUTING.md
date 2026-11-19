@@ -290,13 +290,41 @@ A check dropping OUT of the required set is the other direction, and it is the o
 document can catch on its own: protection matches by name, so renaming a job stops it
 being required while nothing in any diff says so.
 
+### Checks that gate `dev`
+
+A pull request into `dev` without the `full-ci` label runs the quick tier: every `ci.yml` job but
+`Lint · Typecheck · Test · Build` is skipped by its own condition and reports as passing, so that is
+the `ci.yml` check worth requiring here. The label runs the other jobs as well (see "Branches"
+below), but only on the pull requests that carry it. On the rest those jobs skip, which counts as
+passing, so requiring one of them on `dev` would gate labelled pull requests only.
+`Dependency audit` also runs on every pull request, whatever its base. The same daily `Required
+checks` job reads this table, from `dev`'s own copy of this file, against a recent pull request
+into `dev`, with the same exact match in both directions.
+
+| Check                             | Workflow    | Enforced |
+| --------------------------------- | ----------- | -------- |
+| `Lint · Typecheck · Test · Build` | `ci.yml`    | ✅       |
+| `Dependency audit`                | `audit.yml` | ⛔       |
+
+**`Lint · Typecheck · Test · Build` blocks a merge into `dev`; `Dependency audit` runs and blocks
+nothing.** A row records what protection does, not what it should, so requiring the audit on `dev`
+is a repository-settings change, and its row flips to ✅ in the change that makes it.
+
+Reading it works the same way as for `main`, against a pull request whose base is `dev`:
+
+```bash
+gh api graphql -f query='{repository(owner:"akasecurity",name:"ai-tc"){pullRequests(last:5,baseRefName:"dev"){nodes{number}}}}'
+```
+
 ### Branch freshness
 
 A `pull_request` check does not run against your branch. It runs against a merge commit
-GitHub builds by merging your branch into `main` — and GitHub rebuilds that commit when
-the **branch** is pushed, never when `main` moves. A branch that has sat for a few hours
-is therefore checked against a `main` that no longer exists, and its green tick describes
-a tree nobody will ever merge.
+GitHub builds by merging your branch into its base — `dev` for most pull requests, a
+`release/**` branch for work kept off `dev`, `main` for a promotion or a hotfix — and GitHub
+rebuilds that commit when the **branch** is pushed,
+never when the base moves. A branch that has sat for a few hours is therefore checked
+against a base that no longer exists, and its green tick describes a tree nobody will ever
+merge.
 
 For most changes that is harmless, because two diffs touching different files compose. It
 stops being harmless for the guards here that **derive** their expectations from the tree
@@ -311,7 +339,7 @@ read a base that has moved.
 
 So: add a workspace package on one branch, and on another add a file that the package
 guard would judge. Neither diff contains the mismatch. Both PRs go green, both merge, and
-the first run that ever sees both trees is the post-merge run on `main`. Review cannot
+the first run that ever sees both trees is the post-merge run on the base. Review cannot
 catch it, because there is nothing in either diff to review.
 
 Two repository settings close it, and they are settings — nothing in this tree can
@@ -331,6 +359,13 @@ as the answer.
 Chosen for the merge rate here: with several PRs landing on a busy day, the up-to-date
 setting turns every merge into an update-and-re-run for each remaining open PR, while the
 queue does that work with nobody in the loop.
+
+**The queue covers `main` only; on `dev` and `release/**` the hole stays open.** A pull
+request into either can go green against a base that has moved, and the push run on that
+branch after the merge is the first to see the combined tree. That is accepted there because
+neither branch publishes a stable release: every change from `dev` reaches `main` through a
+promotion pull request, which runs the full suite against the current `main`, and a break that lands on
+`dev` this way shows as a red push run on `dev` to fix before the next promotion.
 
 Two consequences follow for `.github/workflows/`, and
 `packages/eslint-config/test/required-checks.test.js` holds both against this section. It
@@ -540,9 +575,8 @@ Every `bin-v*` release renders `aka.rb` and `aka.json` from its own `SHA256SUMS`
 https://github.com/akasecurity/scoop-bucket` and `scoop install aka` install it on Windows.
 
 It also moves the `bin-latest` tag, which the install one-liners and both package managers' version
-checks read files through. The GitHub Release on that tag is frozen on aka 0.9.21: a published
-Release is locked, so it no longer takes new files (see "GitHub Releases are immutable" in
-`conventions/releasing.md`).
+checks read files through. That tag has no GitHub Release, and must not get one: a published Release
+would lock the tag (see "GitHub Releases are immutable" in `conventions/releasing.md`).
 
 Both pushes authenticate as a GitHub App owned by the `akasecurity` organization, not as a person:
 each job mints a one-hour token from the app's private key, scoped to the single repository it

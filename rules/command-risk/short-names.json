@@ -11,5 +11,7 @@
   "command-risk/object-storage-upload": "Object storage upload",
   "command-risk/alibaba-oss-host": "Alibaba OSS host",
   "command-risk/download-then-execute": "Download then execute",
-  "command-risk/recon-then-egress": "Recon with egress"
+  "command-risk/recon-then-egress": "Recon with egress",
+  "command-risk/offensive-security-tool": "Offensive security tool",
+  "command-risk/sql-log-webshell": "SQL write of a web script"
 }

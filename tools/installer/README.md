@@ -106,10 +106,10 @@ corrupt download from a substituted release.
   is what lets it run on Apple Silicon — and is neither Developer ID signed nor
   notarized, so a browser-downloaded archive would be refused where the
   `curl`-installed one runs.
-- **The old `bin-latest` download links.** The GitHub Release on the `bin-latest` tag is
-  frozen on aka 0.9.21 and no longer updated, because a published Release is locked. A
-  link to a file on it still works and still serves 0.9.21. Take a current archive from
-  its `bin-v<version>` release instead. The tag itself still moves with every release.
+- **The old `bin-latest` download links.** The GitHub Release on the `bin-latest` tag has
+  been deleted, so a link to a file on it returns 404. Take a current archive from its
+  `bin-v<version>` release instead. A Scoop install made from the old `aka.json` link has
+  to be installed again from the bucket. The tag itself still moves with every release.
 
 ## Uninstalling
 

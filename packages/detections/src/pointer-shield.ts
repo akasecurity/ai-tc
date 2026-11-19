@@ -8,10 +8,19 @@
 // whatever rules are installed. Without this, a matching rule would re-tokenize
 // a pointer (a pointer to a pointer), re-block a pointerized resubmit, or
 // corrupt a transcript rewrite.
-import { POINTER_TOKEN_PATTERN, SIGHTING_TOKEN_PATTERN } from '@akasecurity/schema';
+import {
+  credentialHandleScanner,
+  POINTER_TOKEN_PATTERN,
+  SIGHTING_TOKEN_PATTERN,
+} from '@akasecurity/schema';
 
-// Vault pointers and sighting tokens: neither carries a value, so neither is scanned.
-const SHIELDED_SOURCE = `${POINTER_TOKEN_PATTERN.source}|${SIGHTING_TOKEN_PATTERN.source}`;
+// Vault pointers, sighting tokens and credential handles: none carries a value,
+// so none is scanned.
+const SHIELDED_SOURCE = [
+  POINTER_TOKEN_PATTERN.source,
+  SIGHTING_TOKEN_PATTERN.source,
+  credentialHandleScanner().source,
+].join('|');
 
 export interface ShieldedSpan {
   start: number;

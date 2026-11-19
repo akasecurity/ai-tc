@@ -1625,7 +1625,7 @@ function queuedLines(queued: number): string {
  * send, and the count is only those newly marked: captures already marked are
  * sent as well. The history drain re-reads the scope on every pass, bounded by
  * the instant this machine attached, so the repository's other activity from
- * before the attachment (sessions, tool calls, token usage) is sent too. What
+ * before the attachment (sessions, tool calls, token usage, commit ids) is sent too. What
  * it recorded between attaching and enrolling, other than those captures, was
  * judged local when it happened and stays local, except what a session of a
  * recognised work subscription or of an account enrolled by hand there already
@@ -1665,10 +1665,10 @@ function earlierActivity(
   return (
     queuedLines(queued) +
     'The history sync also sends the rest of its activity recorded before this machine attached\n' +
-    '(sessions, tool calls, token usage), in the background. Activity it recorded between\n' +
-    'attaching and enrolling, other than those captures and what a Claude Code or Codex session\n' +
-    'of a recognised work subscription or of an account enrolled by hand there already sent,\n' +
-    'stays on this machine.\n'
+    '(sessions, tool calls, token usage, commit ids), in the background. Activity it recorded\n' +
+    'between attaching and enrolling, other than those captures and what a Claude Code or\n' +
+    'Codex session of a recognised work subscription or of an account enrolled by hand there\n' +
+    'already sent, stays on this machine.\n'
   );
 }
 

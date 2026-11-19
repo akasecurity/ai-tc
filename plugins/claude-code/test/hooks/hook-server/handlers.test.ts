@@ -14,6 +14,7 @@ import { removeTree } from '../../../../../test/helpers/remove-tree.ts';
 import { FORWARDED_ENV, REMOTE_CONTROL_ENV } from '../../../src/hooks/hook-server/forwarded-env.ts';
 import { postToolUseHandler, preToolUseHandler } from '../../../src/hooks/hook-server/handlers.ts';
 import { currentValue } from '../../../src/hooks/hook-server/request-env.ts';
+import { RESPONSE_SCAN_DEADLINE_MS } from '../../../src/hooks/scan-response.ts';
 import {
   closingGateways,
   dropHeldGateway,
@@ -143,6 +144,28 @@ describe('the pre-tool-use hook server handler', () => {
       });
     expect(await run('nothing sensitive here')).toBe('');
     expect(await run('AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE')).toContain('secrets/aws-access-key');
+  });
+
+  it('still scans a tool response once the server has been up past the scan deadline', async () => {
+    const uptime = vi.spyOn(performance, 'now').mockReturnValue(RESPONSE_SCAN_DEADLINE_MS * 100);
+    try {
+      const out = await postToolUseHandler(() => undefined)({
+        hook: 'post-tool-use',
+        cwd: proj,
+        env: {},
+        payload: JSON.stringify({
+          tool_name: 'Bash',
+          tool_input: { command: 'env' },
+          tool_response: { stdout: 'AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE', stderr: '' },
+          session_id: 'hs-test',
+          cwd: proj,
+          hook_event_name: 'PostToolUse',
+        }),
+      });
+      expect(out).toContain('secrets/aws-access-key');
+    } finally {
+      uptime.mockRestore();
+    }
   });
 
   it('reads the response from tool_output when tool_response holds nothing scannable', async () => {

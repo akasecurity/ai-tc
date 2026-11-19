@@ -2,8 +2,9 @@ import { existsSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, sep } from 'node:path';
 
 import { canonicalRepoUrl, namesARemoteAddress } from '@akasecurity/persistence';
+import type { GitCommitKind } from '@akasecurity/schema';
 
-import { readRegularFile } from './regular-file.ts';
+import { readRegularFile, readRegularFileTail } from './regular-file.ts';
 
 // Repo attribution for a captured event. The Security dashboard's Top-Sources
 // (by repo) and the recommendation engine both group findings by `repo`, but the
@@ -363,6 +364,91 @@ export function resolveGitBranch(cwd: string): string | undefined {
     // `ref: refs/heads/<branch>` on a normal checkout; a detached HEAD is a bare
     // sha with no `ref:` prefix, which we deliberately don't surface as a branch.
     return /^ref:\s*refs\/heads\/(.+?)\s*$/m.exec(head)?.[1];
+  } catch {
+    return undefined;
+  }
+}
+
+/** One commit a checkout's HEAD reached, read from its reflog. */
+export interface HeadCommit {
+  /** The commit id HEAD moved to. */
+  commit: string;
+  /** When HEAD moved, in epoch milliseconds. */
+  at: number;
+  /** What moved it. */
+  kind: GitCommitKind;
+}
+
+const REFLOG_TAIL_BYTES = 256 * 1024;
+// `<old> <new> <name> <<email>> <seconds> <zone>\t<message>`; only the new id, the time and the
+// message are read.
+const REFLOG_LINE = /^[0-9a-f]{40,64} ([0-9a-f]{40,64}) .* (\d{1,12}) [+-]\d{4}\t(.*)$/;
+const NULL_ID = /^0+$/;
+// The HEAD moves that leave HEAD on a commit the move made. A rebase counts only at its last
+// step: the commits it replays on the way are not new work. A fast-forward merge, cherry-pick
+// or rebase does not count: it moves HEAD onto a commit that already existed.
+const REBASE_START = /^rebase( -i)? \(start\):/;
+const REBASE_STEP = /^rebase( -i)? \((?!start\)|finish\))[a-z]+\):/;
+const KIND_OF_MESSAGE: readonly [RegExp, GitCommitKind][] = [
+  [/^commit \(merge\):/, 'merge'],
+  [/^commit( \([a-z]+\))?:/, 'commit'],
+  [/^merge (?!.*: Fast-forward$)/, 'merge'],
+  [/^cherry-pick: (?!fast-forward$)/, 'cherry-pick'],
+  [/^revert:/, 'revert'],
+  [/^am:/, 'am'],
+  [/^rebase( -i)? \(finish\):/, 'rebase'],
+];
+
+/**
+ * The commits the checkout at `cwd` reached, from the worktree's own reflog (`logs/HEAD`), oldest
+ * first: only moves that make commits count; a checkout, reset, pull, fast-forward or a rebase's
+ * intermediate step does not. Reads at most the last 256 KiB. Pure file I/O; null outside a checkout or when
+ * the reflog cannot be read.
+ */
+export function readHeadLog(cwd: string): HeadCommit[] | null {
+  try {
+    const gitdir = worktreeGitdir(cwd);
+    if (gitdir === undefined) return null;
+    let tail: { text: string; truncated: boolean };
+    try {
+      tail = readRegularFileTail(join(gitdir, 'logs', 'HEAD'), REFLOG_TAIL_BYTES);
+    } catch {
+      return null;
+    }
+    const lines = tail.text.split('\n');
+    if (tail.truncated) lines.shift();
+    const seen = new Set<string>();
+    const commits: HeadCommit[] = [];
+    // Steps since the last `rebase (start)`, or null before one is read. A rebase that finishes
+    // with none only fast-forwarded onto commits it did not make.
+    let rebaseSteps: number | null = null;
+    for (const line of lines) {
+      const match = REFLOG_LINE.exec(line);
+      if (!match) continue;
+      const [, commit = '', seconds = '', message = ''] = match;
+      const at = Number(seconds) * 1000;
+      if (REBASE_START.test(message)) rebaseSteps = 0;
+      else if (REBASE_STEP.test(message) && rebaseSteps !== null) rebaseSteps += 1;
+      const kind = KIND_OF_MESSAGE.find(([pattern]) => pattern.test(message))?.[1];
+      if (kind === undefined || NULL_ID.test(commit) || seen.has(commit)) continue;
+      if (kind === 'rebase' && rebaseSteps === 0) continue;
+      seen.add(commit);
+      commits.push({ commit, at, kind });
+    }
+    return commits;
+  } catch {
+    return null;
+  }
+}
+
+// The gitdir holding this checkout's own HEAD and reflog: `.git` itself for a clone, the
+// `gitdir:` target for a linked worktree or submodule.
+function worktreeGitdir(cwd: string): string | undefined {
+  const root = findGitRoot(cwd);
+  if (!root) return undefined;
+  const dotGit = join(root, '.git');
+  try {
+    return statSync(dotGit).isDirectory() ? dotGit : resolveWorktreeGitdir(root, dotGit);
   } catch {
     return undefined;
   }

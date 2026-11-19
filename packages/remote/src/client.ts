@@ -3,6 +3,7 @@ import type {
   AttachDeviceRequest as AttachDeviceRequestT,
   AttachTokenResponse as AttachTokenResponseT,
   AuditEventBatchAck as AuditEventBatchAckT,
+  AvailableCredentialsResponse as AvailableCredentialsResponseT,
   ConfigInventoryAck as ConfigInventoryAckT,
   ConfigInventoryRequest as ConfigInventoryRequestT,
   CredentialSightingsAck as CredentialSightingsAckT,
@@ -18,6 +19,8 @@ import type {
   PluginWhoami as PluginWhoamiT,
   PolicyBundle as PolicyBundleT,
   RecordAuditEventRequest as AuditEventSubmission,
+  ResolveCredentialsRequest as ResolveCredentialsRequestT,
+  ResolveCredentialsResponse as ResolveCredentialsResponseT,
   ResolvedInventory as ResolvedInventoryT,
   SessionHoldResponse as SessionHoldResponseT,
   SightingKeyResponse as SightingKeyResponseT,
@@ -27,6 +30,7 @@ import {
   AttachDeviceGrant,
   AttachTokenResponse,
   AuditEventBatchAck,
+  AvailableCredentialsResponse,
   ConfigInventoryAck,
   ConfigInventoryRequest,
   CredentialSightingsAck,
@@ -42,6 +46,8 @@ import {
   PolicyBundle,
   RecordAuditEventBatch,
   RecordAuditEventRequest,
+  ResolveCredentialsRequest,
+  ResolveCredentialsResponse,
   ResolvedInventory,
   SessionHoldResponse,
   SightingKeyResponse,
@@ -59,10 +65,10 @@ import {
 } from './http.ts';
 import { auditEventForWire, batchForWire } from './repo-label.ts';
 
-// The fifteen routes an attached machine may call, and nothing else.
+// The seventeen routes an attached machine may call, and nothing else.
 //
 // The set is small on purpose and is the same set a deployment scopes a
-// credential to: ten writes and five self-scoped reads. There is
+// credential to: ten writes and seven self-scoped reads. There is
 // deliberately no way to ask this client for anything organization-wide — a
 // credential on a laptop should not be able to read what other people's
 // machines reported, and a client that cannot express the request is a
@@ -80,6 +86,9 @@ import { auditEventForWire, batchForWire } from './repo-label.ts';
 // The session hold is self-scoped the same way: it asks about one of this
 // machine's own sessions, and the deployment answers only for the credential
 // that asks.
+//
+// The two vault routes are self-scoped as well: they list and resolve the
+// credentials granted to the machine the key is bound to, and name no other.
 //
 // Every response is PARSED, never cast. The bodies arrive from a host named in
 // a settings file, so "the deployment said so" is not a type guarantee; a
@@ -101,6 +110,8 @@ const ROUTES = {
   credentialSightings: '/v1/credential-sightings',
   labels: '/v1/plugin/labels',
   sessions: '/v1/plugin/sessions',
+  vaultAvailable: '/v1/vault/available',
+  vaultResolve: '/v1/vault/resolve',
 } as const;
 
 /**
@@ -221,6 +232,20 @@ export interface RemoteClient {
    * 404, which reads as not held.
    */
   getSessionHold(sessionId: string): Promise<SessionHoldResponseT>;
+
+  /**
+   * GET /v1/vault/available — the credentials granted to this machine, each by
+   * slug and description; never a value. A 404 raises `RemoteRouteAbsent`.
+   */
+  listAvailableCredentials(): Promise<AvailableCredentialsResponseT>;
+
+  /**
+   * POST /v1/vault/resolve — the values of the named credentials, and a reason
+   * for each one refused. Validated before it is sent; a 404 raises
+   * `RemoteRouteAbsent`. Neither a refusal nor a parse failure carries any part
+   * of the body.
+   */
+  resolveCredentials(request: ResolveCredentialsRequestT): Promise<ResolveCredentialsResponseT>;
 }
 
 /** Header value as a single string; Node reports repeats as an array. */
@@ -539,6 +564,27 @@ export function createRemoteClient(options: RemoteClientOptions): RemoteClient {
       const response = await send({ ...common, method: 'GET', url: url(route) });
       if (response.status === 404) return { held: false };
       return parsed(SessionHoldResponse, okBody(response), route);
+    },
+
+    async listAvailableCredentials() {
+      const response = await send({ ...common, method: 'GET', url: url(ROUTES.vaultAvailable) });
+      if (response.status === 404) throw new RemoteRouteAbsent(ROUTES.vaultAvailable);
+      return parsed(AvailableCredentialsResponse, okBody(response), ROUTES.vaultAvailable);
+    },
+
+    async resolveCredentials(request) {
+      const validated = ResolveCredentialsRequest.safeParse(request);
+      if (!validated.success) {
+        throw new RemoteRequestInvalid(ROUTES.vaultResolve, validated.error);
+      }
+      const response = await send({
+        ...common,
+        method: 'POST',
+        url: url(ROUTES.vaultResolve),
+        body: JSON.stringify(validated.data),
+      });
+      if (response.status === 404) throw new RemoteRouteAbsent(ROUTES.vaultResolve);
+      return parsed(ResolveCredentialsResponse, okBody(response), ROUTES.vaultResolve);
     },
   };
 }

@@ -367,6 +367,7 @@ export const auditEvents = sqliteTable(
         'request_decision',
         'config_scan',
         'capture_status',
+        'git_commit',
       ],
     }).notNull(),
     hostId: text(COL.hostId).references(() => inventory.id),

@@ -57,6 +57,7 @@ const KIND_LABELS: Record<CountedEventType, string> = {
   session: 'Sessions',
   llm_call: 'Model calls',
   tool_call: 'Tool calls',
+  git_commit: 'Commits',
   prompt: 'Prompts',
   response: 'Responses',
   tool_use: 'Tool inputs',
@@ -65,7 +66,7 @@ const KIND_LABELS: Record<CountedEventType, string> = {
 /**
  * The order the rows are shown in, taken from the map above.
  *
- * LANE ORDER, deliberately: the three structural kinds, then the three that
+ * LANE ORDER, deliberately: the four structural kinds, then the three that
  * carry text. The store returns whatever order its index walk produces, which
  * came out as Model calls, Prompts, Responses, Sessions, Tool calls, Tool
  * inputs — alphabetical by accident, and it interleaves two lanes that behave

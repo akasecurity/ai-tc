@@ -25,6 +25,7 @@ function renderToolbar(props: Partial<Parameters<typeof FindingsToolbarView>[0]>
       facets={facets}
       filters={EMPTY_FILTERS}
       onFiltersChange={vi.fn()}
+      locale="en-US"
       query=""
       onQueryChange={vi.fn()}
       {...props}
@@ -38,6 +39,7 @@ function renderFindingLevel(props: Partial<Parameters<typeof FindingLevelFilters
       facets={facets}
       filters={EMPTY_FILTERS}
       onFiltersChange={vi.fn()}
+      locale="en-US"
       {...props}
     />,
   );
@@ -93,6 +95,11 @@ describe('FindingLevelFilters', () => {
     });
     expect((html.match(/bg-primary-tint/g) ?? []).length).toBe(1);
     expect(html).toContain('>2<');
+    // Announced as "Provider, 2 selected", shown as "Provider" and the badge:
+    // both added words are sr-only, which text alone cannot tell.
+    expect(html).toContain(
+      '<span class="sr-only">, </span>2</span><span class="sr-only"> selected</span>',
+    );
   });
 
   it('offers Deployment only when asked, in both the panel filters and the toolbar', () => {

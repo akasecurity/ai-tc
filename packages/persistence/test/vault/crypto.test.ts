@@ -11,6 +11,7 @@ import {
   encodeKeyVersion,
   formatPointer,
   mintPointer,
+  mintPointerWith,
   NONCE_BYTES,
   open,
   POINTER_ID_BYTES,
@@ -323,5 +324,52 @@ describe('mintPointer', () => {
 
   it('refuses a key version the grammar cannot encode', () => {
     expect(() => mintPointer(master, 0, 'secret')).toThrow(/key version out of range/);
+  });
+
+  it('is mintPointerWith over the id it drew', () => {
+    for (const category of ['secret', 'pii', 'code_context']) {
+      const minted = mintPointer(master, 3, category);
+      const id = base32Decode(minted.slice(`[[aka:${category}:`.length).split('.')[1] ?? '');
+      expect(mintPointerWith(master, 3, category, id)).toBe(minted);
+    }
+  });
+});
+
+describe('mintPointerWith', () => {
+  it('gives a fixed pointer for a fixed id', () => {
+    expect(mintPointerWith(master, 1, 'secret', pointerId)).toBe(
+      '[[aka:secret:AE.AMBQGAYDAMBQGAYDAMBQGAYDAM.3WZXOLILB6IH2APV]]',
+    );
+  });
+
+  it('carries the given id, tagged with the sign subkey derived from the master', () => {
+    const minted = mintPointerWith(master, 7, 'pii', pointerId);
+    const [version = '', id = '', tag = ''] = minted
+      .slice('[[aka:pii:'.length, -']]'.length)
+      .split('.');
+    expect(decodeKeyVersion(version)).toBe(7);
+    expect(base32Decode(id)).toEqual(pointerId);
+    expect(verifyPointerTag(keys.sign, 7, pointerId, 'pii', base32Decode(tag))).toBe(true);
+  });
+
+  it('gives a different pointer for a different id', () => {
+    const other = Buffer.alloc(POINTER_ID_BYTES, 4);
+    expect(mintPointerWith(master, 1, 'secret', other)).not.toBe(
+      mintPointerWith(master, 1, 'secret', pointerId),
+    );
+  });
+
+  it('refuses an id that is not 16 bytes', () => {
+    for (const length of [0, POINTER_ID_BYTES - 1, POINTER_ID_BYTES + 1]) {
+      expect(() => mintPointerWith(master, 1, 'secret', Buffer.alloc(length, 3))).toThrow(
+        /pointer id must be 16 bytes/,
+      );
+    }
+  });
+
+  it('refuses a key version the grammar cannot encode', () => {
+    expect(() => mintPointerWith(master, 0, 'secret', pointerId)).toThrow(
+      /key version out of range/,
+    );
   });
 });

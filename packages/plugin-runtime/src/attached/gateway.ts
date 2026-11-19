@@ -949,6 +949,16 @@ export class AttachedDataGateway
     if (forwarded.ok) this.deps.local.markAuditEventsDelivered([event], Date.now());
   }
 
+  // Each row is written locally, then the ones the scope verdict lets out are forwarded in
+  // batches of AUDIT_EVENT_BATCH_MAX, stamped as they land, as `recordToolCalls` forwards.
+  async recordAuditEvents(events: readonly AuditEventInput[]): Promise<void> {
+    const { local } = this.deps;
+    if (local.recordAuditEvents) await local.recordAuditEvents(events);
+    else for (const event of events) await local.recordAuditEvent(event);
+    const forwardable = events.filter((event) => this.auditVerdict(event) !== 'local');
+    await this.forwardBatch(await this.wireEvents(forwardable), (event) => event);
+  }
+
   // Attached `llm_call` is written locally by the inner gateway, then routed to
   // the control plane through the existing `recordAuditEvent` ingest (no dedicated
   // client method yet) by pre-building the audit event from the natural key.

@@ -7,6 +7,7 @@
     "cloud-metadata-access",
     "object-storage-file-upload",
     "agent-probe-host",
-    "unshare-user-namespace"
+    "unshare-user-namespace",
+    "oast-c2-host"
   ]
 }

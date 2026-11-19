@@ -19,15 +19,22 @@
 // never from live env (which would mislabel backfilled history under today's env).
 import { sessionAccountsDir } from '@akasecurity/persistence';
 import { accountScopeOf, resolveDataGateway } from '@akasecurity/plugin-runtime';
-import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
+import type {
+  DataGateway,
+  HeadCommit,
+  PluginConfig,
+  SessionCommand,
+} from '@akasecurity/plugin-sdk';
 import {
   createPolicyResolver,
   createVaultGlue,
+  headLogMemo,
   providerFromModelId,
   resolveInventoryContext,
   resolveRepoNwo,
   scanText,
   scopeKeyMemo,
+  sessionCommitEvents,
   sessionRootScopeKey,
   toolCallScopeKey,
   truncateTarget,
@@ -119,6 +126,10 @@ export interface ReconcileSessionOptions {
   // directory shared across sessions is walked once and keyed identically
   // everywhere. When omitted, the call builds its own.
   scopeKeyOf?: ((cwd: string | undefined) => string | undefined) | undefined;
+  // The pass's reflog memo (plugin-sdk's headLogMemo), shared the same way so a
+  // checkout's reflog is read once for every session in the pass. When omitted,
+  // the call builds its own.
+  headLogOf?: ((dir: string) => HeadCommit[] | null) | undefined;
   // The account key each assistant line ran under, by its uuid. Each row is
   // stamped for that account through the gateway's account scope, and the session
   // root is keyed from the first line that has one; without one (backfill, a
@@ -358,11 +369,30 @@ export async function reconcileSessionToolCalls(
 
   try {
     await gateway.recordToolCalls(inputs);
-    return inputs.length;
   } catch {
     // Fail-open (see reconcileSession): drop the whole pass; recovered idempotently.
     return 0;
   }
+  await recordSessionCommits(
+    gateway,
+    sessionId,
+    toolCalls.flatMap((tc) =>
+      tc.toolName === 'Bash'
+        ? [
+            {
+              cwd: tc.cwd,
+              occurredAt: tc.occurredAt,
+              completedAt: tc.completedAt,
+              command: tc.target,
+              isError: tc.isError,
+              scopeKey: stamp(scopeKeyOf(tc.cwd), tc.uuid),
+            },
+          ]
+        : [],
+    ),
+    opts.headLogOf,
+  );
+  return inputs.length;
 }
 
 // Group the flattened tool-call stream into per-session buckets (file order within
@@ -408,6 +438,7 @@ export async function reconcileHistory(
     // One scope-key memo for the whole sweep: sessions that share a directory
     // share its one `.git` walk and its one key.
     const scopeKeyOf = scopeKeyMemo();
+    const headLogOf = headLogMemo();
     // Group usage by `sessionId` so each session is reconciled as a unit (the root +
     // provider are per-session). uuids are globally unique, so the per-session
     // `parentUuid → promptId` map is correct regardless of cross-file interleave.
@@ -429,7 +460,7 @@ export async function reconcileHistory(
         sessionId,
         toolCallsBySession.get(sessionId) ?? [],
         records,
-        { scopeKeyOf },
+        { scopeKeyOf, headLogOf },
       );
     }
   } finally {
@@ -465,6 +496,25 @@ export async function reconcileHistory(
 //
 // Resolves its OWN gateway and always `close()`s it in a finally, so a
 // single worker invocation is self-contained. Fully fail-open.
+// The commits a session's git commands made, read from each command's checkout once the tool
+// calls are written, so the session root they hang off exists. Only the commands in this pass's
+// tail are read, so a command whose result lands in a later tail records nothing. Fail-open.
+async function recordSessionCommits(
+  gateway: DataGateway,
+  sessionId: string,
+  commands: readonly SessionCommand[],
+  headLogOf: ((dir: string) => HeadCommit[] | null) | undefined,
+): Promise<void> {
+  try {
+    const events = sessionCommitEvents(sessionId, commands, headLogOf);
+    if (events.length === 0) return;
+    if (gateway.recordAuditEvents) await gateway.recordAuditEvents(events);
+    else for (const event of events) await gateway.recordAuditEvent(event);
+  } catch {
+    // A commit not recorded here is not retried; the tool calls already written stand.
+  }
+}
+
 export async function reconcileSessionTail(
   config: PluginConfig,
   sessionId: string,

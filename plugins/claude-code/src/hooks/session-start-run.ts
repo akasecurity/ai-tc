@@ -3,12 +3,19 @@
 // environment, and passes the session start, the reconcile trigger and the
 // emitter this runs with.
 import type { handleSessionStart } from '@akasecurity/plugin-runtime';
-import { sessionStartNotice } from '@akasecurity/plugin-runtime';
-import { loadConfig, recordSessionModel } from '@akasecurity/plugin-sdk';
+import {
+  canReachVault,
+  listAvailableCredentials,
+  sessionStartNotice,
+} from '@akasecurity/plugin-runtime';
+import { loadConfig, type PluginConfig, recordSessionModel } from '@akasecurity/plugin-sdk';
 import { resolveClaudeBilling } from '@akasecurity/plugin-sdk/account';
+import type { AvailableCredential } from '@akasecurity/schema';
 import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { INSTALL_ROOT, PLUGIN_PACKAGE } from '../build-info.ts';
+import { credentialBrief } from '../credentials/brief.ts';
+import { saveCredentialLookups } from '../credentials/pasted.ts';
 import type { triggerReconcile } from '../history/reconcile-trigger.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { standingBrief } from '../protocol/notes.ts';
@@ -29,6 +36,14 @@ export interface SessionStartDeps {
   readonly emit: (output: HookOutput) => Promise<void>;
   /** The clock the session's boundary and login view are stamped with; the entry passes none. */
   readonly now?: (() => number) | undefined;
+  /** The credentials granted to this machine; the entry passes none and the attached client is asked. */
+  readonly availableCredentials?:
+    ((dataDir: string) => Promise<AvailableCredential[] | undefined>) | undefined;
+  /** Whether the machine is attached with a usable key; the entry passes none and settings are read. */
+  readonly canReachVault?: ((dataDir: string) => boolean) | undefined;
+  /** Whether a tool call can be given a credential's value; the entry reads it from the host env. */
+  readonly credentialHandlesCanBeSupplied?:
+    ((settings: PluginConfig['settings']) => boolean) | undefined;
 }
 
 /** One SessionStart, from its parsed stdin payload (null when it did not parse). */
@@ -127,19 +142,68 @@ export async function runSessionStart(
   // consent does this hook give the model anything — the brief teaches the
   // model what a pointer is and carries the per-session authenticity marker.
   // Without consent the vault is inert, and only the user notice (if any) goes
-  // out.
+  // out. On an attached machine with granted credentials, a note naming their
+  // handles rides alongside; it is skipped on any failure.
+  const briefs: string[] = [];
   if (isVaultConsentValid(config.settings.vaultConsent)) {
+    briefs.push(
+      standingBrief({
+        marker: sessionProtocolMarker(config.dataDir, sessionId),
+        inlineReveal: config.settings.vaultInlineReveal,
+      }),
+    );
+  }
+  // Handles are offered only where a tool call can be given their values; elsewhere the
+  // saved lookups are cleared, so no pasted value is swapped for a handle.
+  let credentials: string | undefined;
+  if (deps.credentialHandlesCanBeSupplied?.(config.settings) ?? true) {
+    credentials = await availableCredentialsBrief(config.dataDir, deps);
+  } else {
+    clearCredentialLookups(config.dataDir);
+  }
+  if (credentials !== undefined) briefs.push(credentials);
+  if (briefs.length > 0) {
     await deps.emit({
       hookSpecificOutput: {
         hookEventName: 'SessionStart',
-        additionalContext: standingBrief({
-          marker: sessionProtocolMarker(config.dataDir, sessionId),
-          inlineReveal: config.settings.vaultInlineReveal,
-        }),
+        additionalContext: briefs.join('\n\n'),
       },
       ...(shown === undefined ? {} : { systemMessage: shown }),
     });
   } else if (shown !== undefined) {
     await deps.emit({ systemMessage: shown });
+  }
+}
+
+function clearCredentialLookups(dataDir: string): void {
+  try {
+    saveCredentialLookups(dataDir, []);
+  } catch {
+    // A file left behind only keeps a pasted value's swap.
+  }
+}
+
+async function availableCredentialsBrief(
+  dataDir: string,
+  deps: SessionStartDeps,
+): Promise<string | undefined> {
+  try {
+    const available = deps.availableCredentials
+      ? await deps.availableCredentials(dataDir)
+      : await listAvailableCredentials({ dataDir });
+    if (available === undefined) {
+      // Saved lookups are cleared when the machine cannot reach the vault, and kept when an
+      // attached deployment did not answer.
+      if (!(deps.canReachVault ?? canReachVault)(dataDir)) clearCredentialLookups(dataDir);
+      return undefined;
+    }
+    try {
+      saveCredentialLookups(dataDir, available);
+    } catch {
+      // Without the file a pasted credential is only not recognised.
+    }
+    return credentialBrief(available);
+  } catch {
+    return undefined;
   }
 }

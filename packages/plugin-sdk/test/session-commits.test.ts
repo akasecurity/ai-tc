@@ -1,13 +1,14 @@
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve, win32 } from 'node:path';
 
 import { gitCommitId } from '@akasecurity/persistence';
 import { GitCommitAttributes } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
+import { resolveWindowsCommand, systemWhere } from '../src/bare-command.ts';
 import { readRegularFileTail } from '../src/regular-file.ts';
 import { readHeadLog } from '../src/repo.ts';
 import type { SessionCommand } from '../src/session-commits.ts';
@@ -36,14 +37,44 @@ afterEach(() => {
   removeTree(root);
 });
 
+/**
+ * The git executable and the platform part of the environment it runs with.
+ * The environment below replaces the inherited one, so on Windows git is
+ * resolved against the inherited PATH first, and keeps `SystemRoot`, which
+ * Windows programs need to start.
+ */
+function gitRuntime(): { file: string | undefined; env: Record<string, string> } {
+  if (process.platform !== 'win32') {
+    return { file: 'git', env: { PATH: '/usr/bin:/bin:/usr/local/bin' } };
+  }
+  const file = resolveWindowsCommand('git', undefined, tmpdir());
+  const where = systemWhere(undefined);
+  const system32 = where === undefined ? undefined : win32.dirname(where);
+  return {
+    file,
+    env: {
+      PATH: [file === undefined ? undefined : dirname(file), system32]
+        .filter((p) => p !== undefined)
+        .join(';'),
+      ...(system32 === undefined ? {} : { SystemRoot: win32.dirname(system32) }),
+    },
+  };
+}
+
+const GIT = gitRuntime();
+
 /** Runs git in `dir` with a fixed identity and no user or system config. */
 function realGit(dir: string): (...args: string[]) => string {
+  const file = GIT.file;
+  if (file === undefined) {
+    throw new Error('git is not installed or not on PATH: `where git` found no executable');
+  }
   return (...args) =>
-    execFileSync('git', args, {
+    execFileSync(file, args, {
       cwd: dir,
       encoding: 'utf8',
       env: {
-        PATH: '/usr/bin:/bin:/usr/local/bin',
+        ...GIT.env,
         HOME: dir,
         GIT_CONFIG_NOSYSTEM: '1',
         GIT_AUTHOR_NAME: 'Dev',
@@ -256,7 +287,7 @@ describe('committingGitDirs', () => {
   it('reads -C as the directory the commit lands in', () => {
     expect(
       committingGitDirs('git -C ../other commit -m x; git -C /abs merge y', '/w/repo'),
-    ).toEqual(['/w/other', '/abs']);
+    ).toEqual([resolve('/w/repo', '../other'), resolve('/w/repo', '/abs')]);
   });
 });
 

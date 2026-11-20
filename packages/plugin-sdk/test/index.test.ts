@@ -71,6 +71,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'ANTIGRAVITY_BASELINE_HOOK_EVENTS',
   'ANTIGRAVITY_HOST_FEATURE',
   'ANTIGRAVITY_HOST_FLOORS',
+  'API_EQUIVALENT_NOTE',
   'BASELINE_HOOK_EVENTS',
   'BUNDLED_PACKS',
   'CODEX_BASELINE_HOOK_EVENTS',
@@ -260,7 +261,9 @@ const PUBLIC_VALUE_EXPORTS = [
   'toolCallScopeKey',
   'truncateTarget',
   'uniqueRuleIds',
+  'usageChannelLabel',
   'webCaptureReport',
+  'withBilling',
   'withLayer',
   'withLiteralCredentialRefs',
 ];

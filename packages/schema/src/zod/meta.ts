@@ -207,6 +207,42 @@ export const ConfigFileAttributes = z
   .catchall(z.unknown());
 export type ConfigFileAttributes = z.infer<typeof ConfigFileAttributes>;
 
+/** How a session's model calls are paid for, read from the agent's login when the session starts.
+ * `unknown` when the signals are missing or disagree. */
+export const UsageChannel = z.enum(['api_key', 'subscription', 'cloud', 'gateway', 'unknown']);
+export type UsageChannel = z.infer<typeof UsageChannel>;
+
+/** The plan a subscription sign-in names, normalised across vendors. */
+export const SubscriptionPlan = z.enum([
+  'claude_pro',
+  'claude_max',
+  'claude_team',
+  'claude_enterprise',
+  'chatgpt_plus',
+  'chatgpt_pro',
+  'chatgpt_business',
+  'chatgpt_enterprise',
+  'chatgpt_edu',
+  'other',
+]);
+export type SubscriptionPlan = z.infer<typeof SubscriptionPlan>;
+
+/** A stored channel read back; anything this build does not know is `unknown`. */
+export function usageChannelOf(value: unknown): UsageChannel {
+  const parsed = UsageChannel.safeParse(value);
+  return parsed.success ? parsed.data : 'unknown';
+}
+
+/** The basis a list-price figure is on: spend for per-token traffic, a theoretical
+ * API-equivalent value for subscription traffic, which no spend total may include. */
+export const CostBasis = z.enum(['estimated', 'api_equivalent']);
+export type CostBasis = z.infer<typeof CostBasis>;
+
+/** The basis a call on `channel` is priced on. */
+export function costBasisFor(channel: UsageChannel): CostBasis {
+  return channel === 'subscription' ? 'api_equivalent' : 'estimated';
+}
+
 // The token-usage attribute bag carried by an `llm_call` audit row. One row per
 // assistant API response = one `usage` block from the transcript. Mirrors the
 // HostAttributes style: every field `.optional()`, `.catchall(z.unknown())` for
@@ -241,6 +277,9 @@ export const LlmCallAttributes = z
     parent_uuid: z.string().optional(),
     // Run grouping = the parent user record's `promptId` (NOT nearest user uuid).
     run_key: z.string().optional(),
+    // Copied from the session root, which records them when the session starts.
+    usage_channel: z.string().optional(),
+    subscription_plan: z.string().optional(),
   })
   .catchall(z.unknown());
 export type LlmCallAttributes = z.infer<typeof LlmCallAttributes>;
@@ -676,7 +715,12 @@ export const TokenRollup = z
     // Computed upstream at read time from the leaf `llm_call` attribute bag (which
     // carries the ephemeral 1h/5m split); the rollup only STORES the already-
     // computed number. Null when (provider, model) is unknown — never a guess.
+    // A list-price figure on `costBasis`: spend, or for subscription traffic an
+    // API-equivalent value that no spend total includes.
     estimatedCostUsd: z.number().nullable(),
+    channel: UsageChannel,
+    /** Null when the rollup is unpriced. */
+    costBasis: CostBasis.nullable(),
   })
   .meta({ id: 'TokenRollup' });
 export type TokenRollup = z.infer<typeof TokenRollup>;
@@ -688,17 +732,21 @@ export const SessionTokenReport = z.object({
   sessionId: z.string(),
   rollups: z.array(TokenRollup),
   totalTokens: z.number().int().nonnegative(),
-  // Σ of the PRICED rollups only; null when no rollup had a known price.
+  // Σ of the PRICED `estimated` rollups only; null when none had a known price.
   estimatedCostUsd: z.number().nullable(),
-  // True whenever any call priced to null (an unknown provider/model, or a call
-  // over a long-context threshold whose rate is unpublished), so the total
-  // understates real spend — the UI renders `≥ $X` instead of a falsely
-  // precise figure rather than silently dropping the unpriced calls.
+  // True whenever a call outside a subscription priced to null (an unknown
+  // provider/model, or a call over a long-context threshold whose rate is
+  // unpublished), so the total understates real spend — the UI renders `≥ $X`
+  // instead of a falsely precise figure rather than silently dropping the
+  // unpriced calls.
   costIsPartial: z.boolean(),
+  // Σ of the priced `api_equivalent` rollups; null when none had a known price.
+  apiEquivalentUsd: z.number().nullable(),
+  apiEquivalentIsPartial: z.boolean(),
 });
 export type SessionTokenReport = z.infer<typeof SessionTokenReport>;
 
-// A cross-session token usage row, collapsed onto one `(provider, model)` — the
+// A cross-session token usage row, collapsed onto one `(provider, model, channel)` — the
 // grain the read surfaces render as a "usage by model" table (built by
 // `aggregateTokenUsage`). `cacheTokens` merges cache creation + read (the rollup
 // keeps them split; the aggregate view shows one "cache" column). No `.meta({id})`
@@ -713,6 +761,8 @@ export const ModelTokenUsage = z.object({
   totalTokens: z.number().int().nonnegative(),
   // Σ of this model's PRICED rollups; null when none had a known price.
   estimatedCostUsd: z.number().nullable(),
+  channel: UsageChannel,
+  costBasis: CostBasis.nullable(),
 });
 export type ModelTokenUsage = z.infer<typeof ModelTokenUsage>;
 
@@ -726,6 +776,9 @@ export const TokenUsageSummary = z.object({
   totalTokens: z.number().int().nonnegative(),
   estimatedCostUsd: z.number(),
   costIsPartial: z.boolean(),
+  // Subscription traffic at list price, never part of `estimatedCostUsd`.
+  apiEquivalentUsd: z.number(),
+  apiEquivalentIsPartial: z.boolean(),
 });
 export type TokenUsageSummary = z.infer<typeof TokenUsageSummary>;
 

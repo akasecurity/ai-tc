@@ -195,4 +195,8 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
     tag: '0041_label_reported_at',
     sql: 'ALTER TABLE `exceptions` ADD `label_reported_at` integer;--> statement-breakpoint\nALTER TABLE `finding_resolution` ADD `label_reported_at` integer;',
   },
+  {
+    tag: '0042_usage_channel',
+    sql: "DROP INDEX `idx_audit_llm_usage`;--> statement-breakpoint\nALTER TABLE `audit_events` ADD `usage_channel` text GENERATED ALWAYS AS (json_extract(attributes, '$.usage_channel')) VIRTUAL;--> statement-breakpoint\nCREATE INDEX `idx_audit_llm_usage` ON `audit_events` (`started_at`,`root_session_id`,`provider`,`model`,`service_tier`,`usage_channel`,`input_tokens`,`output_tokens`,`cache_creation_input_tokens`,`cache_read_input_tokens`,`ephemeral_1h_input_tokens`,`ephemeral_5m_input_tokens`,`web_search_requests`) WHERE event_type = 'llm_call' AND attributes IS NOT NULL;",
+  },
 ];

@@ -25,7 +25,9 @@ export type {
   RuleProbeVerdictEntry,
   ScanLedgerEntry,
   ScanLedgerState,
+  SessionBillingRead,
 } from './data-gateway.ts';
+export { withBilling } from './data-gateway.ts';
 export {
   hasLocalStoreMaintenance,
   offersCaptureStatusReader,
@@ -282,9 +284,11 @@ export type { LlmCallLeaf } from '@akasecurity/schema';
 export { defaultCostModel } from '@akasecurity/schema';
 export {
   aggregateTokenUsage,
+  API_EQUIVALENT_NOTE,
   buildTokenReports,
   formatCostTotal,
   formatUsd,
+  usageChannelLabel,
 } from '@akasecurity/schema';
 // The recommendation rollup and the posture score, also from `@akasecurity/schema`
 // and re-exported for the same reason: each plugin's `render.ts` reaches the shared

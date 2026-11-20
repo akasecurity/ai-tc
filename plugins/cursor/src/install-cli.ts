@@ -77,9 +77,9 @@ function statOrUndefined(path: string): { mode: number } | undefined {
   }
 }
 
-export function main(argv: readonly string[] = process.argv): number {
+export function main(argv: readonly string[] = process.argv, home: string = homedir()): number {
   const mode = argv.includes('--uninstall') ? 'uninstall' : 'install';
-  const path = cursorHooksPath();
+  const path = cursorHooksPath(home);
   const scriptsDir = dirname(fileURLToPath(import.meta.url));
   try {
     applyInstall(path, mode, process.execPath, scriptsDir);

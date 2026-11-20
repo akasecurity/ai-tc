@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTrees } from '../../../test/helpers/remove-tree.ts';
 import { CURSOR_EVENTS } from '../src/hooks/event-name.ts';
@@ -15,7 +15,7 @@ import {
   parseHooksFile,
   removeOwnHooks,
 } from '../src/install.ts';
-import { applyInstall, cursorHooksPath } from '../src/install-cli.ts';
+import { applyInstall, cursorHooksPath, main } from '../src/install-cli.ts';
 import tsupConfig from '../tsup.config.ts';
 
 const NODE = '/opt/node/bin/node';
@@ -134,5 +134,53 @@ describe('applyInstall keeps the file’s permission bits', () => {
     chmodSync(path, 0o600);
     applyInstall(path, 'install', NODE, SCRIPTS);
     expect(statSync(path).mode & 0o777).toBe(0o600);
+  });
+});
+
+describe('main', () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'aka-cursor-install-main-'));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    removeTrees([home]);
+  });
+
+  function capture(): { out: string[]; err: string[] } {
+    const out: string[] = [];
+    const err: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      out.push(String(chunk));
+      return true;
+    });
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      err.push(String(chunk));
+      return true;
+    });
+    return { out, err };
+  }
+
+  it('installs, then uninstalls, and reports each', () => {
+    const { out } = capture();
+    const path = cursorHooksPath(home);
+    expect(main(['node', 'install.js'], home)).toBe(0);
+    expect(out.join('')).toContain('registered the AKA hooks');
+    expect(readFileSync(path, 'utf8')).toContain(OWNER_MARKER);
+    expect(main(['node', 'install.js', '--uninstall'], home)).toBe(0);
+    expect(out.join('')).toContain('removed the AKA hooks');
+    expect(readFileSync(path, 'utf8')).not.toContain(OWNER_MARKER);
+  });
+
+  it('fails with a message, and leaves the file, when it cannot parse it', () => {
+    const { err } = capture();
+    const path = cursorHooksPath(home);
+    mkdirSync(join(home, '.cursor'));
+    writeFileSync(path, '{ not json');
+    expect(main(['node', 'install.js'], home)).toBe(1);
+    expect(err.join('')).toContain('could not update');
+    expect(readFileSync(path, 'utf8')).toBe('{ not json');
   });
 });

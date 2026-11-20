@@ -222,6 +222,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'resolveCodexProvider',
   'resolveConfigInventory',
   'resolveCopilotProvider',
+  'resolveCursorProvider',
   'resolveEgress',
   'resolveGitBranch',
   'resolveHeadRoot',

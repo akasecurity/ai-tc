@@ -186,6 +186,7 @@ const EXPECTED_VITEST_PACKAGES = [
   '@akasecurity/ai-tc-codex',
   '@akasecurity/ai-tc-antigravity',
   '@akasecurity/ai-tc-copilot',
+  '@akasecurity/ai-tc-cursor',
   '@akasecurity/audit-gate',
   '@akasecurity/cli',
   '@akasecurity/codeql-alerts-gate',

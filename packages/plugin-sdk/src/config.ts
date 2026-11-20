@@ -16,6 +16,7 @@ import { resolveProvider } from './provider.ts';
 import type { ResolvedAntigravityProvider } from './provider-antigravity.ts';
 import type { ResolvedCodexProvider } from './provider-codex.ts';
 import type { ResolvedCopilotProvider } from './provider-copilot.ts';
+import type { ResolvedCursorProvider } from './provider-cursor.ts';
 
 // The settings file readers and writer live in @akasecurity/persistence
 // (shared with the CLI and the web-ui); re-exported so the SDK's public
@@ -45,7 +46,8 @@ export interface PluginConfig {
     | ResolvedProvider
     | ResolvedCodexProvider
     | ResolvedAntigravityProvider
-    | ResolvedCopilotProvider;
+    | ResolvedCopilotProvider
+    | ResolvedCursorProvider;
 }
 
 /**
@@ -70,7 +72,8 @@ export function loadConfig(
     | ResolvedProvider
     | ResolvedCodexProvider
     | ResolvedAntigravityProvider
-    | ResolvedCopilotProvider = resolveProvider,
+    | ResolvedCopilotProvider
+    | ResolvedCursorProvider = resolveProvider,
 ): PluginConfig {
   // Self-heal the store's at-rest modes on the plugin's entry path, so a
   // group/other-readable base or settings.json left by an older release (or the
@@ -116,9 +119,14 @@ function resolveProviderSafe(
     | ResolvedProvider
     | ResolvedCodexProvider
     | ResolvedAntigravityProvider
-    | ResolvedCopilotProvider,
+    | ResolvedCopilotProvider
+    | ResolvedCursorProvider,
 ):
-  ResolvedProvider | ResolvedCodexProvider | ResolvedAntigravityProvider | ResolvedCopilotProvider {
+  | ResolvedProvider
+  | ResolvedCodexProvider
+  | ResolvedAntigravityProvider
+  | ResolvedCopilotProvider
+  | ResolvedCursorProvider {
   try {
     return resolveProviderFn();
   } catch {

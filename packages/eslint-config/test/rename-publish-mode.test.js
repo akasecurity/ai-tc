@@ -200,6 +200,8 @@ const EXPECTED = {
   'plugins/claude-code/src/history/tail-scrub.ts#tmpPath': 'preserved',
   'plugins/claude-code/src/remediation/redact.ts#tmpPath': 'preserved',
   'plugins/codex/src/remediation/redact.ts#tmpPath': 'preserved',
+  // The user's own Cursor hooks file, which the installer merges entries into.
+  'plugins/cursor/src/install-cli.ts#temp': 'preserved',
 
   // Files AKA owns under `~/.aka`. A constant is right here, and preserving
   // would be wrong: whatever bits a store file drifted to are not a target.

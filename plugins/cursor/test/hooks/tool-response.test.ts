@@ -20,6 +20,17 @@ function nested(depth: number, leaf: unknown = 'x'): unknown {
   return node;
 }
 
+describe('the walk bounds', () => {
+  // Pinned as literals: every case below derives its fixtures from these
+  // constants, so without this a raised bound would keep the file green.
+  it('are the values this adapter is measured against', () => {
+    expect(RESULT_WALK_MAX_DEPTH).toBe(6);
+    expect(RESULT_WALK_MAX_LEAVES).toBe(2_000);
+    expect(RESULT_WALK_MAX_LEAF_CHARS).toBe(1_000_000);
+    expect(RESULT_WALK_MAX_TOTAL_CHARS).toBe(5_000_000);
+  });
+});
+
 describe('scannableFields', () => {
   it('reads a bare string whole, and an empty one as nothing', () => {
     expect(scannableFields('text')).toEqual({
@@ -47,7 +58,10 @@ describe('scannableFields', () => {
   });
 
   it('reads a leaf at the depth bound and truncates one below it', () => {
-    expect(scannableFields(nested(RESULT_WALK_MAX_DEPTH))).toMatchObject({ truncated: false });
+    expect(scannableFields(nested(RESULT_WALK_MAX_DEPTH))).toEqual({
+      fields: [{ path: Array<string>(RESULT_WALK_MAX_DEPTH).fill('k'), text: 'x' }],
+      truncated: false,
+    });
     expect(scannableFields(nested(RESULT_WALK_MAX_DEPTH + 1))).toEqual({
       fields: [],
       truncated: true,
@@ -63,10 +77,20 @@ describe('scannableFields', () => {
 
   it('truncates past the leaf-count bound', () => {
     const atBound = Array.from({ length: RESULT_WALK_MAX_LEAVES }, (_, i) => `v${String(i)}`);
-    expect(scannableFields(atBound)).toMatchObject({ truncated: false });
+    const inside = scannableFields(atBound);
+    expect(inside.truncated).toBe(false);
+    expect(inside.fields.map((field) => field.text)).toEqual(atBound);
     const past = scannableFields([...atBound, 'one more']);
     expect(past.fields).toHaveLength(RESULT_WALK_MAX_LEAVES);
     expect(past.truncated).toBe(true);
+  });
+
+  it('reads a leaf of exactly the per-leaf bound whole', () => {
+    const atCap = 'a'.repeat(RESULT_WALK_MAX_LEAF_CHARS);
+    expect(scannableFields({ atCap })).toEqual({
+      fields: [{ path: ['atCap'], text: atCap }],
+      truncated: false,
+    });
   });
 
   it('truncates a leaf longer than the per-leaf bound', () => {
@@ -80,7 +104,10 @@ describe('scannableFields', () => {
     const leaf = 'b'.repeat(RESULT_WALK_MAX_LEAF_CHARS);
     const count = Math.floor(RESULT_WALK_MAX_TOTAL_CHARS / RESULT_WALK_MAX_LEAF_CHARS);
     const atBound = Array.from({ length: count }, () => leaf);
-    expect(scannableFields(atBound)).toMatchObject({ truncated: false });
+    const inside = scannableFields(atBound);
+    expect(inside.truncated).toBe(false);
+    expect(inside.fields).toHaveLength(count);
+    expect(inside.fields.every((field) => field.text === leaf)).toBe(true);
     const past = scannableFields([...atBound, 'c']);
     expect(past.fields).toHaveLength(count);
     expect(past.truncated).toBe(true);

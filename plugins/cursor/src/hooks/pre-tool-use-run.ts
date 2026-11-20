@@ -19,7 +19,7 @@ import { SOURCE_TOOL } from '@akasecurity/schema';
 import { isOwnEvent } from './event-name.ts';
 import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
 import { readPayloadEvent, readSessionId, readToolCall } from './payload.ts';
-import type { ScannableField, ScannedField } from './pre-tool-use-decision.ts';
+import type { FieldText, ScannedField } from './pre-tool-use-decision.ts';
 import {
   decideInputPointerDeny,
   decidePreToolUse,
@@ -42,11 +42,6 @@ import {
   warnIfStoreRedirected,
 } from './store-health.ts';
 import { scannableFields } from './tool-response.ts';
-
-interface FieldText {
-  spec: ScannableField;
-  text: string;
-}
 
 /** The texts to scan for this call, and whether the MCP walk left any out. */
 function fieldTexts(
@@ -90,11 +85,10 @@ export const runPreToolUse: HookHandler = async (event, stdin, options = {}) => 
   if (collected === undefined) return undefined;
   if (collected.texts.length === 0 && !collected.truncated) return undefined;
 
-  // A vault pointer in text that EXECUTES is decided before the secret scan
-  // and before the store is opened, so an unopenable store cannot turn it into
-  // a let-through.
-  const fields = SCANNABLE_FIELDS[call.name] ?? [];
-  const pointerDeny = decideInputPointerDeny(call.name, call.args, fields);
+  // A vault pointer in text that EXECUTES — a Shell command or an MCP argument
+  // — is decided before the secret scan and before the store is opened, so an
+  // unopenable store cannot turn it into a let-through.
+  const pointerDeny = decideInputPointerDeny(call.name, collected.texts);
   if (pointerDeny) return pointerDeny;
 
   const config = loadConfig(options.akaHome);

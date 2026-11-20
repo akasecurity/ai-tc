@@ -80,9 +80,9 @@ export const UNREDACTABLE_NOTE =
  */
 export function denyPointerMessage(toolName: string): string {
   return (
-    `A vault pointer in a ${toolName} command cannot execute as text, and this plugin ` +
+    `A vault pointer in a ${toolName} call cannot execute as text, and this plugin ` +
     'never substitutes a pointer back to its raw value. Remove the pointer from the ' +
-    'command, or resolve the value yourself with `aka vault show` or the dashboard ' +
+    'call, or resolve the value yourself with `aka vault show` or the dashboard ' +
     'Vault page and retype what you need.'
   );
 }
@@ -96,19 +96,25 @@ export interface PreToolUseDecision {
   notice?: string;
 }
 
+/** A field's text, beside the spec that says how it is judged. */
+export interface FieldText {
+  spec: ScannableField;
+  text: string;
+}
+
 /**
  * The pointer pre-check the hook runs BEFORE the secret scan, and before the
- * store is opened. Returns null when nothing denies.
+ * store is opened: a vault pointer in any text judged executable — a Shell
+ * command, or an MCP argument — denies the call. Returns null when nothing
+ * denies.
  */
 export function decideInputPointerDeny(
   toolName: string,
-  toolInput: Record<string, unknown>,
-  fields: readonly ScannableField[],
+  texts: readonly FieldText[],
 ): PermissionDenyOutput | null {
-  const denies = fields.some((spec) => {
-    const value = toolInput[spec.field];
-    return spec.executable && typeof value === 'string' && pointerTokenScanner().test(value);
-  });
+  const denies = texts.some(
+    ({ spec, text }) => spec.executable && pointerTokenScanner().test(text),
+  );
   return denies ? denyOutput(denyPointerMessage(toolName)) : null;
 }
 

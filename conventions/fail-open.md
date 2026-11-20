@@ -69,11 +69,12 @@ deadline. Each sits inside whatever would otherwise answer for that path first:
 - **Cursor preToolUse and beforeSubmitPrompt** (`plugins/cursor/src/hooks/large-input.ts`):
   15 s from process start, inside its 24 s watchdog, which resolves with silence — Cursor's
   no-opinion — inside the 30 s `timeout` its installer registers. preToolUse refuses with a
-  `permission: "deny"`, beforeSubmitPrompt with `continue: false`.
+  `permission: "deny"`, beforeSubmitPrompt with `continue: false`. preToolUse also counts MCP
+  arguments left past the walk bounds in `plugins/cursor/src/hooks/tool-response.ts` in the
+  hook fail-open tally, and reports them on stderr; it does not refuse the call for them.
 - **Cursor postToolUse** (the same bound and deadline): no refusal half, because the tool has
-  already run. A field that comes back `scanIncomplete` is reported on stderr as too large to
-  scan and counted in the hook fail-open tally, as are MCP arguments or tool output past the
-  walk bounds in `plugins/cursor/src/hooks/tool-response.ts`.
+  already run. A field that comes back `scanIncomplete`, or tool output left past the walk
+  bounds, is reported on stderr as unscanned and counted in the hook fail-open tally.
 - **The browser extension's native host** (`captureLargeInput` in
   `plugins/browser-extension/src/native-host/host.ts`): 2 s from when it receives a prompt
   capture, with a 500 ms worker start budget drawn from it, because `background.ts`

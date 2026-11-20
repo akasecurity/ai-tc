@@ -45,6 +45,40 @@ function runHook(script: string, event: string, home: string, input: string): Ho
   };
 }
 
+/** readStdin settles 5 s after it starts; a little under that, for timer slack. */
+const STDIN_SETTLE_FLOOR_MS = 4_500;
+
+/**
+ * Run a built hook with stdin written in `chunks`, a pause between each, and
+ * never closed: the hook has to settle on its own stdin timer.
+ */
+function runOpenStdin(
+  script: string,
+  event: string,
+  home: string,
+  chunks: readonly string[],
+  gapMs = 200,
+): Promise<HookRun & { elapsedMs: number }> {
+  return new Promise((resolve) => {
+    const started = performance.now();
+    const child = spawn(process.execPath, [join(SCRIPTS_DIR, script), event, OWNER_MARKER], {
+      env: { HOME: home, USERPROFILE: home },
+      cwd: home,
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()));
+    child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
+    child.stdin.on('error', () => undefined);
+    chunks.forEach((chunk, index) => {
+      setTimeout(() => child.stdin.write(chunk), index * gapMs);
+    });
+    child.on('close', (status) => {
+      resolve({ stdout, stderr, status: status ?? 1, elapsedMs: performance.now() - started });
+    });
+  });
+}
+
 function silent(run: HookRun): void {
   expect(run.status, run.stderr).toBe(0);
   expect(run.stdout).toBe('');
@@ -99,25 +133,14 @@ describe.each(HOOKS)('%s fails open', (script, event) => {
     });
   });
 
-  it('on a stdin that never closes', async () => {
+  it('on a stdin that never closes, settling on the stdin timer', async () => {
     const home = mkdtempSync(join(tmpdir(), 'aka-cursor-stall-'));
     try {
-      const run = await new Promise<HookRun>((resolve) => {
-        const child = spawn(process.execPath, [join(SCRIPTS_DIR, script), event, OWNER_MARKER], {
-          env: { HOME: home, USERPROFILE: home },
-          cwd: home,
-        });
-        let stdout = '';
-        let stderr = '';
-        child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()));
-        child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
-        // Half a payload and then nothing: stdin stays open until the hook exits.
-        child.stdin.write('{"hook_event_name":');
-        child.on('close', (status) => {
-          resolve({ stdout, stderr, status: status ?? 1 });
-        });
-      });
+      const run = await runOpenStdin(script, event, home, ['{"hook_event_name":']);
       silent(run);
+      // Proves the run ended on readStdin's own timer rather than on an
+      // immediate exit, which would also be silent.
+      expect(run.elapsedMs).toBeGreaterThanOrEqual(STDIN_SETTLE_FLOOR_MS);
     } finally {
       removeTrees([home]);
     }
@@ -170,6 +193,26 @@ describe('the built hooks enforce', () => {
       expect(output.continue).toBe(false);
       expect(String(output.user_message)).toContain(RULE_ID);
     });
+  });
+
+  it('preToolUse assembles a payload sent in chunks on a stdin that never closes', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'aka-cursor-chunks-'));
+    try {
+      seedPolicy(home, 'block');
+      const whole = JSON.stringify(
+        payload('preToolUse', { cwd: home, tool_input: { command: `echo ${FIXTURE.example}` } }),
+      );
+      const cut = Math.floor(whole.length / 2);
+      const run = await runOpenStdin('pre-tool-use.js', 'preToolUse', home, [
+        whole.slice(0, cut),
+        whole.slice(cut),
+      ]);
+      const output = soleObject(run);
+      expect(output.permission).toBe('deny');
+      expect(String(output.agent_message)).toContain(RULE_ID);
+    } finally {
+      removeTrees([home]);
+    }
   });
 
   it('a clean call writes nothing', () => {

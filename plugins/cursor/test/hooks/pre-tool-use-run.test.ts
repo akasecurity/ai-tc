@@ -143,6 +143,25 @@ describe('runPreToolUse', () => {
     expect(stderr.filtered()).toContain('was not checked');
   });
 
+  it('counts nothing for MCP arguments inside the walk bounds', async () => {
+    store.seedPolicy('block');
+    let counted = 0;
+    const output = await runPreToolUse(
+      'preToolUse',
+      call('MCP:send_message', { channel: 'ops', body: { text: 'hello', tags: ['a', 'b'] } }),
+      {
+        akaHome: store.akaHome,
+        countFailOpen: () => {
+          counted += 1;
+        },
+      },
+    );
+    expect(output).toBeUndefined();
+    expect(counted).toBe(0);
+    // The control: the store was opened, so the call was scanned.
+    expect(existsSync(join(store.akaHome, 'data', 'aka.db'))).toBe(true);
+  });
+
   it('accepts tool_input as a JSON string', async () => {
     store.seedPolicy('block');
     const output = await run(call('Shell', JSON.stringify({ command: `echo ${FIXTURE.example}` })));
@@ -174,6 +193,20 @@ describe('runPreToolUse', () => {
     const output = await run(call('Shell', { command: `echo ${POINTER}` }));
     expect(output).toEqual(denyOutput(denyPointerMessage('Shell')));
     expect(existsSync(store.akaHome)).toBe(false);
+  });
+
+  it('denies a vault pointer in an MCP argument before opening the store', async () => {
+    const output = await run(call('MCP:run_task', { args: { shell: `echo ${POINTER}` } }));
+    expect(output).toEqual(denyOutput(denyPointerMessage('MCP:run_task')));
+    expect(existsSync(store.akaHome)).toBe(false);
+  });
+
+  it('does not deny a pointer in file content, which does not execute', async () => {
+    store.seedPolicy('block');
+    const output = await run(
+      call('Write', { file_path: join(store.cwd, 'notes.md'), contents: `see ${POINTER}` }),
+    );
+    expect(output).toBeUndefined();
   });
 
   it('denies a field too large to scan in time', async () => {

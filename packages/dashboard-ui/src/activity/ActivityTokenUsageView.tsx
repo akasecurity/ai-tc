@@ -31,7 +31,23 @@ import { useState } from 'react';
 
 import { AnalyticsIcon } from '../shared/icons.tsx';
 import { WidgetEmpty, WidgetError } from '../shared/widget-state.tsx';
-import { formatCostTotal, formatUsd, tokenLabel } from './format.ts';
+import {
+  API_EQUIVALENT_NOTE,
+  formatCostTotal,
+  formatUsd,
+  tokenLabel,
+  usageChannelLabel,
+} from './format.ts';
+
+function hasSubscription(summary: TokenUsageSummary): boolean {
+  return summary.models.some((m) => m.costBasis === 'api_equivalent');
+}
+
+function rowCost(m: TokenUsageSummary['models'][number]): string {
+  if (m.estimatedCostUsd === null) return '—';
+  const usd = formatUsd(m.estimatedCostUsd);
+  return m.costBasis === 'api_equivalent' ? `${usd} API-eq.` : usd;
+}
 
 /** Per-model rows table — the slide-over body. Token counts are compact; a model
  * with no known price shows `—` in the cost column. */
@@ -42,6 +58,7 @@ function ModelTable({ summary }: { summary: TokenUsageSummary }) {
         <TableRow>
           <TableHead>Provider</TableHead>
           <TableHead>Model</TableHead>
+          <TableHead>Paid via</TableHead>
           <TableHead className="text-right">Input</TableHead>
           <TableHead className="text-right">Output</TableHead>
           <TableHead className="text-right">Cache</TableHead>
@@ -51,11 +68,12 @@ function ModelTable({ summary }: { summary: TokenUsageSummary }) {
       </TableHeader>
       <TableBody>
         {summary.models.map((m) => (
-          <TableRow key={`${m.provider} ${m.model}`}>
+          <TableRow key={`${m.provider} ${m.model} ${m.channel}`}>
             <TableCell className="text-text-2">{m.provider}</TableCell>
             <TableCell className="max-w-40 truncate font-mono text-text" title={m.model}>
               {m.model}
             </TableCell>
+            <TableCell className="text-text-2">{usageChannelLabel(m.channel)}</TableCell>
             <TableCell className="text-right tabular-nums text-text-2">
               {tokenLabel(m.inputTokens)}
             </TableCell>
@@ -68,9 +86,7 @@ function ModelTable({ summary }: { summary: TokenUsageSummary }) {
             <TableCell className="text-right font-semibold tabular-nums text-text">
               {tokenLabel(m.totalTokens)}
             </TableCell>
-            <TableCell className="text-right tabular-nums text-text">
-              {m.estimatedCostUsd !== null ? formatUsd(m.estimatedCostUsd) : '—'}
-            </TableCell>
+            <TableCell className="text-right tabular-nums text-text">{rowCost(m)}</TableCell>
           </TableRow>
         ))}
       </TableBody>
@@ -103,7 +119,7 @@ export function ActivityTokenUsageView({
   const chipLabel = error
     ? 'Token usage'
     : hasUsage
-      ? `${tokenLabel(summary.totalTokens)} tokens · ${formatCostTotal(summary.estimatedCostUsd, summary.costIsPartial)}`
+      ? `${tokenLabel(summary.totalTokens)} tokens · ${formatCostTotal(summary.estimatedCostUsd, summary.costIsPartial)}${hasSubscription(summary) ? ` · ${formatCostTotal(summary.apiEquivalentUsd, summary.apiEquivalentIsPartial)} API-eq.` : ''}`
       : 'No token usage';
 
   const chipTitle = error
@@ -156,8 +172,17 @@ export function ActivityTokenUsageView({
                 </span>
                 <span>·</span>
                 <span className="font-semibold tabular-nums text-text-2">
-                  {formatCostTotal(summary.estimatedCostUsd, summary.costIsPartial)}
+                  {formatCostTotal(summary.estimatedCostUsd, summary.costIsPartial)} estimated spend
                 </span>
+                {hasSubscription(summary) && (
+                  <>
+                    <span>·</span>
+                    <span className="font-semibold tabular-nums text-text-2">
+                      {formatCostTotal(summary.apiEquivalentUsd, summary.apiEquivalentIsPartial)}{' '}
+                      API-equivalent
+                    </span>
+                  </>
+                )}
               </div>
             )}
           </SheetHeader>
@@ -174,6 +199,9 @@ export function ActivityTokenUsageView({
                     — = unknown pricing (a local or non-Anthropic model); the cost total is a lower
                     bound.
                   </p>
+                )}
+                {hasSubscription(summary) && (
+                  <p className="px-3 pb-1 pt-2 text-xs text-text-3">{API_EQUIVALENT_NOTE}</p>
                 )}
               </>
             ) : (

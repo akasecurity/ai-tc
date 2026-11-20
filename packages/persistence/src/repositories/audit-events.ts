@@ -320,6 +320,19 @@ export class SqliteAuditEventsRepository {
   // contemporaneous env-provider wins by first-write; a reconciler-created root carries
   // the heuristic/'unknown' the reconciler stamped. Returns undefined when the root or
   // the attribute is absent, so the caller can fall back to the model-id heuristic.
+  // The usage channel and subscription plan a session start recorded on its root;
+  // each is absent when the root or the attribute is.
+  sessionBilling(sessionId: string): { usageChannel?: string; subscriptionPlan?: string } {
+    const row = this.findById(sessionId);
+    const attributes = row?.attributes ? parseJsonObject(row.attributes) : undefined;
+    const channel = attributes?.usage_channel;
+    const plan = attributes?.subscription_plan;
+    return {
+      ...(typeof channel === 'string' ? { usageChannel: channel } : {}),
+      ...(typeof plan === 'string' ? { subscriptionPlan: plan } : {}),
+    };
+  }
+
   sessionProvider(sessionId: string): string | undefined {
     const row = this.findById(sessionId);
     if (!row?.attributes) return undefined;

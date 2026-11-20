@@ -1,3 +1,5 @@
+import type { UsageChannel } from '../zod/meta.ts';
+
 // Pure USD/cost-label formatters shared by every token read surface — the
 // plugin's `/aka:tokens`, the OSS Activity page, and the CLI `aka stats` block +
 // TUI — so the same figure AND the same qualifier convention print everywhere
@@ -44,3 +46,20 @@ export function formatUsd(value: number): string {
 export function formatCostTotal(estimatedCostUsd: number, costIsPartial: boolean): string {
   return costIsPartial ? `≥ ${formatUsd(estimatedCostUsd)}` : formatUsd(estimatedCostUsd);
 }
+
+const USAGE_CHANNEL_LABEL: Record<UsageChannel, string> = {
+  api_key: 'API key',
+  subscription: 'Subscription',
+  cloud: 'Cloud',
+  gateway: 'Gateway',
+  unknown: 'Unknown',
+};
+
+/** How a usage row was paid for, as a column value. */
+export function usageChannelLabel(channel: UsageChannel): string {
+  return USAGE_CHANNEL_LABEL[channel];
+}
+
+/** The note every surface prints beside an API-equivalent figure. */
+export const API_EQUIVALENT_NOTE =
+  'API-equivalent is subscription usage priced at API list rates. A plan is billed as a flat fee, so it is not spend.';

@@ -137,7 +137,11 @@ export function toLlmCallInput(
   // Never gateway.readSessionProvider() here: the session root carries the
   // vendor id (openai/anthropic) for a separate display purpose, and reading
   // it back would undo this on the very next line.
-  const attrs: LlmCallAttributes = { provider: tool, message_id: messageId };
+  const attrs: LlmCallAttributes = {
+    provider: tool,
+    message_id: messageId,
+    usage_channel: 'subscription',
+  };
 
   const model = trimmed(exchange.model);
   if (model !== undefined) attrs.model = model;

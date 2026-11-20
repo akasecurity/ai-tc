@@ -15,6 +15,7 @@ import type {
   IngestEvent,
   InventoryContext,
   InventoryFacets,
+  LlmCallAttributes,
   LlmCallInput,
   PolicyBundle,
   ProjectFilesScan,
@@ -167,6 +168,22 @@ export interface ProjectEgressContext {
  * the two rows must commit together (a single SQLite transaction), and there
  * is no separate audit record — the persisted findings ARE the audit trail.
  */
+/** The billing facts a session start recorded on a session root. */
+export interface SessionBillingRead {
+  usageChannel?: string;
+  subscriptionPlan?: string;
+}
+
+/** `attrs` with the session's usage channel and plan copied onto it. */
+export function withBilling(
+  attrs: LlmCallAttributes,
+  billing: SessionBillingRead,
+): LlmCallAttributes {
+  if (billing.usageChannel !== undefined) attrs.usage_channel = billing.usageChannel;
+  if (billing.subscriptionPlan !== undefined) attrs.subscription_plan = billing.subscriptionPlan;
+  return attrs;
+}
+
 export interface DataGateway {
   recordCapture(record: CaptureRecord): Promise<void>;
   // Idempotent upsert of a session's resolved Inventory dimensions (host /
@@ -224,6 +241,10 @@ export interface DataGateway {
   // undefined when the root/attribute is absent — the caller falls back to the
   // model-id heuristic.
   readSessionProvider(sessionId: string): Promise<string | undefined>;
+  // The usage channel and subscription plan the session start recorded on the
+  // root, read the same way as the provider. A gateway without it leaves every
+  // leaf's channel unset, which reads as 'unknown'.
+  readSessionBilling?(sessionId: string): Promise<SessionBillingRead>;
   // Filter-facet values for the read surfaces, read from the small Inventory
   // dimension, never the audit fact.
   facets(): Promise<InventoryFacets>;

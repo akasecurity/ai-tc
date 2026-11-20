@@ -181,6 +181,9 @@ export interface BaseAuditEventRow<TTime = number> {
   ephemeral1hInputTokens: number | null;
   ephemeral5mInputTokens: number | null;
   webSearchRequests: number | null;
+  // How the call was paid for (UsageChannel), copied from the session root at
+  // capture; a token rollup groups by it so subscription traffic is never priced as spend.
+  usageChannel: string | null;
 }
 
 /** classified_data — small CLASS dimension keyed by class only. */

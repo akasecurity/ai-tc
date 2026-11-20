@@ -5,6 +5,7 @@
 import type { handleSessionStart } from '@akasecurity/plugin-runtime';
 import { sessionStartNotice } from '@akasecurity/plugin-runtime';
 import { loadConfig, recordSessionModel } from '@akasecurity/plugin-sdk';
+import { resolveClaudeBilling } from '@akasecurity/plugin-sdk/account';
 import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { INSTALL_ROOT, PLUGIN_PACKAGE } from '../build-info.ts';
@@ -96,6 +97,7 @@ export async function runSessionStart(
     rootAwaitsAccount: account.basis !== undefined || account.undetermined,
     // The basis the login view reached, given only for a work login.
     accountBasis: account.basis,
+    billing: resolveClaudeBilling(config.provider.provider, cwd),
   });
   // A symlinked store path redirects the corpus without failing anything; say
   // so once per session. Collected rather than written to stderr: on this hook

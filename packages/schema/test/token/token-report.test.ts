@@ -247,6 +247,71 @@ describe('aggregateTokenUsage', () => {
       totalTokens: 0,
       estimatedCostUsd: 0,
       costIsPartial: false,
+      apiEquivalentUsd: 0,
+      apiEquivalentIsPartial: false,
     });
+  });
+});
+
+describe('usage channels', () => {
+  const sonnet = { provider: 'anthropic', model: 'claude-sonnet-4-5', input_tokens: 10 };
+
+  it('keeps subscription traffic out of spend and totals it as API-equivalent value', () => {
+    const [report] = buildTokenReports(
+      [
+        leaf('s1', { ...sonnet, usage_channel: 'api_key' }),
+        leaf('s1', { ...sonnet, usage_channel: 'subscription' }),
+        leaf('s1', { ...sonnet, usage_channel: 'subscription' }),
+      ],
+      fakeCost,
+    );
+    expect(report?.estimatedCostUsd).toBe(1);
+    expect(report?.apiEquivalentUsd).toBe(2);
+    expect(report?.rollups.map((r) => [r.channel, r.costBasis, r.estimatedCostUsd])).toEqual([
+      ['subscription', 'api_equivalent', 2],
+      ['api_key', 'estimated', 1],
+    ]);
+  });
+
+  it('reads a missing or unrecognised channel as unknown, priced as spend', () => {
+    const [report] = buildTokenReports(
+      [leaf('s1', sonnet), leaf('s1', { ...sonnet, usage_channel: 'barter' })],
+      fakeCost,
+    );
+    const rollup = only(report?.rollups ?? []);
+    expect([rollup.channel, rollup.costBasis]).toEqual(['unknown', 'estimated']);
+    expect(report?.estimatedCostUsd).toBe(2);
+    expect(report?.apiEquivalentUsd).toBeNull();
+  });
+
+  it('marks only the total an unpriced call understates', () => {
+    const [report] = buildTokenReports(
+      [
+        leaf('s1', { ...sonnet, usage_channel: 'api_key' }),
+        leaf('s1', { provider: 'ChatGpt', model: 'gpt-5', usage_channel: 'subscription' }),
+      ],
+      fakeCost,
+    );
+    expect(report?.costIsPartial).toBe(false);
+    expect(report?.apiEquivalentIsPartial).toBe(true);
+  });
+
+  it('aggregates one row per (provider, model, channel) and keeps the two totals apart', () => {
+    const summary = aggregateTokenUsage(
+      buildTokenReports(
+        [
+          leaf('s1', { ...sonnet, usage_channel: 'api_key' }),
+          leaf('s2', { ...sonnet, usage_channel: 'subscription' }),
+          leaf('s2', { ...sonnet, usage_channel: 'subscription' }),
+        ],
+        fakeCost,
+      ),
+    );
+    expect(summary.models.map((m) => [m.channel, m.costBasis, m.estimatedCostUsd])).toEqual([
+      ['subscription', 'api_equivalent', 2],
+      ['api_key', 'estimated', 1],
+    ]);
+    expect(summary.estimatedCostUsd).toBe(1);
+    expect(summary.apiEquivalentUsd).toBe(2);
   });
 });

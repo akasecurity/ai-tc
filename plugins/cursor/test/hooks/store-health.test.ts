@@ -23,7 +23,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   claimStoreUnavailableWarning,
   openGateway,
-  openGatewayOrNull,
   storeBusyMessage,
   storeDegradedMessage,
   storeOpenCause,
@@ -54,29 +53,6 @@ function configFor(dataDir: string): PluginConfig {
   };
 }
 
-describe('openGatewayOrNull — observable store-open failure', () => {
-  let dir: string;
-  beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), 'aka-store-health-'));
-  });
-  afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  it('returns null when aka.db is not a database (corrupt bytes)', () => {
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, 'aka.db'), 'garbage bytes, definitely not sqlite');
-
-    expect(openGatewayOrNull(configFor(dir))).toBeNull();
-  });
-
-  it('returns a working gateway for a healthy (fresh) data dir', async () => {
-    const gateway = openGatewayOrNull(configFor(dir));
-    expect(gateway).not.toBeNull();
-    await gateway?.close();
-  });
-});
-
 // The reason a store failed to open decides what the user is told: a store
 // written by a newer AKA build is intact, so the file-repair advice is wrong
 // for it.
@@ -106,17 +82,19 @@ describe('openGateway — the reason survives the failure', () => {
 
 describe('storeDegradedMessage — one message per cause', () => {
   const DB = '/home/u/.aka/data/aka.db';
+  // The two versions share no digits with the tag, so each assertion below
+  // fails on its own if its interpolation is dropped.
   const skew = new StoreAheadOfBuildError(
-    { storeVersion: 42, buildVersion: 35, unknownTags: ['0035_from_a_newer_build'] },
+    { storeVersion: 42, buildVersion: 37, unknownTags: ['0099_from_a_newer_build'] },
     new Error('cannot UPSERT a view'),
   );
 
   it('names the version gap for a store written by a newer build', () => {
     const message = storeDegradedMessage(DB, skew);
     expect(message).toContain(DB);
-    expect(message).toContain('0035_from_a_newer_build');
-    expect(message).toContain('42');
-    expect(message).toContain('35');
+    expect(message).toContain('0099_from_a_newer_build');
+    expect(message).toContain('store schema 42');
+    expect(message).toContain('this build 37');
     expect(message).toContain('OFF for this session');
   });
 

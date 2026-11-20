@@ -18,7 +18,7 @@ import { createPluginRuntime, loadConfig } from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 
 import { isOwnEvent } from './event-name.ts';
-import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
+import { hookLargeInputBound } from './large-input.ts';
 import { readPayloadEvent, readSessionId, str } from './payload.ts';
 import { promptDecision } from './prompt-decision.ts';
 import type { HookHandler } from './shared.ts';
@@ -51,7 +51,7 @@ export const runBeforeSubmitPrompt: HookHandler = async (event, stdin, options =
 
   const runtime = createPluginRuntime(gateway, config.settings, {
     dataDir: config.dataDir,
-    largeInput: largeInputBound(HOOK_SCAN_DEADLINE_MS, true),
+    largeInput: hookLargeInputBound(true),
     ...(options.scanWorkerUrl === undefined
       ? {}
       : { scanIsolation: { workerUrl: options.scanWorkerUrl } }),

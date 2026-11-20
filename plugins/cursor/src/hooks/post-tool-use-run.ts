@@ -15,7 +15,7 @@ import { createPluginRuntime, loadConfig } from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 
 import { isOwnEvent } from './event-name.ts';
-import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
+import { hookLargeInputBound } from './large-input.ts';
 import { readPayloadEvent, readSessionId, readToolCall } from './payload.ts';
 import { responseNotice, scanResponseFields } from './scan-response.ts';
 import type { HookHandler } from './shared.ts';
@@ -59,7 +59,7 @@ export const runPostToolUse: HookHandler = async (event, stdin, options = {}) =>
 
   const runtime = createPluginRuntime(gateway, config.settings, {
     dataDir: config.dataDir,
-    largeInput: largeInputBound(HOOK_SCAN_DEADLINE_MS, false),
+    largeInput: hookLargeInputBound(false),
     ...(options.scanWorkerUrl === undefined
       ? {}
       : { scanIsolation: { workerUrl: options.scanWorkerUrl } }),

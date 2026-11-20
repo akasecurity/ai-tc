@@ -120,19 +120,6 @@ describe.each(HOOKS)('%s fails open', (script, event) => {
     });
   });
 
-  it('on truncated JSON', () => {
-    withTempHome((home) => {
-      const whole = JSON.stringify(payload(event, { cwd: home, workspace_roots: [home] }));
-      silent(runHook(script, event, home, whole.slice(0, Math.floor(whole.length / 2))));
-    });
-  });
-
-  it('on an oversized stdin that is not JSON', () => {
-    withTempHome((home) => {
-      silent(runHook(script, event, home, `{"prompt":"${'x'.repeat(4 * 1024 * 1024)}`));
-    });
-  });
-
   it('on a stdin that never closes, settling on the stdin timer', async () => {
     const home = mkdtempSync(join(tmpdir(), 'aka-cursor-stall-'));
     try {

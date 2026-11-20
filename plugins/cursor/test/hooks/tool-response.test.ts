@@ -113,3 +113,37 @@ describe('scannableFields', () => {
     expect(past.truncated).toBe(true);
   });
 });
+
+describe('scannableFields with keys', () => {
+  it('collects object keys as their own fields, beside the values', () => {
+    expect(scannableFields({ 'rm -rf /': 1, nested: { inner: 'v' } }, { keys: true })).toEqual({
+      fields: [
+        { path: ['rm -rf /'], text: 'rm -rf /', key: true },
+        { path: ['nested'], text: 'nested', key: true },
+        { path: ['nested', 'inner'], text: 'inner', key: true },
+        { path: ['nested', 'inner'], text: 'v' },
+      ],
+      truncated: false,
+    });
+  });
+
+  it('never reads array indices as keys', () => {
+    expect(scannableFields(['a'], { keys: true })).toEqual({
+      fields: [{ path: ['0'], text: 'a' }],
+      truncated: false,
+    });
+  });
+
+  it('reads no keys without the option (a tool’s output)', () => {
+    expect(scannableFields({ secretKey: 1 })).toEqual({ fields: [], truncated: false });
+  });
+
+  it('counts keys against the leaf-count bound', () => {
+    const many = Object.fromEntries(
+      Array.from({ length: RESULT_WALK_MAX_LEAVES + 1 }, (_, i) => [`k${String(i)}`, 0]),
+    );
+    const result = scannableFields(many, { keys: true });
+    expect(result.fields).toHaveLength(RESULT_WALK_MAX_LEAVES);
+    expect(result.truncated).toBe(true);
+  });
+});

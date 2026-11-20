@@ -55,3 +55,12 @@ export function largeInputBound(
     refuses,
   };
 }
+
+/**
+ * The bound every hook in this package passes its runtime: `largeInputBound`
+ * against `HOOK_SCAN_DEADLINE_MS`, so no hook can pair the bound with another
+ * deadline.
+ */
+export function hookLargeInputBound(refuses: boolean): LargeInputScanOptions {
+  return largeInputBound(HOOK_SCAN_DEADLINE_MS, refuses);
+}

@@ -17,7 +17,7 @@ import { createPluginRuntime, loadConfig } from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 
 import { isOwnEvent } from './event-name.ts';
-import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
+import { hookLargeInputBound } from './large-input.ts';
 import { readPayloadEvent, readSessionId, readToolCall } from './payload.ts';
 import type { FieldText, ScannedField } from './pre-tool-use-decision.ts';
 import {
@@ -49,13 +49,13 @@ function fieldTexts(
   args: Record<string, unknown>,
 ): { texts: FieldText[]; truncated: boolean } | undefined {
   if (isMcpTool(toolName)) {
-    const collected = scannableFields(args);
+    const collected = scannableFields(args, { keys: true });
     return {
       // An MCP server defines its own argument schema, so nothing here can
-      // tell a message body from a command the server will run: every leaf is
-      // judged as executable, command-risk rules included.
-      texts: collected.fields.map(({ path, text }) => ({
-        spec: { field: path.join('.'), executable: true },
+      // tell a message body from a command the server will run: every leaf and
+      // every object key is judged as executable, command-risk rules included.
+      texts: collected.fields.map(({ path, text, key }) => ({
+        spec: { field: key ? `${path.join('.')} (key)` : path.join('.'), executable: true },
         text,
       })),
       truncated: collected.truncated,
@@ -106,7 +106,7 @@ export const runPreToolUse: HookHandler = async (event, stdin, options = {}) => 
 
   const runtime = createPluginRuntime(gateway, config.settings, {
     dataDir: config.dataDir,
-    largeInput: largeInputBound(HOOK_SCAN_DEADLINE_MS, true),
+    largeInput: hookLargeInputBound(true),
     ...(options.scanWorkerUrl === undefined
       ? {}
       : { scanIsolation: { workerUrl: options.scanWorkerUrl } }),

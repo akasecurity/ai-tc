@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTrees } from '../../../test/helpers/remove-tree.ts';
 import { CURSOR_EVENTS } from '../src/hooks/event-name.ts';
-import { HOOK_SCAN_DEADLINE_MS } from '../src/hooks/large-input.ts';
+import { HOOK_SCAN_DEADLINE_MS, hookLargeInputBound } from '../src/hooks/large-input.ts';
 import { WATCHDOG_MS } from '../src/hooks/shared.ts';
 import {
   HOOK_SCRIPTS,
@@ -195,6 +195,28 @@ describe('the timing chain', () => {
   it('orders the scan deadline, the watchdog and the host timeout', () => {
     expect(HOOK_SCAN_DEADLINE_MS).toBeLessThan(WATCHDOG_MS);
     expect(WATCHDOG_MS).toBeLessThan(HOOK_TIMEOUT_SECONDS * 1000);
+  });
+
+  it('wires every scanning hook to that deadline through one bound', () => {
+    for (const file of [
+      'pre-tool-use-run.ts',
+      'before-submit-prompt-run.ts',
+      'post-tool-use-run.ts',
+    ]) {
+      const source = readFileSync(new URL(`../src/hooks/${file}`, import.meta.url), 'utf8');
+      expect(source, file).toMatch(/largeInput: hookLargeInputBound\((true|false)\)/);
+      expect(source, file).not.toMatch(/\blargeInputBound\(/);
+    }
+  });
+
+  it('bounds that one deadline at HOOK_SCAN_DEADLINE_MS from process start', () => {
+    const bound = hookLargeInputBound(true);
+    expect(bound.remainingMs).toBeTypeOf('function');
+    const remaining = bound.remainingMs?.() ?? Number.NaN;
+    expect(remaining).toBeLessThanOrEqual(HOOK_SCAN_DEADLINE_MS);
+    expect(remaining).toBeGreaterThan(HOOK_SCAN_DEADLINE_MS - performance.now() - 1_000);
+    expect(bound.refuses).toBe(true);
+    expect(hookLargeInputBound(false).refuses).toBe(false);
   });
 
   it('registers that timeout on every entry the installer writes', () => {

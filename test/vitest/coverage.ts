@@ -126,7 +126,7 @@ export const COVERAGE_FLOORS: Readonly<Record<string, number>> = Object.freeze({
   '@akasecurity/ai-tc-copilot': 87, //              88.14 (Windows), 89.20 (macOS)
   // Taken on Linux, and reproduced there in review; not yet measured on
   // macOS / Node 24, the platform the rest of this table is read on.
-  '@akasecurity/ai-tc-cursor': 88, //               89.80
+  '@akasecurity/ai-tc-cursor': 88, //               89.41
   '@akasecurity/ai-tc-codex': 58, //                59.78
   '@akasecurity/plugin-browser-extension': 81, //   82.44
   '@akasecurity/cli': 51, //                        52.66

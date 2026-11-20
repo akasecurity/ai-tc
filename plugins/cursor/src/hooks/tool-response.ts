@@ -9,7 +9,8 @@
 //
 // The walk is held to depth, leaf-count and character bounds, and anything
 // those bounds leave out is reported as `truncated` so the hook says part of
-// the value went unscanned. It reads values only, never object keys.
+// the value went unscanned. It reads values, and object keys too when asked
+// (an MCP call's arguments; see `leafFields`).
 //
 // NOTHING HERE WRITES. Cursor's postToolUse offers a rewrite only for an MCP
 // tool's output (`updated_mcp_tool_output`), and it has never been driven
@@ -27,6 +28,8 @@ export interface ScannableResponseField {
    */
   path: string[];
   text: string;
+  /** True when `text` is an object key at `path` rather than a value. */
+  key?: true;
 }
 
 /** The fields to scan, and whether the walk bounds left any text out of them. */
@@ -77,12 +80,12 @@ function couldCarryText(node: unknown): boolean {
  * because a structured result read only in part and reported as clean is the
  * failure this adapter is shaped against.
  *
- * The bounds are the Claude Code plugin's MCP argument walk's, but the key
- * handling is not: that walk also scans object keys (in `MCP_MAX_KEY_GROUPS`
- * chunks), while this one scans string VALUES only. A key reaches the model
- * unscanned, and is not counted as truncated either.
+ * The bounds are the Claude Code plugin's MCP argument walk's. With `keys`
+ * set, every non-empty object key is collected too, as its own field under the
+ * same bounds, because an MCP server can read a command from a key as easily
+ * as from a value. Without it — a tool's output — values alone are read.
  */
-function leafFields(response: object): ResponseFields {
+function leafFields(response: object, keys: boolean): ResponseFields {
   const fields: ScannableResponseField[] = [];
   let truncated = false;
   let remaining = RESULT_WALK_MAX_TOTAL_CHARS;
@@ -114,12 +117,26 @@ function leafFields(response: object): ResponseFields {
       ? node.map((item, index): [string, unknown] => [String(index), item])
       : Object.entries(node);
     for (const [index, [key, value]] of entries.entries()) {
+      if (keys && !Array.isArray(node) && key !== '') {
+        if (fields.length >= RESULT_WALK_MAX_LEAVES) {
+          truncated = true;
+          break;
+        }
+        if (key.length > RESULT_WALK_MAX_LEAF_CHARS || key.length > remaining) {
+          truncated = true;
+        } else {
+          remaining -= key.length;
+          fields.push({ path: [...path, key], text: key, key: true });
+        }
+      }
       walk(value, [...path, key], depth + 1);
       if (fields.length >= RESULT_WALK_MAX_LEAVES) {
         // The leaf count is reached: no later sibling is entered. One that
         // could have carried text is reported as left out, read without
         // descending into it.
-        if (entries.slice(index + 1).some(([, rest]) => couldCarryText(rest))) truncated = true;
+        const keyed = keys && !Array.isArray(node);
+        const rest = entries.slice(index + 1);
+        if (rest.some(([k, v]) => (keyed && k !== '') || couldCarryText(v))) truncated = true;
         break;
       }
     }
@@ -135,11 +152,11 @@ function leafFields(response: object): ResponseFields {
  * drop the flag that says they are not the whole value. Empty strings are
  * skipped: there is nothing in one to find.
  */
-export function scannableFields(value: unknown): ResponseFields {
+export function scannableFields(value: unknown, options: { keys?: boolean } = {}): ResponseFields {
   if (typeof value === 'string') {
     return { fields: value === '' ? [] : [{ path: [], text: value }], truncated: false };
   }
   return typeof value === 'object' && value !== null
-    ? leafFields(value)
+    ? leafFields(value, options.keys === true)
     : { fields: [], truncated: false };
 }

@@ -121,7 +121,17 @@ describe('runPreToolUse', () => {
     expect(store.findingRules()).toContain(COMMAND_RULE);
   });
 
-  it('does not judge file content with the command-risk rules (the control)', async () => {
+  it('judges an MCP argument key as executable text too', async () => {
+    store.seedPolicy('block');
+    const command = ruleExample(COMMAND_RULE).example;
+    await run(call('MCP:run_task', { [command]: true }));
+    expect(store.findingRules()).toContain(COMMAND_RULE);
+  });
+
+  // File content is captured as a `code_change`, never as `tool_use` text, so
+  // a rule scoped to `tool_use` does not judge it whatever the field's
+  // `executable` flag says. This pins that capture kind.
+  it('does not judge file content with the tool_use command-risk rules', async () => {
     store.seedPolicy('block');
     const command = ruleExample(COMMAND_RULE).example;
     await run(call('Write', { file_path: join(store.cwd, 'notes.md'), contents: command }));

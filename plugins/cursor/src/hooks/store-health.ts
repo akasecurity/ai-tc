@@ -64,15 +64,6 @@ export function openGateway(config: PluginConfig): GatewayOpen {
 }
 
 /**
- * The same open, for the callers that only branch on whether they got one.
- * A caller that WARNS wants `openGateway` — it cannot say anything true about
- * the failure from a null alone.
- */
-export function openGatewayOrNull(config: PluginConfig): DataGateway | null {
-  return openGateway(config).gateway;
-}
-
-/**
  * The once-per-session degradation warning, chosen by what actually failed.
  *
  * Two causes, two opposite remedies. A store this build cannot READ is a file

@@ -5,8 +5,9 @@
  * What the host requires of every run is asserted first and carries stderr as
  * its message: exit 0, and stdout either empty or exactly one JSON object.
  */
-import { spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -15,6 +16,7 @@ import { bundledDetections } from '@akasecurity/plugin-sdk';
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
 import { OWNER_MARKER } from '../../src/install.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { withTempHome } from '../helpers/run-hook.ts';
@@ -82,6 +84,43 @@ describe.each(HOOKS)('%s fails open', (script, event) => {
     withTempHome((home) => {
       silent(runHook(script, event, home, ''));
     });
+  });
+
+  it('on truncated JSON', () => {
+    withTempHome((home) => {
+      const whole = JSON.stringify(payload(event, { cwd: home, workspace_roots: [home] }));
+      silent(runHook(script, event, home, whole.slice(0, Math.floor(whole.length / 2))));
+    });
+  });
+
+  it('on an oversized stdin that is not JSON', () => {
+    withTempHome((home) => {
+      silent(runHook(script, event, home, `{"prompt":"${'x'.repeat(4 * 1024 * 1024)}`));
+    });
+  });
+
+  it('on a stdin that never closes', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'aka-cursor-stall-'));
+    try {
+      const run = await new Promise<HookRun>((resolve) => {
+        const child = spawn(process.execPath, [join(SCRIPTS_DIR, script), event, OWNER_MARKER], {
+          env: { HOME: home, USERPROFILE: home },
+          cwd: home,
+        });
+        let stdout = '';
+        let stderr = '';
+        child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()));
+        child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
+        // Half a payload and then nothing: stdin stays open until the hook exits.
+        child.stdin.write('{"hook_event_name":');
+        child.on('close', (status) => {
+          resolve({ stdout, stderr, status: status ?? 1 });
+        });
+      });
+      silent(run);
+    } finally {
+      removeTrees([home]);
+    }
   });
 
   it('on a store that cannot be opened', () => {

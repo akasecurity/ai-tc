@@ -29,8 +29,8 @@ import {
 } from './shared.ts';
 import {
   claimStoreUnavailableWarning,
-  openGatewayOrNull,
-  storeUnavailableMessage,
+  openGateway,
+  storeDegradedMessage,
   warnIfStoreRedirected,
 } from './store-health.ts';
 import { scannableFields } from './tool-response.ts';
@@ -49,10 +49,10 @@ export const runPostToolUse: HookHandler = async (event, stdin, options = {}) =>
   const config = loadConfig(options.akaHome);
   const sessionId = readSessionId(input);
   warnIfStoreRedirected(config, sessionId);
-  const gateway = openGatewayOrNull(config);
+  const { gateway, error } = openGateway(config);
   if (gateway === null) {
     if (claimStoreUnavailableWarning(config.dataDir, sessionId)) {
-      writeNotice(storeUnavailableMessage(config.dbPath));
+      writeNotice(storeDegradedMessage(config.dbPath, error));
     }
     return undefined;
   }

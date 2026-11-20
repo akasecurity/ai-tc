@@ -21,6 +21,7 @@ import { denyPointerMessage } from '../../src/hooks/pre-tool-use-decision.ts';
 import { runPreToolUse } from '../../src/hooks/pre-tool-use-run.ts';
 import { denyOutput } from '../../src/hooks/shared.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
+import { ruleExample } from '../helpers/rule-example.ts';
 import type { StderrCapture } from '../helpers/stderr-capture.ts';
 import { captureStderr } from '../helpers/stderr-capture.ts';
 import type { TempStore } from '../helpers/store.ts';
@@ -31,6 +32,9 @@ import { FIXTURE, payload, RULE_ID, tempStore } from '../helpers/store.ts';
 const POINTER = `${'['.repeat(2)}aka:secret:AA.${'A'.repeat(26)}.${'B'.repeat(16)}${']'.repeat(2)}`;
 
 const LARGE = `${'lorem ipsum dolor sit amet '.repeat(Math.ceil(LARGE_INPUT_THRESHOLD_CHARS / 27))}end`;
+
+// A rule scoped to `tool_use` text: it runs only on a field judged executable.
+const COMMAND_RULE = 'agent-harness-tamper/agent-approval-bypass';
 
 let store: TempStore;
 let stderr: StderrCapture;
@@ -108,6 +112,35 @@ describe('runPreToolUse', () => {
       call('MCP:send_message', { channel: 'ops', body: { text: `key ${FIXTURE.example}` } }),
     );
     expect(reasonOf(output)).toContain(RULE_ID);
+  });
+
+  it('judges MCP arguments with the command-risk rules, as executable text', async () => {
+    store.seedPolicy('block');
+    const command = ruleExample(COMMAND_RULE).example;
+    await run(call('MCP:run_task', { args: { shell: command } }));
+    expect(store.findingRules()).toContain(COMMAND_RULE);
+  });
+
+  it('does not judge file content with the command-risk rules (the control)', async () => {
+    store.seedPolicy('block');
+    const command = ruleExample(COMMAND_RULE).example;
+    await run(call('Write', { file_path: join(store.cwd, 'notes.md'), contents: command }));
+    expect(store.findingRules()).not.toContain(COMMAND_RULE);
+  });
+
+  it('counts MCP arguments past the walk bounds as a fail-open', async () => {
+    store.seedPolicy('block');
+    let counted = 0;
+    const deep = { a: { b: { c: { d: { e: { f: { g: 'past the depth bound' } } } } } } };
+    const output = await runPreToolUse('preToolUse', call('MCP:deep', deep), {
+      akaHome: store.akaHome,
+      countFailOpen: () => {
+        counted += 1;
+      },
+    });
+    expect(output).toBeUndefined();
+    expect(counted).toBe(1);
+    expect(stderr.filtered()).toContain('was not checked');
   });
 
   it('accepts tool_input as a JSON string', async () => {

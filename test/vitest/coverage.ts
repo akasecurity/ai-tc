@@ -124,9 +124,9 @@ export const COVERAGE_FLOORS: Readonly<Record<string, number>> = Object.freeze({
   // children run only as child processes under the e2e suite, so none of their
   // lines count here; the handlers they wrap are driven in-process and do.
   '@akasecurity/ai-tc-copilot': 87, //              88.14 (Windows), 89.20 (macOS)
-  // Taken on Linux / Node 22, the one platform this package has been measured
-  // on yet; re-take it on macOS / Node 24 like the rest of the table.
-  '@akasecurity/ai-tc-cursor': 86, //               87.29
+  // Taken on Linux, and reproduced there in review; not yet measured on
+  // macOS / Node 24, the platform the rest of this table is read on.
+  '@akasecurity/ai-tc-cursor': 87, //               88.84
   '@akasecurity/ai-tc-codex': 58, //                59.78
   '@akasecurity/plugin-browser-extension': 81, //   82.44
   '@akasecurity/cli': 51, //                        52.66

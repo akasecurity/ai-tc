@@ -35,7 +35,8 @@ export interface ScannableField {
  * spellings its content has been reported under for that reason.
  *
  * MCP tools (`MCP:<name>`) are not rows here: their arguments are free-form,
- * so every string leaf is scanned instead (see `isMcpTool`).
+ * so every string leaf is scanned instead, as executable text (see `isMcpTool`
+ * and `fieldTexts` in ./pre-tool-use-run.ts).
  *
  * `Read`, `Grep`, `Glob`, `Task` and the rest are absent on purpose: none of
  * them carries text the user or the model authored that this adapter can act

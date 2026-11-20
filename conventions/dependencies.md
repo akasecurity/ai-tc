@@ -109,17 +109,17 @@ cli               → @akasecurity/schema, persistence, local-ops, detections,
                      ships the web-ui as a spawned Next server)
 
 # Plugin
-plugins/claude-code → @akasecurity/plugin-runtime, plugin-sdk
-plugins/codex        → @akasecurity/plugin-runtime, plugin-sdk
-plugins/antigravity  → @akasecurity/plugin-runtime, plugin-sdk
-plugins/copilot      → @akasecurity/plugin-runtime, plugin-sdk (GitHub Copilot: the
+plugins/claude-code → @akasecurity/plugin-runtime, plugin-sdk, scanner
+plugins/codex        → @akasecurity/plugin-runtime, plugin-sdk, scanner
+plugins/antigravity  → @akasecurity/plugin-runtime, plugin-sdk, scanner
+plugins/copilot      → @akasecurity/plugin-runtime, plugin-sdk, scanner (GitHub Copilot: the
                      Copilot CLI and VS Code agent mode, and the cloud coding
                      agent, which speaks the CLI's protocol. ONE package, TWO
                      payload dialects — the CLI's flat camelCase envelope and VS
                      Code's flat snake_case one — sniffed per payload in
                      src/hooks/dialect.ts and carried as a parameter from there
                      down, so the two scannable-field tables are never merged)
-plugins/cursor       → @akasecurity/plugin-runtime, plugin-sdk (Cursor's agent hooks:
+plugins/cursor       → @akasecurity/plugin-runtime, plugin-sdk, scanner (Cursor's agent hooks:
                      sessionStart, beforeSubmitPrompt, preToolUse and postToolUse,
                      registered in the user-level ~/.cursor/hooks.json by the package's
                      own installer script. Private until it is released)

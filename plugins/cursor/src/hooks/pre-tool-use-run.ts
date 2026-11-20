@@ -27,11 +27,18 @@ import {
   SCANNABLE_FIELDS,
 } from './pre-tool-use-decision.ts';
 import type { HookHandler } from './shared.ts';
-import { baseMetadata, callKind, callScopeKey, parseJson, writeNotice } from './shared.ts';
+import {
+  baseMetadata,
+  callKind,
+  callScopeKey,
+  countFailOpen,
+  parseJson,
+  writeNotice,
+} from './shared.ts';
 import {
   claimStoreUnavailableWarning,
-  openGatewayOrNull,
-  storeUnavailableMessage,
+  openGateway,
+  storeDegradedMessage,
   warnIfStoreRedirected,
 } from './store-health.ts';
 import { scannableFields } from './tool-response.ts';
@@ -49,8 +56,11 @@ function fieldTexts(
   if (isMcpTool(toolName)) {
     const collected = scannableFields(args);
     return {
+      // An MCP server defines its own argument schema, so nothing here can
+      // tell a message body from a command the server will run: every leaf is
+      // judged as executable, command-risk rules included.
       texts: collected.fields.map(({ path, text }) => ({
-        spec: { field: path.join('.'), executable: false },
+        spec: { field: path.join('.'), executable: true },
         text,
       })),
       truncated: collected.truncated,
@@ -90,12 +100,12 @@ export const runPreToolUse: HookHandler = async (event, stdin, options = {}) => 
   const config = loadConfig(options.akaHome);
   const sessionId = readSessionId(input);
   warnIfStoreRedirected(config, sessionId);
-  const gateway = openGatewayOrNull(config);
+  const { gateway, error } = openGateway(config);
   if (gateway === null) {
     // Nothing was scanned, so there is no verdict; an allow here would
     // pre-approve exactly the calls AKA failed to inspect.
     if (claimStoreUnavailableWarning(config.dataDir, sessionId)) {
-      writeNotice(storeUnavailableMessage(config.dbPath));
+      writeNotice(storeDegradedMessage(config.dbPath, error));
     }
     return undefined;
   }
@@ -134,6 +144,10 @@ export const runPreToolUse: HookHandler = async (event, stdin, options = {}) => 
   } finally {
     await runtime.close();
   }
+
+  // Arguments past the walk bounds went unscanned, which the fail-open tally
+  // counts so `aka status` does not read this machine as fully scanned.
+  if (collected.truncated) countFailOpen(options.countFailOpen);
 
   const decision = decidePreToolUse(call.name, scanned, collected.truncated);
   if (decision.notice !== undefined) writeNotice(decision.notice);

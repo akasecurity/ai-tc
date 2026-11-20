@@ -25,8 +25,8 @@ import type { HookHandler } from './shared.ts';
 import { baseMetadata, captureScopeKey, parseJson, writeNotice } from './shared.ts';
 import {
   claimStoreUnavailableWarning,
-  openGatewayOrNull,
-  storeUnavailableMessage,
+  openGateway,
+  storeDegradedMessage,
   warnIfStoreRedirected,
 } from './store-health.ts';
 
@@ -41,10 +41,10 @@ export const runBeforeSubmitPrompt: HookHandler = async (event, stdin, options =
   const config = loadConfig(options.akaHome);
   const sessionId = readSessionId(input);
   warnIfStoreRedirected(config, sessionId);
-  const gateway = openGatewayOrNull(config);
+  const { gateway, error } = openGateway(config);
   if (gateway === null) {
     if (claimStoreUnavailableWarning(config.dataDir, sessionId)) {
-      writeNotice(storeUnavailableMessage(config.dbPath));
+      writeNotice(storeDegradedMessage(config.dbPath, error));
     }
     return undefined;
   }

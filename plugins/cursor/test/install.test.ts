@@ -6,8 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTrees } from '../../../test/helpers/remove-tree.ts';
 import { CURSOR_EVENTS } from '../src/hooks/event-name.ts';
+import { HOOK_SCAN_DEADLINE_MS } from '../src/hooks/large-input.ts';
+import { WATCHDOG_MS } from '../src/hooks/shared.ts';
 import {
   HOOK_SCRIPTS,
+  HOOK_TIMEOUT_SECONDS,
   hookCommand,
   isOwnEntry,
   mergeOwnHooks,
@@ -182,5 +185,22 @@ describe('main', () => {
     expect(main(['node', 'install.js'], home)).toBe(1);
     expect(err.join('')).toContain('could not update');
     expect(readFileSync(path, 'utf8')).toBe('{ not json');
+  });
+});
+
+describe('the timing chain', () => {
+  // A bounded scan must finish before the watchdog, which must fire before
+  // Cursor's own timeout: each later stage would otherwise pass the call
+  // through before the earlier one could refuse it.
+  it('orders the scan deadline, the watchdog and the host timeout', () => {
+    expect(HOOK_SCAN_DEADLINE_MS).toBeLessThan(WATCHDOG_MS);
+    expect(WATCHDOG_MS).toBeLessThan(HOOK_TIMEOUT_SECONDS * 1000);
+  });
+
+  it('registers that timeout on every entry the installer writes', () => {
+    const merged = mergeOwnHooks(parseHooksFile(undefined), NODE, SCRIPTS);
+    for (const entries of Object.values(merged.hooks)) {
+      for (const entry of entries) expect(entry.timeout).toBe(HOOK_TIMEOUT_SECONDS);
+    }
   });
 });

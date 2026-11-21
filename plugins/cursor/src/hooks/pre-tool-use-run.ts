@@ -99,7 +99,7 @@ export const runPreToolUse: HookHandler = async (event, stdin, options = {}) => 
     // Nothing was scanned, so there is no verdict; an allow here would
     // pre-approve exactly the calls AKA failed to inspect.
     if (claimStoreUnavailableWarning(config.dataDir, sessionId)) {
-      writeNotice(storeDegradedMessage(config.dbPath, error));
+      writeNotice(storeDegradedMessage(config.dbPath, error, 'tool call'));
     }
     return undefined;
   }

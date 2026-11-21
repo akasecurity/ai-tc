@@ -61,6 +61,6 @@ export function largeInputBound(
  * against `HOOK_SCAN_DEADLINE_MS`, so no hook can pair the bound with another
  * deadline.
  */
-export function hookLargeInputBound(refuses: boolean): LargeInputScanOptions {
-  return largeInputBound(HOOK_SCAN_DEADLINE_MS, refuses);
+export function hookLargeInputBound(refuses: boolean, now?: () => number): LargeInputScanOptions {
+  return largeInputBound(HOOK_SCAN_DEADLINE_MS, refuses, now);
 }

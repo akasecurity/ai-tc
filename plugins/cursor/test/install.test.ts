@@ -210,13 +210,20 @@ describe('the timing chain', () => {
   });
 
   it('bounds that one deadline at HOOK_SCAN_DEADLINE_MS from process start', () => {
-    const bound = hookLargeInputBound(true);
-    expect(bound.remainingMs).toBeTypeOf('function');
-    const remaining = bound.remainingMs?.() ?? Number.NaN;
-    expect(remaining).toBeLessThanOrEqual(HOOK_SCAN_DEADLINE_MS);
-    expect(remaining).toBeGreaterThan(HOOK_SCAN_DEADLINE_MS - performance.now() - 1_000);
+    let clock = 1_000;
+    const bound = hookLargeInputBound(true, () => clock);
+    expect(bound.remainingMs?.()).toBe(HOOK_SCAN_DEADLINE_MS - 1_000);
+    clock = 13_500;
+    expect(bound.remainingMs?.()).toBe(HOOK_SCAN_DEADLINE_MS - 13_500);
+    clock = HOOK_SCAN_DEADLINE_MS + 1_000;
+    expect(bound.remainingMs?.()).toBe(-1_000);
     expect(bound.refuses).toBe(true);
     expect(hookLargeInputBound(false).refuses).toBe(false);
+  });
+
+  it('reads the default clock from process start, not from the call', () => {
+    const remaining = hookLargeInputBound(true).remainingMs?.() ?? Number.NaN;
+    expect(remaining).toBeLessThanOrEqual(HOOK_SCAN_DEADLINE_MS - performance.now() + 50);
   });
 
   it('registers that timeout on every entry the installer writes', () => {

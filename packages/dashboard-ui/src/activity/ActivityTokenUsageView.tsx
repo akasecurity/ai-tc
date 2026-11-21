@@ -200,6 +200,12 @@ export function ActivityTokenUsageView({
                     bound.
                   </p>
                 )}
+                {summary.apiEquivalentIsPartial && (
+                  <p className="px-3 pb-1 pt-2 text-xs text-text-3">
+                    — on a subscription row = unknown pricing; the API-equivalent total is a lower
+                    bound.
+                  </p>
+                )}
                 {hasSubscription(summary) && (
                   <p className="px-3 pb-1 pt-2 text-xs text-text-3">{API_EQUIVALENT_NOTE}</p>
                 )}

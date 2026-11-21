@@ -1,7 +1,12 @@
 import type { DatabaseSync, StatementSync } from 'node:sqlite';
 
-import type { AuditEventInput, LlmCallInput, ToolCallInput } from '@akasecurity/schema';
-import { isoToEpochMillis, toAuditEventRow } from '@akasecurity/schema';
+import type {
+  AuditEventInput,
+  LlmCallInput,
+  ToolCallInput,
+  UsageChannel,
+} from '@akasecurity/schema';
+import { isoToEpochMillis, toAuditEventRow, usageChannelOf } from '@akasecurity/schema';
 
 import { llmCallId, toolCallId } from '../ids.ts';
 import { parseJsonObject } from '../internal/json.ts';
@@ -322,15 +327,11 @@ export class SqliteAuditEventsRepository {
   // the attribute is absent, so the caller can fall back to the model-id heuristic.
   // The usage channel and subscription plan a session start recorded on its root;
   // each is absent when the root or the attribute is.
-  sessionBilling(sessionId: string): { usageChannel?: string; subscriptionPlan?: string } {
+  sessionBilling(sessionId: string): { usageChannel?: UsageChannel } {
     const row = this.findById(sessionId);
     const attributes = row?.attributes ? parseJsonObject(row.attributes) : undefined;
     const channel = attributes?.usage_channel;
-    const plan = attributes?.subscription_plan;
-    return {
-      ...(typeof channel === 'string' ? { usageChannel: channel } : {}),
-      ...(typeof plan === 'string' ? { subscriptionPlan: plan } : {}),
-    };
+    return channel === undefined ? {} : { usageChannel: usageChannelOf(channel) };
   }
 
   sessionProvider(sessionId: string): string | undefined {

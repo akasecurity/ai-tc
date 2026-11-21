@@ -277,9 +277,10 @@ export const LlmCallAttributes = z
     parent_uuid: z.string().optional(),
     // Run grouping = the parent user record's `promptId` (NOT nearest user uuid).
     run_key: z.string().optional(),
-    // Copied from the session root, which records them when the session starts.
+    // Copied from the session root, which records it when the session starts. A
+    // `UsageChannel` value; kept a string so a store written by a newer build still
+    // parses, and narrowed with `usageChannelOf` wherever it is read.
     usage_channel: z.string().optional(),
-    subscription_plan: z.string().optional(),
   })
   .catchall(z.unknown());
 export type LlmCallAttributes = z.infer<typeof LlmCallAttributes>;

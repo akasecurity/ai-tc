@@ -908,8 +908,11 @@ export function renderTokens(reports: SessionTokenReport[]): string {
     '',
     table(['Provider', 'Model', 'Paid via', 'Input', 'Output', 'Cache', 'Total', 'Cost'], rows),
   ];
-  if (summary.costIsPartial || summary.apiEquivalentIsPartial) {
+  if (summary.costIsPartial) {
     lines.push('', '— = unknown pricing (local / non-Anthropic model); cost is a lower bound.');
+  }
+  if (summary.apiEquivalentIsPartial) {
+    lines.push('', '— on a subscription row = unknown pricing; API-equivalent is a lower bound.');
   }
   if (hasSubscription) lines.push('', API_EQUIVALENT_NOTE);
   return lines.join('\n');

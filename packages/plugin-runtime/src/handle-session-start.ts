@@ -118,7 +118,7 @@ export interface SessionStartInput {
   threadAccountPending?: boolean | undefined;
   // How this session's model calls are paid for, read by the adapter from the
   // agent's login. Recorded on the root as `usage_channel` and
-  // `subscription_plan`; the token reconcilers copy both onto every call.
+  // `subscription_plan`; the token reconcilers copy the channel onto every call.
   billing?: SessionBilling | undefined;
 }
 

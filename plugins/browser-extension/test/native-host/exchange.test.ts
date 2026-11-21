@@ -135,6 +135,14 @@ describe('toLlmCallInput', () => {
     expect(attrs.response_truncated).toBe(true);
   });
 
+  it('records every exchange on the subscription channel, for both web tools', () => {
+    for (const tool of ['chatgpt', 'claude-ai'] as const) {
+      expect(toLlmCallInput(baseExchange(), SESSION, tool)?.attributes.usage_channel).toBe(
+        'subscription',
+      );
+    }
+  });
+
   it('sets provider to the web tool id, not the vendor', () => {
     expect(toLlmCallInput(baseExchange(), SESSION, 'chatgpt')?.attributes.provider).toBe('chatgpt');
     expect(toLlmCallInput(baseExchange(), SESSION, 'claude-ai')?.attributes.provider).toBe(

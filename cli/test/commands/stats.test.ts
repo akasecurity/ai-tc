@@ -120,6 +120,34 @@ describe('renderTokenUsage', () => {
     expect(text).toContain('lower bound');
   });
 
+  it('marks only the API-equivalent figure partial for an unpriced subscription model', () => {
+    const summary: TokenUsageSummary = {
+      sessionCount: 1,
+      totalTokens: 500,
+      estimatedCostUsd: 0,
+      costIsPartial: false,
+      apiEquivalentUsd: 0,
+      apiEquivalentIsPartial: true,
+      models: [
+        {
+          provider: 'anthropic',
+          model: 'unpriced-model',
+          inputTokens: 500,
+          outputTokens: 0,
+          cacheTokens: 0,
+          totalTokens: 500,
+          estimatedCostUsd: null,
+          channel: 'subscription',
+          costBasis: null,
+        },
+      ],
+    };
+
+    const text = renderTokenUsage(summary, '7d');
+    expect(text).toContain('API-equivalent is a lower bound');
+    expect(text).not.toContain('cost is a lower bound');
+  });
+
   it('renders an empty state when no tokens were recorded', () => {
     const summary: TokenUsageSummary = {
       sessionCount: 0,

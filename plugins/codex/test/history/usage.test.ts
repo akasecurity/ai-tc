@@ -808,10 +808,8 @@ describe('reconcileSession — FK-safety & provider inheritance', () => {
     } finally {
       await gateway.close();
     }
-    expect(rows(dataDir).attrsByOrdinal[0]).toMatchObject({
-      usage_channel: 'subscription',
-      subscription_plan: 'chatgpt_plus',
-    });
+    expect(rows(dataDir).attrsByOrdinal[0]).toMatchObject({ usage_channel: 'subscription' });
+    expect(rows(dataDir).attrsByOrdinal[0]).not.toHaveProperty('subscription_plan');
   });
 
   it('leaves the channel unset on leaves under a root that records none', async () => {

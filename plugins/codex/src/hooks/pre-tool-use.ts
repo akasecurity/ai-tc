@@ -76,7 +76,7 @@ async function main(): Promise<void> {
   const opened = openGateway(config);
   if (opened.gateway === null) {
     if (claimStoreUnavailableWarning(config.dataDir, getString(input, 'session_id'))) {
-      await emit({ systemMessage: storeDegradedMessage(config.dbPath, opened.error) });
+      await emit({ systemMessage: storeDegradedMessage(config.dbPath, opened.error, 'tool call') });
     }
     return;
   }

@@ -125,7 +125,7 @@ export const runPreToolUse: HookHandler = async (event, stdin, options = {}) => 
     // pre-approve exactly the calls it failed to inspect. The warning goes to
     // the channel the dialect has for it and stdout keeps its silence.
     if (claimStoreUnavailableWarning(config.dataDir, sessionId)) {
-      const message = storeDegradedMessage(config.dbPath, error);
+      const message = storeDegradedMessage(config.dbPath, error, 'tool call');
       if (dialect === 'vscode') return { systemMessage: message };
       writeNotice(message, dialect);
     }

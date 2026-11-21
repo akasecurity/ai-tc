@@ -418,7 +418,7 @@ describe('storeDegradedMessage — one message per cause', () => {
   );
 
   it('names the version gap for a store written by a newer build', () => {
-    const message = storeDegradedMessage(DB, skew);
+    const message = storeDegradedMessage(DB, skew, 'tool call');
 
     expect(message).toContain(DB);
     expect(message).toContain('0035_from_a_newer_build');
@@ -428,21 +428,27 @@ describe('storeDegradedMessage — one message per cause', () => {
   });
 
   it('never tells the user to move an intact store aside', () => {
-    expect(storeDegradedMessage(DB, skew)).not.toMatch(/aside|recreate|corrupt|permission/i);
+    expect(storeDegradedMessage(DB, skew, 'tool call')).not.toMatch(
+      /aside|recreate|corrupt|permission/i,
+    );
   });
 
   // The positive control for the assertion above: the GENERIC message really
   // does carry that advice, so the absence check is a property of the skew
   // branch rather than something both branches satisfy by accident.
   it('keeps the file-repair advice for a failure that is not skew', () => {
-    const message = storeDegradedMessage(DB, new Error('database disk image is malformed'));
+    const message = storeDegradedMessage(
+      DB,
+      new Error('database disk image is malformed'),
+      'tool call',
+    );
 
     expect(message).toBe(storeUnavailableMessage(DB));
     expect(message).toMatch(/aside/i);
   });
 
   it('falls back to the generic message when there is no error to read', () => {
-    expect(storeDegradedMessage(DB, undefined)).toBe(storeUnavailableMessage(DB));
+    expect(storeDegradedMessage(DB, undefined, 'tool call')).toBe(storeUnavailableMessage(DB));
   });
 });
 
@@ -490,9 +496,17 @@ describe('storeDegradedMessage — the failure is named', () => {
     const err = busyError();
     expect(err).toBeDefined();
 
-    const message = storeDegradedMessage(DB, err);
+    const message = storeDegradedMessage(DB, err, 'tool call');
 
-    expect(message).toBe(storeBusyMessage(DB, 'SQLite error 5: database is locked'));
+    expect(message).toBe(
+      storeBusyMessage(
+        DB,
+        { text: 'SQLite error 5: database is locked', lock: 'busy' },
+        'tool call',
+      ),
+    );
+    expect(message).toContain('another process held it locked');
+    expect(message).toContain('skipped for this tool call');
     expect(message).toContain(DB);
     expect(message).toContain('fails open');
     expect(message).not.toMatch(/aside|recreate|corrupt/i);
@@ -503,7 +517,7 @@ describe('storeDegradedMessage — the failure is named', () => {
     const opened = openGateway(configFor(dir));
     expect(opened.gateway).toBeNull();
 
-    const message = storeDegradedMessage(DB, opened.error);
+    const message = storeDegradedMessage(DB, opened.error, 'tool call');
 
     expect(message).toContain('(SQLite error 26: file is not a database)');
     expect(message).toMatch(/aside/i);
@@ -516,7 +530,7 @@ describe('storeDegradedMessage — the failure is named', () => {
       code: 'EACCES',
     });
 
-    const message = storeDegradedMessage(DB, err);
+    const message = storeDegradedMessage(DB, err, 'tool call');
 
     expect(message).toContain('(EACCES)');
     expectNoEchoOf(message, secret);
@@ -529,7 +543,7 @@ describe('storeDegradedMessage — the failure is named', () => {
       errstr: 'SQL logic error',
     });
 
-    const message = storeDegradedMessage(DB, err);
+    const message = storeDegradedMessage(DB, err, 'tool call');
 
     expect(message).toContain('(SQLite error 1: SQL logic error)');
     expectNoEchoOf(message, secret);
@@ -539,7 +553,7 @@ describe('storeDegradedMessage — the failure is named', () => {
     const secret = `/Users/someone/${randomUUID()}`;
     expect(storeOpenCause({ errcode: 14, errstr: secret })).toEqual({
       text: 'SQLite error 14',
-      busy: false,
+      lock: undefined,
     });
   });
 
@@ -549,10 +563,42 @@ describe('storeDegradedMessage — the failure is named', () => {
     expect(storeOpenCause({ code: 'not a code' })).toBeUndefined();
   });
 
-  it('treats SQLITE_LOCKED and an extended BUSY code as a lock', () => {
-    expect(storeOpenCause({ errcode: 6, errstr: 'database table is locked' })?.busy).toBe(true);
-    expect(storeOpenCause({ errcode: 517, errstr: 'database is locked' })?.busy).toBe(true);
+  it('tells SQLITE_LOCKED apart from BUSY, and reads an extended BUSY code as BUSY', () => {
+    expect(storeOpenCause({ errcode: 6, errstr: 'database table is locked' })?.lock).toBe('locked');
+    expect(storeOpenCause({ errcode: 517, errstr: 'database is locked' })?.lock).toBe('busy');
     const corrupt = storeOpenCause({ errcode: 11, errstr: 'database disk image is malformed' });
-    expect(corrupt?.busy).toBe(false);
+    expect(corrupt?.lock).toBeUndefined();
+  });
+
+  it('names SQLITE_LOCKED by its code alone, without the other-process story', () => {
+    const message = storeDegradedMessage(
+      DB,
+      { errcode: 6, errstr: 'database table is locked' },
+      'tool call',
+    );
+    expect(message).toContain('because it was locked (SQLite error 6: database table is locked)');
+    expect(message).not.toMatch(/another process|longer than AKA waits/);
+    expect(message).not.toMatch(/aside|recreate|corrupt/i);
+  });
+
+  it('names the prompt, not a tool call, when a prompt hook hits the lock', () => {
+    const message = storeDegradedMessage(
+      DB,
+      { errcode: 5, errstr: 'database is locked' },
+      'prompt',
+    );
+    expect(message).toContain('skipped for this prompt');
+    expect(message).not.toContain('tool call');
+  });
+});
+
+describe('the event each hook names on a locked store', () => {
+  it.each([
+    ['pre-tool-use-run.ts', 'tool call', 'error'],
+    ['post-tool-use-run.ts', 'tool call', 'error'],
+    ['user-prompt-submit-run.ts', 'prompt', 'error'],
+  ])('%s names a %s', (file: string, subject: string, errorArg: string) => {
+    const source = readFileSync(new URL(`../../src/hooks/${file}`, import.meta.url), 'utf8');
+    expect(source).toContain(`storeDegradedMessage(config.dbPath, ${errorArg}, '${subject}')`);
   });
 });

@@ -128,7 +128,7 @@ export const runUserPromptSubmit: HookHandler = async (event, stdin, options = {
     // is not an output field there, so the same object on stdout would be
     // dropped and the user told nothing at all.
     if (claimStoreUnavailableWarning(config.dataDir, sessionId)) {
-      const message = storeDegradedMessage(config.dbPath, error);
+      const message = storeDegradedMessage(config.dbPath, error, 'prompt');
       if (dialect === 'vscode') return { systemMessage: message };
       writeNotice(message, dialect);
     }

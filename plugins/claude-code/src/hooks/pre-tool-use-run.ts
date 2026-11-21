@@ -301,7 +301,7 @@ export async function runPreToolUse(
   const opened = openGateway(config);
   if (opened.gateway === null) {
     if (options.mode === 'hook' && claimStoreUnavailableWarning(config.dataDir, sessionId)) {
-      await emit({ systemMessage: storeDegradedMessage(config.dbPath, opened.error) });
+      await emit({ systemMessage: storeDegradedMessage(config.dbPath, opened.error, 'tool call') });
     }
     return 'store-unavailable';
   }

@@ -1,5 +1,6 @@
 // Tests the store-health module directly — NEVER via the hook entry files
-// (src/hooks/*.ts run main() on import and hang vitest collection).
+// (src/hooks/*.ts run main() on import and hang vitest collection). The other
+// plugins carry their own copy of the module and of these tests.
 import { randomUUID } from 'node:crypto';
 import {
   mkdirSync,

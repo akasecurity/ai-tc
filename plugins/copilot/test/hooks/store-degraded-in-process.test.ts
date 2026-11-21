@@ -131,6 +131,17 @@ const CASES: readonly Case[] = [
     }),
   },
   {
+    name: 'postToolUse',
+    dialect: 'cli',
+    event: 'postToolUse',
+    run: runPostToolUse,
+    payload: () => ({
+      ...fixture('cli', 'postToolUse.json'),
+      cwd,
+      toolResult: { resultType: 'success', textResultForLlm: 'total 0' },
+    }),
+  },
+  {
     name: 'PostToolUse',
     dialect: 'vscode',
     event: 'PostToolUse',

@@ -1,8 +1,7 @@
-import { randomUUID } from 'node:crypto';
 // Tests the store-health module directly — NEVER via the hook entry files
-// (src/hooks/*.ts run main() on import and hang vitest collection). Identical
-// to plugins/claude-code/src/hooks/store-health.test.ts — no harness-specific
-// logic here.
+// (src/hooks/*.ts run main() on import and hang vitest collection). The other
+// plugins carry their own copy of the module and of these tests.
+import { randomUUID } from 'node:crypto';
 import {
   mkdirSync,
   mkdtempSync,

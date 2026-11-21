@@ -91,7 +91,7 @@ export function storeDegradedMessage(
 }
 
 /** What a hook was handling when the store could not be opened. */
-export type StoreEventSubject = 'tool call' | 'prompt';
+export type StoreEventSubject = 'tool call' | 'prompt' | 'tool result';
 
 /**
  * Which lock stopped the open. `busy` is SQLITE_BUSY: another connection held
@@ -159,9 +159,15 @@ export function storeBusyMessage(
     cause.lock === 'busy'
       ? `because another process held it locked longer than AKA waits (${cause.text})`
       : `because it was locked (${cause.text})`;
+  // A tool result arrives after the call ran, so only its scan and recording
+  // were skipped; the call itself was decided before it.
+  const skipped =
+    subject === 'tool result'
+      ? 'Scanning and recording were skipped for this tool result'
+      : `Detection, enforcement, and recording were skipped for this ${subject}`;
   return (
     `AKA could not open its local store (${dbPath}) ${reason}. ` +
-    `Detection, enforcement, and recording were skipped for this ${subject} (fails open, so your session keeps working). ` +
+    `${skipped} (fails open, so your session keeps working). ` +
     'The store is not damaged and needs no repair; the next hook opens it again.'
   );
 }

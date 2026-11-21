@@ -564,10 +564,22 @@ describe('storeDegradedMessage — the failure is named', () => {
 describe('the event each hook names on a locked store', () => {
   it.each([
     ['pre-tool-use-run.ts', 'tool call'],
-    ['post-tool-use-run.ts', 'tool call'],
+    ['post-tool-use-run.ts', 'tool result'],
     ['before-submit-prompt-run.ts', 'prompt'],
   ])('%s names a %s', (file, subject) => {
     const source = readFileSync(new URL(`../../src/hooks/${file}`, import.meta.url), 'utf8');
     expect(source).toContain(`storeDegradedMessage(config.dbPath, error, '${subject}')`);
+  });
+});
+
+describe('a lock met after the call ran', () => {
+  it('says only the scan and recording of the tool result were skipped', () => {
+    const message = storeDegradedMessage(
+      '/home/u/.aka/data/aka.db',
+      { errcode: 5, errstr: 'database is locked' },
+      'tool result',
+    );
+    expect(message).toContain('Scanning and recording were skipped for this tool result');
+    expect(message).not.toMatch(/enforcement|tool call/u);
   });
 });

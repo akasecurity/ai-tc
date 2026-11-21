@@ -52,7 +52,7 @@ export const runPostToolUse: HookHandler = async (event, stdin, options = {}) =>
   const { gateway, error } = openGateway(config);
   if (gateway === null) {
     if (claimStoreUnavailableWarning(config.dataDir, sessionId)) {
-      writeNotice(storeDegradedMessage(config.dbPath, error, 'tool call'));
+      writeNotice(storeDegradedMessage(config.dbPath, error, 'tool result'));
     }
     return undefined;
   }

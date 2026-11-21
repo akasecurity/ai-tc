@@ -265,13 +265,25 @@ vendor documents, not as what was seen to happen.
 **Load the package from a local directory.** There is no marketplace install for
 VS Code. If the Copilot CLI install above has already been done, reuse its
 `aka-copilot` folder and skip these two lines, so VS Code loads the same folder
-the update steps refresh. Otherwise pack and unpack the npm package, then point
-VS Code at the unpacked folder in your user settings:
+the update steps refresh. Otherwise pack and unpack the npm package:
 
 ```sh
 mkdir -p aka-copilot && cd aka-copilot
 tar -xzf "$(npm pack @akasecurity/ai-tc-copilot --silent)"
 ```
+
+Then, from that same folder, register the unpacked package with VS Code and
+reload the VS Code window:
+
+```sh
+node package/scripts/vscode-install.js
+```
+
+It edits VS Code's user `settings.json` and keeps every other line, comments
+included. Add `--insiders` for VS Code Insiders, or `--settings <path>` for a
+portable install or a custom user-data directory. `--uninstall` removes the
+folder again and leaves the two switches on. A settings file it cannot parse is
+left untouched and the run fails. To make the same change by hand, set:
 
 ```json
 {

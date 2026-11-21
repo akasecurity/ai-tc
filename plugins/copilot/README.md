@@ -56,7 +56,13 @@ mkdir -p aka-copilot && cd aka-copilot
 tar -xzf "$(npm pack @akasecurity/ai-tc-copilot --silent)"
 ```
 
-Then point VS Code at the unpacked folder in your user settings:
+Then, from that same folder, register it with VS Code and reload the window:
+
+```sh
+node package/scripts/vscode-install.js
+```
+
+That edits VS Code's user `settings.json` and keeps every other line, comments included. Add `--insiders` for VS Code Insiders, or `--settings <path>` for a portable install; `--uninstall` removes the entry again. To make the change by hand instead, set:
 
 ```json
 {

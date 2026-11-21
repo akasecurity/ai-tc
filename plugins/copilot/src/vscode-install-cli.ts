@@ -12,6 +12,7 @@
 // that is not a JSON object is left untouched and the run fails.
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   readFileSync,
   renameSync,
@@ -36,8 +37,18 @@ const PLUGIN_NAME = 'aka-copilot';
 /** The mode a settings.json this script creates is given. */
 const NEW_FILE_MODE = 0o644;
 
-/** Whether `dir` holds a copy of this plugin. */
+/** The folder layout the documented install unpacks into: `aka-copilot/package`. */
+const DOCUMENTED_LAYOUT = /(^|[\\/])aka-copilot[\\/]package[\\/]?$/u;
+
+/**
+ * Whether `dir` holds a copy of this plugin, or held one: a folder that is gone
+ * but sits at the documented `aka-copilot/package` layout is an earlier copy
+ * removed by an update, so its entry is dropped rather than left behind. A
+ * folder that still exists is recognised only by its manifest, so another
+ * plugin's entry is never removed.
+ */
 export function isPluginFolder(dir: string): boolean {
+  if (!existsSync(dir)) return DOCUMENTED_LAYOUT.test(dir);
   try {
     const manifest = JSON.parse(readFileSync(join(dir, 'plugin.json'), 'utf8')) as {
       name?: unknown;

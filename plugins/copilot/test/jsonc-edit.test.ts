@@ -96,6 +96,26 @@ describe('setProperty on a document of only comments', () => {
   });
 });
 
+describe('a CRLF document', () => {
+  const CRLF = '{\r\n  "files.exclude": {}\r\n}\r\n';
+
+  it('appends with the document’s own line ending', () => {
+    const next = setProperty(CRLF, 'chat.useHooks', true);
+    expect(next).toBe('{\r\n  "files.exclude": {},\r\n  "chat.useHooks": true\r\n}\r\n');
+    expect(next.replaceAll('\r\n', '')).not.toContain('\n');
+  });
+
+  it('indents an object value with CRLF continuation lines', () => {
+    const next = setProperty(CRLF, 'files.exclude', { a: true });
+    expect(next.replaceAll('\r\n', '')).not.toContain('\n');
+    expect(parseJsonc(next)).toEqual({ 'files.exclude': { a: true } });
+  });
+
+  it('removes a property with its whole line, leaving no stray carriage return', () => {
+    expect(removeProperty(CRLF, 'files.exclude')).toBe('{\r\n}\r\n');
+  });
+});
+
 describe('removeProperty', () => {
   it.each([
     ['a block comment', '{\n  "a": 1 /* note */, "b": 2\n}\n'],

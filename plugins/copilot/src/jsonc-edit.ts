@@ -170,26 +170,40 @@ function indentOf(text: string, spans: readonly PropertySpan[]): string {
   return /^[ \t]+$/u.test(indent) ? indent : '    ';
 }
 
+/** The document's line ending: CRLF when it uses one, else LF. */
+function eolOf(text: string): string {
+  return text.includes('\r\n') ? '\r\n' : '\n';
+}
+
 /** `value` as JSON, its continuation lines indented to sit under `indent`. */
-function render(value: unknown, indent: string): string {
-  return JSON.stringify(value, null, indent).replaceAll('\n', `\n${indent}`);
+function render(value: unknown, indent: string, eol: string): string {
+  return JSON.stringify(value, null, indent).replaceAll('\n', `${eol}${indent}`);
 }
 
 /** Set a top-level property, replacing its value or appending it. */
 export function setProperty(text: string, key: string, value: unknown): string {
-  const source = text.trim() === '' ? '{\n}\n' : isBlank(text) ? `${text.trimEnd()}\n{\n}\n` : text;
+  const fresh = eolOf(text);
+  const source =
+    text.trim() === ''
+      ? `{${fresh}}${fresh}`
+      : isBlank(text)
+        ? `${text.trimEnd()}${fresh}{${fresh}}${fresh}`
+        : text;
   const { close, properties } = layout(source);
   const indent = indentOf(source, properties);
+  const eol = eolOf(source);
   const existing = properties.find((p) => p.key === key);
   if (existing !== undefined) {
     return (
-      source.slice(0, existing.valueStart) + render(value, indent) + source.slice(existing.valueEnd)
+      source.slice(0, existing.valueStart) +
+      render(value, indent, eol) +
+      source.slice(existing.valueEnd)
     );
   }
-  const entry = `${indent}${JSON.stringify(key)}: ${render(value, indent)}`;
+  const entry = `${indent}${JSON.stringify(key)}: ${render(value, indent, eol)}`;
   const last = properties.at(-1);
   if (last === undefined) {
-    return `${source.slice(0, close).replace(/\s*$/u, '')}\n${entry}\n${source.slice(close)}`;
+    return `${source.slice(0, close).replace(/\s*$/u, '')}${eol}${entry}${eol}${source.slice(close)}`;
   }
   // After the last value, past any comma already there, so the edit adds one
   // comma at most and keeps a trailing comment on that line in place.
@@ -198,7 +212,7 @@ export function setProperty(text: string, key: string, value: unknown): string {
   const insertAt = close - (afterLast.length - afterLast.trimEnd().length);
   const lead = hasComma ? '' : ',';
   const head = source.slice(0, last.valueEnd) + lead + source.slice(last.valueEnd, insertAt);
-  return `${head}\n${entry}${source.slice(insertAt)}`;
+  return `${head}${eol}${entry}${source.slice(insertAt)}`;
 }
 
 /** Remove a top-level property, and the comma that separated it. */
@@ -216,11 +230,10 @@ export function removeProperty(text: string, key: string): string {
   const commaAt = skipTrivia(text, end);
   const afterComma = text.charAt(commaAt) === ',' ? commaAt + 1 : null;
   if (afterComma !== null) end = afterComma;
-  const spaces = /^[ \t]*/u.exec(text.slice(end));
-  if (afterComma !== null && spaces !== null && text.charAt(end + spaces[0].length) === '\n') {
-    end += spaces[0].length;
-  }
-  if (text.charAt(end) === '\n') end += 1;
+  const spaces = /^[ \t]*(?=\r?\n)/u.exec(text.slice(end));
+  if (afterComma !== null && spaces !== null) end += spaces[0].length;
+  if (text.startsWith('\r\n', end)) end += 2;
+  else if (text.charAt(end) === '\n') end += 1;
   let result = text.slice(0, start) + text.slice(end);
   // The last property had no comma of its own; drop the one before it.
   if (afterComma === null && index > 0) {

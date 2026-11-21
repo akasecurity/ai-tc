@@ -284,7 +284,9 @@ node package/scripts/vscode-install.js
 It edits VS Code's user `settings.json` and keeps every other line, comments
 included. Add `--insiders` for VS Code Insiders, or `--settings <path>` for a
 portable install or a custom user-data directory. `--uninstall` removes the
-folder again and leaves the two switches on. A settings file it cannot parse, or
+folder again and leaves the two switches on. An entry for an earlier copy is
+replaced, including one an update deleted from another `aka-copilot/package`
+folder. A settings file it cannot parse, or
 one that sets the same key twice, is left untouched and the run fails. It reads
 and rewrites the file without a lock VS Code knows of, so leave the Settings
 editor alone while it runs: a setting saved there at the same moment is lost. To

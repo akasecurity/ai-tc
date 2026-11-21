@@ -132,6 +132,12 @@ describe('the installer on disk', () => {
     expect(isPluginFolder(pluginDir)).toBe(true);
     expect(isPluginFolder(home)).toBe(false);
     expect(isPluginFolder(join(home, 'missing'))).toBe(false);
+    // A copy an update deleted, at the documented layout, is an earlier copy.
+    expect(isPluginFolder(join(home, 'old', 'aka-copilot', 'package'))).toBe(true);
+    // A folder that still exists at that layout is judged by its manifest.
+    const lookalike = join(home, 'other', 'aka-copilot', 'package');
+    mkdirSync(lookalike, { recursive: true });
+    expect(isPluginFolder(lookalike)).toBe(false);
   });
 
   it('creates settings.json, then removes its entry again', () => {

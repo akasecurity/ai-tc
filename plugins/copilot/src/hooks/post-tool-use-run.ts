@@ -124,7 +124,7 @@ export const runPostToolUse: HookHandler = async (event, stdin, options = {}) =>
     // than looking protected. On the CLI that has to be a progress line: `systemMessage`
     // is not an output field there, so the same object on stdout is dropped.
     if (claimStoreUnavailableWarning(config.dataDir, sessionId)) {
-      const message = storeDegradedMessage(config.dbPath, error, 'tool call');
+      const message = storeDegradedMessage(config.dbPath, error, 'tool result');
       if (dialect === 'vscode') return { systemMessage: message };
       writeNotice(message, dialect);
     }

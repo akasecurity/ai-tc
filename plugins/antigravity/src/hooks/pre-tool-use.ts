@@ -77,7 +77,9 @@ async function main(): Promise<unknown> {
     // deny), so the once-per-session notice goes to stderr rather than being
     // smuggled into an allow the host may not surface.
     if (claimStoreUnavailableWarning(config.dataDir, getString(input, 'conversationId'))) {
-      process.stderr.write(`[aka] ${storeDegradedMessage(config.dbPath, opened.error)}\n`);
+      process.stderr.write(
+        `[aka] ${storeDegradedMessage(config.dbPath, opened.error, 'tool call')}\n`,
+      );
     }
     return ALLOW;
   }

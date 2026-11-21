@@ -766,6 +766,21 @@ describe('runHookFailOpen — VS Code prompt block', () => {
     expect(run.stdout).toEqual([]);
   });
 
+  // The recording kit writes its file synchronously after the handler decides,
+  // inside the raced body. A stalled write blocks the loop, so the watchdog's
+  // timer cannot run until the body has already settled with its block.
+  it('still exits 2 when a synchronous stall after the decision outlasts the watchdog', async () => {
+    const run = await drivePromptBlock(() => {
+      const until = Date.now() + 40;
+      while (Date.now() < until) {
+        /* a synchronous write to a stalled home directory */
+      }
+      return Promise.resolve({ promptBlock: 'stopped: r1' });
+    }, 2);
+    expect(run.exits[0]).toBe(PROMPT_BLOCK_EXIT_CODE);
+    expect(run.stderr.join('')).toBe('stopped: r1\n');
+  });
+
   it('exits 0 with nothing written when the body throws instead', async () => {
     const run = await drivePromptBlock(() => Promise.reject(new Error('boom')));
     expect(run.exits).toEqual([0]);

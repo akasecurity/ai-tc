@@ -68,6 +68,20 @@ describe('installInSettings', () => {
   it('refuses a chat.pluginLocations that is not an object', () => {
     expect(() => installInSettings('{"chat.pluginLocations": []}', PLUGIN, isOld)).toThrow();
   });
+
+  // Otherwise the edit lands on the first copy, JSON.parse reads the second,
+  // and the installer reports a switch on that VS Code reads as off.
+  it('refuses a settings file that repeats a switch it sets', () => {
+    expect(() =>
+      installInSettings('{"chat.useHooks": false, "chat.useHooks": false}', PLUGIN, isOld),
+    ).toThrow(/appears more than once/u);
+  });
+
+  it('installs into a settings file that holds only comments', () => {
+    const next = installInSettings('// my settings\n', PLUGIN, isOld);
+    expect(next.startsWith('// my settings\n')).toBe(true);
+    expect(parseJsonc(next)['chat.useHooks']).toBe(true);
+  });
 });
 
 describe('uninstallFromSettings', () => {

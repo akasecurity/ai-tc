@@ -31,7 +31,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ISSUED_TWILIO_SID } from '../../../../test/helpers/issued-secret.ts';
 import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
-import { tooLargeToScanMessage } from '../../src/exception-guidance.ts';
+import {
+  tooLargeToScanMessage,
+  workerUnavailableBlockedMessage,
+} from '../../src/exception-guidance.ts';
 import { denyPointerMessage } from '../../src/hooks/pre-tool-use-decision.ts';
 import { runPreToolUse } from '../../src/hooks/pre-tool-use-run.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
@@ -193,7 +196,11 @@ describe.each(DIALECTS)('runPreToolUse on the $kind dialect', (d) => {
 
     const output = await run(command, { scanWorkerUrl: absent });
 
-    expect(output).toEqual(d.deny(tooLargeToScanMessage(`${d.tool} call`)));
+    // `unavailable` names the reinstall, `timeout` the size; either is a deny.
+    expect([
+      d.deny(workerUnavailableBlockedMessage(`${d.tool} call`)),
+      d.deny(tooLargeToScanMessage(`${d.tool} call`)),
+    ]).toContainEqual(output);
     // The refused field was never scanned, so nothing was found in it.
     expect(findingRules()).toEqual([]);
     expectNoEchoOf(reasonOf(output), FIXTURE.example);

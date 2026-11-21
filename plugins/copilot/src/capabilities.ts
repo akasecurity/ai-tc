@@ -162,7 +162,7 @@ export const CAPABILITY_MATRIX: readonly Capability[] = [
     subject: 'prompt',
     channel: 'block',
     verified: false,
-    note: 'Captured and scanned; the capture was recorded in test/fixtures/vscode/plugin-load-1.141/. A block policy, a redact this host cannot carry out, or a prompt too large to scan in time exits 2, which this host documents as its blocking exit, so the prompt is not sent; that exit has not been driven against a live install. Nothing is rewritten.',
+    note: 'Captured and scanned; the capture was recorded in test/fixtures/vscode/plugin-load-1.141/. A block policy (a redact policy whose workspace redactFallback is block included) or a prompt that could not be scanned exits 2, which this host documents as a blocking error. Whether VS Code then withholds the prompt has not been seen on a live install. Nothing is rewritten.',
   },
   {
     surface: 'vscode',

@@ -39,6 +39,7 @@ import {
   tooLargeToScanMessage,
   unscannedTooLargeMessage,
   unscannedWorkerUnavailableMessage,
+  workerUnavailableBlockedMessage,
 } from '../../src/exception-guidance.ts';
 import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from '../../src/hooks/large-input.ts';
 import { openGatewayOrNull } from '../../src/hooks/store-health.ts';
@@ -252,9 +253,16 @@ describe.each(DIALECTS)('runUserPromptSubmit on the $kind dialect', (d) => {
     const output = await run(prompt, { scanWorkerUrl: absent });
     if (d.kind === 'vscode') {
       // VS Code can stop the prompt, so a prompt nobody could check is refused.
-      expect(output).toEqual({ promptBlock: tooLargeToScanMessage('prompt') });
       const attrs = JSON.parse(String(promptRows()[0]?.attributes)) as Record<string, unknown>;
       expect(['unavailable', 'timeout']).toContain(attrs.scan_incomplete);
+      // The refusal names the cause the scan recorded: the reinstall for a
+      // worker that could not run, the size for one that ran out of time.
+      expect(output).toEqual({
+        promptBlock:
+          attrs.scan_incomplete === 'unavailable'
+            ? workerUnavailableBlockedMessage('prompt')
+            : tooLargeToScanMessage('prompt'),
+      });
       expect(findingRows()).toEqual([]);
       expectNoEchoOf(stderr.raw(), FIXTURE.example);
       return;

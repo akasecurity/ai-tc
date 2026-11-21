@@ -15,6 +15,7 @@ import {
   tooLargeToScanMessage,
   unscannedTooLargeMessage,
   unscannedWorkerUnavailableMessage,
+  workerUnavailableBlockedMessage,
 } from '../../src/exception-guidance.ts';
 import {
   PROMPT_REDACT_NOTE,
@@ -142,14 +143,29 @@ describe('promptDecision', () => {
     },
   );
 
-  it.each(['timeout', 'unavailable'] as const)(
-    'stops a VS Code prompt whose scan was refused (%s)',
-    (scanIncomplete) => {
-      expect(
-        promptDecision('submitted', 'vscode', { action: 'block', findings: [], scanIncomplete }),
-      ).toEqual({ output: { promptBlock: tooLargeToScanMessage('prompt') } });
-    },
-  );
+  it('stops a VS Code prompt whose scan ran out of time, saying it was too large', () => {
+    expect(
+      promptDecision('submitted', 'vscode', {
+        action: 'block',
+        findings: [],
+        scanIncomplete: 'timeout',
+      }),
+    ).toEqual({ output: { promptBlock: tooLargeToScanMessage('prompt') } });
+  });
+
+  it('stops a VS Code prompt the worker could not scan, naming the reinstall', () => {
+    const decision = promptDecision('submitted', 'vscode', {
+      action: 'block',
+      findings: [],
+      scanIncomplete: 'unavailable',
+    });
+    expect(decision).toEqual({
+      output: { promptBlock: workerUnavailableBlockedMessage('prompt') },
+    });
+    const block = (decision.output as { promptBlock: string }).promptBlock;
+    expect(block).toContain('reinstall the AKA plugin');
+    expect(block).not.toMatch(/shorten|too large|time limit/iu);
+  });
 
   // A worker that could not run is an install fault: telling the user to
   // shorten the prompt would send them after the wrong cause.
@@ -190,19 +206,37 @@ describe('promptDecision', () => {
 
   // VS Code's prompt-stop channel is exit 2, which the wrapper writes for a
   // returned `promptBlock`.
-  it.each(['block', 'redact'] as const)('stops a VS Code prompt on a %s policy', (action) => {
+  // A redact policy reaches here already resolved by the runtime (the capture
+  // is `rewritable: false`): `action` is the workspace `redactFallback`, and
+  // `redactDegradedTo` says a block came from a redact.
+  it.each([
+    ['a block policy', undefined],
+    ['a redact policy whose redactFallback is block', 'block' as const],
+  ])('stops a VS Code prompt on %s', (_name, redactDegradedTo) => {
     const decision = promptDecision('submitted', 'vscode', {
-      action,
+      action: 'block',
       findings: findings('generic.secret'),
       blockedReferences: [REF],
+      redactDegradedTo,
     });
     const block = (decision.output as { promptBlock?: string } | null)?.promptBlock;
     expect(block).toContain('AKA blocked this prompt');
     expect(block).toContain('generic.secret');
     expect(block).toContain('aka exception approve aka-ref-0001');
-    if (action === 'redact') expect(block).toContain(PROMPT_REDACT_NOTE);
+    if (redactDegradedTo === 'block') expect(block).toContain(PROMPT_REDACT_NOTE);
     else expect(block).not.toContain(PROMPT_REDACT_NOTE);
     expect(decision.notice).toBeUndefined();
+  });
+
+  it('sends a VS Code prompt under a redact policy with the default warn fallback', () => {
+    const decision = promptDecision('submitted', 'vscode', {
+      action: 'warn',
+      findings: findings('generic.secret'),
+      redactDegradedTo: 'warn',
+    });
+    expect(decision.output).toEqual({
+      systemMessage: expect.stringContaining('sent unchanged') as unknown,
+    });
   });
 
   it('never stops a VS Code transformed prompt, which the submitted one owns', () => {

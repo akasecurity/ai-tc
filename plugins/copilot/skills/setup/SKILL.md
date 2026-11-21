@@ -107,9 +107,11 @@ The doc-derived fixtures the half was first written from still sit in
 **Only the pre-tool-use event ENFORCES, and the VS Code prompt event.** Four
 events are wired — the session start, the prompt, the tool call and the tool
 result. The tool call can be stopped or rewritten on every surface. Under VS
-Code a prompt can be stopped too: a `block` policy, or a `redact` policy that
-cannot be carried out, exits 2, which VS Code documents as its blocking exit,
-and the prompt is not sent. That stop has not yet been seen on a live install.
+Code a prompt can be stopped too: a `block` policy, or a `redact` policy whose
+workspace `redactFallback` is `block`, exits 2, which VS Code documents as a
+blocking error. Whether VS Code then withholds the prompt has not yet been seen
+on a live install. With the default `redactFallback`, `warn`, a `redact` policy
+reports the prompt and sends it.
 On the Copilot CLI your prompts, and on every surface the tool output the model
 reads, **are** captured, scanned and recorded, so a secret in either shows up as
 a finding on the dashboard; **neither can be withheld or masked.** A `block` or
@@ -249,7 +251,7 @@ everything or only enrolled repositories, and which repositories are enrolled.
 | vscode  | PreToolUse          | run_in_terminal.explanation, goal | block   | no       | Model-authored prose that rides along with the call; both fields were recorded in test/fixtures/vscode/plugin-load-1.141/. They do not execute, but this host takes updatedInput only alongside permissionDecision allow, which would cover the command too, so they are never rewritten: a redact follows redactFallback (warn by default), exactly as on command, and a block policy denies the call. A deny through hookSpecificOutput was never driven. Scanned for secrets and PII only: the command-risk rules judge run_in_terminal.command, never this prose. |
 | vscode  | PreToolUse          | file-write content                | rewrite | no       | create_file content was recorded as captured, in test/fixtures/vscode/plugin-load-1.141/. No updatedInput was ever driven; it is validated against the tool input schema and LAST HOOK WINS, so a user or repo hook returning one discards this.                                                                                                                                                                                                                                                                                                                      |
 | vscode  | SessionStart        | session                           | none    | yes      | Opens the session root as the vscode interface, recorded in test/fixtures/vscode/plugin-load-1.141/. A payload carrying no cwd declines without opening the store; the recorded host sent cwd on every event.                                                                                                                                                                                                                                                                                                                                                         |
-| vscode  | UserPromptSubmit    | prompt                            | block   | no       | Captured and scanned; the capture was recorded in test/fixtures/vscode/plugin-load-1.141/. A block policy, a redact this host cannot carry out, or a prompt too large to scan in time exits 2, which this host documents as its blocking exit, so the prompt is not sent; that exit has not been driven against a live install. Nothing is rewritten.                                                                                                                                                                                                                 |
+| vscode  | UserPromptSubmit    | prompt                            | block   | no       | Captured and scanned; the capture was recorded in test/fixtures/vscode/plugin-load-1.141/. A block policy (a redact policy whose workspace redactFallback is block included) or a prompt that could not be scanned exits 2, which this host documents as a blocking error. Whether VS Code then withholds the prompt has not been seen on a live install. Nothing is rewritten.                                                                                                                                                                                       |
 | vscode  | PostToolUse         | tool_response                     | none    | yes      | Captured and scanned, recorded in test/fixtures/vscode/plugin-load-1.141/ as a string response; nothing can be withheld. This host has no output-rewrite field at all, and its whole-result block has never been driven, so a finding is recorded and the output reaches the model unchanged.                                                                                                                                                                                                                                                                         |
 | cloud   | preToolUse          | bash.command                      | block   | no       | Speaks the CLI protocol, so the adapter behaves identically — but it runs only where the repository commits a hook on its default branch, and ask is coerced to deny there.                                                                                                                                                                                                                                                                                                                                                                                           |
 
@@ -282,8 +284,11 @@ node package/scripts/vscode-install.js
 It edits VS Code's user `settings.json` and keeps every other line, comments
 included. Add `--insiders` for VS Code Insiders, or `--settings <path>` for a
 portable install or a custom user-data directory. `--uninstall` removes the
-folder again and leaves the two switches on. A settings file it cannot parse is
-left untouched and the run fails. To make the same change by hand, set:
+folder again and leaves the two switches on. A settings file it cannot parse, or
+one that sets the same key twice, is left untouched and the run fails. It reads
+and rewrites the file without a lock VS Code knows of, so leave the Settings
+editor alone while it runs: a setting saved there at the same moment is lost. To
+make the same change by hand, set:
 
 ```json
 {

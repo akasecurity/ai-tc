@@ -85,7 +85,19 @@ function skipValue(text: string, i: number): number {
   return i + match[0].length;
 }
 
-/** The root object and its top-level properties. Throws on a non-object root. */
+/**
+ * True for a document holding nothing but whitespace and comments, which VS
+ * Code reads as an empty settings object.
+ */
+function isBlank(text: string): boolean {
+  return skipTrivia(text, 0) === text.length;
+}
+
+/**
+ * The root object and its top-level properties. Throws on a non-object root,
+ * and on a top-level key that appears twice: an edit to one copy while
+ * `JSON.parse` reads the other would report a change that does not apply.
+ */
 function layout(text: string): Layout {
   const open = skipTrivia(text, 0);
   if (text.charAt(open) !== '{') throw new Error('expected a JSON object at the top level');
@@ -100,6 +112,9 @@ function layout(text: string): Layout {
       throw new Error(`expected a property name at offset ${String(at)}`);
     const keyEnd = skipString(text, at);
     const key = JSON.parse(text.slice(at, keyEnd)) as string;
+    if (properties.some((p) => p.key === key)) {
+      throw new Error(`"${key}" appears more than once at the top level; remove one and run again`);
+    }
     const colon = skipTrivia(text, keyEnd);
     if (text.charAt(colon) !== ':') throw new Error(`expected ':' after "${key}"`);
     const valueStart = skipTrivia(text, colon + 1);
@@ -137,11 +152,11 @@ function stripToJson(text: string): string {
 }
 
 /**
- * Parse a JSONC document. An empty or whitespace-only document is an empty
- * object, which is how VS Code treats a fresh settings.json.
+ * Parse a JSONC document. A document of only whitespace and comments is an
+ * empty object, which is how VS Code treats a fresh settings.json.
  */
 export function parseJsonc(text: string): Record<string, unknown> {
-  if (text.trim() === '') return {};
+  if (isBlank(text)) return {};
   layout(text);
   return JSON.parse(stripToJson(text)) as Record<string, unknown>;
 }
@@ -162,7 +177,7 @@ function render(value: unknown, indent: string): string {
 
 /** Set a top-level property, replacing its value or appending it. */
 export function setProperty(text: string, key: string, value: unknown): string {
-  const source = text.trim() === '' ? '{\n}\n' : text;
+  const source = text.trim() === '' ? '{\n}\n' : isBlank(text) ? `${text.trimEnd()}\n{\n}\n` : text;
   const { close, properties } = layout(source);
   const indent = indentOf(source, properties);
   const existing = properties.find((p) => p.key === key);
@@ -188,7 +203,7 @@ export function setProperty(text: string, key: string, value: unknown): string {
 
 /** Remove a top-level property, and the comma that separated it. */
 export function removeProperty(text: string, key: string): string {
-  if (text.trim() === '') return text;
+  if (isBlank(text)) return text;
   const { properties } = layout(text);
   const index = properties.findIndex((p) => p.key === key);
   const target = properties[index];
@@ -196,8 +211,15 @@ export function removeProperty(text: string, key: string): string {
   const lineStart = text.lastIndexOf('\n', target.start) + 1;
   const start = /^[ \t]*$/u.test(text.slice(lineStart, target.start)) ? lineStart : target.start;
   let end = target.valueEnd;
-  const afterComma = /^[ \t]*,/u.exec(text.slice(end));
-  if (afterComma !== null) end += afterComma[0].length;
+  // The separating comma, past any comment between it and the value. The
+  // comment goes with the property it annotates.
+  const commaAt = skipTrivia(text, end);
+  const afterComma = text.charAt(commaAt) === ',' ? commaAt + 1 : null;
+  if (afterComma !== null) end = afterComma;
+  const spaces = /^[ \t]*/u.exec(text.slice(end));
+  if (afterComma !== null && spaces !== null && text.charAt(end + spaces[0].length) === '\n') {
+    end += spaces[0].length;
+  }
   if (text.charAt(end) === '\n') end += 1;
   let result = text.slice(0, start) + text.slice(end);
   // The last property had no comma of its own; drop the one before it.

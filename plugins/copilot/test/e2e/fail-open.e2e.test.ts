@@ -40,6 +40,7 @@ import { ISSUED_TWILIO_SID } from '../../../../test/helpers/issued-secret.ts';
 import {
   tooLargeToScanMessage,
   unscannedWorkerUnavailableMessage,
+  workerUnavailableBlockedMessage,
 } from '../../src/exception-guidance.ts';
 import { readCliStdout } from '../helpers/cli-stdout.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
@@ -430,7 +431,7 @@ describe.each(DIALECTS)('pre-tool-use [$event] — a field too large to scan in 
       return runHook(d.event, home, payload, scriptsDir);
     }, `aka-copilot-no-worker-${d.event}-`);
 
-    const reason = tooLargeToScanMessage(`${tool} call`);
+    const reason = workerUnavailableBlockedMessage(`${tool} call`);
     expect(soleObject(run)).toEqual(
       d.event === 'preToolUse'
         ? { permissionDecision: 'deny', permissionDecisionReason: reason }
@@ -805,7 +806,8 @@ describe.each(DIALECTS.map((d) => (d.event === 'preToolUse' ? 'cli' : 'vscode'))
         // on stdout. The prompt nobody could check is not sent.
         expect(run.status, run.stderr).toBe(2);
         expect(run.stdout).toBe('');
-        expect(run.stderr).toContain(tooLargeToScanMessage('prompt'));
+        expect(run.stderr).toContain(workerUnavailableBlockedMessage('prompt'));
+        expect(run.stderr).not.toContain(tooLargeToScanMessage('prompt'));
         expectNoEchoOf(run.stderr, FIXTURE.example);
         return;
       }

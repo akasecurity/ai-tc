@@ -29,6 +29,20 @@ describe('parseJsonc', () => {
     expect(parseJsonc('  \n')).toEqual({});
   });
 
+  it('reads a document of only comments as an empty object', () => {
+    expect(parseJsonc('// my settings\n')).toEqual({});
+    expect(parseJsonc('/* nothing yet */')).toEqual({});
+  });
+
+  // An edit to the first copy of a key while JSON.parse reads the last would
+  // report a change that never applies.
+  it('refuses a top-level key that appears twice', () => {
+    const doubled = '{"chat.useHooks": false, "chat.useHooks": false}';
+    expect(() => parseJsonc(doubled)).toThrow(/"chat\.useHooks" appears more than once/u);
+    expect(() => setProperty(doubled, 'chat.useHooks', true)).toThrow(/appears more than once/u);
+    expect(parseJsonc('{"a": {"x": 1}, "b": {"x": 2}}')).toEqual({ a: { x: 1 }, b: { x: 2 } });
+  });
+
   it('refuses what it cannot edit safely', () => {
     for (const bad of ['[]', '{', '{"a": 1} x', '{"a" 1}', '{"a": "x}', '{/* x', '42']) {
       expect(() => parseJsonc(bad), bad).toThrow();
@@ -74,7 +88,28 @@ describe('setProperty', () => {
   });
 });
 
+describe('setProperty on a document of only comments', () => {
+  it('keeps the comments and adds the object after them', () => {
+    const next = setProperty('// my settings\n', 'chat.useHooks', true);
+    expect(next.startsWith('// my settings\n')).toBe(true);
+    expect(parseJsonc(next)).toEqual({ 'chat.useHooks': true });
+  });
+});
+
 describe('removeProperty', () => {
+  it.each([
+    ['a block comment', '{\n  "a": 1 /* note */, "b": 2\n}\n'],
+    ['a line comment', '{\n  "a": 1 // note\n  , "b": 2\n}\n'],
+  ])('removes the comma that follows %s after the value', (_name, text) => {
+    const next = removeProperty(text, 'a');
+    expect(parseJsonc(next)).toEqual({ b: 2 });
+    expect(next).not.toContain('note');
+  });
+
+  it('leaves a document of only comments alone', () => {
+    expect(removeProperty('// my settings\n', 'a')).toBe('// my settings\n');
+  });
+
   it('removes a middle property and its line', () => {
     const next = removeProperty(SETTINGS, 'files.exclude');
     expect(parseJsonc(next)).toEqual({ 'editor.fontSize': 14, url: 'http://example.test/a//b' });

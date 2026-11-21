@@ -253,8 +253,8 @@ changes. The gaps that exist today:
   non-zero exit, invalid JSON, a timeout — is a non-blocking warning, so that host fails
   open. The one exit 2 this adapter writes is VS Code's prompt block: `runHookFailOpen` ends
   with `PROMPT_BLOCK_EXIT_CODE` only when the VS Code-dialect prompt handler RETURNS a
-  `VsCodePromptBlock` (a `block` verdict, an unresolved `redact`, or a prompt too large to
-  scan in time), never on a throw, a decline or the watchdog; it also **parses matchers and ignores them**, so the hook is spawned for every tool
+  `VsCodePromptBlock` (a `block` verdict, a `redact` whose workspace `redactFallback` is
+  `block` included, or a prompt that could not be scanned), never on a throw, a decline or the watchdog; it also **parses matchers and ignores them**, so the hook is spawned for every tool
   call and the unknown-tool exit is the common path rather than the rare one.
   **The two dialects are payload FORMATS, not hosts**, and the CLI speaks both: the reference
   selects the format by the event name's casing, so a manifest registering `preToolUse` and

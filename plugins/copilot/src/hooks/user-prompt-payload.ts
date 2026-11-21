@@ -31,6 +31,7 @@ import {
   tooLargeToScanMessage,
   unscannedTooLargeMessage,
   unscannedWorkerUnavailableMessage,
+  workerUnavailableBlockedMessage,
 } from '../exception-guidance.ts';
 import type { Dialect } from './dialect.ts';
 import type { HookEvent } from './event-name.ts';
@@ -104,8 +105,10 @@ export interface PromptDecision {
 }
 
 /**
- * The note on a stopped prompt whose policy said redact: there is no rewrite
- * channel for a prompt, so it is stopped rather than sent unmasked.
+ * The note on a stopped prompt whose policy said redact and whose workspace
+ * `redactFallback` is `block`: there is no rewrite channel for a prompt, so the
+ * runtime resolved the redact to that fallback and the prompt is stopped
+ * rather than sent unmasked.
  */
 export const PROMPT_REDACT_NOTE =
   'This surface cannot rewrite a prompt, so the mask was not applied and the prompt was stopped instead.';
@@ -115,7 +118,8 @@ export const PROMPT_REDACT_NOTE =
  *
  * **ONLY THE VS CODE DIALECT STOPS A PROMPT.** VS Code's block channel is exit
  * 2, which `runHookFailOpen` writes when this returns a `VsCodePromptBlock`:
- * on a `block` verdict, on a `redact` the runtime could not carry out, and on a
+ * on a `block` verdict (including a `redact` whose workspace `redactFallback`
+ * is `block`), and on a
  * prompt too large to scan in time — the large-input refusal every other host
  * with a prompt-stop channel already makes. The Copilot CLI has no prompt-stop
  * channel this repository has observed (`userPromptSubmitted.modifiedPrompt` is
@@ -126,8 +130,9 @@ export const PROMPT_REDACT_NOTE =
  * The capture is taken with `rewritable: false`, which resolves a `redact`
  * policy to `settings.redactFallback` INSIDE the runtime, where the recorded
  * `findings.actionTaken` and the ledger read the one answer this function then
- * acts on. A `redact` that still reaches here was not resolved and is stopped
- * rather than sent unmasked, on VS Code.
+ * acts on. With the default fallback, `warn`, a redact policy is reported and
+ * the prompt is sent; `redactDegradedTo` says when a block came from a redact,
+ * which is what the note on the stop keys off.
  *
  * The transformed event never speaks about a finding: the submitted one owns
  * the message, and the user's own words are inside both, so a second copy for
@@ -143,11 +148,19 @@ export function promptDecision(
   result: Pick<CaptureResult, 'action' | 'findings'> & {
     blockedReferences?: readonly BlockedDetectionRef[] | undefined;
     scanIncomplete?: CaptureResult['scanIncomplete'];
+    redactDegradedTo?: CaptureResult['redactDegradedTo'];
   },
 ): PromptDecision {
   if (result.scanIncomplete !== undefined) {
     if (dialect === 'vscode' && event === 'submitted') {
-      return { output: { promptBlock: tooLargeToScanMessage('prompt') } };
+      return {
+        output: {
+          promptBlock:
+            result.scanIncomplete === 'unavailable'
+              ? workerUnavailableBlockedMessage('prompt')
+              : tooLargeToScanMessage('prompt'),
+        },
+      };
     }
     // A worker that could not run is an install fault, not a prompt that was
     // too big, so the two causes get different advice.
@@ -165,14 +178,14 @@ export function promptDecision(
   const ruleIds = uniqueRuleIds([...result.findings]);
   const pointer = exceptionPointer(result.blockedReferences);
 
-  if (dialect === 'vscode' && (result.action === 'block' || result.action === 'redact')) {
+  if (dialect === 'vscode' && result.action === 'block') {
     return {
       output: {
         promptBlock: blockMessage({
           subject: 'prompt',
           ruleIds,
           blockedRef: result.blockedReferences?.[0],
-          note: result.action === 'redact' ? PROMPT_REDACT_NOTE : undefined,
+          note: result.redactDegradedTo === 'block' ? PROMPT_REDACT_NOTE : undefined,
         }),
       },
     };

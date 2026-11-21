@@ -62,7 +62,7 @@ Then, from that same folder, register it with VS Code and reload the window:
 node package/scripts/vscode-install.js
 ```
 
-That edits VS Code's user `settings.json` and keeps every other line, comments included. Add `--insiders` for VS Code Insiders, or `--settings <path>` for a portable install; `--uninstall` removes the entry again. To make the change by hand instead, set:
+That edits VS Code's user `settings.json` and keeps every other line, comments included. Add `--insiders` for VS Code Insiders, or `--settings <path>` for a portable install; `--uninstall` removes the entry again. Leave VS Code's Settings editor alone while it runs: a setting saved there at the same moment is lost. To make the change by hand instead, set:
 
 ```json
 {

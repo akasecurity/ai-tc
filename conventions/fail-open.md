@@ -61,8 +61,8 @@ deadline. Each sits inside whatever would otherwise answer for that path first:
   start, inside its 24 s watchdog, which resolves with silence — the no-opinion on both
   dialects.
 - **Copilot UserPromptSubmit under VS Code** (the same `largeInputBound` and the same 15 s
-  deadline, inside the same 24 s watchdog): refused by exit 2, VS Code's prompt-stop channel
-  — see the exit-2 exception below.
+  deadline, inside the same 24 s watchdog): refused by exit 2, VS Code's documented blocking
+  exit — see the exit-2 exception below.
 - **Copilot userPromptSubmitted on the CLI, and postToolUse on both dialects** (the same
   bound and deadline): bounded, with **no refusal half**. Neither has a prompt-stop or
   result-withhold channel this package has confirmed, so a field that comes back
@@ -104,11 +104,14 @@ missing one refuses every large field (or, on those Copilot hooks, reports every
 unscanned).
 
 **One hook exits non-zero on purpose: a VS Code prompt the Copilot plugin stops.** VS Code
-agent mode documents exit 2 as its blocking exit and has no stdout field that stops a
+agent mode documents exit 2 as a blocking error and has no stdout field that stops a
 prompt, so the Copilot plugin's `runHookFailOpen` (`plugins/copilot/src/hooks/shared.ts`)
 writes the reason to stderr and exits `PROMPT_BLOCK_EXIT_CODE` (2) when the VS Code-dialect
-prompt handler RETURNS a `VsCodePromptBlock`: on a `block` verdict, on a `redact` the runtime
-could not carry out, and on a prompt too large to scan in time. It is a returned decision,
+prompt handler RETURNS a `VsCodePromptBlock`: on a `block` verdict (a `redact` whose
+workspace `redactFallback` is `block` included) and on a prompt that could not be scanned.
+No vendor page says what exit 2 does to `UserPromptSubmit` in particular, and the prompt
+being withheld has not been observed on a live install; row 4 of
+`plugins/copilot/test/fixtures/RECORDING.md` is the recording that would settle it. It is a returned decision,
 exactly like a deny: `failOpen` takes a `HookOutput`, so a throw, a decline and the watchdog
 still write nothing and exit 0, and the CLI dialect never returns one, because a non-zero
 exit there is a deny. `plugins/copilot/test/hook-output-shapes.test.ts` holds the source to a

@@ -29,9 +29,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import {
-  tooLargeToScanMessage,
   unscannedPastWalkLimitsMessage,
   unscannedWorkerUnavailableMessage,
+  workerUnavailableBlockedMessage,
 } from '../../src/exception-guidance.ts';
 import { readCliStdout } from '../helpers/cli-stdout.ts';
 
@@ -222,7 +222,7 @@ describe.each(DIALECTS)(
         await expectTallySettlesAt(1);
       } else {
         expect(large.status, large.stderr).toBe(2);
-        expect(large.stderr).toContain(tooLargeToScanMessage('prompt'));
+        expect(large.stderr).toContain(workerUnavailableBlockedMessage('prompt'));
         await expectTallySettlesAt(0);
       }
     });

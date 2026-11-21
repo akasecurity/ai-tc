@@ -48,6 +48,7 @@ import type { EventMetadata } from '@akasecurity/schema';
 import type { Dialect, ToolCall } from './dialect.ts';
 import { readCwd, readSessionId } from './dialect.ts';
 import { readEventName } from './event-name.ts';
+import { recordHookRun } from './recording.ts';
 
 /**
  * The watchdog `runHookFailOpen` races the hook body against.
@@ -684,10 +685,17 @@ export type HookHandler = (
  * The entry-script form of a {@link HookHandler}: argv's event token and stdin
  * feed it inside {@link runHookFailOpen}, so the stdin read races the same
  * watchdog the body does and every fault still writes `failOpen` (or nothing)
- * and exits 0.
+ * and exits 0. A run that reaches the handler's answer is recorded when
+ * recording is on (see ./recording.ts).
  */
 export async function runHookEntry(handler: HookHandler, failOpen?: HookOutput): Promise<never> {
-  return runHookFailOpen(async () => handler(readEventName(), await readStdin()), failOpen);
+  return runHookFailOpen(async () => {
+    const event = readEventName();
+    const stdin = await readStdin();
+    const verdict = await handler(event, stdin);
+    recordHookRun(event, stdin, verdict);
+    return verdict;
+  }, failOpen);
 }
 
 /**

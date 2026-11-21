@@ -55,6 +55,13 @@ your user account can read them. These modes are the only at-rest control, so
 treat a copy of the store (a backup, a synced folder, a stolen disk image) as
 sensitive.
 
+The GitHub Copilot plugin can also record what its hooks received and answered,
+for checking it against a live install. That is off unless you create
+`~/.aka/data/hook-recordings/` yourself. While the directory exists, each hook
+run writes one `0600` file there holding the payload exactly as the host sent
+it — prompts, tool arguments and tool output, nothing masked. Remove the
+directory to stop recording, and delete the files when you are done with them.
+
 Which of those sidecars exist depends on how SQLite is journalling. `-wal` and
 `-shm` are the pair it keeps in write-ahead logging, the mode it uses by default;
 where WAL is unavailable it silently falls back to a rollback journal and writes

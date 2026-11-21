@@ -87,6 +87,26 @@ The two commands in the [quick start](#install) above add the marketplace and in
 
 Claude Desktop is supported too; the [installation guide](https://akasecurity.github.io/ai-tc-docs/getting-started/installation/) covers both. `ai-tc` runs locally alongside your agent. Standalone by default: there's no backend to stand up, and no scanning happens off your machine.[^egress]
 
+### In VS Code
+
+Three agents run inside VS Code, and each reaches AKA a different way. None of the three has
+been verified end to end against a live VS Code install yet.
+
+- **GitHub Copilot agent mode** loads the GitHub Copilot plugin (beta). Unpack the npm package
+  and run `node package/scripts/vscode-install.js`; the
+  [plugin's README](plugins/copilot/README.md) has the steps and says what it can stop there.
+- **The Claude Code extension** runs Claude Code, which reads the same `~/.claude/settings.json`
+  and the same installed plugins as the terminal, so installing the plugin as above covers it.
+  Anthropic documents the shared settings but not that every hook fires the same way in the
+  extension, and some versions have been reported not to fire plugin hooks there. The
+  extension's Customize menu lists the hooks it loaded.
+- **The Codex extension** runs the Codex CLI and reads the same `~/.codex/config.toml`, so the
+  Codex plugin's hooks apply to it as they do in the terminal. OpenAI documents the shared
+  configuration, not the hook behaviour inside the extension.
+
+To check any of them, run one agent session in VS Code and open `aka dashboard`: the session's
+prompts and tool calls appear under Activity if its hooks ran.
+
 ### The `aka` CLI (standalone binary)
 
 The CLI carries the dashboard, the local store and `aka scan`. The binary embeds its own runtime, so it needs no Node.js.

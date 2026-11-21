@@ -248,10 +248,13 @@ changes. The gaps that exist today:
   prompted about — a control plane widening the permissions it was installed to narrow.
   `CliPermissionDecisionOutput` therefore carries `'deny'` alone, which makes a CLI allow a
   **compile error**; VS Code's shape keeps `'allow'` because that host carries `updatedInput`
-  only alongside one. What the adapter guarantees instead is that no path exits non-zero and
-  none exits 2. On **VS Code agent mode** exit 2 blocks and everything else — any other
+  only alongside one. What the adapter guarantees instead is that no failure path exits
+  non-zero. On **VS Code agent mode** exit 2 blocks and everything else — any other
   non-zero exit, invalid JSON, a timeout — is a non-blocking warning, so that host fails
-  open; it also **parses matchers and ignores them**, so the hook is spawned for every tool
+  open. The one exit 2 this adapter writes is VS Code's prompt block: `runHookFailOpen` ends
+  with `PROMPT_BLOCK_EXIT_CODE` only when the VS Code-dialect prompt handler RETURNS a
+  `VsCodePromptBlock` (a `block` verdict, an unresolved `redact`, or a prompt too large to
+  scan in time), never on a throw, a decline or the watchdog; it also **parses matchers and ignores them**, so the hook is spawned for every tool
   call and the unknown-tool exit is the common path rather than the rare one.
   **The two dialects are payload FORMATS, not hosts**, and the CLI speaks both: the reference
   selects the format by the event name's casing, so a manifest registering `preToolUse` and
@@ -262,11 +265,13 @@ changes. The gaps that exist today:
   once. VS Code loads that same camelCase `hooks.json` through its plugin location
   (`chat.pluginLocations`) and dispatches the four events in its own PascalCase/snake_case
   dialect, which the recording in `plugins/copilot/test/fixtures/vscode/plugin-load-1.141/`
-  shows running all four hooks. Of those four only
-  `preToolUse` ENFORCES. `userPromptSubmitted` and `postToolUse` capture, scan and record,
-  and pass `rewritable: false` because neither host has a prompt-stop or result-withhold
-  channel this repository has observed, so a `redact` resolves to `redactFallback` inside
-  the runtime rather than the hook claiming an enforcement the host would ignore.
+  shows running all four hooks. Of those four `preToolUse` ENFORCES on both dialects, and
+  the prompt event ENFORCES under VS Code alone, through the exit 2 described above.
+  `userPromptSubmitted` on the CLI and `postToolUse` capture, scan and record. Both capture
+  events pass `rewritable: false` because neither host has a prompt-rewrite or
+  result-withhold channel this repository has observed, so a `redact` resolves to
+  `redactFallback` inside the runtime rather than the hook claiming an enforcement the host
+  would ignore.
   `sessionStart` scans nothing: it opens the session root every later capture hangs off.
   `userPromptTransformed` is handled by the prompt entry and deliberately NOT registered: its
   payload re-carries `prompt` verbatim, so registering it beside `userPromptSubmitted` records

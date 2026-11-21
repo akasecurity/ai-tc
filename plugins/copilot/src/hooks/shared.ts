@@ -17,11 +17,13 @@
 //     exactly as CLAUDE.md §1 defines fail-open, and what this module has to
 //     guarantee is the EXIT CODE.
 //
-//  2. NO PATH EVER EXITS NON-ZERO, and none exits 2. That is the whole of the
-//     fail-open guarantee on this host. On the CLI a non-zero exit from
-//     `preToolUse` denies; under VS Code exit 2 is the BLOCK channel. An
-//     accidental 2 from an unhandled rejection would block a tool call by a
-//     route nothing in this package ever writes to.
+//  2. NO FAILURE PATH EVER EXITS NON-ZERO. That is the whole of the fail-open
+//     guarantee on this host. On the CLI a non-zero exit from `preToolUse`
+//     denies; under VS Code exit 2 is the BLOCK channel. An accidental 2 from
+//     an unhandled rejection would block a call by a route nothing decided.
+//     The one exit 2 is VS Code's prompt block, written only when the prompt
+//     handler RETURNS a `VsCodePromptBlock` — a reached verdict, never a
+//     throw, a decline or the watchdog (see `runHookFailOpen`).
 //
 //  3. THIS ADAPTER NEVER EMITS AN ALLOW ON THE CLI. `permissionDecision:
 //     "allow"` is a VERDICT — it decides that the tool executes — so printing
@@ -235,6 +237,32 @@ export type HookOutput =
   | VsCodeBlockOutput
   | SystemMessageOutput;
 
+/**
+ * VS Code's prompt-stop channel, which is not a stdout payload: the hook exits
+ * 2 and the reason goes to stderr. VS Code documents exit 2 as the blocking
+ * exit for every agent-mode event, and on `UserPromptSubmit` it stops the
+ * prompt from being sent.
+ *
+ * Only a decision returned by the VS Code-dialect prompt handler can be one:
+ * `runHookFailOpen`'s `failOpen` takes a `HookOutput`, so no failure path —
+ * a throw, a decline, the watchdog — can reach exit 2. The Copilot CLI reads a
+ * non-zero exit from `preToolUse` as a deny, so the CLI dialect never returns
+ * one either.
+ */
+export interface VsCodePromptBlock {
+  promptBlock: string;
+}
+
+/** What a hook body may return: a stdout payload, or VS Code's prompt block. */
+export type HookVerdict = HookOutput | VsCodePromptBlock;
+
+/** The exit code `runHookFailOpen` ends a `VsCodePromptBlock` with. */
+export const PROMPT_BLOCK_EXIT_CODE = 2;
+
+function isPromptBlock(verdict: HookVerdict): verdict is VsCodePromptBlock {
+  return 'promptBlock' in verdict;
+}
+
 // ─── Progress lines: the CLI's one documented user-visible hook output ──────
 
 /**
@@ -412,14 +440,33 @@ function writeStdout(text: string): Promise<void> {
   });
 }
 
+/** Write to stderr and settle on the flush or an error, never rejecting. */
+function writeStderr(text: string): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    process.stderr.on('error', finish);
+    try {
+      process.stderr.write(text, finish);
+    } catch {
+      finish();
+    }
+  });
+}
+
 /**
  * Run a hook body so the host is left with a VALID exit code rather than a
  * crash.
  *
  * A body that reaches a decision has it forwarded verbatim, which is how
- * `preToolUse` denies. A body that reaches none — it threw, it declined
- * (returned undefined), or it outran the watchdog — writes **nothing** and
- * still exits 0. On every host this package speaks to, that is the no-opinion:
+ * `preToolUse` denies, and a returned `VsCodePromptBlock` ends in exit 2,
+ * which is how a VS Code prompt is stopped. A body that reaches none — it
+ * threw, it declined (returned undefined), or it outran the watchdog — writes
+ * **nothing** and still exits 0. On every host this package speaks to, that is the no-opinion:
  * the Copilot CLI's reference documents empty `preToolUse` output as "default
  * behavior", and VS Code treats anything but exit 2 as non-blocking. What must
  * never happen is a non-zero exit, which on the CLI is a deny — so the
@@ -476,12 +523,12 @@ function writeStdout(text: string): Promise<void> {
  * Never rejects, and never returns to its caller.
  */
 export async function runHookFailOpen(
-  main: () => Promise<HookOutput | undefined>,
+  main: () => Promise<HookVerdict | undefined>,
   failOpen?: HookOutput,
   watchdogMs: number = WATCHDOG_MS,
   countFailOpen: () => void = spawnFailOpenCount,
 ): Promise<never> {
-  let output: HookOutput | undefined = failOpen;
+  let output: HookVerdict | undefined = failOpen;
   let failed = false;
   let watchdog: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -513,6 +560,12 @@ export async function runHookFailOpen(
   // the no-opinion in place. What was queued when the watchdog fired is
   // written too; a body still running after that queues nothing that is read.
   const progress = takeQueuedProgress();
+  // VS Code's prompt block: the reason on stderr and exit 2, nothing on stdout.
+  // Reached only from a decision the body returned, never from a failure.
+  if (output !== undefined && isPromptBlock(output)) {
+    await writeStderr(`${output.promptBlock}\n`);
+    return process.exit(PROMPT_BLOCK_EXIT_CODE);
+  }
   try {
     if (output !== undefined) await emit(output, progress);
     else if (progress.length > 0) await emitProgress(progress);
@@ -625,7 +678,7 @@ export type HookHandler = (
   event: string | undefined,
   stdin: string,
   options?: HookHandlerOptions,
-) => Promise<HookOutput | undefined>;
+) => Promise<HookVerdict | undefined>;
 
 /**
  * The entry-script form of a {@link HookHandler}: argv's event token and stdin

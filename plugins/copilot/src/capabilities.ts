@@ -160,9 +160,9 @@ export const CAPABILITY_MATRIX: readonly Capability[] = [
     surface: 'vscode',
     event: 'UserPromptSubmit',
     subject: 'prompt',
-    channel: 'none',
-    verified: true,
-    note: 'Captured and scanned, recorded in test/fixtures/vscode/plugin-load-1.141/; nothing can be stopped or rewritten. This host blocks through exit 2, which no path in this adapter takes, so a block or redact policy is recorded and the prompt is sent unchanged.',
+    channel: 'block',
+    verified: false,
+    note: 'Captured and scanned; the capture was recorded in test/fixtures/vscode/plugin-load-1.141/. A block policy, a redact this host cannot carry out, or a prompt too large to scan in time exits 2, which this host documents as its blocking exit, so the prompt is not sent; that exit has not been driven against a live install. Nothing is rewritten.',
   },
   {
     surface: 'vscode',

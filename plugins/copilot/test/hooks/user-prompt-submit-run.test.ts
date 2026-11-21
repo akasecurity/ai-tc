@@ -33,8 +33,10 @@ import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ISSUED_TWILIO_SID } from '../../../../test/helpers/issued-secret.ts';
 import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
 import {
+  tooLargeToScanMessage,
   unscannedTooLargeMessage,
   unscannedWorkerUnavailableMessage,
 } from '../../src/exception-guidance.ts';
@@ -199,6 +201,25 @@ describe.each(DIALECTS)('runUserPromptSubmit on the $kind dialect', (d) => {
     expectNoEchoOf(stderr.raw(), FIXTURE.example);
   });
 
+  // A realistic issued value rather than the rule's documented example, which
+  // the scanner caps at warn.
+  it('stops the prompt under block on VS Code, and reports it sent unchanged on the CLI', async () => {
+    seedPolicy('block');
+    const output = await run(`deploy ${ISSUED_TWILIO_SID}`);
+    expect(findingRows().map((r) => r.rule_id)).toEqual([RULE_ID]);
+    if (d.kind === 'vscode') {
+      const block = (output as { promptBlock?: string } | undefined)?.promptBlock;
+      expect(block).toContain('AKA blocked this prompt');
+      expect(block).toContain(RULE_ID);
+      expectNoEchoOf(String(block), ISSUED_TWILIO_SID);
+    } else {
+      const text = notice(output);
+      expect(text).toContain(RULE_ID);
+      expect(text).toContain('unchanged');
+      expect(text).not.toMatch(/\bblocked\b/iu);
+    }
+  });
+
   it('stamps the scope key of the cwd the payload names', async () => {
     seedPolicy('monitor');
     await run('nothing to see here');
@@ -219,7 +240,7 @@ describe.each(DIALECTS)('runUserPromptSubmit on the $kind dialect', (d) => {
   // never shipped one — so the bounded scan cannot run. Whether it reports
   // `unavailable` or (on a test process already past the hook deadline)
   // `timeout`, it is the same refusal, and it must not read as clean.
-  it('reports a prompt too large to scan as unscanned, never as clean', async () => {
+  it('refuses a prompt too large to scan on VS Code, and reports it as unscanned on the CLI', async () => {
     seedPolicy('block');
     const filler = 'lorem ipsum dolor sit amet '.repeat(
       Math.ceil(LARGE_INPUT_THRESHOLD_CHARS / 27),
@@ -228,7 +249,17 @@ describe.each(DIALECTS)('runUserPromptSubmit on the $kind dialect', (d) => {
     expect(prompt.length).toBeGreaterThanOrEqual(LARGE_INPUT_THRESHOLD_CHARS);
     const absent = pathToFileURL(join(root, 'no-worker-here', 'scan-worker.js'));
 
-    const text = notice(await run(prompt, { scanWorkerUrl: absent }));
+    const output = await run(prompt, { scanWorkerUrl: absent });
+    if (d.kind === 'vscode') {
+      // VS Code can stop the prompt, so a prompt nobody could check is refused.
+      expect(output).toEqual({ promptBlock: tooLargeToScanMessage('prompt') });
+      const attrs = JSON.parse(String(promptRows()[0]?.attributes)) as Record<string, unknown>;
+      expect(['unavailable', 'timeout']).toContain(attrs.scan_incomplete);
+      expect(findingRows()).toEqual([]);
+      expectNoEchoOf(stderr.raw(), FIXTURE.example);
+      return;
+    }
+    const text = notice(output);
 
     // Recorded, with the refusal on the row and none of the content in it.
     const [row] = promptRows();
@@ -325,9 +356,9 @@ describe.each(DIALECTS)('runUserPromptSubmit on the $kind dialect', (d) => {
   );
 });
 
-// A prompt whose scan did not finish was sent with no verdict on it, since
-// neither host can stop a prompt, so it is counted in the hook fail-open tally
-// `aka status` renders; a prompt scanned in full is not.
+// A prompt whose scan did not finish and that was sent with no verdict on it
+// is counted in the hook fail-open tally `aka status` renders; a prompt
+// scanned in full, or refused on VS Code, is not.
 describe.each(DIALECTS)(
   'runUserPromptSubmit counts an unscanned prompt on the $kind dialect',
   (d) => {
@@ -352,13 +383,15 @@ describe.each(DIALECTS)(
       expect(findingRows().map((r) => r.rule_id)).toEqual([RULE_ID]);
     });
 
-    it('counts one when the prompt is too large to scan in time', async () => {
+    // On the CLI the prompt went out unchecked, which is a fail-open; on VS
+    // Code it was refused, which is not.
+    it('counts a prompt too large to scan only where it was not refused', async () => {
       seedPolicy('warn');
       const filler = 'lorem ipsum dolor sit amet '.repeat(
         Math.ceil(LARGE_INPUT_THRESHOLD_CHARS / 27),
       );
       const absent = pathToFileURL(join(root, 'no-worker-here', 'scan-worker.js'));
-      expect(await count(filler, { scanWorkerUrl: absent })).toBe(1);
+      expect(await count(filler, { scanWorkerUrl: absent })).toBe(d.kind === 'cli' ? 1 : 0);
       // Positive control: the prompt really was refused rather than scanned.
       const attrs = JSON.parse(String(promptRows()[0]?.attributes)) as Record<string, unknown>;
       expect(['unavailable', 'timeout']).toContain(attrs.scan_incomplete);

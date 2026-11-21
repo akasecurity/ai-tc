@@ -305,9 +305,17 @@ describe('the hook-contract bullet for this host in conventions/dependencies.md'
     // CLI-dialect progress line, and that the exit code is the guarantee. All
     // three are checkable in `shared.ts`.
     expect(BULLET).toMatch(/no hook output on every path that reaches no verdict/u);
-    expect(BULLET).toMatch(/no path exits non-zero and\s+none exits 2/iu);
+    expect(BULLET).toMatch(/no failure path exits\s+non-zero/iu);
     expect(SOURCE).toContain('process.exit(0)');
-    expect(SOURCE).not.toMatch(/process\.exit\(\s*[^0)]/u);
+    // Exactly one non-zero exit, and it is VS Code's prompt block: the constant
+    // is 2, and the exit sits behind a returned `VsCodePromptBlock`.
+    expect(BULLET).toMatch(/The one exit 2 this adapter writes is VS Code's prompt block/u);
+    expect(SOURCE.match(/process\.exit\(\s*[^0)]/gu)).toEqual(['process.exit(P']);
+    expect(SOURCE).toContain('return process.exit(PROMPT_BLOCK_EXIT_CODE);');
+    expect(SOURCE).toContain('export const PROMPT_BLOCK_EXIT_CODE = 2;');
+    expect(SOURCE).toMatch(
+      /if \(output !== undefined && isPromptBlock\(output\)\) \{\n.*\n\s*return process\.exit\(PROMPT_BLOCK_EXIT_CODE\);/u,
+    );
     // The emit is GUARDED rather than unconditional — the difference between
     // writing nothing and writing `{}`, which the host would parse.
     expect(SOURCE).toMatch(/if \(output !== undefined\) await emit\(output, progress\);/u);

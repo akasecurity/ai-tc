@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 // Tests the store-health module directly — NEVER via the hook entry files
 // (src/hooks/*.ts run main() on import and hang vitest collection). Identical
 // to plugins/claude-code/src/hooks/store-health.test.ts — no harness-specific
@@ -13,18 +14,24 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
-import { dataDir as dataDirOf } from '@akasecurity/persistence';
+import { dataDir as dataDirOf, StoreAheadOfBuildError } from '@akasecurity/persistence';
 import type { PluginConfig } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   claimStoreUnavailableWarning,
+  openGateway,
   openGatewayOrNull,
+  storeBusyMessage,
+  storeDegradedMessage,
+  storeOpenCause,
   storeRedirectedMessage,
   storeUnavailableMessage,
   warnIfStoreRedirected,
 } from '../../src/hooks/store-health.ts';
+import { expectNoEchoOf } from '../helpers/no-echo.ts';
 
 function configFor(dataDir: string): PluginConfig {
   return {
@@ -368,5 +375,184 @@ describe('storeRedirectedMessage', () => {
     // An absent mode must never be rendered as a safe one.
     expect(message).not.toContain('0700');
     expect(message).not.toContain('NOT owner-only');
+  });
+});
+
+// Which message the user gets is decided by WHY the open failed, so the reason
+// has to survive the open. It used to be swallowed by a bare catch, which made
+// a store written by a newer AKA build read exactly like an unreadable one —
+// and sent the user to move an intact corpus aside over a stale binary.
+describe('openGateway — the reason survives the failure', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'aka-store-reason-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('carries the failure out instead of collapsing it to null', () => {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'aka.db'), 'garbage bytes, definitely not sqlite');
+
+    const opened = openGateway(configFor(dir));
+
+    expect(opened.gateway).toBeNull();
+    expect(opened.error).toBeInstanceOf(Error);
+  });
+
+  it('reports no error at all when the store opens', async () => {
+    const opened = openGateway(configFor(dir));
+
+    expect(opened.gateway).not.toBeNull();
+    expect(opened.error).toBeUndefined();
+    await opened.gateway?.close();
+  });
+});
+
+describe('storeDegradedMessage — one message per cause', () => {
+  const DB = '/home/u/.aka/data/aka.db';
+  const skew = new StoreAheadOfBuildError(
+    { storeVersion: 42, buildVersion: 35, unknownTags: ['0035_from_a_newer_build'] },
+    new Error('cannot UPSERT a view'),
+  );
+
+  it('names the version gap for a store written by a newer build', () => {
+    const message = storeDegradedMessage(DB, skew);
+
+    expect(message).toContain(DB);
+    expect(message).toContain('0035_from_a_newer_build');
+    expect(message).toContain('42');
+    expect(message).toContain('35');
+    expect(message).toContain('OFF for this session');
+  });
+
+  it('never tells the user to move an intact store aside', () => {
+    expect(storeDegradedMessage(DB, skew)).not.toMatch(/aside|recreate|corrupt|permission/i);
+  });
+
+  // The positive control for the assertion above: the GENERIC message really
+  // does carry that advice, so the absence check is a property of the skew
+  // branch rather than something both branches satisfy by accident.
+  it('keeps the file-repair advice for a failure that is not skew', () => {
+    const message = storeDegradedMessage(DB, new Error('database disk image is malformed'));
+
+    expect(message).toBe(storeUnavailableMessage(DB));
+    expect(message).toMatch(/aside/i);
+  });
+
+  it('falls back to the generic message when there is no error to read', () => {
+    expect(storeDegradedMessage(DB, undefined)).toBe(storeUnavailableMessage(DB));
+  });
+});
+
+// The generic warning used to hide WHICH failure it was, so a store that was
+// merely locked by another process read exactly like a corrupt one. These cases
+// drive real node:sqlite errors, never hand-built ones, so the fields read are
+// the ones the engine actually sets.
+describe('storeDegradedMessage — the failure is named', () => {
+  const DB = '/home/u/.aka/data/aka.db';
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'aka-store-cause-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // A connection holding the file exclusively refuses another connection's
+  // first statement at once when that connection set no busy timeout, which
+  // yields a real SQLITE_BUSY without waiting.
+  function busyError(): unknown {
+    const file = join(dir, 'held.db');
+    const holder = new DatabaseSync(file);
+    const victim = new DatabaseSync(file);
+    try {
+      holder.exec('PRAGMA journal_mode = WAL');
+      holder.exec('CREATE TABLE t (x INTEGER)');
+      holder.exec('PRAGMA locking_mode = EXCLUSIVE');
+      holder.exec('BEGIN EXCLUSIVE');
+      holder.prepare('SELECT count(*) FROM t').get();
+      try {
+        victim.exec('PRAGMA journal_mode = WAL');
+        return undefined;
+      } catch (err) {
+        return err;
+      }
+    } finally {
+      victim.close();
+      holder.exec('ROLLBACK');
+      holder.close();
+    }
+  }
+
+  it('names a lock held by another process and gives no repair advice', () => {
+    const err = busyError();
+    expect(err).toBeDefined();
+
+    const message = storeDegradedMessage(DB, err);
+
+    expect(message).toBe(storeBusyMessage(DB, 'SQLite error 5: database is locked'));
+    expect(message).toContain(DB);
+    expect(message).toContain('fails open');
+    expect(message).not.toMatch(/aside|recreate|corrupt/i);
+  });
+
+  it('names the SQLite code on the generic message for an unreadable store', () => {
+    writeFileSync(join(dir, 'aka.db'), 'garbage bytes, definitely not sqlite');
+    const opened = openGateway(configFor(dir));
+    expect(opened.gateway).toBeNull();
+
+    const message = storeDegradedMessage(DB, opened.error);
+
+    expect(message).toContain('(SQLite error 26: file is not a database)');
+    expect(message).toMatch(/aside/i);
+    expect(message).toBe(storeUnavailableMessage(DB, 'SQLite error 26: file is not a database'));
+  });
+
+  it('names a filesystem code without the error message that came with it', () => {
+    const secret = `k${randomUUID().replaceAll('-', '')}`;
+    const err = Object.assign(new Error(`EACCES: permission denied, mkdir '/x/${secret}'`), {
+      code: 'EACCES',
+    });
+
+    const message = storeDegradedMessage(DB, err);
+
+    expect(message).toContain('(EACCES)');
+    expectNoEchoOf(message, secret);
+  });
+
+  it("reads only the code and SQLite's own description, never the message", () => {
+    const secret = `k${randomUUID().replaceAll('-', '')}`;
+    const err = Object.assign(new Error(`near "${secret}": syntax error`), {
+      errcode: 1,
+      errstr: 'SQL logic error',
+    });
+
+    const message = storeDegradedMessage(DB, err);
+
+    expect(message).toContain('(SQLite error 1: SQL logic error)');
+    expectNoEchoOf(message, secret);
+  });
+
+  it("drops a description that is not shaped like SQLite's own", () => {
+    const secret = `/Users/someone/${randomUUID()}`;
+    expect(storeOpenCause({ errcode: 14, errstr: secret })).toEqual({
+      text: 'SQLite error 14',
+      busy: false,
+    });
+  });
+
+  it('says nothing extra when the error carries no code', () => {
+    expect(storeOpenCause(new Error('database disk image is malformed'))).toBeUndefined();
+    expect(storeOpenCause(undefined)).toBeUndefined();
+    expect(storeOpenCause({ code: 'not a code' })).toBeUndefined();
+  });
+
+  it('treats SQLITE_LOCKED and an extended BUSY code as a lock', () => {
+    expect(storeOpenCause({ errcode: 6, errstr: 'database table is locked' })?.busy).toBe(true);
+    expect(storeOpenCause({ errcode: 517, errstr: 'database is locked' })?.busy).toBe(true);
+    const corrupt = storeOpenCause({ errcode: 11, errstr: 'database disk image is malformed' });
+    expect(corrupt?.busy).toBe(false);
   });
 });

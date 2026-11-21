@@ -65,8 +65,8 @@ import {
 } from './shared.ts';
 import {
   claimStoreUnavailableWarning,
-  openGatewayOrNull,
-  storeUnavailableMessage,
+  openGateway,
+  storeDegradedMessage,
   warnIfStoreRedirected,
 } from './store-health.ts';
 import { responseKey, scannableResponseFields } from './tool-response.ts';
@@ -118,13 +118,13 @@ export const runPostToolUse: HookHandler = async (event, stdin, options = {}) =>
   // the host strips before reading this hook's output.
   warnIfStoreRedirected(config, sessionId, noticeWriter(dialect));
 
-  const gateway = openGatewayOrNull(config);
+  const { gateway, error } = openGateway(config);
   if (gateway === null) {
     // Nothing is being scanned or recorded — say so once per session rather
     // than looking protected. On the CLI that has to be a progress line: `systemMessage`
     // is not an output field there, so the same object on stdout is dropped.
     if (claimStoreUnavailableWarning(config.dataDir, sessionId)) {
-      const message = storeUnavailableMessage(config.dbPath);
+      const message = storeDegradedMessage(config.dbPath, error);
       if (dialect === 'vscode') return { systemMessage: message };
       writeNotice(message, dialect);
     }

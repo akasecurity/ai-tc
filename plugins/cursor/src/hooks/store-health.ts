@@ -111,7 +111,7 @@ const SQLITE_ERRSTR_SHAPE = /^[a-z0-9 ,()'-]{1,80}$/i;
 /**
  * What the open failure was, in terms that carry no user data.
  *
- * Only two fields are read, and neither is the error's message. A node:sqlite
+ * Only three fields are read, and none is the error's message. A node:sqlite
  * error carries `errcode` (the extended result code) and `errstr`, SQLite's own
  * fixed description of that code, so the pair names the failure without
  * repeating anything the statement or the path contained. A filesystem error

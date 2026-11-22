@@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type * as PluginSdkModule from '@akasecurity/plugin-sdk';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
 import type { HookRecording } from '../../src/hooks/recording.ts';
@@ -82,5 +83,28 @@ describe('exitCodeFor', () => {
     expect(exitCodeFor({ promptBlock: 'x' })).toBe(2);
     expect(exitCodeFor({ systemMessage: 'x' })).toBe(0);
     expect(exitCodeFor(undefined)).toBe(0);
+  });
+});
+
+// The hook calls this after it has decided, inside the body its watchdog races,
+// so a throw here would replace the decision with the fail-open default.
+describe('recordHookRun with a home it cannot resolve', () => {
+  it('swallows the failure and records nothing', async () => {
+    vi.resetModules();
+    vi.doMock('@akasecurity/plugin-sdk', async (importOriginal) => ({
+      ...(await importOriginal<typeof PluginSdkModule>()),
+      dataDir: () => {
+        throw new Error('no home');
+      },
+    }));
+    try {
+      const fresh = await import('../../src/hooks/recording.ts');
+      expect(fresh.recordHookRun('userPromptSubmitted', '{}', { promptBlock: 'stopped' })).toBe(
+        undefined,
+      );
+    } finally {
+      vi.doUnmock('@akasecurity/plugin-sdk');
+      vi.resetModules();
+    }
   });
 });

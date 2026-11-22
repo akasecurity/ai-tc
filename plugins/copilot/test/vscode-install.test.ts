@@ -1,4 +1,13 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -148,6 +157,22 @@ describe('the installer on disk', () => {
     expect(parseJsonc(readFileSync(path, 'utf8'))).not.toHaveProperty(PLUGIN_LOCATIONS);
     expect(applyVsCodeInstall(path, 'uninstall', pluginDir)).toBe(false);
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'writes through a symlinked settings.json and keeps the link',
+    () => {
+      const path = vsCodeSettingsPath(home, 'linux');
+      mkdirSync(join(path, '..'), { recursive: true });
+      const real = join(home, 'dotfiles-settings.json');
+      writeFileSync(real, '{}');
+      symlinkSync(real, path);
+      applyVsCodeInstall(path, 'install', pluginDir);
+      expect(lstatSync(path).isSymbolicLink()).toBe(true);
+      expect(parseJsonc(readFileSync(real, 'utf8'))[PLUGIN_LOCATIONS]).toEqual({
+        [pluginDir]: true,
+      });
+    },
+  );
 
   it('leaves a file it cannot parse untouched', () => {
     const path = vsCodeSettingsPath(home, 'linux');

@@ -56,10 +56,12 @@ export function recordHookRun(
   event: string | undefined,
   stdin: string,
   verdict: HookVerdict | undefined,
-  dir: string = join(dataDir(), RECORDINGS_DIR_NAME),
+  recordingsDir?: string,
   now: Date = new Date(),
 ): string | undefined {
   try {
+    // Resolved inside the try, so a home it cannot resolve is swallowed too.
+    const dir = recordingsDir ?? join(dataDir(), RECORDINGS_DIR_NAME);
     if (!existsSync(dir)) return undefined;
     const recording: HookRecording = {
       recordedAt: now.toISOString(),

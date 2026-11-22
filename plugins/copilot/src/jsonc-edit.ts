@@ -158,7 +158,9 @@ function stripToJson(text: string): string {
 export function parseJsonc(text: string): Record<string, unknown> {
   if (isBlank(text)) return {};
   layout(text);
-  return JSON.parse(stripToJson(text)) as Record<string, unknown>;
+  // A leading byte-order mark is whitespace to VS Code and to `layout`, but
+  // not to JSON.parse.
+  return JSON.parse(stripToJson(text.replace(/^\uFEFF/u, ''))) as Record<string, unknown>;
 }
 
 /** The indent of the first property, or four spaces, VS Code's own default. */
@@ -208,7 +210,8 @@ export function setProperty(text: string, key: string, value: unknown): string {
   // After the last value, past any comma already there, so the edit adds one
   // comma at most and keeps a trailing comment on that line in place.
   const afterLast = source.slice(last.valueEnd, close);
-  const hasComma = /^\s*,/u.test(afterLast);
+  // A comma may sit after a comment that follows the value.
+  const hasComma = source.charAt(skipTrivia(source, last.valueEnd)) === ',';
   const insertAt = close - (afterLast.length - afterLast.trimEnd().length);
   const lead = hasComma ? '' : ',';
   const head = source.slice(0, last.valueEnd) + lead + source.slice(last.valueEnd, insertAt);

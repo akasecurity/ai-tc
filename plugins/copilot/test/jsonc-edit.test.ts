@@ -96,6 +96,23 @@ describe('setProperty on a document of only comments', () => {
   });
 });
 
+describe('a comma after a comment that follows the value', () => {
+  it('is reused when appending, so no second comma is added', () => {
+    const next = setProperty('{\n  "a": 1 /* c */,\n}', 'b', true);
+    expect(next).toBe('{\n  "a": 1 /* c */,\n  "b": true\n}');
+    expect(parseJsonc(next)).toEqual({ a: 1, b: true });
+  });
+});
+
+describe('a document starting with a byte-order mark', () => {
+  it('parses as VS Code reads it, and an edit keeps the mark', () => {
+    expect(parseJsonc('\uFEFF{"a":1}')).toEqual({ a: 1 });
+    const next = setProperty('\uFEFF{\n  "a": 1\n}\n', 'b', true);
+    expect(next.startsWith('\uFEFF{')).toBe(true);
+    expect(parseJsonc(next)).toEqual({ a: 1, b: true });
+  });
+});
+
 describe('a CRLF document', () => {
   const CRLF = '{\r\n  "files.exclude": {}\r\n}\r\n';
 

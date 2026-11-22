@@ -15,6 +15,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -24,6 +25,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { parseJsonc } from './jsonc-edit.ts';
 import {
   installInSettings,
   uninstallFromSettings,
@@ -79,12 +81,15 @@ function writeKeepingMode(path: string, text: string): void {
   // The file belongs to the user, so a rewrite keeps its permission bits; the
   // rename publishes the temp file's bits, not the original's.
   const fileMode = existing === undefined ? NEW_FILE_MODE : existing.mode & 0o777;
-  mkdirSync(dirname(path), { recursive: true });
-  const temp = `${path}.aka-${String(process.pid)}.tmp`;
+  // A symlinked settings.json (a dotfiles checkout) is written at its target,
+  // so the rename below replaces the file and leaves the link in place.
+  const target = existsSync(path) ? realpathSync(path) : path;
+  mkdirSync(dirname(target), { recursive: true });
+  const temp = `${target}.aka-${String(process.pid)}.tmp`;
   try {
     writeFileSync(temp, text, { mode: fileMode, flag: 'wx' });
     chmodSync(temp, fileMode);
-    renameSync(temp, path);
+    renameSync(temp, target);
   } catch (error) {
     rmSync(temp, { force: true });
     throw error;
@@ -104,6 +109,15 @@ export function applyVsCodeInstall(
       ? installInSettings(before, pluginDir, isOwnFolder)
       : uninstallFromSettings(before, pluginDir, isOwnFolder);
   if (after === before) return false;
+  // The edit must leave a file VS Code can read, or nothing is written.
+  try {
+    parseJsonc(after);
+  } catch (error) {
+    throw new Error(
+      `the edit would leave the file unreadable (${error instanceof Error ? error.message : String(error)}); nothing was written`,
+      { cause: error },
+    );
+  }
   writeKeepingMode(path, after);
   return true;
 }

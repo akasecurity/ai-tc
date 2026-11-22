@@ -36,7 +36,7 @@ import {
   writeNotice,
 } from './shared.ts';
 import {
-  claimStoreUnavailableWarning,
+  claimStoreDegradedWarning,
   openGateway,
   storeDegradedMessage,
   warnIfStoreRedirected,
@@ -98,7 +98,7 @@ export const runPreToolUse: HookHandler = async (event, stdin, options = {}) => 
   if (gateway === null) {
     // Nothing was scanned, so there is no verdict; an allow here would
     // pre-approve exactly the calls AKA failed to inspect.
-    if (claimStoreUnavailableWarning(config.dataDir, sessionId)) {
+    if (claimStoreDegradedWarning(config.dataDir, sessionId, error)) {
       writeNotice(storeDegradedMessage(config.dbPath, error, 'tool call'));
     }
     return undefined;

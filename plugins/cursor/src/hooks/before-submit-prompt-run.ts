@@ -24,7 +24,7 @@ import { promptDecision } from './prompt-decision.ts';
 import type { HookHandler } from './shared.ts';
 import { baseMetadata, captureScopeKey, parseJson, writeNotice } from './shared.ts';
 import {
-  claimStoreUnavailableWarning,
+  claimStoreDegradedWarning,
   openGateway,
   storeDegradedMessage,
   warnIfStoreRedirected,
@@ -43,7 +43,7 @@ export const runBeforeSubmitPrompt: HookHandler = async (event, stdin, options =
   warnIfStoreRedirected(config, sessionId);
   const { gateway, error } = openGateway(config);
   if (gateway === null) {
-    if (claimStoreUnavailableWarning(config.dataDir, sessionId)) {
+    if (claimStoreDegradedWarning(config.dataDir, sessionId, error)) {
       writeNotice(storeDegradedMessage(config.dbPath, error, 'prompt'));
     }
     return undefined;

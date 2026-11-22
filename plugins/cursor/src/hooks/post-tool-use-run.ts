@@ -28,7 +28,7 @@ import {
   writeNotice,
 } from './shared.ts';
 import {
-  claimStoreUnavailableWarning,
+  claimStoreDegradedWarning,
   openGateway,
   storeDegradedMessage,
   warnIfStoreRedirected,
@@ -51,7 +51,7 @@ export const runPostToolUse: HookHandler = async (event, stdin, options = {}) =>
   warnIfStoreRedirected(config, sessionId);
   const { gateway, error } = openGateway(config);
   if (gateway === null) {
-    if (claimStoreUnavailableWarning(config.dataDir, sessionId)) {
+    if (claimStoreDegradedWarning(config.dataDir, sessionId, error)) {
       writeNotice(storeDegradedMessage(config.dbPath, error, 'tool result'));
     }
     return undefined;

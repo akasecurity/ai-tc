@@ -600,6 +600,9 @@ describe('the event each hook names on a locked store', () => {
       'utf8',
     );
     expect(source).toContain("storeDegradedMessage(config.dbPath, opened.error, 'tool call')");
+    // The claim must see the same error, or a lock falls back to the
+    // once-per-session gate.
+    expect(source).toMatch(/claimStoreDegradedWarning\(config\.dataDir, [^\n]+, opened\.error\)/u);
   });
 });
 

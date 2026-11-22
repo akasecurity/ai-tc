@@ -667,6 +667,14 @@ describe('the event each hook names on a locked store', () => {
   ])('%s names a %s', (file: string, subject: string, errorArg: string) => {
     const source = readFileSync(new URL(`../../src/hooks/${file}`, import.meta.url), 'utf8');
     expect(source).toContain(`storeDegradedMessage(config.dbPath, ${errorArg}, '${subject}')`);
+    // The claim must see the same error, or a lock falls back to the
+    // once-per-session gate.
+    expect(source).toMatch(
+      new RegExp(
+        `claimStoreDegradedWarning\\(config\\.dataDir, [^\\n]+, ${errorArg.replace('.', '\\.')}\\)`,
+        'u',
+      ),
+    );
   });
 });
 

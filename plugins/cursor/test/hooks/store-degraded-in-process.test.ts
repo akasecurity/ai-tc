@@ -136,3 +136,43 @@ describe.each(HOOKS)('$name, when the store cannot be opened', ({ run }) => {
     expect(notice).not.toContain('older than the store');
   });
 });
+
+/**
+ * Holds the store exclusively from a second connection until released, so
+ * every hook's open waits out its busy timeout and fails with SQLITE_BUSY.
+ */
+function holdStoreLocked(): () => void {
+  const dir = join(store.akaHome, 'data');
+  mkdirSync(dir, { recursive: true });
+  openLocalDatabase(dir).close();
+  const holder = new DatabaseSync(join(dir, 'aka.db'));
+  holder.exec('PRAGMA journal_mode = WAL');
+  holder.exec('PRAGMA locking_mode = EXCLUSIVE');
+  holder.exec('BEGIN EXCLUSIVE');
+  holder.prepare('SELECT count(*) FROM migration_ledger').get();
+  return () => {
+    holder.exec('ROLLBACK');
+    holder.close();
+  };
+}
+
+const BUSY_SENTENCE = 'another process held it locked longer than AKA waits';
+
+// A lock lasts for one event, so each hook reports it every time rather than
+// spending the once-per-session warning. Both runs share one conversation id,
+// so a call site that stopped passing the open error to the claim would fall
+// back to the once-per-session gate and the second run would say nothing.
+describe.each(HOOKS)('$name, when another process holds the store', ({ run }) => {
+  it('reports the lock on every event in one session, without repair advice', async () => {
+    const release = holdStoreLocked();
+    try {
+      expect(await run()).toBeUndefined();
+      expect(await run()).toBeUndefined();
+    } finally {
+      release();
+    }
+    const notice = stderr.filtered();
+    expect(notice.split(BUSY_SENTENCE)).toHaveLength(3);
+    expect(notice).not.toMatch(/aside|recreate|corrupt/i);
+  }, 30_000);
+});

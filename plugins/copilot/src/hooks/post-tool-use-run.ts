@@ -64,7 +64,7 @@ import {
   writeNotice,
 } from './shared.ts';
 import {
-  claimStoreUnavailableWarning,
+  claimStoreDegradedWarning,
   openGateway,
   storeDegradedMessage,
   warnIfStoreRedirected,
@@ -123,7 +123,7 @@ export const runPostToolUse: HookHandler = async (event, stdin, options = {}) =>
     // Nothing is being scanned or recorded — say so once per session rather
     // than looking protected. On the CLI that has to be a progress line: `systemMessage`
     // is not an output field there, so the same object on stdout is dropped.
-    if (claimStoreUnavailableWarning(config.dataDir, sessionId)) {
+    if (claimStoreDegradedWarning(config.dataDir, sessionId, error)) {
       const message = storeDegradedMessage(config.dbPath, error, 'tool result');
       if (dialect === 'vscode') return { systemMessage: message };
       writeNotice(message, dialect);

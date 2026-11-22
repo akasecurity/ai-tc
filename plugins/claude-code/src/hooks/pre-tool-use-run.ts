@@ -69,7 +69,7 @@ import type { HookOutput } from './shared.ts';
 import { baseMetadata, captureScopeKey, getString } from './shared.ts';
 import { captureStamped } from './stamped-capture.ts';
 import {
-  claimStoreUnavailableWarning,
+  claimStoreDegradedWarning,
   isSessionMarked,
   openGateway,
   openGatewayOrNull,
@@ -300,7 +300,10 @@ export async function runPreToolUse(
   // silently passing everything through.
   const opened = openGateway(config);
   if (opened.gateway === null) {
-    if (options.mode === 'hook' && claimStoreUnavailableWarning(config.dataDir, sessionId)) {
+    if (
+      options.mode === 'hook' &&
+      claimStoreDegradedWarning(config.dataDir, sessionId, opened.error)
+    ) {
       await emit({ systemMessage: storeDegradedMessage(config.dbPath, opened.error, 'tool call') });
     }
     return 'store-unavailable';

@@ -38,7 +38,7 @@ import {
   runHookFailOpen,
 } from './shared.ts';
 import {
-  claimStoreUnavailableWarning,
+  claimStoreDegradedWarning,
   openGateway,
   storeDegradedMessage,
   warnIfStoreRedirected,
@@ -76,7 +76,9 @@ async function main(): Promise<unknown> {
     // channel of its own (the payload carries `reason`, which accompanies a
     // deny), so the once-per-session notice goes to stderr rather than being
     // smuggled into an allow the host may not surface.
-    if (claimStoreUnavailableWarning(config.dataDir, getString(input, 'conversationId'))) {
+    if (
+      claimStoreDegradedWarning(config.dataDir, getString(input, 'conversationId'), opened.error)
+    ) {
       process.stderr.write(
         `[aka] ${storeDegradedMessage(config.dbPath, opened.error, 'tool call')}\n`,
       );

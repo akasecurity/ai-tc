@@ -32,6 +32,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import {
+  claimStoreDegradedWarning,
   claimStoreUnavailableWarning,
   openGateway,
   openGatewayOrNull,
@@ -678,5 +679,37 @@ describe('a lock met after the call ran', () => {
     );
     expect(message).toContain('Scanning and recording were skipped for this tool result');
     expect(message).not.toMatch(/enforcement|tool call/u);
+  });
+});
+
+// A lock lasts for one event, so it must not spend the once-per-session claim
+// a later corrupt or newer store needs to be reported at all.
+describe('claimStoreDegradedWarning', () => {
+  const LOCKED = { errcode: 5, errstr: 'database is locked' };
+  let claimDir: string;
+  beforeEach(() => {
+    claimDir = mkdtempSync(join(tmpdir(), 'aka-store-claim-'));
+  });
+  afterEach(() => {
+    rmSync(claimDir, { recursive: true, force: true });
+  });
+
+  it('warns on every lock without spending the session claim', () => {
+    expect(claimStoreDegradedWarning(claimDir, 'sess-1', LOCKED)).toBe(true);
+    expect(claimStoreDegradedWarning(claimDir, 'sess-1', LOCKED)).toBe(true);
+    const corrupt = new Error('file is not a database');
+    expect(claimStoreDegradedWarning(claimDir, 'sess-1', corrupt)).toBe(true);
+    expect(claimStoreDegradedWarning(claimDir, 'sess-1', corrupt)).toBe(false);
+  });
+
+  it('spends the claim once for a store written by a newer build', () => {
+    const skew = new StoreAheadOfBuildError(
+      { storeVersion: 42, buildVersion: 35, unknownTags: ['0035_from_a_newer_build'] },
+      new Error('cannot UPSERT a view'),
+    );
+    expect(claimStoreDegradedWarning(claimDir, 'sess-2', skew)).toBe(true);
+    expect(claimStoreDegradedWarning(claimDir, 'sess-2', skew)).toBe(false);
+    // A lock after it is still reported: it is a separate, per-event skip.
+    expect(claimStoreDegradedWarning(claimDir, 'sess-2', LOCKED)).toBe(true);
   });
 });

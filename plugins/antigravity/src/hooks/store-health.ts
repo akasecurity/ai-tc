@@ -100,6 +100,23 @@ export function storeDegradedMessage(
   return storeUnavailableMessage(dbPath, cause?.text);
 }
 
+/**
+ * Whether to show the degradation warning for this open failure. A lock lasts
+ * only for the event that hit it, so its warning is shown each time and does
+ * not spend the once-per-session claim, which a later corrupt or newer store
+ * in the same session still needs.
+ */
+export function claimStoreDegradedWarning(
+  dataDir: string,
+  sessionId: string | undefined,
+  error: unknown,
+): boolean {
+  if (!(error instanceof StoreAheadOfBuildError) && storeOpenCause(error)?.lock !== undefined) {
+    return true;
+  }
+  return claimStoreUnavailableWarning(dataDir, sessionId);
+}
+
 /** What a hook was handling when the store could not be opened. */
 export type StoreEventSubject = 'tool call' | 'prompt' | 'tool result';
 

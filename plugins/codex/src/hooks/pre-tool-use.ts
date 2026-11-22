@@ -36,7 +36,7 @@ import {
 import { baseMetadata, countFailOpen, emit, getString, parseJson, readStdin } from './shared.ts';
 import { captureStamped } from './stamped-capture.ts';
 import {
-  claimStoreUnavailableWarning,
+  claimStoreDegradedWarning,
   openGateway,
   storeDegradedMessage,
   warnIfStoreRedirected,
@@ -75,7 +75,7 @@ async function main(): Promise<void> {
   warnIfStoreRedirected(config, getString(input, 'session_id'));
   const opened = openGateway(config);
   if (opened.gateway === null) {
-    if (claimStoreUnavailableWarning(config.dataDir, getString(input, 'session_id'))) {
+    if (claimStoreDegradedWarning(config.dataDir, getString(input, 'session_id'), opened.error)) {
       await emit({ systemMessage: storeDegradedMessage(config.dbPath, opened.error, 'tool call') });
     }
     return;

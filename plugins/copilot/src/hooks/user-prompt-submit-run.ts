@@ -63,7 +63,7 @@ import {
   writeNotice,
 } from './shared.ts';
 import {
-  claimStoreUnavailableWarning,
+  claimStoreDegradedWarning,
   openGateway,
   storeDegradedMessage,
   warnIfStoreRedirected,
@@ -127,7 +127,7 @@ export const runUserPromptSubmit: HookHandler = async (event, stdin, options = {
     // than looking protected. On the CLI that has to be a progress line: `systemMessage`
     // is not an output field there, so the same object on stdout would be
     // dropped and the user told nothing at all.
-    if (claimStoreUnavailableWarning(config.dataDir, sessionId)) {
+    if (claimStoreDegradedWarning(config.dataDir, sessionId, error)) {
       const message = storeDegradedMessage(config.dbPath, error, 'prompt');
       if (dialect === 'vscode') return { systemMessage: message };
       writeNotice(message, dialect);

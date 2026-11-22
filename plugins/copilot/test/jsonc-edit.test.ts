@@ -108,8 +108,7 @@ describe('a document starting with a byte-order mark', () => {
   it('parses as VS Code reads it, and an edit keeps the mark', () => {
     expect(parseJsonc('\uFEFF{"a":1}')).toEqual({ a: 1 });
     const next = setProperty('\uFEFF{\n  "a": 1\n}\n', 'b', true);
-    expect(next.startsWith('\uFEFF{')).toBe(true);
-    expect(parseJsonc(next)).toEqual({ a: 1, b: true });
+    expect(next).toBe('\uFEFF{\n  "a": 1,\n  "b": true\n}\n');
   });
 });
 

@@ -13,6 +13,7 @@
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   realpathSync,
@@ -70,6 +71,28 @@ function readText(path: string): string {
   }
 }
 
+/**
+ * The file a symlinked settings path points at, or undefined when the path is
+ * not a link. A link whose target is missing is refused rather than replaced
+ * by a regular file, which would cut it off from the file it pointed at.
+ */
+function symlinkTarget(path: string): string | undefined {
+  let isLink: boolean;
+  try {
+    isLink = lstatSync(path).isSymbolicLink();
+  } catch {
+    return undefined;
+  }
+  if (!isLink) return undefined;
+  try {
+    return realpathSync(path);
+  } catch (error) {
+    throw new Error(`${path} is a symlink whose target is missing; nothing was written`, {
+      cause: error,
+    });
+  }
+}
+
 /** Write `text` to `path` through a sibling temp file, keeping the file's mode. */
 function writeKeepingMode(path: string, text: string): void {
   let existing: { mode: number } | undefined;
@@ -83,7 +106,7 @@ function writeKeepingMode(path: string, text: string): void {
   const fileMode = existing === undefined ? NEW_FILE_MODE : existing.mode & 0o777;
   // A symlinked settings.json (a dotfiles checkout) is written at its target,
   // so the rename below replaces the file and leaves the link in place.
-  const target = existsSync(path) ? realpathSync(path) : path;
+  const target = symlinkTarget(path) ?? path;
   mkdirSync(dirname(target), { recursive: true });
   const temp = `${target}.aka-${String(process.pid)}.tmp`;
   try {

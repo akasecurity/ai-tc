@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -171,6 +172,21 @@ describe('the installer on disk', () => {
       expect(parseJsonc(readFileSync(real, 'utf8'))[PLUGIN_LOCATIONS]).toEqual({
         [pluginDir]: true,
       });
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses a symlinked settings.json whose target is missing, and keeps the link',
+    () => {
+      const path = vsCodeSettingsPath(home, 'linux');
+      mkdirSync(join(path, '..'), { recursive: true });
+      const missing = join(home, 'moved-dotfiles', 'settings.json');
+      symlinkSync(missing, path);
+      expect(() => applyVsCodeInstall(path, 'install', pluginDir)).toThrow(
+        /symlink whose target is missing; nothing was written/u,
+      );
+      expect(lstatSync(path).isSymbolicLink()).toBe(true);
+      expect(existsSync(missing)).toBe(false);
     },
   );
 

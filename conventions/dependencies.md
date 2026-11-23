@@ -109,16 +109,20 @@ cli               → @akasecurity/schema, persistence, local-ops, detections,
                      ships the web-ui as a spawned Next server)
 
 # Plugin
-plugins/claude-code → @akasecurity/plugin-runtime, plugin-sdk
-plugins/codex        → @akasecurity/plugin-runtime, plugin-sdk
-plugins/antigravity  → @akasecurity/plugin-runtime, plugin-sdk
-plugins/copilot      → @akasecurity/plugin-runtime, plugin-sdk (GitHub Copilot: the
+plugins/claude-code → @akasecurity/plugin-runtime, plugin-sdk, scanner
+plugins/codex        → @akasecurity/plugin-runtime, plugin-sdk, scanner
+plugins/antigravity  → @akasecurity/plugin-runtime, plugin-sdk, scanner
+plugins/copilot      → @akasecurity/plugin-runtime, plugin-sdk, scanner (GitHub Copilot: the
                      Copilot CLI and VS Code agent mode, and the cloud coding
                      agent, which speaks the CLI's protocol. ONE package, TWO
                      payload dialects — the CLI's flat camelCase envelope and VS
                      Code's flat snake_case one — sniffed per payload in
                      src/hooks/dialect.ts and carried as a parameter from there
                      down, so the two scannable-field tables are never merged)
+plugins/cursor       → @akasecurity/plugin-runtime, plugin-sdk, scanner (Cursor's agent hooks:
+                     sessionStart, beforeSubmitPrompt, preToolUse and postToolUse,
+                     registered in the user-level ~/.cursor/hooks.json by the package's
+                     own installer script. Private until it is released)
 plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the native-messaging
                      host only — Node side); the browser-side content script bundles just
                      `@akasecurity/plugin-sdk/browser` (mask.ts's Node-API-free slice) and
@@ -289,6 +293,14 @@ changes. The gaps that exist today:
   watchdog. A silent exit is a bug that would block the user's every tool call. The guarantee
   holds over everything that **yields** and cannot reach a body that blocks the thread; §1
   states that limit and names the two suites that cover each half.
+- **Cursor fails open on silence, and the exit code is what the adapter guards.** A hook
+  that writes nothing and exits 0 is read as allowed, and Cursor fails open on a crash, a
+  timeout or unparseable output unless an entry sets `failClosed`, which the installer
+  never does. So `runHookFailOpen` in `plugins/cursor/src/hooks/shared.ts` exits 0 on every
+  path, and the adapter never emits an allow: `PermissionDenyOutput` carries `'deny'`
+  alone, because an allow printed per clean call would pre-approve what the user's own
+  Cursor settings would have asked about. Its two enforcing outputs are a `preToolUse`
+  deny and a `beforeSubmitPrompt` `continue: false`; every other message goes to stderr.
 
 **Cross-cutting rules:**
 

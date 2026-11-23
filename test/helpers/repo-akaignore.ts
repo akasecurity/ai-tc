@@ -59,6 +59,7 @@ const BUILD_OUTPUT = [
   'plugins/codex/scripts/',
   'plugins/antigravity/scripts/',
   'plugins/copilot/scripts/',
+  'plugins/cursor/scripts/',
   'plugins/claude-code/hooks/engine.js',
   'plugins/browser-extension/native-host/',
   'cli/native-host/',

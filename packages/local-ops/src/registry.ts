@@ -109,7 +109,9 @@ export const AGENT_PLUGINS: readonly AgentPlugin[] = [
       '  rm -rf package\n' +
       '  tar -xzf "$(npm pack @akasecurity/ai-tc-copilot --silent)"\n' +
       '  copilot plugin update aka-copilot\n' +
-      'VS Code agent mode can load the same folder via its `chat.pluginLocations` setting (beta).',
+      'VS Code agent mode (beta): from that same folder, run\n' +
+      '  node package/scripts/vscode-install.js\n' +
+      'and reload VS Code. It adds the folder to `chat.pluginLocations` in your user settings.',
   },
 ];
 

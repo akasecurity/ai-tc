@@ -40,6 +40,7 @@ import { ISSUED_TWILIO_SID } from '../../../../test/helpers/issued-secret.ts';
 import {
   tooLargeToScanMessage,
   unscannedWorkerUnavailableMessage,
+  workerUnavailableBlockedMessage,
 } from '../../src/exception-guidance.ts';
 import { readCliStdout } from '../helpers/cli-stdout.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
@@ -430,7 +431,7 @@ describe.each(DIALECTS)('pre-tool-use [$event] — a field too large to scan in 
       return runHook(d.event, home, payload, scriptsDir);
     }, `aka-copilot-no-worker-${d.event}-`);
 
-    const reason = tooLargeToScanMessage(`${tool} call`);
+    const reason = workerUnavailableBlockedMessage(`${tool} call`);
     expect(soleObject(run)).toEqual(
       d.event === 'preToolUse'
         ? { permissionDecision: 'deny', permissionDecisionReason: reason }
@@ -760,11 +761,12 @@ describe.each(DIALECTS.map((d) => (d.event === 'preToolUse' ? 'cli' : 'vscode'))
   120_000,
 );
 
-// ─── A prompt too large to scan in time: reported, not refused ──────────────
+// ─── A prompt too large to scan in time: refused on VS Code, reported on the CLI
 //
-// The prompt hook is built with the same large-input bound as preToolUse, but
-// it has no channel to stop a prompt, so a scan that does not finish is not a
-// refusal here. What it must not be is SILENCE: a refused scan has no findings,
+// The prompt hook is built with the same large-input bound as preToolUse. VS
+// Code can stop a prompt (exit 2), so there a scan that does not finish is a
+// refusal; the CLI has no prompt-stop channel, so there it is reported. What it
+// must never be is SILENCE: a refused scan has no findings,
 // which reads exactly like a clean prompt. The worker is removed from a copy of
 // the build, as for the preToolUse rows, and the intact build is the control —
 // there the same prompt is scanned, and its secret is found.
@@ -786,7 +788,7 @@ describe.each(DIALECTS.map((d) => (d.event === 'preToolUse' ? 'cli' : 'vscode'))
       return String((soleObject(run) as Record<string, unknown>).systemMessage);
     }
 
-    it('with no worker to scan it → says it was not scanned, exit 0, no verdict', () => {
+    it('with no worker to scan it → stopped on VS Code (exit 2), reported unscanned on the CLI', () => {
       const run = withTempHome((dir) => {
         const scriptsDir = join(dir, 'scripts');
         cpSync(SCRIPTS_DIR, scriptsDir, { recursive: true });
@@ -799,6 +801,16 @@ describe.each(DIALECTS.map((d) => (d.event === 'preToolUse' ? 'cli' : 'vscode'))
         return runScript('user-prompt-submit.js', event, home, payload, scriptsDir);
       }, `aka-copilot-prompt-no-worker-${kind}-`);
 
+      if (!isCli) {
+        // VS Code's prompt-stop channel: exit 2, the reason on stderr, nothing
+        // on stdout. The prompt nobody could check is not sent.
+        expect(run.status, run.stderr).toBe(2);
+        expect(run.stdout).toBe('');
+        expect(run.stderr).toContain(workerUnavailableBlockedMessage('prompt'));
+        expect(run.stderr).not.toContain(tooLargeToScanMessage('prompt'));
+        expectNoEchoOf(run.stderr, FIXTURE.example);
+        return;
+      }
       const text = notice(run);
       // The worker file is gone: an install fault, not a size limit.
       expect(text).toContain(
@@ -849,7 +861,7 @@ describe.each(DIALECTS.map((d) => (d.event === 'preToolUse' ? 'cli' : 'vscode'))
       return String((soleObject(run) as Record<string, unknown>).systemMessage);
     }
 
-    it('with no worker to scan it → says it was not scanned, exit 0, no verdict', () => {
+    it('with no worker to scan it → stopped on VS Code (exit 2), reported unscanned on the CLI', () => {
       const run = withTempHome((dir) => {
         const scriptsDir = join(dir, 'scripts');
         cpSync(SCRIPTS_DIR, scriptsDir, { recursive: true });

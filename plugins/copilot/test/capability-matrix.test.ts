@@ -88,11 +88,9 @@ describe('the capability matrix and the SKILL.md that renders it', () => {
     const verified = capabilitiesFor('vscode')
       .filter((row) => row.verified)
       .map((row) => `${row.event} ${row.subject}`);
-    expect(verified).toEqual([
-      'SessionStart session',
-      'UserPromptSubmit prompt',
-      'PostToolUse tool_response',
-    ]);
+    // UserPromptSubmit's capture was recorded, but its exit-2 block was never
+    // driven, so the row is not verified.
+    expect(verified).toEqual(['SessionStart session', 'PostToolUse tool_response']);
     expect(SKILL).toMatch(/partly confirmed\s+against a live install/u);
     expect(SKILL).toMatch(/never driven/u);
   });
@@ -135,10 +133,14 @@ describe('the capability matrix and the SKILL.md that renders it', () => {
     // `channel` says what can be done about a finding, so a captured-only event
     // is `none` exactly like an unwired one. Registration is what
     // `hooks-manifest.test.ts` holds.
-    expect(SKILL).toMatch(/Only the pre-tool-use event ENFORCES/u);
+    expect(SKILL).toMatch(/Only the pre-tool-use event ENFORCES, and the VS Code prompt event/u);
     const acting = CAPABILITY_MATRIX.filter((row) => row.channel !== 'none');
     expect(acting.length).toBeGreaterThan(0);
-    expect([...new Set(acting.map((row) => row.event.toLowerCase()))]).toEqual(['pretooluse']);
+    expect(
+      [...new Set(acting.map((row) => `${row.surface}/${row.event.toLowerCase()}`))].filter(
+        (key) => !key.endsWith('/pretooluse'),
+      ),
+    ).toEqual(['vscode/userpromptsubmit']);
   });
 
   it('says in prose that prompts and tool results are captured but cannot be withheld', () => {
@@ -156,7 +158,9 @@ describe('the capability matrix and the SKILL.md that renders it', () => {
     // The positive control: without it the loop below runs zero times.
     expect(capturing.length).toBeGreaterThan(0);
     for (const row of capturing) {
-      expect(row.channel, `${row.surface}/${row.event}`).toBe('none');
+      // VS Code's prompt event is the one capture that can also stop: exit 2.
+      const stops = row.surface === 'vscode' && row.event === 'UserPromptSubmit';
+      expect(row.channel, `${row.surface}/${row.event}`).toBe(stops ? 'block' : 'none');
       expect(row.note, `${row.surface}/${row.event}`).toMatch(/Captured and scanned/u);
     }
   });

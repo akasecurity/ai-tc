@@ -1,7 +1,6 @@
 // Tests the store-health module directly — NEVER via the hook entry files
-// (src/hooks/*.ts run main() on import and hang vitest collection). Identical
-// to plugins/claude-code/src/hooks/store-health.test.ts — no harness-specific
-// logic here.
+// (src/hooks/*.ts run main() on import and hang vitest collection). The other
+// plugins carry their own copy of the module and of these tests.
 import { randomUUID } from 'node:crypto';
 import {
   mkdirSync,
@@ -14,6 +13,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 import {
   dataDir as dataDirOf,
@@ -26,14 +26,18 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import {
+  claimStoreDegradedWarning,
   claimStoreUnavailableWarning,
   openGateway,
   openGatewayOrNull,
+  storeBusyMessage,
   storeDegradedMessage,
+  storeOpenCause,
   storeRedirectedMessage,
   storeUnavailableMessage,
   warnIfStoreRedirected,
 } from '../../src/hooks/store-health.ts';
+import { expectNoEchoOf } from '../helpers/no-echo.ts';
 
 function configFor(dataDir: string): PluginConfig {
   return {
@@ -241,7 +245,7 @@ describe('storeDegradedMessage — one message per cause', () => {
   );
 
   it('names the version gap for a store written by a newer build', () => {
-    const message = storeDegradedMessage(DB, skew);
+    const message = storeDegradedMessage(DB, skew, 'tool call');
 
     expect(message).toContain(DB);
     expect(message).toContain('0035_from_a_newer_build');
@@ -251,21 +255,27 @@ describe('storeDegradedMessage — one message per cause', () => {
   });
 
   it('never tells the user to move an intact store aside', () => {
-    expect(storeDegradedMessage(DB, skew)).not.toMatch(/aside|recreate|corrupt|permission/i);
+    expect(storeDegradedMessage(DB, skew, 'tool call')).not.toMatch(
+      /aside|recreate|corrupt|permission/i,
+    );
   });
 
   // The positive control for the assertion above: the GENERIC message really
   // does carry that advice, so the absence check is a property of the skew
   // branch rather than something both branches satisfy by accident.
   it('keeps the file-repair advice for a failure that is not skew', () => {
-    const message = storeDegradedMessage(DB, new Error('database disk image is malformed'));
+    const message = storeDegradedMessage(
+      DB,
+      new Error('database disk image is malformed'),
+      'tool call',
+    );
 
     expect(message).toBe(storeUnavailableMessage(DB));
     expect(message).toMatch(/aside/i);
   });
 
   it('falls back to the generic message when there is no error to read', () => {
-    expect(storeDegradedMessage(DB, undefined)).toBe(storeUnavailableMessage(DB));
+    expect(storeDegradedMessage(DB, undefined, 'tool call')).toBe(storeUnavailableMessage(DB));
   });
 });
 
@@ -501,5 +511,207 @@ describe('storeRedirectedMessage', () => {
     // An absent mode must never be rendered as a safe one.
     expect(message).not.toContain('0700');
     expect(message).not.toContain('NOT owner-only');
+  });
+});
+
+// The generic warning used to hide WHICH failure it was, so a store that was
+// merely locked by another process read exactly like a corrupt one. These cases
+// drive real node:sqlite errors, never hand-built ones, so the fields read are
+// the ones the engine actually sets.
+describe('storeDegradedMessage — the failure is named', () => {
+  const DB = '/home/u/.aka/data/aka.db';
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'aka-store-cause-'));
+  });
+  afterEach(() => {
+    removeTree(dir);
+  });
+
+  // A connection holding the file exclusively refuses another connection's
+  // first statement at once when that connection set no busy timeout, which
+  // yields a real SQLITE_BUSY without waiting.
+  function busyError(): unknown {
+    const file = join(dir, 'held.db');
+    const holder = new DatabaseSync(file);
+    const victim = new DatabaseSync(file);
+    try {
+      holder.exec('PRAGMA journal_mode = WAL');
+      holder.exec('CREATE TABLE t (x INTEGER)');
+      holder.exec('PRAGMA locking_mode = EXCLUSIVE');
+      holder.exec('BEGIN EXCLUSIVE');
+      holder.prepare('SELECT count(*) FROM t').get();
+      try {
+        victim.exec('PRAGMA journal_mode = WAL');
+        return undefined;
+      } catch (err) {
+        return err;
+      }
+    } finally {
+      victim.close();
+      holder.exec('ROLLBACK');
+      holder.close();
+    }
+  }
+
+  it('names a lock held by another process and gives no repair advice', () => {
+    const err = busyError();
+    expect(err).toBeDefined();
+
+    const message = storeDegradedMessage(DB, err, 'tool call');
+
+    expect(message).toBe(
+      storeBusyMessage(
+        DB,
+        { text: 'SQLite error 5: database is locked', lock: 'busy' },
+        'tool call',
+      ),
+    );
+    expect(message).toContain('another process held it locked');
+    expect(message).toContain('skipped for this tool call');
+    expect(message).toContain(DB);
+    expect(message).toContain('fails open');
+    expect(message).not.toMatch(/aside|recreate|corrupt/i);
+  });
+
+  it('names the SQLite code on the generic message for an unreadable store', () => {
+    writeFileSync(join(dir, 'aka.db'), 'garbage bytes, definitely not sqlite');
+    const opened = openGateway(configFor(dir));
+    expect(opened.gateway).toBeNull();
+
+    const message = storeDegradedMessage(DB, opened.error, 'tool call');
+
+    expect(message).toContain('(SQLite error 26: file is not a database)');
+    expect(message).toMatch(/aside/i);
+    expect(message).toBe(storeUnavailableMessage(DB, 'SQLite error 26: file is not a database'));
+  });
+
+  it('names a filesystem code without the error message that came with it', () => {
+    const secret = `k${randomUUID().replaceAll('-', '')}`;
+    const err = Object.assign(new Error(`EACCES: permission denied, mkdir '/x/${secret}'`), {
+      code: 'EACCES',
+    });
+
+    const message = storeDegradedMessage(DB, err, 'tool call');
+
+    expect(message).toContain('(EACCES)');
+    expectNoEchoOf(message, secret);
+  });
+
+  it("reads only the code and SQLite's own description, never the message", () => {
+    const secret = `k${randomUUID().replaceAll('-', '')}`;
+    const err = Object.assign(new Error(`near "${secret}": syntax error`), {
+      errcode: 1,
+      errstr: 'SQL logic error',
+    });
+
+    const message = storeDegradedMessage(DB, err, 'tool call');
+
+    expect(message).toContain('(SQLite error 1: SQL logic error)');
+    expectNoEchoOf(message, secret);
+  });
+
+  it("drops a description that is not shaped like SQLite's own", () => {
+    const secret = `/Users/someone/${randomUUID()}`;
+    expect(storeOpenCause({ errcode: 14, errstr: secret })).toEqual({
+      text: 'SQLite error 14',
+      lock: undefined,
+    });
+  });
+
+  it('says nothing extra when the error carries no code', () => {
+    expect(storeOpenCause(new Error('database disk image is malformed'))).toBeUndefined();
+    expect(storeOpenCause(undefined)).toBeUndefined();
+    expect(storeOpenCause({ code: 'not a code' })).toBeUndefined();
+  });
+
+  it('tells SQLITE_LOCKED apart from BUSY, and reads an extended BUSY code as BUSY', () => {
+    expect(storeOpenCause({ errcode: 6, errstr: 'database table is locked' })?.lock).toBe('locked');
+    expect(storeOpenCause({ errcode: 517, errstr: 'database is locked' })?.lock).toBe('busy');
+    const corrupt = storeOpenCause({ errcode: 11, errstr: 'database disk image is malformed' });
+    expect(corrupt?.lock).toBeUndefined();
+  });
+
+  it('names SQLITE_LOCKED by its code alone, without the other-process story', () => {
+    const message = storeDegradedMessage(
+      DB,
+      { errcode: 6, errstr: 'database table is locked' },
+      'tool call',
+    );
+    expect(message).toContain('because it was locked (SQLite error 6: database table is locked)');
+    expect(message).not.toMatch(/another process|longer than AKA waits/);
+    expect(message).not.toMatch(/aside|recreate|corrupt/i);
+  });
+
+  it('names the prompt, not a tool call, when a prompt hook hits the lock', () => {
+    const message = storeDegradedMessage(
+      DB,
+      { errcode: 5, errstr: 'database is locked' },
+      'prompt',
+    );
+    expect(message).toContain('skipped for this prompt');
+    expect(message).not.toContain('tool call');
+  });
+});
+
+describe('the event each hook names on a locked store', () => {
+  it.each([
+    ['pre-tool-use.ts', 'tool call', 'opened.error'],
+    ['user-prompt-submit.ts', 'prompt', 'opened.error'],
+  ])('%s names a %s', (file: string, subject: string, errorArg: string) => {
+    const source = readFileSync(new URL(`../../src/hooks/${file}`, import.meta.url), 'utf8');
+    expect(source).toContain(`storeDegradedMessage(config.dbPath, ${errorArg}, '${subject}')`);
+    // The claim must see the same error, or a lock falls back to the
+    // once-per-session gate.
+    expect(source).toMatch(
+      new RegExp(
+        `claimStoreDegradedWarning\\(config\\.dataDir, [^\\n]+, ${errorArg.replace('.', '\\.')}\\)`,
+        'u',
+      ),
+    );
+  });
+});
+
+describe('a lock met after the call ran', () => {
+  it('says only the scan and recording of the tool result were skipped', () => {
+    const message = storeDegradedMessage(
+      '/home/u/.aka/data/aka.db',
+      { errcode: 5, errstr: 'database is locked' },
+      'tool result',
+    );
+    expect(message).toContain('Scanning and recording were skipped for this tool result');
+    expect(message).not.toMatch(/enforcement|tool call/u);
+  });
+});
+
+// A lock lasts for one event, so it must not spend the once-per-session claim
+// a later corrupt or newer store needs to be reported at all.
+describe('claimStoreDegradedWarning', () => {
+  const LOCKED = { errcode: 5, errstr: 'database is locked' };
+  let claimDir: string;
+  beforeEach(() => {
+    claimDir = mkdtempSync(join(tmpdir(), 'aka-store-claim-'));
+  });
+  afterEach(() => {
+    rmSync(claimDir, { recursive: true, force: true });
+  });
+
+  it('warns on every lock without spending the session claim', () => {
+    expect(claimStoreDegradedWarning(claimDir, 'sess-1', LOCKED)).toBe(true);
+    expect(claimStoreDegradedWarning(claimDir, 'sess-1', LOCKED)).toBe(true);
+    const corrupt = new Error('file is not a database');
+    expect(claimStoreDegradedWarning(claimDir, 'sess-1', corrupt)).toBe(true);
+    expect(claimStoreDegradedWarning(claimDir, 'sess-1', corrupt)).toBe(false);
+  });
+
+  it('spends the claim once for a store written by a newer build', () => {
+    const skew = new StoreAheadOfBuildError(
+      { storeVersion: 42, buildVersion: 35, unknownTags: ['0035_from_a_newer_build'] },
+      new Error('cannot UPSERT a view'),
+    );
+    expect(claimStoreDegradedWarning(claimDir, 'sess-2', skew)).toBe(true);
+    expect(claimStoreDegradedWarning(claimDir, 'sess-2', skew)).toBe(false);
+    // A lock after it is still reported: it is a separate, per-event skip.
+    expect(claimStoreDegradedWarning(claimDir, 'sess-2', LOCKED)).toBe(true);
   });
 });

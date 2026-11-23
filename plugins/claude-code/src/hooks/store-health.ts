@@ -179,17 +179,49 @@ export function openGatewayOrNull(config: PluginConfig): DataGateway | null {
  * binary that is merely behind. The skew branch therefore names the version gap
  * and says nothing about the file.
  *
- * A third cause, a store another process held locked past the open's wait, is
- * also intact, and gets its own message for the same reason. Every other
+ * A third cause, a lock that kept the open from completing, is also intact,
+ * and gets its own message for the same reason. Unlike the other two it lasts
+ * only for the event that hit it, so `subject` names that event. Every other
  * failure keeps the generic message, naming the SQLite or filesystem code
  * when the error carries one.
  */
-export function storeDegradedMessage(dbPath: string, error: unknown): string {
+export function storeDegradedMessage(
+  dbPath: string,
+  error: unknown,
+  subject: StoreEventSubject,
+): string {
   if (error instanceof StoreAheadOfBuildError) return storeAheadMessage(dbPath, error);
   const cause = storeOpenCause(error);
-  if (cause?.busy === true) return storeBusyMessage(dbPath, cause.text);
+  if (cause?.lock !== undefined) return storeBusyMessage(dbPath, cause, subject);
   return storeUnavailableMessage(dbPath, cause?.text);
 }
+
+/**
+ * Whether to show the degradation warning for this open failure. A lock lasts
+ * only for the event that hit it, so its warning is shown each time and does
+ * not spend the once-per-session claim, which a later corrupt or newer store
+ * in the same session still needs.
+ */
+export function claimStoreDegradedWarning(
+  dataDir: string,
+  sessionId: string | undefined,
+  error: unknown,
+): boolean {
+  if (!(error instanceof StoreAheadOfBuildError) && storeOpenCause(error)?.lock !== undefined) {
+    return true;
+  }
+  return claimStoreUnavailableWarning(dataDir, sessionId);
+}
+
+/** What a hook was handling when the store could not be opened. */
+export type StoreEventSubject = 'tool call' | 'prompt' | 'tool result';
+
+/**
+ * Which lock stopped the open. `busy` is SQLITE_BUSY: another connection held
+ * the file past the busy timeout. `locked` is SQLITE_LOCKED: a conflict inside
+ * this process's own connection, for which SQLite runs no busy handler.
+ */
+export type StoreLock = 'busy' | 'locked';
 
 // SQLite's primary result codes for "another connection holds a lock".
 const SQLITE_BUSY = 5;
@@ -202,7 +234,7 @@ const SQLITE_ERRSTR_SHAPE = /^[a-z0-9 ,()'-]{1,80}$/i;
 /**
  * What the open failure was, in terms that carry no user data.
  *
- * Only two fields are read, and neither is the error's message. A node:sqlite
+ * Only three fields are read, and none is the error's message. A node:sqlite
  * error carries `errcode` (the extended result code) and `errstr`, SQLite's own
  * fixed description of that code, so the pair names the failure without
  * repeating anything the statement or the path contained. A filesystem error
@@ -212,7 +244,7 @@ const SQLITE_ERRSTR_SHAPE = /^[a-z0-9 ,()'-]{1,80}$/i;
  */
 export function storeOpenCause(
   error: unknown,
-): { readonly text: string; readonly busy: boolean } | undefined {
+): { readonly text: string; readonly lock: StoreLock | undefined } | undefined {
   if (typeof error !== 'object' || error === null) return undefined;
   const { errcode, errstr, code } = error as {
     errcode?: unknown;
@@ -225,26 +257,41 @@ export function storeOpenCause(
     const description = described ? `: ${errstr}` : '';
     return {
       text: `SQLite error ${String(errcode)}${description}`,
-      busy: primary === SQLITE_BUSY || primary === SQLITE_LOCKED,
+      lock: primary === SQLITE_BUSY ? 'busy' : primary === SQLITE_LOCKED ? 'locked' : undefined,
     };
   }
   if (typeof code === 'string' && /^E[A-Z0-9]{1,15}$/.test(code)) {
-    return { text: code, busy: false };
+    return { text: code, lock: undefined };
   }
   return undefined;
 }
 
 /**
- * The degradation warning for a store another process held locked for longer
- * than the open waits. The file is intact, so the repair advice the generic
- * message gives would be wrong here; and every hook opens the store afresh, so
- * the condition lasts only as long as the other process holds it.
+ * The degradation warning for a store a lock kept from opening. The file is
+ * intact, so the repair advice the generic message gives would be wrong here;
+ * and every hook opens the store afresh, so the condition lasts only as long
+ * as the lock does. Only SQLITE_BUSY is narrated as another process holding
+ * the file; SQLITE_LOCKED is named by its code alone.
  */
-export function storeBusyMessage(dbPath: string, cause: string): string {
+export function storeBusyMessage(
+  dbPath: string,
+  cause: { readonly text: string; readonly lock: StoreLock | undefined },
+  subject: StoreEventSubject,
+): string {
+  const reason =
+    cause.lock === 'busy'
+      ? `because another process held it locked longer than AKA waits (${cause.text})`
+      : `because it was locked (${cause.text})`;
+  // A tool result arrives after the call ran, so only its scan and recording
+  // were skipped; the call itself was decided before it.
+  const skipped =
+    subject === 'tool result'
+      ? 'Scanning and recording were skipped for this tool result'
+      : `Detection, enforcement, and recording were skipped for this ${subject}`;
   return (
-    `AKA could not open its local store (${dbPath}) because another process held it locked longer than AKA waits (${cause}). ` +
-    'Detection, enforcement, and recording were skipped for this tool call (fails open, so your session keeps working). ' +
-    'The store is not damaged and needs no repair; each later call opens it again.'
+    `AKA could not open its local store (${dbPath}) ${reason}. ` +
+    `${skipped} (fails open, so your session keeps working). ` +
+    'The store is not damaged and needs no repair; the next hook opens it again.'
   );
 }
 

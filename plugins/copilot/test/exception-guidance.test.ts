@@ -14,6 +14,7 @@ import {
   unscannedWorkerUnavailableMessage,
   withheldBanner,
   withheldToolText,
+  workerUnavailableBlockedMessage,
 } from '../src/exception-guidance.ts';
 
 function ref(reference: string, maskedValue = 'F******E'): BlockedDetectionRef {
@@ -193,6 +194,16 @@ describe('tooLargeToScanMessage', () => {
       'This bash call is too large for AKA to scan within the time limit, so it was blocked. Shorten it or send it in smaller parts.',
     );
     expect(tooLargeToScanMessage('bash call')).not.toContain('aka exception');
+  });
+});
+
+describe('workerUnavailableBlockedMessage', () => {
+  it('says the input was blocked because the worker could not run, and names the reinstall', () => {
+    expect(workerUnavailableBlockedMessage('prompt')).toBe(
+      "AKA's scan worker could not run, so this prompt could not be scanned and was blocked. " +
+        'This is a fault in AKA, not a limit on what was sent: reinstall the AKA plugin to repair it.',
+    );
+    expect(workerUnavailableBlockedMessage('prompt')).not.toMatch(/shorten|aka exception/iu);
   });
 });
 

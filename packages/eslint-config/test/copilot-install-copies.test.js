@@ -20,7 +20,9 @@ const ts = require('typescript');
 // folder and unpack the package: the skill's own VS Code section and the
 // README's. Each copy is reduced to its command lines and required to equal the
 // reference's lines (or, for the VS Code copies, the reference's install lines
-// up to `copilot plugin install`), so a copy edited on its own goes red here.
+// up to `copilot plugin install` followed by the VS Code register step), so a
+// copy edited on its own goes red here. llms.txt must also name that register
+// step in its prose.
 //
 // Only commands are compared, never the prose around them: the copies explain
 // the steps at different lengths on purpose, and the commands are what a user
@@ -48,6 +50,12 @@ const COMMAND_MARKERS = Object.freeze([
   'copilot plugin install',
   'copilot plugin update',
 ]);
+
+/**
+ * The VS Code step that registers the unpacked package. Only the VS Code copies
+ * carry it, so it is read there alone, after the reference's opening lines.
+ */
+const VSCODE_INSTALL = 'node package/scripts/vscode-install.js';
 
 /** @param {string} rel */
 const read = (rel) => readFileSync(join(REPO_ROOT, rel), 'utf8');
@@ -180,16 +188,27 @@ function vscodeReference() {
   return reference.slice(0, install);
 }
 
+/**
+ * The command lines of a VS Code copy: the reference's markers plus the
+ * register step.
+ * @param {string[]} lines
+ * @returns {string[]}
+ */
+const vscodeCommandsIn = (lines) =>
+  lines
+    .map(normalize)
+    .filter((line) => [...COMMAND_MARKERS, VSCODE_INSTALL].some((m) => line.includes(m)));
+
 /** @returns {string[]} */
 function skillVscodeCommands() {
-  return commandsIn(
+  return vscodeCommandsIn(
     fencedLines(sectionOf(read(SKILL), '## Install — VS Code agent mode (beta)', /^## /u, SKILL)),
   );
 }
 
 /** @returns {string[]} */
 function readmeVscodeCommands() {
-  return commandsIn(
+  return vscodeCommandsIn(
     fencedLines(sectionOf(read(README), '### VS Code agent mode (beta)', /^#{2,3} /u, README)),
   );
 }
@@ -291,8 +310,24 @@ describe('Copilot install copies agree with the setup skill', () => {
     expect(VSCODE_COPIES[copy]().length, `${copy} yielded no install command`).toBeGreaterThan(0);
   });
 
-  it.each(Object.keys(VSCODE_COPIES))('%s carries exactly the reference opening lines', (copy) => {
-    expect(VSCODE_COPIES[copy](), `${copy} has drifted from ${SKILL}`).toEqual(vscodeReference());
+  it.each(Object.keys(VSCODE_COPIES))(
+    '%s carries exactly the reference opening lines, then the register step',
+    (copy) => {
+      expect(VSCODE_COPIES[copy](), `${copy} has drifted from ${SKILL}`).toEqual([
+        ...vscodeReference(),
+        VSCODE_INSTALL,
+      ]);
+    },
+  );
+
+  it(`${LLMS} names the VS Code register step`, () => {
+    const text = read(LLMS);
+    const start = text.split('\n').find((line) => line.startsWith('- GitHub Copilot:'));
+    expect(start, `${LLMS} has no \`- GitHub Copilot:\` entry`).toBeDefined();
+    const entry = sectionOf(text, /** @type {string} */ (start), /^(- |#)/u, LLMS);
+    expect(entry, `${LLMS} does not tell a VS Code user to run \`${VSCODE_INSTALL}\``).toContain(
+      VSCODE_INSTALL,
+    );
   });
 
   it('pins only the Release body to a version', () => {

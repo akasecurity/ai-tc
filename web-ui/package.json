@@ -37,11 +37,11 @@
     "@types/react-dom": "^19.3.0",
     "@vitest/coverage-v8": "^4.1.12",
     "eslint": "^9.39.5",
-    "jsdom": "~31.0.0",
+    "jsdom": "~31.0.1",
     "tailwindcss": "^4.3.5",
     "tsup": "^9.0.0",
     "typescript": "^5.8.0",
-    "typescript-eslint": "^8.72.2",
+    "typescript-eslint": "^8.73.0",
     "vitest": "^4.1.12"
   }
 }

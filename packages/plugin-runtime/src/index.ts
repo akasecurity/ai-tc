@@ -54,3 +54,19 @@ export {
   sightingToken,
 } from './scan-sightings.ts';
 export { StandaloneDataGateway } from './standalone-gateway.ts';
+export type { GatewayOpen, StoreEventSubject, StoreLock } from './store-health.ts';
+export {
+  claimStoreDegradedWarning,
+  claimStoreUnavailableWarning,
+  isSessionMarked,
+  markSession,
+  openGateway,
+  openGatewayOrNull,
+  storeAheadMessage,
+  storeBusyMessage,
+  storeDegradedMessage,
+  storeOpenCause,
+  storeRedirectedMessage,
+  storeUnavailableMessage,
+  warnIfStoreRedirected,
+} from './store-health.ts';

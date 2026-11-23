@@ -156,7 +156,7 @@ function holdStoreLocked(): () => void {
   };
 }
 
-const BUSY_SENTENCE = 'another process held it locked longer than AKA waits';
+const BUSY_SENTENCE = 'another connection held it locked longer than AKA waits';
 
 // A lock lasts for one event, so each hook reports it every time rather than
 // spending the once-per-session warning. Both runs share one conversation id,

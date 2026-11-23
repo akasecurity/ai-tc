@@ -1,6 +1,6 @@
 {
   "name": "@akasecurity/ai-tc-cursor",
-  "version": "0.9.25",
+  "version": "0.9.26",
   "description": "AI Traffic Control — inspect and govern AI prompts in Cursor",
   "license": "Apache-2.0",
   "type": "module",

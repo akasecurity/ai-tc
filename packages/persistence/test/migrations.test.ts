@@ -27,6 +27,7 @@ import {
   SCOPE_OWED_INDEX_DDL,
   TOKEN_USAGE_COLUMNS,
 } from '../src/migrations.ts';
+import { SqliteActivityRepository } from '../src/repositories/activity.ts';
 import { SqliteScanLedgerRepository } from '../src/repositories/scan-ledger.ts';
 import { SYNC_FAILURE_REASONS } from '../src/sync-failure.ts';
 import { captureEvent } from './helpers/capture-fixtures.ts';
@@ -3052,6 +3053,78 @@ describe('the store opener and deferred migrations', () => {
       for (const tag of DEFERRED_MIGRATION_TAGS) {
         expect(applied.has(tag), `${tag} was skipped without a skip set`).toBe(true);
       }
+    } finally {
+      db.close();
+    }
+  });
+});
+
+const USAGE_CHANNEL_TAG = '0042_usage_channel';
+
+// A store as the binary before the usage channel left it, already holding a session's calls.
+function preUsageChannelStore(): DatabaseSync {
+  const db = new DatabaseSync(':memory:');
+  db.exec('PRAGMA foreign_keys = ON');
+  db.exec('CREATE TABLE migration_ledger (tag TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)');
+  const earlier = SQLITE_MIGRATIONS.filter((m) => m.tag !== USAGE_CHANNEL_TAG);
+  for (const migration of earlier) {
+    for (const statement of splitBreakpoints(migration.sql)) db.exec(statement);
+    db.prepare('INSERT INTO migration_ledger (tag, applied_at) VALUES (?, ?)').run(
+      migration.tag,
+      1,
+    );
+  }
+  db.exec(`PRAGMA user_version = ${String(earlier.length)}`);
+  db.prepare(
+    `INSERT INTO audit_events (id, event_type, started_at, attributes) VALUES ('root-a', 'session', 1000, '{}')`,
+  ).run();
+  const call = db.prepare(
+    `INSERT INTO audit_events (id, parent_id, root_session_id, event_type, started_at, attributes)
+       VALUES (?, 'root-a', 'root-a', 'llm_call', ?, ?)`,
+  );
+  for (const [id, at] of [
+    ['call-a', 2000],
+    ['call-b', 3000],
+  ] as const) {
+    call.run(
+      id,
+      at,
+      JSON.stringify({
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-5',
+        input_tokens: 100,
+        output_tokens: 10,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      }),
+    );
+  }
+  return db;
+}
+
+describe('migration 0042 (usage channel)', () => {
+  it('adds the channel to a store that already holds calls, and reads them back as unknown', async () => {
+    const db = preUsageChannelStore();
+    try {
+      expect(indexColumns(db, 'idx_audit_llm_usage')).not.toContain('usage_channel');
+
+      applyMigrations(db);
+
+      expect(appliedTags(db)).toEqual(SQLITE_MIGRATIONS.map((m) => m.tag).sort());
+      expect(columnNames(db, 'audit_events', { includeGenerated: true })).toContain(
+        'usage_channel',
+      );
+      expect(indexColumns(db, 'idx_audit_llm_usage')).toContain('usage_channel');
+
+      const reports = await new SqliteActivityRepository(db).tokenReports();
+      expect(reports).toHaveLength(1);
+      expect(reports[0]?.rollups.map((r) => [r.inputTokens, r.channel])).toEqual([
+        [200, 'unknown'],
+      ]);
+
+      expect(() => {
+        applyMigrations(db);
+      }).not.toThrow();
     } finally {
       db.close();
     }

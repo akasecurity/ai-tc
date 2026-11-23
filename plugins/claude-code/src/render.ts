@@ -17,12 +17,14 @@ import type {
 } from '@akasecurity/plugin-sdk';
 import {
   aggregateTokenUsage,
+  API_EQUIVALENT_NOTE,
   buildRecommendations,
   findingStatus,
   formatCostTotal,
   formatUsd,
   offersCaptureStatusReader,
   severityWeight,
+  usageChannelLabel,
   WEB_CAPTURE_DRIFT_RULE,
   webCaptureReport,
 } from '@akasecurity/plugin-sdk';
@@ -882,24 +884,37 @@ export function renderTokens(reports: SessionTokenReport[]): string {
   const rows = summary.models.map((m) => [
     m.provider,
     m.model,
+    usageChannelLabel(m.channel),
     num(m.inputTokens),
     num(m.outputTokens),
     num(m.cacheTokens),
     num(m.totalTokens),
-    m.estimatedCostUsd !== null ? formatUsd(m.estimatedCostUsd) : '—',
+    m.estimatedCostUsd === null
+      ? '—'
+      : m.costBasis === 'api_equivalent'
+        ? `${formatUsd(m.estimatedCostUsd)} API-eq.`
+        : formatUsd(m.estimatedCostUsd),
   ]);
 
   const totalCost = formatCostTotal(summary.estimatedCostUsd, summary.costIsPartial);
+  const hasSubscription = summary.models.some((m) => m.costBasis === 'api_equivalent');
+  const apiEquivalent = hasSubscription
+    ? `, ${formatCostTotal(summary.apiEquivalentUsd, summary.apiEquivalentIsPartial)} API-equivalent`
+    : '';
   const sessions =
     summary.sessionCount === 1 ? '1 session' : `${String(summary.sessionCount)} sessions`;
   const lines = [
-    `Token usage — ${sessions}, ${num(summary.totalTokens)} tokens, ${totalCost}`,
+    `Token usage — ${sessions}, ${num(summary.totalTokens)} tokens, ${totalCost} estimated spend${apiEquivalent}`,
     '',
-    table(['Provider', 'Model', 'Input', 'Output', 'Cache', 'Total', 'Cost'], rows),
+    table(['Provider', 'Model', 'Paid via', 'Input', 'Output', 'Cache', 'Total', 'Cost'], rows),
   ];
   if (summary.costIsPartial) {
     lines.push('', '— = unknown pricing (local / non-Anthropic model); cost is a lower bound.');
   }
+  if (summary.apiEquivalentIsPartial) {
+    lines.push('', '— on a subscription row = unknown pricing; API-equivalent is a lower bound.');
+  }
+  if (hasSubscription) lines.push('', API_EQUIVALENT_NOTE);
   return lines.join('\n');
 }
 

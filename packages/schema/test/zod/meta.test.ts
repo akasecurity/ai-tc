@@ -149,6 +149,8 @@ describe('token-usage read DTOs', () => {
       cacheRead: 11404,
       totalTokens: 28450,
       estimatedCostUsd: 0.1234,
+      channel: 'api_key',
+      costBasis: 'estimated',
     });
     expect(rollup.totalTokens).toBe(28450);
     expect(rollup.estimatedCostUsd).toBe(0.1234);
@@ -165,6 +167,8 @@ describe('token-usage read DTOs', () => {
       cacheRead: 0,
       totalTokens: 2,
       estimatedCostUsd: null,
+      channel: 'unknown',
+      costBasis: null,
     });
     expect(rollup.estimatedCostUsd).toBeNull();
   });
@@ -183,11 +187,15 @@ describe('token-usage read DTOs', () => {
           cacheRead: 11404,
           totalTokens: 28450,
           estimatedCostUsd: 0.1234,
+          channel: 'api_key',
+          costBasis: 'estimated',
         },
       ],
       totalTokens: 28450,
       estimatedCostUsd: 0.1234,
       costIsPartial: false,
+      apiEquivalentUsd: null,
+      apiEquivalentIsPartial: false,
     });
     expect(report.rollups).toHaveLength(1);
     expect(report.totalTokens).toBe(28450);
@@ -208,6 +216,8 @@ describe('token-usage read DTOs', () => {
           cacheRead: 11404,
           totalTokens: 28450,
           estimatedCostUsd: 0.1234,
+          channel: 'api_key',
+          costBasis: 'estimated',
         },
         {
           sessionId: 'sess-1',
@@ -219,12 +229,16 @@ describe('token-usage read DTOs', () => {
           cacheRead: 0,
           totalTokens: 150,
           estimatedCostUsd: null,
+          channel: 'unknown',
+          costBasis: null,
         },
       ],
       totalTokens: 28600,
       // Σ of the priced rollup only; the unpriced one is excluded from the total.
       estimatedCostUsd: 0.1234,
       costIsPartial: true,
+      apiEquivalentUsd: null,
+      apiEquivalentIsPartial: false,
     });
     expect(report.rollups).toHaveLength(2);
     expect(report.costIsPartial).toBe(true);

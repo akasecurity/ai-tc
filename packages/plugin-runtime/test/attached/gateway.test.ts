@@ -69,6 +69,7 @@ const PORT_METHODS = [
   'recordConfigScan',
   'configInventoryReport',
   'readSessionProvider',
+  'readSessionBilling',
   'facets',
   'getPolicyBundle',
   'consumeException',

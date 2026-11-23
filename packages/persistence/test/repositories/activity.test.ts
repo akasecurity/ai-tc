@@ -739,6 +739,13 @@ describe('tokenReports', () => {
       service_tier: 'batch',
     });
     leaf('X3', 'X', NOW + 3, { ...base, input_tokens: 700, service_tier: 'batch' });
+    leaf('X3s', 'X', NOW + 3, {
+      ...base,
+      input_tokens: 900,
+      service_tier: 'batch',
+      usage_channel: 'subscription',
+    });
+    leaf('X3k', 'X', NOW + 3, { ...base, input_tokens: 40, usage_channel: 'api_key' });
     leaf('X4', 'X', NOW + 4, {
       ...base,
       model: 'claude-opus-4-8',
@@ -877,6 +884,8 @@ describe('tokenReports', () => {
         cacheCreation: roll.cacheCreation,
         cacheRead: roll.cacheRead,
         totalTokens: roll.totalTokens,
+        channel: roll.channel,
+        costBasis: roll.costBasis,
       });
       expect(gotRollups.map(withoutCost)).toEqual(expectedRollups.map(withoutCost));
       for (const [j, roll] of expectedRollups.entries()) {

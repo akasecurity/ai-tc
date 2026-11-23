@@ -17,13 +17,14 @@ import type {
 } from '@akasecurity/plugin-sdk';
 import {
   aggregateTokenUsage,
-  API_EQUIVALENT_NOTE,
   buildRecommendations,
   findingStatus,
   formatCostTotal,
-  formatUsd,
+  formatModelCost,
+  hasApiEquivalent,
   offersCaptureStatusReader,
   severityWeight,
+  tokenCostNotes,
   usageChannelLabel,
   WEB_CAPTURE_DRIFT_RULE,
   webCaptureReport,
@@ -889,16 +890,11 @@ export function renderTokens(reports: SessionTokenReport[]): string {
     num(m.outputTokens),
     num(m.cacheTokens),
     num(m.totalTokens),
-    m.estimatedCostUsd === null
-      ? '—'
-      : m.costBasis === 'api_equivalent'
-        ? `${formatUsd(m.estimatedCostUsd)} API-eq.`
-        : formatUsd(m.estimatedCostUsd),
+    formatModelCost(m.estimatedCostUsd, m.costBasis),
   ]);
 
   const totalCost = formatCostTotal(summary.estimatedCostUsd, summary.costIsPartial);
-  const hasSubscription = summary.models.some((m) => m.costBasis === 'api_equivalent');
-  const apiEquivalent = hasSubscription
+  const apiEquivalent = hasApiEquivalent(summary.models)
     ? `, ${formatCostTotal(summary.apiEquivalentUsd, summary.apiEquivalentIsPartial)} API-equivalent`
     : '';
   const sessions =
@@ -908,13 +904,7 @@ export function renderTokens(reports: SessionTokenReport[]): string {
     '',
     table(['Provider', 'Model', 'Paid via', 'Input', 'Output', 'Cache', 'Total', 'Cost'], rows),
   ];
-  if (summary.costIsPartial) {
-    lines.push('', '— = unknown pricing (local / non-Anthropic model); cost is a lower bound.');
-  }
-  if (summary.apiEquivalentIsPartial) {
-    lines.push('', '— on a subscription row = unknown pricing; API-equivalent is a lower bound.');
-  }
-  if (hasSubscription) lines.push('', API_EQUIVALENT_NOTE);
+  for (const note of tokenCostNotes(summary)) lines.push('', note);
   return lines.join('\n');
 }
 

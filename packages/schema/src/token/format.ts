@@ -1,4 +1,4 @@
-import type { UsageChannel } from '../zod/meta.ts';
+import type { CostBasis, UsageChannel } from '../zod/meta.ts';
 
 // Pure USD/cost-label formatters shared by every token read surface — the
 // plugin's `/aka:tokens`, the OSS Activity page, and the CLI `aka stats` block +
@@ -63,3 +63,35 @@ export function usageChannelLabel(channel: UsageChannel): string {
 /** The note every surface prints beside an API-equivalent figure. */
 export const API_EQUIVALENT_NOTE =
   'API-equivalent is subscription usage priced at API list rates. A plan is billed as a flat fee, so it is not spend.';
+
+/** A model row's cost: `—` when unpriced, and marked `API-eq.` when it is subscription value. */
+export function formatModelCost(costUsd: number | null, costBasis: CostBasis | null): string {
+  if (costUsd === null) return '—';
+  return costBasis === 'api_equivalent' ? `${formatUsd(costUsd)} API-eq.` : formatUsd(costUsd);
+}
+
+/** True when any row of a token summary is subscription usage priced at list rates. */
+export function hasApiEquivalent(models: readonly { costBasis: CostBasis | null }[]): boolean {
+  return models.some((m) => m.costBasis === 'api_equivalent');
+}
+
+/** The note for a spend total that an unpriced per-token row leaves a lower bound. */
+export const SPEND_LOWER_BOUND_NOTE =
+  '— = unknown pricing (a local or non-Anthropic model); the spend total is a lower bound.';
+
+/** The note for an API-equivalent total that an unpriced subscription row leaves a lower bound. */
+export const API_EQUIVALENT_LOWER_BOUND_NOTE =
+  '— on a subscription row = unknown pricing; the API-equivalent total is a lower bound.';
+
+/** The notes a token summary prints below its rows, in order. */
+export function tokenCostNotes(summary: {
+  readonly costIsPartial: boolean;
+  readonly apiEquivalentIsPartial: boolean;
+  readonly models: readonly { costBasis: CostBasis | null }[];
+}): string[] {
+  return [
+    ...(summary.costIsPartial ? [SPEND_LOWER_BOUND_NOTE] : []),
+    ...(summary.apiEquivalentIsPartial ? [API_EQUIVALENT_LOWER_BOUND_NOTE] : []),
+    ...(hasApiEquivalent(summary.models) ? [API_EQUIVALENT_NOTE] : []),
+  ];
+}

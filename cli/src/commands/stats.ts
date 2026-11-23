@@ -4,16 +4,18 @@ import { openLocalDatabase } from '@akasecurity/persistence';
 import { dataDir } from '@akasecurity/plugin-sdk';
 import {
   aggregateTokenUsage,
-  API_EQUIVALENT_NOTE,
+  formatModelCost,
+  hasApiEquivalent,
   parseTimeRange,
   RANGE_DAYS,
   type SeveritySummaryResponse,
   type TimeRange,
+  tokenCostNotes,
   type TokenUsageSummary,
 } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
-import { compactTokens, totalCostLabel, usdCost } from '../lib/tokens.ts';
+import { compactTokens, totalCostLabel } from '../lib/tokens.ts';
 
 const DAY_MS = 86_400_000;
 
@@ -122,8 +124,7 @@ export function renderTokenUsage(summary: TokenUsageSummary, range: TimeRange): 
   }
   const total = totalCostLabel(summary.estimatedCostUsd, summary.costIsPartial);
   const sessions = `${String(summary.sessionCount)} session${summary.sessionCount === 1 ? '' : 's'}`;
-  const hasSubscription = summary.models.some((m) => m.costBasis === 'api_equivalent');
-  const apiEquivalent = hasSubscription
+  const apiEquivalent = hasApiEquivalent(summary.models)
     ? ` · ${totalCostLabel(summary.apiEquivalentUsd, summary.apiEquivalentIsPartial)} API-equivalent`
     : '';
   const lines = [
@@ -133,12 +134,7 @@ export function renderTokenUsage(summary: TokenUsageSummary, range: TimeRange): 
   const shown = summary.models.slice(0, TOP_MODELS);
   const labelWidth = Math.max(...shown.map((m) => `${m.provider}/${m.model}`.length));
   for (const m of shown) {
-    const cost =
-      m.estimatedCostUsd === null
-        ? '—'
-        : m.costBasis === 'api_equivalent'
-          ? `${usdCost(m.estimatedCostUsd)} API-eq.`
-          : usdCost(m.estimatedCostUsd);
+    const cost = formatModelCost(m.estimatedCostUsd, m.costBasis);
     lines.push(
       `  ${`${m.provider}/${m.model}`.padEnd(labelWidth)}  ${compactTokens(m.totalTokens).padStart(7)}  ${cost}`,
     );
@@ -146,12 +142,6 @@ export function renderTokenUsage(summary: TokenUsageSummary, range: TimeRange): 
   if (summary.models.length > TOP_MODELS) {
     lines.push(`  … and ${String(summary.models.length - TOP_MODELS)} more model(s)`);
   }
-  if (summary.costIsPartial) {
-    lines.push('  — = unknown pricing (local / non-Anthropic); cost is a lower bound.');
-  }
-  if (summary.apiEquivalentIsPartial) {
-    lines.push('  — on a subscription row = unknown pricing; API-equivalent is a lower bound.');
-  }
-  if (hasSubscription) lines.push(`  ${API_EQUIVALENT_NOTE}`);
+  for (const note of tokenCostNotes(summary)) lines.push(`  ${note}`);
   return lines.join('\n');
 }

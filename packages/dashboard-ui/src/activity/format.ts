@@ -128,9 +128,11 @@ export function tokenLabel(n: number): string {
 // Activity page, the plugin's `/aka:tokens`, and the CLI/TUI print the same figure
 // AND the same qualifier convention (`$X` / `≥ $X`) — no local `~`/`—` drift.
 export {
-  API_EQUIVALENT_NOTE,
   formatCostTotal,
+  formatModelCost,
   formatUsd,
+  hasApiEquivalent,
+  tokenCostNotes,
   usageChannelLabel,
 } from '@akasecurity/schema';
 

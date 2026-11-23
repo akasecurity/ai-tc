@@ -37,8 +37,9 @@ function codexLogin(over: Partial<CodexLogin> = {}): CodexLoginRead {
   };
 }
 
-const noKey = { credentialEnv: false };
-const key = { credentialEnv: true };
+const noKey = { keyEnv: false, tokenEnv: false };
+const key = { keyEnv: true, tokenEnv: false };
+const token = { keyEnv: false, tokenEnv: true };
 
 describe('claudeBilling', () => {
   const base = { provider: 'anthropic', env: noKey, settingsVeto: false };
@@ -83,6 +84,22 @@ describe('claudeBilling', () => {
     );
   });
 
+  it('reads a plan token with no sign-in as a subscription with no plan named', () => {
+    expect(claudeBilling({ ...base, env: token, login: { status: 'absent' } })).toEqual({
+      usageChannel: 'subscription',
+    });
+  });
+
+  it('reads a key beside a plan token as unknown', () => {
+    expect(
+      claudeBilling({
+        ...base,
+        env: { keyEnv: true, tokenEnv: true },
+        login: { status: 'absent' },
+      }),
+    ).toEqual({ usageChannel: 'unknown' });
+  });
+
   it('is unknown with no login and no key', () => {
     expect(claudeBilling({ ...base, login: { status: 'unreadable' } })).toEqual({
       usageChannel: 'unknown',
@@ -108,6 +125,15 @@ describe('codexBilling', () => {
     expect(codexBilling({ ...base, login: { status: 'mode', cloud: true } }).usageChannel).toBe(
       'cloud',
     );
+  });
+
+  it('reads an access token with no sign-in as unknown, never as api_key', () => {
+    expect(codexBilling({ ...base, env: token, login: { status: 'absent' } })).toEqual({
+      usageChannel: 'unknown',
+    });
+    expect(
+      codexBilling({ ...base, env: { keyEnv: true, tokenEnv: true }, login: { status: 'absent' } }),
+    ).toEqual({ usageChannel: 'unknown' });
   });
 
   it('reads a key beside a ChatGPT sign-in as unknown, and a key alone as api_key', () => {

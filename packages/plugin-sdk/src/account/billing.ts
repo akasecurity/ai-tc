@@ -57,7 +57,7 @@ function subscription(
 
 export interface ClaudeBillingInput {
   readonly provider: string;
-  readonly env: Pick<ClaudeAccountEnv, 'credentialEnv'>;
+  readonly env: Pick<ClaudeAccountEnv, 'keyEnv' | 'tokenEnv'>;
   readonly login: ClaudeLoginRead;
   /** Any settings layer sets an API key helper or a billing env block. */
   readonly settingsVeto: boolean;
@@ -66,8 +66,9 @@ export interface ClaudeBillingInput {
 /**
  * Claude Code. A Console sign-in stores `primaryApiKey` next to its `oauthAccount`,
  * so that key, not the account, is what decides an API-key session; a key from the
- * environment or a settings helper beside a subscription sign-in may or may not be
- * the one in use, so that pair is `unknown`.
+ * environment or a settings helper beside a subscription sign-in or a plan token may
+ * or may not be the one in use, so that pair is `unknown`. A plan token on its own
+ * is a subscription whose plan the token does not name.
  */
 export function claudeBilling(input: ClaudeBillingInput): SessionBilling {
   const { provider, env, login, settingsVeto } = input;
@@ -76,27 +77,29 @@ export function claudeBilling(input: ClaudeBillingInput): SessionBilling {
   const account = login.status === 'ok' ? login.login : undefined;
   if (account?.primaryApiKey === true) return API_KEY;
   const signedIn = account?.hasOauthAccount === true;
-  if (env.credentialEnv || settingsVeto) return signedIn ? UNKNOWN : API_KEY;
+  if (env.keyEnv || settingsVeto) return signedIn || env.tokenEnv ? UNKNOWN : API_KEY;
+  if (env.tokenEnv) return { usageChannel: 'subscription' };
   return signedIn ? subscription(account.plan, CLAUDE_PLANS) : UNKNOWN;
 }
 
 export interface CodexBillingInput {
   readonly provider: string;
-  readonly env: Pick<CodexAccountEnv, 'credentialEnv'>;
+  readonly env: Pick<CodexAccountEnv, 'keyEnv' | 'tokenEnv'>;
   readonly login: CodexLoginRead;
 }
 
-/** Codex. A ChatGPT sign-in is a subscription unless a key in the environment competes with it. */
+/** Codex. A ChatGPT sign-in is a subscription unless a key or token in the environment competes
+ * with it; with no sign-in, a key alone is per-token, and a token is `unknown`. */
 export function codexBilling(input: CodexBillingInput): SessionBilling {
   const { provider, env, login } = input;
   if (provider === 'gateway') return GATEWAY;
   switch (login.status) {
     case 'ok':
-      return env.credentialEnv ? UNKNOWN : subscription(login.login.plan, CHATGPT_PLANS);
+      return env.keyEnv || env.tokenEnv ? UNKNOWN : subscription(login.login.plan, CHATGPT_PLANS);
     case 'mode':
       return login.cloud === true ? CLOUD : API_KEY;
     case 'absent':
-      return env.credentialEnv ? API_KEY : UNKNOWN;
+      return env.keyEnv && !env.tokenEnv ? API_KEY : UNKNOWN;
     case 'malformed':
       return UNKNOWN;
   }

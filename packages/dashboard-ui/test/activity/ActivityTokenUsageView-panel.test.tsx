@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import type { TokenUsageSummary } from '@akasecurity/schema';
+import { API_EQUIVALENT_LOWER_BOUND_NOTE, SPEND_LOWER_BOUND_NOTE } from '@akasecurity/schema';
 import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -93,7 +94,7 @@ describe('ActivityTokenUsageView panel', () => {
   it('labels a subscription cost as API-equivalent and an unpriced one as unknown', () => {
     const costs = openPanel().map((cells) => cells.at(-1)?.textContent);
     expect(costs).toEqual(['$0.50', '$2.50 API-eq.', '—']);
-    expect(document.body.textContent).toContain('the API-equivalent total is a lower bound');
-    expect(document.body.textContent).not.toContain('the cost total is a lower bound');
+    expect(document.body.textContent).toContain(API_EQUIVALENT_LOWER_BOUND_NOTE);
+    expect(document.body.textContent).not.toContain(SPEND_LOWER_BOUND_NOTE);
   });
 });

@@ -32,21 +32,16 @@ import { useState } from 'react';
 import { AnalyticsIcon } from '../shared/icons.tsx';
 import { WidgetEmpty, WidgetError } from '../shared/widget-state.tsx';
 import {
-  API_EQUIVALENT_NOTE,
   formatCostTotal,
-  formatUsd,
+  formatModelCost,
+  hasApiEquivalent,
+  tokenCostNotes,
   tokenLabel,
   usageChannelLabel,
 } from './format.ts';
 
 function hasSubscription(summary: TokenUsageSummary): boolean {
-  return summary.models.some((m) => m.costBasis === 'api_equivalent');
-}
-
-function rowCost(m: TokenUsageSummary['models'][number]): string {
-  if (m.estimatedCostUsd === null) return '—';
-  const usd = formatUsd(m.estimatedCostUsd);
-  return m.costBasis === 'api_equivalent' ? `${usd} API-eq.` : usd;
+  return hasApiEquivalent(summary.models);
 }
 
 /** Per-model rows table — the slide-over body. Token counts are compact; a model
@@ -86,7 +81,9 @@ function ModelTable({ summary }: { summary: TokenUsageSummary }) {
             <TableCell className="text-right font-semibold tabular-nums text-text">
               {tokenLabel(m.totalTokens)}
             </TableCell>
-            <TableCell className="text-right tabular-nums text-text">{rowCost(m)}</TableCell>
+            <TableCell className="text-right tabular-nums text-text">
+              {formatModelCost(m.estimatedCostUsd, m.costBasis)}
+            </TableCell>
           </TableRow>
         ))}
       </TableBody>
@@ -194,21 +191,11 @@ export function ActivityTokenUsageView({
             ) : hasUsage ? (
               <>
                 <ModelTable summary={summary} />
-                {summary.costIsPartial && (
-                  <p className="px-3 pb-1 pt-2 text-xs text-text-3">
-                    — = unknown pricing (a local or non-Anthropic model); the cost total is a lower
-                    bound.
+                {tokenCostNotes(summary).map((note) => (
+                  <p key={note} className="px-3 pb-1 pt-2 text-xs text-text-3">
+                    {note}
                   </p>
-                )}
-                {summary.apiEquivalentIsPartial && (
-                  <p className="px-3 pb-1 pt-2 text-xs text-text-3">
-                    — on a subscription row = unknown pricing; the API-equivalent total is a lower
-                    bound.
-                  </p>
-                )}
-                {hasSubscription(summary) && (
-                  <p className="px-3 pb-1 pt-2 text-xs text-text-3">{API_EQUIVALENT_NOTE}</p>
-                )}
+                ))}
               </>
             ) : (
               <div className="p-3">

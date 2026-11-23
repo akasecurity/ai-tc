@@ -1,10 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  API_EQUIVALENT_LOWER_BOUND_NOTE,
+  API_EQUIVALENT_NOTE,
   compactNumber,
   formatCostTotal,
+  formatModelCost,
   formatTokenCount,
   formatUsd,
+  hasApiEquivalent,
+  SPEND_LOWER_BOUND_NOTE,
+  tokenCostNotes,
 } from '../../src/token/format.ts';
 
 describe('compactNumber', () => {
@@ -45,6 +51,27 @@ describe('formatUsd', () => {
     expect(formatUsd(3.4)).toBe('$3.40');
     expect(formatUsd(0)).toBe('$0.00');
     expect(formatUsd(0.065)).toBe('$0.0650');
+  });
+});
+
+describe('formatModelCost', () => {
+  it('marks subscription value, and shows — for an unpriced row', () => {
+    expect(formatModelCost(2.5, 'estimated')).toBe('$2.50');
+    expect(formatModelCost(2.5, 'api_equivalent')).toBe('$2.50 API-eq.');
+    expect(formatModelCost(null, null)).toBe('—');
+  });
+});
+
+describe('tokenCostNotes', () => {
+  const sub = [{ costBasis: 'api_equivalent' as const }];
+  it('prints each note only for the total it qualifies', () => {
+    expect(
+      tokenCostNotes({ costIsPartial: false, apiEquivalentIsPartial: false, models: [] }),
+    ).toEqual([]);
+    expect(
+      tokenCostNotes({ costIsPartial: true, apiEquivalentIsPartial: true, models: sub }),
+    ).toEqual([SPEND_LOWER_BOUND_NOTE, API_EQUIVALENT_LOWER_BOUND_NOTE, API_EQUIVALENT_NOTE]);
+    expect(hasApiEquivalent([{ costBasis: 'estimated' }, { costBasis: null }])).toBe(false);
   });
 });
 

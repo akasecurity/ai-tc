@@ -67,6 +67,13 @@ describe('resolveClaudeBilling', () => {
     expect(resolveClaudeBilling('anthropic', machine.cwd).usageChannel).toBe('api_key');
   });
 
+  it('reads a plan token in the environment as a subscription', () => {
+    vi.stubEnv('CLAUDE_CODE_OAUTH_TOKEN', 'fixture-token');
+    expect(resolveClaudeBilling('anthropic', machine.cwd)).toEqual({
+      usageChannel: 'subscription',
+    });
+  });
+
   it('answers unknown when reading the login throws', () => {
     machine.writeConfig({ oauthAccount: { organizationType: 'claude_max' } });
     failing.reads = true;

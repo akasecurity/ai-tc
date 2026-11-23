@@ -1,4 +1,5 @@
 import type { SeveritySummaryResponse, TokenUsageSummary } from '@akasecurity/schema';
+import { API_EQUIVALENT_LOWER_BOUND_NOTE, SPEND_LOWER_BOUND_NOTE } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { renderFindingsSummary, renderTokenUsage } from '../../src/commands/stats.ts';
@@ -144,8 +145,8 @@ describe('renderTokenUsage', () => {
     };
 
     const text = renderTokenUsage(summary, '7d');
-    expect(text).toContain('API-equivalent is a lower bound');
-    expect(text).not.toContain('cost is a lower bound');
+    expect(text).toContain(API_EQUIVALENT_LOWER_BOUND_NOTE);
+    expect(text).not.toContain(SPEND_LOWER_BOUND_NOTE);
   });
 
   it('renders an empty state when no tokens were recorded', () => {

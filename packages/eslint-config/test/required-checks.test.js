@@ -1113,7 +1113,7 @@ describe('the Windows legs', () => {
   // second copy of the count is the thing that goes stale.
   it('every lint script carries the glob this job exists to observe', () => {
     const scripts = workspaceLintScripts();
-    expect(scripts).toHaveLength(27);
+    expect(scripts).toHaveLength(28);
     for (const { dir, lintScript } of scripts) {
       expect(lintScript, `${dir} declares no lint script`).not.toBe('');
       expect(lintScript, `${dir}'s lint script targets no *.config.* glob`).toContain('*.config.*');

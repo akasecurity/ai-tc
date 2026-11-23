@@ -1,0 +1,15 @@
+{
+  "conversation_id": "c0ffee00-0000-4000-8000-000000000001",
+  "generation_id": "c0ffee00-0000-4000-8000-000000000003",
+  "model": "placeholder-model",
+  "hook_event_name": "preToolUse",
+  "cursor_version": "0.0.0",
+  "workspace_roots": ["/workspace/project"],
+  "user_email": null,
+  "transcript_path": null,
+  "tool_name": "Shell",
+  "tool_input": { "command": "ls -la" },
+  "tool_use_id": "tool-0001",
+  "cwd": "/workspace/project",
+  "agent_message": ""
+}

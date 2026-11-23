@@ -983,6 +983,7 @@ jobs:
           --filter=@akasecurity/scanner
           --filter=@akasecurity/local-ops
           --filter=@akasecurity/eslint-config
+          --filter=@akasecurity/ai-tc-cursor
           --filter=@akasecurity/plugin-browser-extension
           --
           --maxWorkers=2

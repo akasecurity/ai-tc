@@ -13,15 +13,58 @@ function rollup(over: Partial<TokenRollup> & { sessionId: string }): TokenRollup
     cacheRead: 0,
     totalTokens: 0,
     estimatedCostUsd: null,
+    channel: 'unknown',
+    costBasis:
+      over.estimatedCostUsd === undefined || over.estimatedCostUsd === null ? null : 'estimated',
     ...over,
   };
 }
 
 function report(over: Partial<SessionTokenReport> & { sessionId: string }): SessionTokenReport {
-  return { rollups: [], totalTokens: 0, estimatedCostUsd: null, costIsPartial: false, ...over };
+  return {
+    rollups: [],
+    totalTokens: 0,
+    estimatedCostUsd: null,
+    costIsPartial: false,
+    apiEquivalentUsd: null,
+    apiEquivalentIsPartial: false,
+    ...over,
+  };
 }
 
 describe('renderTokens', () => {
+  it('labels subscription rows as API-equivalent and keeps them out of the spend total', () => {
+    const out = renderTokens([
+      report({
+        sessionId: 's1',
+        totalTokens: 300,
+        estimatedCostUsd: 0.1,
+        apiEquivalentUsd: 2.5,
+        rollups: [
+          rollup({
+            sessionId: 's1',
+            model: 'claude-opus-4-8',
+            totalTokens: 200,
+            estimatedCostUsd: 2.5,
+            channel: 'subscription',
+            costBasis: 'api_equivalent',
+          }),
+          rollup({
+            sessionId: 's1',
+            model: 'claude-haiku-4-5',
+            totalTokens: 100,
+            estimatedCostUsd: 0.1,
+            channel: 'api_key',
+          }),
+        ],
+      }),
+    ]);
+    expect(out).toContain('$0.10 estimated spend, $2.50 API-equivalent');
+    expect(out).toContain('$2.50 API-eq.');
+    expect(out).toContain('Subscription');
+    expect(out).toContain('not spend');
+  });
+
   it('shows an empty-state line when there are no reports', () => {
     expect(renderTokens([])).toMatch(/No token usage/);
   });

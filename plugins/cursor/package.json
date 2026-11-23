@@ -1,0 +1,39 @@
+{
+  "name": "@akasecurity/ai-tc-cursor",
+  "version": "0.9.25",
+  "private": true,
+  "description": "AI Traffic Control — inspect and govern AI prompts in Cursor",
+  "license": "Apache-2.0",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/akasecurity/ai-tc.git",
+    "directory": "plugins/cursor"
+  },
+  "homepage": "https://github.com/akasecurity/ai-tc/tree/main/plugins/cursor",
+  "files": [
+    "scripts"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "lint": "eslint src test *.config.*",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "prepack": "tsup"
+  },
+  "devDependencies": {
+    "@akasecurity/eslint-config": "workspace:*",
+    "@akasecurity/persistence": "workspace:*",
+    "@akasecurity/plugin-runtime": "workspace:*",
+    "@akasecurity/plugin-sdk": "workspace:*",
+    "@akasecurity/scanner": "workspace:*",
+    "@akasecurity/schema": "workspace:*",
+    "@types/node": "^25.9.9",
+    "@vitest/coverage-v8": "^4.1.12",
+    "eslint": "^9.39.5",
+    "tsup": "^9.0.0",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.12"
+  }
+}

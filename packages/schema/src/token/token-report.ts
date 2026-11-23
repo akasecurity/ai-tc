@@ -12,7 +12,9 @@ import type {
   SessionTokenReport,
   TokenRollup,
   TokenUsageSummary,
+  UsageChannel,
 } from '../zod/meta.ts';
+import { costBasisFor, usageChannelOf } from '../zod/meta.ts';
 import type { CostModel, CostUsage } from './cost-model.ts';
 
 // One reconciler-written `llm_call` leaf: its session and the parsed attribute bag.
@@ -29,6 +31,7 @@ export interface LlmCallLeaf {
 interface RollupAcc {
   provider: string;
   model: string;
+  channel: UsageChannel;
   input: number;
   output: number;
   cacheCreation: number;
@@ -79,7 +82,8 @@ export function buildTokenReports(
   for (const { sessionId, attributes, promptTokens } of leaves) {
     const provider = attributes.provider ?? 'unknown';
     const model = attributes.model ?? 'unknown';
-    const key = `${provider} ${model}`;
+    const channel = usageChannelOf(attributes.usage_channel);
+    const key = `${provider} ${model} ${channel}`;
 
     let rollups = bySession.get(sessionId);
     if (rollups === undefined) {
@@ -91,6 +95,7 @@ export function buildTokenReports(
       acc = {
         provider,
         model,
+        channel,
         input: 0,
         output: 0,
         cacheCreation: 0,
@@ -124,18 +129,19 @@ export function buildTokenReports(
   for (const [sessionId, rollupMap] of bySession) {
     const rollups: TokenRollup[] = [];
     let totalTokens = 0;
-    let costUsd = 0;
-    let anyPriced = false;
-    let anyUnpriced = false;
+    const spend = { usd: 0, priced: false, partial: false };
+    const apiEquivalent = { usd: 0, priced: false, partial: false };
 
     for (const acc of rollupMap.values()) {
       const rollupTotal = acc.input + acc.output + acc.cacheCreation + acc.cacheRead;
       totalTokens += rollupTotal;
       const estimatedCostUsd = acc.priced ? acc.costUsd : null;
-      if (acc.partial) anyUnpriced = true;
+      const basis = costBasisFor(acc.channel);
+      const total = basis === 'api_equivalent' ? apiEquivalent : spend;
+      if (acc.partial) total.partial = true;
       if (estimatedCostUsd !== null) {
-        anyPriced = true;
-        costUsd += estimatedCostUsd;
+        total.priced = true;
+        total.usd += estimatedCostUsd;
       }
       rollups.push({
         sessionId,
@@ -147,6 +153,8 @@ export function buildTokenReports(
         cacheRead: acc.cacheRead,
         totalTokens: rollupTotal,
         estimatedCostUsd,
+        channel: acc.channel,
+        costBasis: estimatedCostUsd === null ? null : basis,
       });
     }
     rollups.sort((a, b) => b.totalTokens - a.totalTokens);
@@ -156,9 +164,11 @@ export function buildTokenReports(
       rollups,
       totalTokens,
       // Σ of the PRICED rollups; null when none had a known price.
-      estimatedCostUsd: anyPriced ? costUsd : null,
+      estimatedCostUsd: spend.priced ? spend.usd : null,
       // Any call priced to null means the total understates real spend.
-      costIsPartial: anyUnpriced,
+      costIsPartial: spend.partial,
+      apiEquivalentUsd: apiEquivalent.priced ? apiEquivalent.usd : null,
+      apiEquivalentIsPartial: apiEquivalent.partial,
     });
   }
   reports.sort((a, b) => b.totalTokens - a.totalTokens);
@@ -181,6 +191,7 @@ export function aggregateTokenUsage(reports: readonly SessionTokenReport[]): Tok
   interface Agg {
     provider: string;
     model: string;
+    channel: UsageChannel;
     inputTokens: number;
     outputTokens: number;
     cacheTokens: number;
@@ -192,15 +203,18 @@ export function aggregateTokenUsage(reports: readonly SessionTokenReport[]): Tok
   let totalTokens = 0;
   let estimatedCostUsd = 0;
   let costIsPartial = false;
+  let apiEquivalentUsd = 0;
+  let apiEquivalentIsPartial = false;
 
   for (const report of reports) {
     for (const roll of report.rollups) {
-      const key = `${roll.provider} ${roll.model}`;
+      const key = `${roll.provider} ${roll.model} ${roll.channel}`;
       let agg = byModel.get(key);
       if (agg === undefined) {
         agg = {
           provider: roll.provider,
           model: roll.model,
+          channel: roll.channel,
           inputTokens: 0,
           outputTokens: 0,
           cacheTokens: 0,
@@ -215,7 +229,8 @@ export function aggregateTokenUsage(reports: readonly SessionTokenReport[]): Tok
       agg.cacheTokens += roll.cacheCreation + roll.cacheRead;
       agg.totalTokens += roll.totalTokens;
       if (roll.estimatedCostUsd === null) {
-        costIsPartial = true;
+        if (costBasisFor(roll.channel) === 'api_equivalent') apiEquivalentIsPartial = true;
+        else costIsPartial = true;
       } else {
         agg.costUsd += roll.estimatedCostUsd;
         agg.priced = true;
@@ -224,6 +239,8 @@ export function aggregateTokenUsage(reports: readonly SessionTokenReport[]): Tok
     totalTokens += report.totalTokens;
     if (report.estimatedCostUsd !== null) estimatedCostUsd += report.estimatedCostUsd;
     if (report.costIsPartial) costIsPartial = true;
+    if (report.apiEquivalentUsd !== null) apiEquivalentUsd += report.apiEquivalentUsd;
+    if (report.apiEquivalentIsPartial) apiEquivalentIsPartial = true;
   }
 
   const models: ModelTokenUsage[] = [...byModel.values()]
@@ -236,6 +253,8 @@ export function aggregateTokenUsage(reports: readonly SessionTokenReport[]): Tok
       cacheTokens: m.cacheTokens,
       totalTokens: m.totalTokens,
       estimatedCostUsd: m.priced ? m.costUsd : null,
+      channel: m.channel,
+      costBasis: m.priced ? costBasisFor(m.channel) : null,
     }));
 
   return {
@@ -244,5 +263,7 @@ export function aggregateTokenUsage(reports: readonly SessionTokenReport[]): Tok
     totalTokens,
     estimatedCostUsd,
     costIsPartial,
+    apiEquivalentUsd,
+    apiEquivalentIsPartial,
   };
 }

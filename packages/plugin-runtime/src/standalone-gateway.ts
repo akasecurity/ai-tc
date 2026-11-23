@@ -20,6 +20,7 @@ import type {
   RecordProjectEgressInput,
   ScanLedgerEntry,
   ScanLedgerState,
+  SessionBillingRead,
 } from '@akasecurity/plugin-sdk';
 import {
   assignedRulePolicies,
@@ -237,6 +238,10 @@ export class StandaloneDataGateway
 
   readSessionProvider(sessionId: string): Promise<string | undefined> {
     return Promise.resolve(this.db.auditEvents.sessionProvider(sessionId));
+  }
+
+  readSessionBilling(sessionId: string): Promise<SessionBillingRead> {
+    return Promise.resolve(this.db.auditEvents.sessionBilling(sessionId));
   }
 
   // The key the store holds for a session root, which is not always the key of

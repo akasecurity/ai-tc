@@ -54,6 +54,13 @@ export {
   holdDecision,
   NO_ATTRIBUTION_CARRY,
 } from './attribution.ts';
+export type { ClaudeBillingInput, CodexBillingInput, SessionBilling } from './billing.ts';
+export {
+  claudeBilling,
+  codexBilling,
+  resolveClaudeBilling,
+  resolveCodexBilling,
+} from './billing.ts';
 export type { ClaudeLogin, ClaudeLoginPaths, ClaudeLoginRead } from './claude-login.ts';
 export {
   CLAUDE_CONFIG_MAX_BYTES,

@@ -4,6 +4,7 @@ import { openLocalDatabase } from '@akasecurity/persistence';
 import { dataDir } from '@akasecurity/plugin-sdk';
 import {
   aggregateTokenUsage,
+  API_EQUIVALENT_NOTE,
   parseTimeRange,
   RANGE_DAYS,
   type SeveritySummaryResponse,
@@ -121,14 +122,23 @@ export function renderTokenUsage(summary: TokenUsageSummary, range: TimeRange): 
   }
   const total = totalCostLabel(summary.estimatedCostUsd, summary.costIsPartial);
   const sessions = `${String(summary.sessionCount)} session${summary.sessionCount === 1 ? '' : 's'}`;
+  const hasSubscription = summary.models.some((m) => m.costBasis === 'api_equivalent');
+  const apiEquivalent = hasSubscription
+    ? ` · ${totalCostLabel(summary.apiEquivalentUsd, summary.apiEquivalentIsPartial)} API-equivalent`
+    : '';
   const lines = [
-    `Token usage (${range}): ${sessions} · ${compactTokens(summary.totalTokens)} tokens · ${total}`,
+    `Token usage (${range}): ${sessions} · ${compactTokens(summary.totalTokens)} tokens · ${total}${apiEquivalent}`,
   ];
 
   const shown = summary.models.slice(0, TOP_MODELS);
   const labelWidth = Math.max(...shown.map((m) => `${m.provider}/${m.model}`.length));
   for (const m of shown) {
-    const cost = m.estimatedCostUsd !== null ? usdCost(m.estimatedCostUsd) : '—';
+    const cost =
+      m.estimatedCostUsd === null
+        ? '—'
+        : m.costBasis === 'api_equivalent'
+          ? `${usdCost(m.estimatedCostUsd)} API-eq.`
+          : usdCost(m.estimatedCostUsd);
     lines.push(
       `  ${`${m.provider}/${m.model}`.padEnd(labelWidth)}  ${compactTokens(m.totalTokens).padStart(7)}  ${cost}`,
     );
@@ -139,5 +149,9 @@ export function renderTokenUsage(summary: TokenUsageSummary, range: TimeRange): 
   if (summary.costIsPartial) {
     lines.push('  — = unknown pricing (local / non-Anthropic); cost is a lower bound.');
   }
+  if (summary.apiEquivalentIsPartial) {
+    lines.push('  — on a subscription row = unknown pricing; API-equivalent is a lower bound.');
+  }
+  if (hasSubscription) lines.push(`  ${API_EQUIVALENT_NOTE}`);
   return lines.join('\n');
 }

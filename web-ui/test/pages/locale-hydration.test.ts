@@ -299,6 +299,8 @@ describe('a de-DE reader on an en-US server', () => {
         cacheRead: 0,
         totalTokens: 0,
         estimatedCostUsd: null,
+        channel: 'unknown',
+        costBasis: null,
       },
       tools: {},
       files: [],

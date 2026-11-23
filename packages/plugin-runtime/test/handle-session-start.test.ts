@@ -196,6 +196,29 @@ describe('handleSessionStart (standalone)', () => {
     db.close();
   });
 
+  it('records the usage channel and plan on the root, and neither when none is given', async () => {
+    await handleSessionStart(
+      { ...start('sb'), billing: { usageChannel: 'subscription', subscriptionPlan: 'claude_max' } },
+      config(dir),
+    );
+    await handleSessionStart(start('sn'), config(dir));
+
+    const db = open();
+    const attrsOf = (id: string): Record<string, unknown> => {
+      const row = db.prepare('SELECT attributes FROM audit_events WHERE id = ?').get(id) as {
+        attributes: string;
+      };
+      return JSON.parse(row.attributes) as Record<string, unknown>;
+    };
+    expect(attrsOf('sb')).toMatchObject({
+      usage_channel: 'subscription',
+      subscription_plan: 'claude_max',
+    });
+    expect(attrsOf('sn')).not.toHaveProperty('usage_channel');
+    expect(attrsOf('sn')).not.toHaveProperty('subscription_plan');
+    db.close();
+  });
+
   it('runs once per session: a repeat SessionStart for the same id is a no-op', async () => {
     await handleSessionStart(start('s1'), config(dir));
     await handleSessionStart(start('s1'), config(dir));

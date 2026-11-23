@@ -104,11 +104,17 @@ as what was seen to happen.
 The doc-derived fixtures the half was first written from still sit in
 `test/fixtures/vscode-provisional/`.
 
-**Only the pre-tool-use event ENFORCES.** Four events are wired — the session
-start, the prompt, the tool call and the tool result — but only the tool call
-can be stopped or rewritten. Your prompts and the tool output the model reads
-**are** captured, scanned and recorded, so a secret in either shows up as a
-finding on the dashboard; **neither can be withheld or masked.** A `block` or
+**Only the pre-tool-use event ENFORCES, and the VS Code prompt event.** Four
+events are wired — the session start, the prompt, the tool call and the tool
+result. The tool call can be stopped or rewritten on every surface. Under VS
+Code a prompt can be stopped too: a `block` policy, or a `redact` policy whose
+workspace `redactFallback` is `block`, exits 2, which VS Code documents as a
+blocking error. Whether VS Code then withholds the prompt has not yet been seen
+on a live install. With the default `redactFallback`, `warn`, a `redact` policy
+reports the prompt and sends it.
+On the Copilot CLI your prompts, and on every surface the tool output the model
+reads, **are** captured, scanned and recorded, so a secret in either shows up as
+a finding on the dashboard; **neither can be withheld or masked.** A `block` or
 `redact` policy on one of those is recorded as a finding and the text goes to
 the model unchanged. Under VS Code AKA returns the notice as a hook message,
 and it appears only in VS Code's "GitHub Copilot Chat Hooks" output channel: in
@@ -119,21 +125,21 @@ in a recorded `-p` session the stderr copy appeared only in Copilot's debug log,
 with debug logging enabled (`--log-level debug`), and that session predates AKA's
 use of progress lines. It never pretends it enforced.
 
-The reason is that neither host has a channel for it that has been seen to
-work: the CLI's `modifiedPrompt` and `modifiedResult` are documented and were
-never observed, and VS Code blocks through exit 2, which no path in this plugin
-takes. A tool result is also too late by construction — the tool has already
+The reason is that the CLI has no channel for it that has been seen to work:
+its `modifiedPrompt` and `modifiedResult` are documented and were never
+observed. A tool result is also too late by construction — the tool has already
 run, and what is at stake is only whether its output reaches the model.
 
 **A prompt or tool result too large to scan in time is reported, not
-refused.** A field of 32,768 characters or more is scanned in a separate thread
+refused — except a prompt under VS Code, which is stopped.** A field of 32,768 characters or more is scanned in a separate thread
 under a deadline. If that scan does not finish, AKA says the text was too large
 to scan in time and that it went to the model unchanged. If AKA's scan thread
 could not run at all, it says that instead: nothing was checked, the text went
 to the model unchanged, and the plugin should be reinstalled if it happens
 again — a missing scan thread is an install fault, and every text this large
-goes unscanned until it is repaired. Either way it is never treated as clean,
-and never stopped: neither event has a channel to stop it with. A structured tool result is read only to a fixed
+goes unscanned until it is repaired. Either way it is never treated as clean.
+Under VS Code a prompt that large is stopped instead of reported, because that
+host can stop a prompt; nothing else here has a channel to stop it with. A structured tool result is read only to a fixed
 depth, number of text values and total size; anything past those limits is
 reported as unscanned in the same way.
 
@@ -245,7 +251,7 @@ everything or only enrolled repositories, and which repositories are enrolled.
 | vscode  | PreToolUse          | run_in_terminal.explanation, goal | block   | no       | Model-authored prose that rides along with the call; both fields were recorded in test/fixtures/vscode/plugin-load-1.141/. They do not execute, but this host takes updatedInput only alongside permissionDecision allow, which would cover the command too, so they are never rewritten: a redact follows redactFallback (warn by default), exactly as on command, and a block policy denies the call. A deny through hookSpecificOutput was never driven. Scanned for secrets and PII only: the command-risk rules judge run_in_terminal.command, never this prose. |
 | vscode  | PreToolUse          | file-write content                | rewrite | no       | create_file content was recorded as captured, in test/fixtures/vscode/plugin-load-1.141/. No updatedInput was ever driven; it is validated against the tool input schema and LAST HOOK WINS, so a user or repo hook returning one discards this.                                                                                                                                                                                                                                                                                                                      |
 | vscode  | SessionStart        | session                           | none    | yes      | Opens the session root as the vscode interface, recorded in test/fixtures/vscode/plugin-load-1.141/. A payload carrying no cwd declines without opening the store; the recorded host sent cwd on every event.                                                                                                                                                                                                                                                                                                                                                         |
-| vscode  | UserPromptSubmit    | prompt                            | none    | yes      | Captured and scanned, recorded in test/fixtures/vscode/plugin-load-1.141/; nothing can be stopped or rewritten. This host blocks through exit 2, which no path in this adapter takes, so a block or redact policy is recorded and the prompt is sent unchanged.                                                                                                                                                                                                                                                                                                       |
+| vscode  | UserPromptSubmit    | prompt                            | block   | no       | Captured and scanned; the capture was recorded in test/fixtures/vscode/plugin-load-1.141/. A block policy (a redact policy whose workspace redactFallback is block included) or a prompt that could not be scanned exits 2, which this host documents as a blocking error. Whether VS Code then withholds the prompt has not been seen on a live install. Nothing is rewritten.                                                                                                                                                                                       |
 | vscode  | PostToolUse         | tool_response                     | none    | yes      | Captured and scanned, recorded in test/fixtures/vscode/plugin-load-1.141/ as a string response; nothing can be withheld. This host has no output-rewrite field at all, and its whole-result block has never been driven, so a finding is recorded and the output reaches the model unchanged.                                                                                                                                                                                                                                                                         |
 | cloud   | preToolUse          | bash.command                      | block   | no       | Speaks the CLI protocol, so the adapter behaves identically — but it runs only where the repository commits a hook on its default branch, and ask is coerced to deny there.                                                                                                                                                                                                                                                                                                                                                                                           |
 
@@ -261,13 +267,30 @@ vendor documents, not as what was seen to happen.
 **Load the package from a local directory.** There is no marketplace install for
 VS Code. If the Copilot CLI install above has already been done, reuse its
 `aka-copilot` folder and skip these two lines, so VS Code loads the same folder
-the update steps refresh. Otherwise pack and unpack the npm package, then point
-VS Code at the unpacked folder in your user settings:
+the update steps refresh. Otherwise pack and unpack the npm package:
 
 ```sh
 mkdir -p aka-copilot && cd aka-copilot
 tar -xzf "$(npm pack @akasecurity/ai-tc-copilot --silent)"
 ```
+
+Then, from that same folder, register the unpacked package with VS Code and
+reload the VS Code window:
+
+```sh
+node package/scripts/vscode-install.js
+```
+
+It edits VS Code's user `settings.json` and keeps every other line, comments
+included. Add `--insiders` for VS Code Insiders, or `--settings <path>` for a
+portable install or a custom user-data directory. `--uninstall` removes the
+folder again and leaves the two switches on. An entry for an earlier copy is
+replaced, including one an update deleted from another `aka-copilot/package`
+folder. A settings file it cannot parse, or
+one that sets the same key twice, is left untouched and the run fails. It reads
+and rewrites the file without a lock VS Code knows of, so leave the Settings
+editor alone while it runs: a setting saved there at the same moment is lost. To
+make the same change by hand, set:
 
 ```json
 {

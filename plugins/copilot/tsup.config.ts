@@ -65,6 +65,8 @@ export default defineConfig({
     // hook body has thrown or outrun its watchdog. Lands flat in scripts/
     // beside the hooks, because that is where the wrapper resolves it from.
     'fail-open-count': 'src/fail-open-count.ts',
+    // Not a hook: the VS Code installer, run by hand from the unpacked package.
+    'vscode-install': 'src/vscode-install-entry.ts',
     // The isolated scan's worker thread. No hook names it — plugin-sdk starts it
     // by path from whichever hook script is running, so the emitted script has to
     // land in this same directory. See src/scan-worker.ts.

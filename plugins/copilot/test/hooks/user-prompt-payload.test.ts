@@ -12,10 +12,13 @@ import type { BlockedDetectionRef, CaptureResult } from '@akasecurity/plugin-sdk
 import { describe, expect, it } from 'vitest';
 
 import {
+  tooLargeToScanMessage,
   unscannedTooLargeMessage,
   unscannedWorkerUnavailableMessage,
+  workerUnavailableBlockedMessage,
 } from '../../src/exception-guidance.ts';
 import {
+  PROMPT_REDACT_NOTE,
   promptDecision,
   promptPersist,
   readPromptCapture,
@@ -120,24 +123,49 @@ describe('promptDecision', () => {
   });
 
   // A refused scan arrives as `block` with NO findings — the shape every check
-  // below reads as clean. It is read first, on both events, and reported as
-  // unscanned on the dialect's own channel rather than as clean or as blocked.
+  // below reads as clean. It is read first. On the CLI, and on VS Code's
+  // transformed event, it is reported as unscanned on the dialect's channel;
+  // on VS Code's submitted event, which can be stopped, it is refused.
   it.each([
     ['timeout', unscannedTooLargeMessage],
     ['unavailable', unscannedWorkerUnavailableMessage],
   ] as const)(
-    'reports a %s refusal as unscanned on both events, never as clean',
+    'reports a %s refusal as unscanned where the prompt cannot be stopped, never as clean',
     (scanIncomplete, wording) => {
       const message = wording('prompt', 'it was sent to the model unchanged');
       const refused = { action: 'block' as const, findings: [], scanIncomplete };
       for (const event of ['submitted', 'transformed'] as const) {
         expect(promptDecision(event, 'cli', refused)).toEqual({ output: null, notice: message });
-        expect(promptDecision(event, 'vscode', refused)).toEqual({
-          output: { systemMessage: message },
-        });
       }
+      expect(promptDecision('transformed', 'vscode', refused)).toEqual({
+        output: { systemMessage: message },
+      });
     },
   );
+
+  it('stops a VS Code prompt whose scan ran out of time, saying it was too large', () => {
+    expect(
+      promptDecision('submitted', 'vscode', {
+        action: 'block',
+        findings: [],
+        scanIncomplete: 'timeout',
+      }),
+    ).toEqual({ output: { promptBlock: tooLargeToScanMessage('prompt') } });
+  });
+
+  it('stops a VS Code prompt the worker could not scan, naming the reinstall', () => {
+    const decision = promptDecision('submitted', 'vscode', {
+      action: 'block',
+      findings: [],
+      scanIncomplete: 'unavailable',
+    });
+    expect(decision).toEqual({
+      output: { promptBlock: workerUnavailableBlockedMessage('prompt') },
+    });
+    const block = (decision.output as { promptBlock: string }).promptBlock;
+    expect(block).toContain('reinstall the AKA plugin');
+    expect(block).not.toMatch(/shorten|too large|time limit/iu);
+  });
 
   // A worker that could not run is an install fault: telling the user to
   // shorten the prompt would send them after the wrong cause.
@@ -176,10 +204,51 @@ describe('promptDecision', () => {
     expect(vscode.notice).toBeUndefined();
   });
 
-  // A block or redact policy did NOT take effect here, and the sentence has to
-  // say so — the whole reason this path takes `rewritable: false`.
+  // VS Code's prompt-stop channel is exit 2, which the wrapper writes for a
+  // returned `promptBlock`.
+  // A redact policy reaches here already resolved by the runtime (the capture
+  // is `rewritable: false`): `action` is the workspace `redactFallback`, and
+  // `redactDegradedTo` says a block came from a redact.
+  it.each([
+    ['a block policy', undefined],
+    ['a redact policy whose redactFallback is block', 'block' as const],
+  ])('stops a VS Code prompt on %s', (_name, redactDegradedTo) => {
+    const decision = promptDecision('submitted', 'vscode', {
+      action: 'block',
+      findings: findings('generic.secret'),
+      blockedReferences: [REF],
+      redactDegradedTo,
+    });
+    const block = (decision.output as { promptBlock?: string } | null)?.promptBlock;
+    expect(block).toContain('AKA blocked this prompt');
+    expect(block).toContain('generic.secret');
+    expect(block).toContain('aka exception approve aka-ref-0001');
+    if (redactDegradedTo === 'block') expect(block).toContain(PROMPT_REDACT_NOTE);
+    else expect(block).not.toContain(PROMPT_REDACT_NOTE);
+    expect(decision.notice).toBeUndefined();
+  });
+
+  it('sends a VS Code prompt under a redact policy with the default warn fallback', () => {
+    const decision = promptDecision('submitted', 'vscode', {
+      action: 'warn',
+      findings: findings('generic.secret'),
+      redactDegradedTo: 'warn',
+    });
+    expect(decision.output).toEqual({
+      systemMessage: expect.stringContaining('sent unchanged') as unknown,
+    });
+  });
+
+  it('never stops a VS Code transformed prompt, which the submitted one owns', () => {
+    expect(
+      promptDecision('transformed', 'vscode', { action: 'block', findings: findings('r1') }),
+    ).toEqual({ output: null });
+  });
+
+  // On the CLI a block or redact policy did NOT take effect, and the sentence
+  // has to say so — the whole reason this path takes `rewritable: false`.
   it.each(['block', 'redact'] as const)(
-    'reports a %s policy as recorded-and-sent-unchanged, never as stopped',
+    'reports a %s policy on the CLI as recorded-and-sent-unchanged, never as stopped',
     (action) => {
       const { notice } = promptDecision('submitted', 'cli', {
         action,
@@ -236,8 +305,8 @@ describe('promptDecision', () => {
           findings: findings('generic.secret'),
           blockedReferences: [REF],
         });
-        const text =
-          decision.notice ?? (decision.output as { systemMessage: string } | null)?.systemMessage;
+        const output = decision.output as { systemMessage?: string; promptBlock?: string } | null;
+        const text = decision.notice ?? output?.systemMessage ?? output?.promptBlock;
         // The positive control: without it every absence check below is satisfied
         // by a decision that said nothing at all.
         expect(text).toContain('generic.secret');

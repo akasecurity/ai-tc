@@ -39,20 +39,29 @@ function configFor(dataDir: string): PluginConfig {
 }
 
 describe('the store-health seam', () => {
-  it.each([
-    'claimStoreDegradedWarning',
-    'claimStoreUnavailableWarning',
-    'isSessionMarked',
-    'markSession',
-    'storeAheadMessage',
-    'storeBusyMessage',
-    'storeDegradedMessage',
-    'storeOpenCause',
-    'storeRedirectedMessage',
-    'storeUnavailableMessage',
-    'warnIfStoreRedirected',
-  ] as const)('re-exports the shared %s', (name) => {
-    expect(seam[name]).toBe(shared[name]);
+  const sharedNames = Object.keys(shared.storeHealth).sort();
+  const exported = seam as Record<string, unknown>;
+  // Claude Code keeps its own open for the hook server; the rest is shared.
+  const LOCAL: readonly string[] = ['openGateway', 'openGatewayOrNull'];
+
+  it('re-exports every function of the shared module, by identity', () => {
+    expect(sharedNames.length).toBeGreaterThan(0);
+    for (const name of sharedNames) {
+      if (LOCAL.includes(name)) continue;
+      expect(exported[name], name).toBe(
+        shared.storeHealth[name as keyof typeof shared.storeHealth],
+      );
+    }
+  });
+
+  it('keeps its own open for the hook server, and only that', () => {
+    for (const name of LOCAL) {
+      expect(sharedNames).toContain(name);
+      expect(typeof exported[name], name).toBe('function');
+      expect(exported[name], name).not.toBe(
+        shared.storeHealth[name as keyof typeof shared.storeHealth],
+      );
+    }
   });
 });
 

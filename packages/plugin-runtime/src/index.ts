@@ -70,3 +70,5 @@ export {
   storeUnavailableMessage,
   warnIfStoreRedirected,
 } from './store-health.ts';
+/** The store-health module as one namespace, so each plugin's seam can be checked against it whole. */
+export * as storeHealth from './store-health.ts';

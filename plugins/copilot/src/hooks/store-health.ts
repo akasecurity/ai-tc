@@ -8,9 +8,9 @@
 // share: opening the gateway stays fail-open (null instead of a throw), and
 // the user is told ONCE per session that detection is off and how to recover.
 //
-// Identical to plugins/{claude-code,codex}/src/hooks/store-health.ts — no
-// harness-specific logic here, only @akasecurity/plugin-runtime/plugin-sdk
-// calls and a session-id-keyed fs marker.
+// No harness-specific logic here, only @akasecurity/plugin-runtime/plugin-sdk
+// calls and a session-id-keyed fs marker. The other plugins carry their own
+// copy; `test/hooks/store-health.test.ts` pins this one's causes.
 //
 // Pure logic + a tiny fs marker only — no main() side effect, so tests can
 // import it (hook ENTRY files run main() on import and must never be imported
@@ -19,7 +19,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import type { SymlinkedStorePath } from '@akasecurity/persistence';
-import { symlinkedStorePaths } from '@akasecurity/persistence';
+import { StoreAheadOfBuildError, symlinkedStorePaths } from '@akasecurity/persistence';
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
 import { DATA_DIR_MODE, DATA_FILE_MODE } from '@akasecurity/plugin-sdk';
@@ -39,24 +39,186 @@ const STORE_REDIRECT_MARKER = 'store-redirect-last-session';
 // How many recent session ids each marker remembers.
 const RECENT_SESSIONS = 32;
 
+/** A gateway, or the reason there is none. */
+export type GatewayOpen =
+  | { readonly gateway: DataGateway; readonly error?: undefined }
+  | { readonly gateway: null; readonly error: unknown };
+
 /**
  * Open the data gateway, fail-open: any store-open failure (corrupt aka.db,
- * bad permissions, a held lock) yields null instead of a throw, so the caller
- * can both keep the session alive AND know that detection is off — a silent
- * catch at the hook entry can't tell those apart.
+ * bad permissions, a held lock, a store written by a NEWER AKA build) yields a
+ * null gateway instead of a throw, so the caller can both keep the session
+ * alive AND know that detection is off — a silent catch at the hook entry
+ * can't tell those apart.
+ *
+ * The reason is carried out rather than swallowed, because it decides what the
+ * user is told: see `storeDegradedMessage`. A bare catch made every cause read
+ * as the same one, and the advice that generic message gives is wrong — and
+ * destructive — for the newer-store case.
  */
-export function openGatewayOrNull(config: PluginConfig): DataGateway | null {
+export function openGateway(config: PluginConfig): GatewayOpen {
   try {
-    return resolveDataGateway(config);
-  } catch {
-    return null;
+    return { gateway: resolveDataGateway(config) };
+  } catch (error) {
+    return { gateway: null, error };
   }
 }
 
-/** The once-per-session degradation warning shown when the store cannot open. */
-export function storeUnavailableMessage(dbPath: string): string {
+/**
+ * The same open, for the callers that only branch on whether they got one.
+ * A caller that WARNS wants `openGateway` — it cannot say anything true about
+ * the failure from a null alone.
+ */
+export function openGatewayOrNull(config: PluginConfig): DataGateway | null {
+  return openGateway(config).gateway;
+}
+
+/**
+ * The once-per-session degradation warning, chosen by what actually failed.
+ *
+ * Two causes, two opposite remedies. A store this build cannot READ is a file
+ * problem, and moving it aside is a real (if costly) repair. A store written by
+ * a NEWER AKA build is intact — every up-to-date surface on the machine reads
+ * it correctly — so moving it aside would destroy the corpus to work around a
+ * binary that is merely behind. The skew branch therefore names the version gap
+ * and says nothing about the file.
+ *
+ * A third cause, a lock that kept the open from completing, is also intact,
+ * and gets its own message for the same reason. Unlike the other two it lasts
+ * only for the event that hit it, so `subject` names that event. Every other
+ * failure keeps the generic message, naming the SQLite or filesystem code
+ * when the error carries one.
+ */
+export function storeDegradedMessage(
+  dbPath: string,
+  error: unknown,
+  subject: StoreEventSubject,
+): string {
+  if (error instanceof StoreAheadOfBuildError) return storeAheadMessage(dbPath, error);
+  const cause = storeOpenCause(error);
+  if (cause?.lock !== undefined) return storeBusyMessage(dbPath, cause, subject);
+  return storeUnavailableMessage(dbPath, cause?.text);
+}
+
+/**
+ * Whether to show the degradation warning for this open failure. A lock lasts
+ * only for the event that hit it, so its warning is shown each time and does
+ * not spend the once-per-session claim, which a later corrupt or newer store
+ * in the same session still needs.
+ */
+export function claimStoreDegradedWarning(
+  dataDir: string,
+  sessionId: string | undefined,
+  error: unknown,
+): boolean {
+  if (!(error instanceof StoreAheadOfBuildError) && storeOpenCause(error)?.lock !== undefined) {
+    return true;
+  }
+  return claimStoreUnavailableWarning(dataDir, sessionId);
+}
+
+/** What a hook was handling when the store could not be opened. */
+export type StoreEventSubject = 'tool call' | 'prompt' | 'tool result';
+
+/**
+ * Which lock stopped the open. `busy` is SQLITE_BUSY: another connection held
+ * the file past the busy timeout. `locked` is SQLITE_LOCKED: a conflict inside
+ * this process's own connection, for which SQLite runs no busy handler.
+ */
+export type StoreLock = 'busy' | 'locked';
+
+// SQLite's primary result codes for "another connection holds a lock".
+const SQLITE_BUSY = 5;
+const SQLITE_LOCKED = 6;
+
+// SQLite's fixed descriptions are short lowercase prose. A value of any other
+// shape is not one of them and is left out.
+const SQLITE_ERRSTR_SHAPE = /^[a-z0-9 ,()'-]{1,80}$/i;
+
+/**
+ * What the open failure was, in terms that carry no user data.
+ *
+ * Only three fields are read, and none is the error's message. A node:sqlite
+ * error carries `errcode` (the extended result code) and `errstr`, SQLite's own
+ * fixed description of that code, so the pair names the failure without
+ * repeating anything the statement or the path contained. A filesystem error
+ * from creating the data dir carries a `code` such as `EACCES`, which is read
+ * only when it has that shape. Anything else yields nothing, and the message
+ * says what it said before.
+ */
+export function storeOpenCause(
+  error: unknown,
+): { readonly text: string; readonly lock: StoreLock | undefined } | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const { errcode, errstr, code } = error as {
+    errcode?: unknown;
+    errstr?: unknown;
+    code?: unknown;
+  };
+  if (typeof errcode === 'number' && Number.isSafeInteger(errcode)) {
+    const primary = errcode & 0xff;
+    const described = typeof errstr === 'string' && SQLITE_ERRSTR_SHAPE.test(errstr);
+    const description = described ? `: ${errstr}` : '';
+    return {
+      text: `SQLite error ${String(errcode)}${description}`,
+      lock: primary === SQLITE_BUSY ? 'busy' : primary === SQLITE_LOCKED ? 'locked' : undefined,
+    };
+  }
+  if (typeof code === 'string' && /^E[A-Z0-9]{1,15}$/.test(code)) {
+    return { text: code, lock: undefined };
+  }
+  return undefined;
+}
+
+/**
+ * The degradation warning for a store a lock kept from opening. The file is
+ * intact, so the repair advice the generic message gives would be wrong here;
+ * and every hook opens the store afresh, so the condition lasts only as long
+ * as the lock does. Only SQLITE_BUSY is narrated as another process holding
+ * the file; SQLITE_LOCKED is named by its code alone.
+ */
+export function storeBusyMessage(
+  dbPath: string,
+  cause: { readonly text: string; readonly lock: StoreLock | undefined },
+  subject: StoreEventSubject,
+): string {
+  const reason =
+    cause.lock === 'busy'
+      ? `because another process held it locked longer than AKA waits (${cause.text})`
+      : `because it was locked (${cause.text})`;
+  // A tool result arrives after the call ran, so only its scan and recording
+  // were skipped; the call itself was decided before it.
+  const skipped =
+    subject === 'tool result'
+      ? 'Scanning and recording were skipped for this tool result'
+      : `Detection, enforcement, and recording were skipped for this ${subject}`;
   return (
-    `AKA could not open its local store (${dbPath}) — detection, enforcement, and recording are OFF for this session (fails open, so your session keeps working). ` +
+    `AKA could not open its local store (${dbPath}) ${reason}. ` +
+    `${skipped} (fails open, so your session keeps working). ` +
+    'The store is not damaged and needs no repair; the next hook opens it again.'
+  );
+}
+
+/** The degradation warning for a store written by a newer AKA build. */
+export function storeAheadMessage(dbPath: string, skew: StoreAheadOfBuildError): string {
+  return (
+    `AKA could not open its local store (${dbPath}) because this AKA build is older than the store: ` +
+    `it carries migration(s) ${skew.unknownTags.join(', ')} that this build does not define ` +
+    `(store schema ${String(skew.storeVersion)}, this build ${String(skew.buildVersion)}). ` +
+    'Detection, enforcement, and recording are OFF for this session (fails open, so your session keeps working). ' +
+    'The store is intact and needs no repair — update AKA so every surface on this machine is on one version line.'
+  );
+}
+
+/**
+ * The degradation warning shown when the store itself cannot be opened. `cause`
+ * is `storeOpenCause`'s text, named when there is one so the warning says which
+ * failure it was.
+ */
+export function storeUnavailableMessage(dbPath: string, cause?: string): string {
+  const reason = cause === undefined ? '' : ` (${cause})`;
+  return (
+    `AKA could not open its local store (${dbPath})${reason} — detection, enforcement, and recording are OFF for this session (fails open, so your session keeps working). ` +
     'To restore protection, check the file and its permissions; a corrupt store can be moved aside and AKA will recreate it.'
   );
 }

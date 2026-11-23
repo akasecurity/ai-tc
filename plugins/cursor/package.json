@@ -1,7 +1,6 @@
 {
   "name": "@akasecurity/ai-tc-cursor",
   "version": "0.9.25",
-  "private": true,
   "description": "AI Traffic Control — inspect and govern AI prompts in Cursor",
   "license": "Apache-2.0",
   "type": "module",
@@ -14,6 +13,10 @@
   "files": [
     "scripts"
   ],
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
+  },
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",

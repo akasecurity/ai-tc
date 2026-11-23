@@ -35,6 +35,7 @@ import { dropComments, jobBlock } from './helpers/workflow.js';
 const DRY_RUN_WORKFLOWS = [
   '.github/workflows/release-plugin-claude.yml',
   '.github/workflows/release-plugin-copilot.yml',
+  '.github/workflows/release-plugin-cursor.yml',
 ];
 
 /** The one gate every publishing step and job carries, exactly. */

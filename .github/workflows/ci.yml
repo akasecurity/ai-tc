@@ -556,12 +556,12 @@ jobs:
   # the OS-sensitive core — SQLite store, ~/.aka file layout, file walks, child
   # processes — gets exercised on windows-latest.
   #
-  # THE FIVE PUBLISHED ARTIFACTS ARE THE FIRST FIVE FILTERS, and that is the one
+  # THE SIX PUBLISHED ARTIFACTS ARE THE FIRST SIX FILTERS, and that is the one
   # part of this list with a rule behind it rather than a judgement. `cli`,
-  # `ai-tc-claude-code`, `ai-tc-codex`, `ai-tc-antigravity` and `ai-tc-copilot`
-  # are every package in the workspace npm actually publishes — everything else
-  # here is `private: true` and reaches a user only inlined into one of those
-  # five (`plugin-browser-extension`, the bundled libraries), if at all. They
+  # `ai-tc-claude-code`, `ai-tc-codex`, `ai-tc-antigravity`, `ai-tc-copilot` and
+  # `ai-tc-cursor` are every package in the workspace npm actually publishes —
+  # everything else here is `private: true` and reaches a user only inlined into
+  # one of those six (`plugin-browser-extension`, the bundled libraries), if at all. They
   # are also the packages carrying the most platform-specific code (`open-url.ts`'s
   # `cmd /c start`, `prompter.ts`'s setRawMode, `dashboard.ts`'s spawn +
   # require.resolve, `external-dispatch.ts`'s POSIX-only guard, the plugins'
@@ -569,7 +569,7 @@ jobs:
   # claimed a shipped surface none of them was part of.
   # `packages/eslint-config/test/required-checks.test.js` derives that set from the
   # workspace and fails when a published package is missing from this list, so a
-  # sixth artifact cannot ship untested here. Note turbo exits 1 on a `--filter`
+  # seventh artifact cannot ship untested here. Note turbo exits 1 on a `--filter`
   # matching no package, so a typo here fails the job rather than quietly
   # narrowing it.
   #
@@ -972,6 +972,7 @@ jobs:
           --filter=@akasecurity/ai-tc-codex
           --filter=@akasecurity/ai-tc-antigravity
           --filter=@akasecurity/ai-tc-copilot
+          --filter=@akasecurity/ai-tc-cursor
           --filter=@akasecurity/schema
           --filter=@akasecurity/extract
           --filter=@akasecurity/detections
@@ -983,7 +984,6 @@ jobs:
           --filter=@akasecurity/scanner
           --filter=@akasecurity/local-ops
           --filter=@akasecurity/eslint-config
-          --filter=@akasecurity/ai-tc-cursor
           --filter=@akasecurity/plugin-browser-extension
           --
           --maxWorkers=2

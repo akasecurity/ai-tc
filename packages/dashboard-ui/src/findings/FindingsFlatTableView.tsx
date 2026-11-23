@@ -28,7 +28,7 @@ import {
   USER_COLUMN_TITLE,
 } from './meta.ts';
 import { ProviderTag } from './ProviderChips.tsx';
-import { UserCell } from './UserCell.tsx';
+import { type RenderFindingUser, UserCell } from './UserCell.tsx';
 
 type FlatColumnId =
   | 'severity'
@@ -92,6 +92,7 @@ export function FindingsFlatTableView({
   isLoading = false,
   emptyState,
   showUserColumn = false,
+  renderUser,
   showDeploymentColumn = false,
   pinnedType = false,
   header,
@@ -106,6 +107,8 @@ export function FindingsFlatTableView({
    * single-user store would show a column of dashes.
    */
   showUserColumn?: boolean;
+  /** Renders each row's user in the User column; absent ⇒ the plain label. */
+  renderUser?: RenderFindingUser;
   /**
    * Render the Deployment column, which reads each row's `delivery`. Off by
    * default: only a machine attached to a deployment has anything to say there.
@@ -251,7 +254,7 @@ export function FindingsFlatTableView({
                     </TableCell>
                     {showUserColumn && (
                       <TableCell className={FINDING_COLUMN_CLASS.user}>
-                        <UserCell user={instance.user} />
+                        <UserCell user={instance.user} render={renderUser} />
                       </TableCell>
                     )}
                     <TableCell className={FINDING_COLUMN_CLASS.location}>

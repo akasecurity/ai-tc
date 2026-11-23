@@ -19,7 +19,7 @@ import {
   USER_COLUMN_TITLE,
 } from './meta.ts';
 import { ProviderTag } from './ProviderChips.tsx';
-import { UserCell } from './UserCell.tsx';
+import { type RenderFindingUser, UserCell } from './UserCell.tsx';
 
 /** Human-readable confidence band + score for an instance's 0–1 confidence. */
 export function formatConfidence(confidence: number): { label: string; tone: string } {
@@ -49,6 +49,7 @@ export function FindingDetailView({
   renderedAt,
   contextLoading = false,
   collectsExcerpts = true,
+  renderUser,
 }: {
   selection: Selection;
   footer?: ReactNode;
@@ -75,6 +76,8 @@ export function FindingDetailView({
    * another when the browser hydrates it. See ../lib/relativeTime.ts.
    */
   renderedAt: number;
+  /** Renders the attributed user; absent ⇒ the plain label. */
+  renderUser?: RenderFindingUser;
 }) {
   const { finding, instance } = selection;
   const Icon = CATEGORY_ICON_FALLBACK[finding.category] ?? KeyIcon;
@@ -153,7 +156,7 @@ export function FindingDetailView({
           {instance.user !== undefined && (
             <MetaItem label="User">
               <span title={USER_COLUMN_TITLE}>
-                <UserCell user={instance.user} />
+                <UserCell user={instance.user} render={renderUser} />
               </span>
             </MetaItem>
           )}

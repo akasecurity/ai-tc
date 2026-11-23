@@ -83,6 +83,7 @@ const EXPECTED_SESSION_PASS_FILES = [
   'plugins/claude-code/src/hooks/session-start-run.ts',
   'plugins/codex/src/hooks/session-start.ts',
   'plugins/copilot/src/hooks/session-start-run.ts',
+  'plugins/cursor/src/hooks/session-start-run.ts',
 ];
 
 const EXPECTED_INVENTORY_RESOLVER_FILES = [

@@ -380,6 +380,7 @@
         "!$TURBO_ROOT$/plugins/codex/scripts/**",
         "!$TURBO_ROOT$/plugins/antigravity/scripts/**",
         "!$TURBO_ROOT$/plugins/copilot/scripts/**",
+        "!$TURBO_ROOT$/plugins/cursor/scripts/**",
         // The Claude Code mod engine (build/engine.mjs) and the fixtures
         // test/mod-runtime/prepare.mjs writes beside the mod-runtime suite: all
         // gitignored in plugins/claude-code/.gitignore, all outside scripts/. The

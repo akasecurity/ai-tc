@@ -174,6 +174,8 @@ export type {
 export { codexProviderFromModelId, resolveCodexProvider } from './provider-codex.ts';
 export type { CopilotProvider, ResolvedCopilotProvider } from './provider-copilot.ts';
 export { resolveCopilotProvider } from './provider-copilot.ts';
+export type { CursorProvider, ResolvedCursorProvider } from './provider-cursor.ts';
+export { resolveCursorProvider } from './provider-cursor.ts';
 export type { EgressHit } from './raw-egress.ts';
 export {
   assertRawFree,

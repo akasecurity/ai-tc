@@ -53,6 +53,8 @@ describe('renderTokenUsage', () => {
       totalTokens: 1_250_000,
       estimatedCostUsd: 3.4,
       costIsPartial: false,
+      apiEquivalentUsd: 0,
+      apiEquivalentIsPartial: false,
       models: [
         {
           provider: 'anthropic',
@@ -62,6 +64,8 @@ describe('renderTokenUsage', () => {
           cacheTokens: 20_000,
           totalTokens: 980_000,
           estimatedCostUsd: 3.2,
+          channel: 'api_key',
+          costBasis: 'estimated',
         },
         {
           provider: 'anthropic',
@@ -71,6 +75,8 @@ describe('renderTokenUsage', () => {
           cacheTokens: 5_000,
           totalTokens: 270_000,
           estimatedCostUsd: 0.2,
+          channel: 'api_key',
+          costBasis: 'estimated',
         },
       ],
     };
@@ -91,6 +97,8 @@ describe('renderTokenUsage', () => {
       totalTokens: 500,
       estimatedCostUsd: 0,
       costIsPartial: true,
+      apiEquivalentUsd: 0,
+      apiEquivalentIsPartial: false,
       models: [
         {
           provider: 'ollama-unknown',
@@ -100,6 +108,8 @@ describe('renderTokenUsage', () => {
           cacheTokens: 0,
           totalTokens: 500,
           estimatedCostUsd: null,
+          channel: 'unknown',
+          costBasis: null,
         },
       ],
     };
@@ -110,12 +120,42 @@ describe('renderTokenUsage', () => {
     expect(text).toContain('lower bound');
   });
 
+  it('marks only the API-equivalent figure partial for an unpriced subscription model', () => {
+    const summary: TokenUsageSummary = {
+      sessionCount: 1,
+      totalTokens: 500,
+      estimatedCostUsd: 0,
+      costIsPartial: false,
+      apiEquivalentUsd: 0,
+      apiEquivalentIsPartial: true,
+      models: [
+        {
+          provider: 'anthropic',
+          model: 'unpriced-model',
+          inputTokens: 500,
+          outputTokens: 0,
+          cacheTokens: 0,
+          totalTokens: 500,
+          estimatedCostUsd: null,
+          channel: 'subscription',
+          costBasis: null,
+        },
+      ],
+    };
+
+    const text = renderTokenUsage(summary, '7d');
+    expect(text).toContain('API-equivalent is a lower bound');
+    expect(text).not.toContain('cost is a lower bound');
+  });
+
   it('renders an empty state when no tokens were recorded', () => {
     const summary: TokenUsageSummary = {
       sessionCount: 0,
       totalTokens: 0,
       estimatedCostUsd: 0,
       costIsPartial: false,
+      apiEquivalentUsd: 0,
+      apiEquivalentIsPartial: false,
       models: [],
     };
     expect(renderTokenUsage(summary, '30d')).toBe('Token usage (30d): none recorded');

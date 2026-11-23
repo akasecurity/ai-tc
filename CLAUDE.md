@@ -116,6 +116,8 @@ plugins/codex/        the Codex CLI plugin (hooks + skills; self-contained npm b
 plugins/antigravity/  the Antigravity plugin (hooks + skills; self-contained npm bundle)
 plugins/copilot/      the GitHub Copilot plugin — the Copilot CLI, VS Code agent mode and
                       the cloud coding agent, one package over two payload dialects
+plugins/cursor/       the Cursor plugin (agent hooks + an installer for ~/.cursor/hooks.json;
+                      private until released)
 plugins/browser-extension/  the Chrome extension for ChatGPT + Claude.ai web chat (MV3
                       content scripts + a native-messaging host; private — bundled into
                       the CLI by `bundle:extension`, installed via `aka extension install`)

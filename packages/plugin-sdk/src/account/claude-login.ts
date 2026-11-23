@@ -30,6 +30,8 @@ export interface ClaudeLogin {
   /** `oauthAccount.emailAddress`, normalised. */
   readonly email: string | undefined;
   readonly planState: AccountPlanState;
+  /** `oauthAccount.organizationType` as written, when it is a string. */
+  readonly plan: string | undefined;
   readonly primaryApiKey: boolean;
   readonly hasSlots: boolean;
   /** The org of the `clientDataCacheSlots` entry with the newest `at`, lower-cased. */
@@ -202,6 +204,7 @@ function parseClaudeConfig(text: string): ClaudeLogin | undefined {
     org: org !== undefined && UUID.test(org) ? org : undefined,
     email: typeof rawEmail === 'string' ? normalizeAccountEmail(rawEmail) : undefined,
     planState: claudePlanState(account?.organizationType),
+    plan: typeof account?.organizationType === 'string' ? account.organizationType : undefined,
     primaryApiKey: root.primaryApiKey !== undefined && root.primaryApiKey !== null,
     ...newestSlot(root.clientDataCacheSlots),
   };

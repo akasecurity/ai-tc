@@ -21,6 +21,7 @@ import type {
   RuleProbeVerdictEntry,
   ScanLedgerEntry,
   ScanLedgerState,
+  SessionBillingRead,
 } from '@akasecurity/plugin-sdk';
 import type { BoundedScanRequest } from '@akasecurity/plugin-sdk';
 import {
@@ -1326,6 +1327,10 @@ export class AttachedDataGateway
 
   async readSessionProvider(sessionId: string): Promise<string | undefined> {
     return this.deps.local.readSessionProvider(sessionId);
+  }
+
+  async readSessionBilling(sessionId: string): Promise<SessionBillingRead> {
+    return (await this.deps.local.readSessionBilling?.(sessionId)) ?? {};
   }
 
   async readCaptureStatuses(): Promise<ReportedCaptureDocument[]> {

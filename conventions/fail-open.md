@@ -69,6 +69,15 @@ deadline. Each sits inside whatever would otherwise answer for that path first:
   `scanIncomplete` is reported on the notice channel as too large to scan
   (`unscannedTooLargeMessage` in `plugins/copilot/src/exception-guidance.ts`) — never
   refused, never treated as clean, and counted in the hook fail-open tally.
+- **Cursor preToolUse and beforeSubmitPrompt** (`plugins/cursor/src/hooks/large-input.ts`):
+  15 s from process start, inside its 24 s watchdog, which resolves with silence — Cursor's
+  no-opinion — inside the 30 s `timeout` its installer registers. preToolUse refuses with a
+  `permission: "deny"`, beforeSubmitPrompt with `continue: false`. preToolUse also counts MCP
+  arguments left past the walk bounds in `plugins/cursor/src/hooks/tool-response.ts` in the
+  hook fail-open tally, and reports them on stderr; it does not refuse the call for them.
+- **Cursor postToolUse** (the same bound and deadline): no refusal half, because the tool has
+  already run. A field that comes back `scanIncomplete`, or tool output left past the walk
+  bounds, is reported on stderr as unscanned and counted in the hook fail-open tally.
 - **The browser extension's native host** (`captureLargeInput` in
   `plugins/browser-extension/src/native-host/host.ts`): 2 s from when it receives a prompt
   capture, with a 500 ms worker start budget drawn from it, because `background.ts`
@@ -79,11 +88,12 @@ A field whose bounded scan times out or finds no worker comes back as a `block` 
 `CaptureResult.scanIncomplete` set and empty `findings`, and the caller REFUSES it wherever
 its host has a channel to refuse on: UserPromptSubmit blocks the prompt, PreToolUse denies
 the call — Antigravity with an explicit `{"decision":"deny"}`, Copilot in each dialect's own
-deny shape — PostToolUse withholds the output, and the native host answers `action: 'block'`
+deny shape, Cursor with `permission: "deny"` — PostToolUse withholds the output, and the native host answers `action: 'block'`
 with `CaptureResponse.scanIncomplete`, which the interceptor shows as a too-large banner
 with no exception route, leaving the message unsent in the composer; Copilot's VS Code
-prompt exits 2. Copilot's CLI userPromptSubmitted and its postToolUse are the exception named
-above: the host sends the prompt and delivers the result whatever the hook answers, so they
+prompt exits 2. Copilot's CLI userPromptSubmitted and its postToolUse, and Cursor's
+postToolUse, are the exceptions named above: the host sends the prompt or delivers the
+result whatever the hook answers, so they
 REPORT the field as unscanned instead. Why: `scan()` cannot be interrupted (§5), so without the bound a large enough field
 keeps the hook busy past whatever answers for it — the host's timeout, a watchdog, the relay
 — and every one of those passes the call through unscanned, except Antigravity's kill, which
@@ -97,7 +107,9 @@ both have no findings — Antigravity's and Copilot's decisions keyed their deny
 rule, and read a refused field as clean until they did. The Claude Code, Codex, Antigravity
 and Copilot `fail-open.e2e.test.ts` drive the refusal through the built hooks with the scan
 worker removed (Copilot's also drive the VS Code prompt's exit 2 and the unscanned report on
-its CLI prompt and its tool result), and the
+its CLI prompt and its tool result), Cursor's `test/hooks/pre-tool-use-run.test.ts` and
+`before-submit-prompt-run.test.ts` drive it through the handlers with the worker pointed at
+an empty location, and the
 extension's `test/native-host/scan-worker-bundle.e2e.test.ts` drives it through the built
 native host — so every bundle that runs this path also has to SHIP the worker, since a
 missing one refuses every large field (or, on those Copilot hooks, reports every one as

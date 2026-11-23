@@ -145,12 +145,13 @@ output field of 32,768 characters or more whose bounded scan does not finish in 
 rather than passed unscanned. The same holds for the Antigravity and GitHub Copilot
 tool-call hooks, which deny such a call, for a GitHub Copilot prompt in VS Code, which the
 plugin refuses with exit 2, the exit VS Code documents as a blocking error (whether VS Code
-then withholds the prompt has not yet been confirmed on a live install), and for a prompt
-the browser extension's native host could not scan in time,
-which is not sent. Each deadline ends before the point at
-which the host itself would let the input through — 6 s for Claude Code and Codex prompts
-and tool inputs (7 s for tool output), 5.5 s for Antigravity, 15 s for Copilot, and 2 s
-from when the native host receives a prompt.
+then withholds the prompt has not yet been confirmed on a live install), for the Cursor
+plugin (not yet released), whose tool-call hook denies such a call and whose prompt hook
+stops such a prompt, and for a prompt the browser extension's native host could not scan in
+time, which is not sent. Each deadline ends before the point at which the host itself would
+let the input through — 6 s for Claude Code and Codex prompts and tool inputs (7 s for tool
+output), 5.5 s for Antigravity, 15 s for Copilot and Cursor, and 2 s from when the native
+host receives a prompt.
 
 ## Data in transit
 

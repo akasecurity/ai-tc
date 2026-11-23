@@ -60,9 +60,9 @@ import {
   writeNotice,
 } from './shared.ts';
 import {
-  claimStoreUnavailableWarning,
-  openGatewayOrNull,
-  storeUnavailableMessage,
+  claimStoreDegradedWarning,
+  openGateway,
+  storeDegradedMessage,
   warnIfStoreRedirected,
 } from './store-health.ts';
 
@@ -117,15 +117,15 @@ export const runPreToolUse: HookHandler = async (event, stdin, options = {}) => 
   // so once per session, on stderr and, on the CLI, as a progress line, which
   // the host strips before reading this hook's output.
   warnIfStoreRedirected(config, sessionId, noticeWriter(dialect));
-  const gateway = openGatewayOrNull(config);
+  const { gateway, error } = openGateway(config);
   if (gateway === null) {
     // The store is gone, so nothing was scanned and there is no verdict to
     // reach. Saying so must not become an allow: this is precisely the state in
     // which AKA knows LEAST about the call, so an explicit allow here would
     // pre-approve exactly the calls it failed to inspect. The warning goes to
     // the channel the dialect has for it and stdout keeps its silence.
-    if (claimStoreUnavailableWarning(config.dataDir, sessionId)) {
-      const message = storeUnavailableMessage(config.dbPath);
+    if (claimStoreDegradedWarning(config.dataDir, sessionId, error)) {
+      const message = storeDegradedMessage(config.dbPath, error, 'tool call');
       if (dialect === 'vscode') return { systemMessage: message };
       writeNotice(message, dialect);
     }

@@ -120,6 +120,25 @@ describe('openGateway — the reason survives the failure', () => {
     expect(opened.error).toBeInstanceOf(Error);
   });
 
+  // This plugin's openGateway wraps the shared one for the hook server, so it
+  // is not pinned by identity. It must still report a failure exactly as the
+  // shared open does, or a fix to the shared classification would skip it.
+  it('reports the same failure as the shared openGateway', () => {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'aka.db'), 'garbage bytes, definitely not sqlite');
+
+    const local = openGateway(configFor(dir));
+    const reference = shared.openGateway(configFor(dir));
+
+    expect(local.gateway).toBeNull();
+    expect(reference.gateway).toBeNull();
+    expect(shared.storeOpenCause(local.error)).toEqual(shared.storeOpenCause(reference.error));
+    expect(shared.storeOpenCause(local.error)?.text).toMatch(/^SQLite error 26/u);
+    expect(shared.storeDegradedMessage('/x/aka.db', local.error, 'tool call')).toBe(
+      shared.storeDegradedMessage('/x/aka.db', reference.error, 'tool call'),
+    );
+  });
+
   it('reports no error at all when the store opens', async () => {
     const opened = openGateway(configFor(dir));
 

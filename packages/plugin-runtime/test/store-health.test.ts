@@ -517,7 +517,7 @@ describe('storeRedirectedMessage', () => {
 });
 
 // The generic warning used to hide WHICH failure it was, so a store that was
-// merely locked by another process read exactly like a corrupt one. These cases
+// merely locked by another connection read exactly like a corrupt one. These cases
 // drive real node:sqlite errors, never hand-built ones, so the fields read are
 // the ones the engine actually sets.
 describe('storeDegradedMessage — the failure is named', () => {
@@ -556,7 +556,7 @@ describe('storeDegradedMessage — the failure is named', () => {
     }
   }
 
-  it('names a lock held by another process and gives no repair advice', () => {
+  it('names a lock held by another connection and gives no repair advice', () => {
     const err = busyError();
     expect(err).toBeDefined();
 
@@ -641,7 +641,7 @@ describe('storeDegradedMessage — the failure is named', () => {
       'tool call',
     );
     expect(message).toContain('because it was locked (SQLite error 6: database table is locked)');
-    expect(message).not.toMatch(/another process|longer than AKA waits/);
+    expect(message).not.toMatch(/another (?:process|connection)|longer than AKA waits/);
     expect(message).not.toMatch(/aside|recreate|corrupt/i);
   });
 

@@ -1186,9 +1186,12 @@ stays green if a branch echoes a _truncated_ value, which is still a live creden
 prefix. `expectNoEchoOf` is the **required form for every raw-value absence assertion that is
 newly written or newly touched** in a package carrying the helper — `cli/test/helpers/no-echo.ts`,
 `plugins/claude-code/test/helpers/no-echo.ts`, `plugins/codex/test/helpers/no-echo.ts`,
-`plugins/antigravity/test/helpers/no-echo.ts`, `web-ui/test/helpers/no-echo.ts`,
+`plugins/antigravity/test/helpers/no-echo.ts`, `plugins/copilot/test/helpers/no-echo.ts`,
+`plugins/cursor/test/helpers/no-echo.ts`,
+`plugins/browser-extension/test/helpers/no-echo.ts`, `web-ui/test/helpers/no-echo.ts`,
 `packages/setup-wizard/test/helpers/no-echo.ts`,
-`packages/persistence/test/helpers/no-echo.ts` and
+`packages/persistence/test/helpers/no-echo.ts`,
+`packages/plugin-runtime/test/helpers/no-echo.ts` and
 `packages/remote/test/helpers/no-echo.ts`. A plain
 `not.toContain(rawValue)` in a new or edited assertion is a defect, not a style choice, and
 editing a file means its in-class assertions come along rather than being left beside converted
@@ -1229,7 +1232,7 @@ purpose; and the deliberate **control** assertions inside each `no-echo.test.ts`
 to show the whole-value form would have passed.
 
 **Share it inside a package, copy it across a wall — and a copy takes the suite with it.**
-All eight packages import a `test/helpers/no-echo.ts` with its own tests in `no-echo.test.ts`:
+All twelve packages import a `test/helpers/no-echo.ts` with its own tests in `no-echo.test.ts`:
 each case drives the helper with an output that leaks a run, and asserts both that the helper
 refuses it **and** that the whole-value form it replaced would have passed. That second half is
 what shows the assertion is _stronger_ rather than merely also-red, and it is why raising the

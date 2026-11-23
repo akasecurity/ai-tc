@@ -162,7 +162,7 @@ const BUSY_SENTENCE = 'another connection held it locked longer than AKA waits';
 // spending the once-per-session warning. Both runs share one conversation id,
 // so a call site that stopped passing the open error to the claim would fall
 // back to the once-per-session gate and the second run would say nothing.
-describe.each(HOOKS)('$name, when another process holds the store', ({ run }) => {
+describe.each(HOOKS)('$name, when another connection holds the store', ({ run }) => {
   it('reports the lock on every event in one session, without repair advice', async () => {
     const release = holdStoreLocked();
     try {

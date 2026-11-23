@@ -163,7 +163,7 @@ export interface CodexAccountEnv {
   readonly credentialEnv: boolean;
   /** `CODEX_API_KEY` is set. */
   readonly keyEnv: boolean;
-  /** `CODEX_ACCESS_TOKEN` is set. */
+  /** `CODEX_ACCESS_TOKEN` is set: a ChatGPT sign-in token, as `codex login --with-access-token` takes. */
   readonly tokenEnv: boolean;
   /** True when the provider resolution names a gateway rather than the default API. */
   readonly gateway: boolean;

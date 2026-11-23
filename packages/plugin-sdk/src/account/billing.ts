@@ -88,18 +88,25 @@ export interface CodexBillingInput {
   readonly login: CodexLoginRead;
 }
 
-/** Codex. A ChatGPT sign-in is a subscription unless a key or token in the environment competes
- * with it; with no sign-in, a key alone is per-token, and a token is `unknown`. */
+/**
+ * Codex, read the same way as Claude Code. A key in the environment beside a ChatGPT sign-in or
+ * an access token may or may not be the one in use, so that pair is `unknown`. An access token
+ * is a ChatGPT sign-in, so on its own it is a subscription whose plan the token does not name.
+ */
 export function codexBilling(input: CodexBillingInput): SessionBilling {
   const { provider, env, login } = input;
   if (provider === 'gateway') return GATEWAY;
   switch (login.status) {
     case 'ok':
-      return env.keyEnv || env.tokenEnv ? UNKNOWN : subscription(login.login.plan, CHATGPT_PLANS);
+      if (env.keyEnv) return UNKNOWN;
+      return env.tokenEnv
+        ? { usageChannel: 'subscription' }
+        : subscription(login.login.plan, CHATGPT_PLANS);
     case 'mode':
       return login.cloud === true ? CLOUD : API_KEY;
     case 'absent':
-      return env.keyEnv && !env.tokenEnv ? API_KEY : UNKNOWN;
+      if (env.keyEnv) return env.tokenEnv ? UNKNOWN : API_KEY;
+      return env.tokenEnv ? { usageChannel: 'subscription' } : UNKNOWN;
     case 'malformed':
       return UNKNOWN;
   }

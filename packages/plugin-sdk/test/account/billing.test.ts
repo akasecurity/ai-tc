@@ -127,10 +127,24 @@ describe('codexBilling', () => {
     );
   });
 
-  it('reads an access token with no sign-in as unknown, never as api_key', () => {
+  it('reads an access token as a ChatGPT subscription with no plan named, as Claude reads its plan token', () => {
     expect(codexBilling({ ...base, env: token, login: { status: 'absent' } })).toEqual({
-      usageChannel: 'unknown',
+      usageChannel: 'subscription',
     });
+    expect(codexBilling({ ...base, env: token, login: codexLogin() })).toEqual({
+      usageChannel: 'subscription',
+    });
+    expect(
+      claudeBilling({
+        provider: 'anthropic',
+        settingsVeto: false,
+        env: token,
+        login: { status: 'absent' },
+      }).usageChannel,
+    ).toBe(codexBilling({ ...base, env: token, login: { status: 'absent' } }).usageChannel);
+  });
+
+  it('reads a key beside an access token as unknown', () => {
     expect(
       codexBilling({ ...base, env: { keyEnv: true, tokenEnv: true }, login: { status: 'absent' } }),
     ).toEqual({ usageChannel: 'unknown' });

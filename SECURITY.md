@@ -55,6 +55,13 @@ your user account can read them. These modes are the only at-rest control, so
 treat a copy of the store (a backup, a synced folder, a stolen disk image) as
 sensitive.
 
+The GitHub Copilot plugin can also record what its hooks received and answered,
+for checking it against a live install. That is off unless you create
+`~/.aka/data/hook-recordings/` yourself. While the directory exists, each hook
+run writes one `0600` file there holding the payload exactly as the host sent
+it — prompts, tool arguments and tool output, nothing masked. Remove the
+directory to stop recording, and delete the files when you are done with them.
+
 Which of those sidecars exist depends on how SQLite is journalling. `-wal` and
 `-shm` are the pair it keeps in write-ahead logging, the mode it uses by default;
 where WAL is unavailable it silently falls back to a rollback journal and writes
@@ -136,13 +143,15 @@ tool call over it. The one deliberate exception is a single prompt, tool input o
 output field of 32,768 characters or more whose bounded scan does not finish in time
 (or finds no scan worker to run it): that field is blocked, or withheld from the model,
 rather than passed unscanned. The same holds for the Antigravity and GitHub Copilot
-tool-call hooks, which deny such a call, for the Cursor plugin (not yet released), whose
-tool-call hook denies such a call and whose prompt hook stops such a prompt, and for a
-prompt the browser extension's native host could not scan in time, which is not sent. Each
-deadline ends before the point at which the host itself would let the input through — 6 s
-for Claude Code and Codex prompts and tool inputs (7 s for tool output), 5.5 s for
-Antigravity, 15 s for Copilot and Cursor, and 2 s from when the native host receives a
-prompt.
+tool-call hooks, which deny such a call, for a GitHub Copilot prompt in VS Code, which the
+plugin refuses with exit 2, the exit VS Code documents as a blocking error (whether VS Code
+then withholds the prompt has not yet been confirmed on a live install), for the Cursor
+plugin (not yet released), whose tool-call hook denies such a call and whose prompt hook
+stops such a prompt, and for a prompt the browser extension's native host could not scan in
+time, which is not sent. Each deadline ends before the point at which the host itself would
+let the input through — 6 s for Claude Code and Codex prompts and tool inputs (7 s for tool
+output), 5.5 s for Antigravity, 15 s for Copilot and Cursor, and 2 s from when the native
+host receives a prompt.
 
 ## Data in transit
 

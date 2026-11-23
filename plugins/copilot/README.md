@@ -56,7 +56,13 @@ mkdir -p aka-copilot && cd aka-copilot
 tar -xzf "$(npm pack @akasecurity/ai-tc-copilot --silent)"
 ```
 
-Then point VS Code at the unpacked folder in your user settings:
+Then, from that same folder, register it with VS Code and reload the window:
+
+```sh
+node package/scripts/vscode-install.js
+```
+
+That edits VS Code's user `settings.json` and keeps every other line, comments included. Add `--insiders` for VS Code Insiders, or `--settings <path>` for a portable install; `--uninstall` removes the entry again. Leave VS Code's Settings editor alone while it runs: a setting saved there at the same moment is lost. To make the change by hand instead, set:
 
 ```json
 {
@@ -72,7 +78,7 @@ Then point VS Code at the unpacked folder in your user settings:
 
 The setup skill's [Known limitations](https://github.com/akasecurity/ai-tc/blob/main/plugins/copilot/skills/setup/SKILL.md#known-limitations) section is the authority on what AKA can do on each surface. In brief:
 
-- **Only a tool call can be stopped.** Prompts and tool results are captured, scanned and recorded, so a secret in either shows up as a finding, but neither is ever blocked or rewritten.
+- **Only a tool call, and a prompt in VS Code, can be stopped.** In VS Code a `block` policy stops the prompt before it is sent; that has not yet been seen on a live install. On the Copilot CLI prompts, and on every surface tool results, are captured, scanned and recorded, so a secret in either shows up as a finding, but neither is ever blocked. Nothing is rewritten.
 - **AKA's notices may not be shown to you.** On the Copilot CLI they are sent as hook progress lines, which the Copilot hooks reference documents as shown in the CLI timeline; that has not yet been observed on a real install, and an earlier build's notices appeared only in the debug log in `-p` mode. In VS Code they appear only in the "GitHub Copilot Chat Hooks" output channel. A deny is the one message that carries its own reason, so set `redactFallback` to `block` where a flagged command must not pass silently.
 - **No setup wizard and no history backfill yet.** Use the `aka` CLI directly (`aka init`, `aka detections`, `aka scan`), and nothing reads the sessions that happened before the plugin was installed.
 

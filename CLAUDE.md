@@ -38,7 +38,9 @@ and do not copy its text elsewhere. The one-paragraph versions below say when a 
    hook wraps `main()` in try/catch, then `process.exit(0)`, and writes nothing to stdout on
    failure. Emit a real opinion only through `emit()` and its `HookOutput` union; never emit
    `{ action: 'allow' }`. A field too large to scan in time is the one path that fails
-   closed. Antigravity inverts the convention (silence is a deny). Read
+   closed, and a Copilot prompt the plugin stops under VS Code is the one hook that exits
+   non-zero (2, that host's blocking exit). Antigravity inverts the convention (silence is a
+   deny). Read
    [fail-open.md](conventions/fail-open.md) before touching any hook entry or watchdog.
 2. **Contracts before code** — `@akasecurity/schema` is the spine; add a Zod shape there
    first and consume its exported types rather than defining local ones. Agent ids come

@@ -200,6 +200,8 @@ const EXPECTED = {
   'plugins/claude-code/src/history/tail-scrub.ts#tmpPath': 'preserved',
   'plugins/claude-code/src/remediation/redact.ts#tmpPath': 'preserved',
   'plugins/codex/src/remediation/redact.ts#tmpPath': 'preserved',
+  // The user's own VS Code settings.json, which the installer edits.
+  'plugins/copilot/src/vscode-install-cli.ts#temp': 'preserved',
   // The user's own Cursor hooks file, which the installer merges entries into.
   'plugins/cursor/src/install-cli.ts#temp': 'preserved',
 

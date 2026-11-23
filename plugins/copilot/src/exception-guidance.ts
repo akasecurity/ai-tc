@@ -12,9 +12,9 @@
 // different value than the one `approve <ref>` resolves — and no raw match
 // text is handled here at all.
 //
-// Identical to plugins/{claude-code,codex}/src/exception-guidance.ts: the
-// messaging is host-agnostic (references `aka`, the CLI, never host-specific
-// wording).
+// The block-message builders match plugins/{claude-code,codex}/src/exception-guidance.ts;
+// the unscanned-field builders below are this plugin's own. The messaging is
+// host-agnostic (references `aka`, the CLI, never host-specific wording).
 //
 // Pure string building (no I/O) so it unit-tests without a hook process. Hook
 // entry files run main() on import and must NEVER be imported by tests — that
@@ -69,6 +69,16 @@ export function blockMessage(input: BlockMessageInput): string {
 // flagged value for one to approve. What the user can do is send less at once.
 export function tooLargeToScanMessage(subject: string): string {
   return `This ${subject} is too large for AKA to scan within the time limit, so it was blocked. Shorten it or send it in smaller parts.`;
+}
+
+// The refusal when the cause is the scan worker rather than the field's size
+// (`scanIncomplete: 'unavailable'`): every field this large is refused until
+// the install is repaired, so the advice names the reinstall, never the size.
+export function workerUnavailableBlockedMessage(subject: string): string {
+  return (
+    `AKA's scan worker could not run, so this ${subject} could not be scanned and was blocked. ` +
+    'This is a fault in AKA, not a limit on what was sent: reinstall the AKA plugin to repair it.'
+  );
 }
 
 // The same fact for a surface that CANNOT refuse: a capture-only event (a

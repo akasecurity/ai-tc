@@ -16,35 +16,27 @@
  *          VSCode { hook_event_name, session_id, cwd, prompt }
  * output, CLI:     undefined, always — every notice is a progress line
  *                  (see `progressLine` in ./shared.ts), with a stderr copy
- * output, VS Code: { systemMessage } → a note, or undefined
+ * output, VS Code: { promptBlock } → exit 2, the prompt is not sent
+ *                  { systemMessage } → a note, or undefined
  *
- * **THIS HOOK BLOCKS NOTHING AND REWRITES NOTHING, on either host**, and the
- * capture says so: `runtime.capture` here passes `rewritable: false`, so a
- * `redact` policy resolves to `settings.redactFallback` INSIDE the runtime —
- * where the emitted message, the recorded `findings.actionTaken` and the ledger
- * read one answer. The hook never escalates for itself.
+ * **ON VS CODE THIS HOOK STOPS A PROMPT; ON THE CLI IT STOPS NOTHING.** VS
+ * Code's block channel is exit 2, which `runHookFailOpen` writes for a returned
+ * `VsCodePromptBlock`; the CLI's `modifiedPrompt` is listed under "Not
+ * measured" in `test/fixtures/cli/README.md`, so there a `block` policy is
+ * reported as a flagged-and-recorded prompt that went out unchanged. Neither
+ * host rewrites a prompt: the capture passes `rewritable: false`, so a
+ * `redact` policy resolves to `settings.redactFallback` INSIDE the runtime.
+ * The argument is at `promptDecision`.
  *
- * Neither host has a prompt-stop channel this repository has observed: the
- * CLI's `modifiedPrompt` is listed under "Not measured" in
- * `test/fixtures/cli/README.md`, and VS Code's block channel is exit 2, which
- * ./shared.ts guarantees no path here reaches. So a `block` policy is reported
- * as a flagged-and-recorded prompt that went out unchanged rather than dressed
- * up as enforcement. The argument, and why the wording matters, is at
- * `promptDecision`.
- *
- * A PROMPT TOO LARGE TO SCAN IN TIME IS NOT REFUSED. The runtime is built with
- * the large-input bound, so a prompt at or above the threshold is scanned in a
- * worker under the hook's deadline, and one whose scan does not finish comes
- * back with `scanIncomplete` set and no findings. With no channel to stop the
- * prompt, refusing it is not available — but reading the empty findings as
- * clean would tell the user nothing about a prompt nobody checked. So it is
- * reported as unscanned (`promptDecision`), the runtime records the row with
- * no content and the refusal stamped on it, and the prompt is counted in the
- * hook fail-open tally `aka status` renders.
+ * A PROMPT TOO LARGE TO SCAN IN TIME is refused on VS Code, like every other
+ * host with a prompt-stop channel. On the CLI, with no channel to stop it, it
+ * is reported as unscanned, the runtime records the row with no content and
+ * the refusal stamped on it, and it is counted in the hook fail-open tally
+ * `aka status` renders.
  *
  * This module is the handler and nothing else: it reads neither argv's event
  * token nor stdin, and never exits. `./user-prompt-submit.ts` is the entry that
- * feeds it, and `runHookFailOpen` there is what guarantees the exit 0.
+ * feeds it, and `runHookFailOpen` there is what guarantees the exit code.
  */
 import type { CaptureResult } from '@akasecurity/plugin-sdk';
 import { claimOnboardingNudge, createPluginRuntime, loadConfig } from '@akasecurity/plugin-sdk';
@@ -137,10 +129,12 @@ export const runUserPromptSubmit: HookHandler = async (event, stdin, options = {
 
   // A prompt at or above the large-input threshold is scanned in a worker
   // under the hook's deadline (see large-input.ts); one that does not finish
-  // comes back as `scanIncomplete`, which `promptDecision` reports as unscanned.
+  // comes back as `scanIncomplete`. VS Code can stop a submitted prompt, so
+  // there it is refused; elsewhere `promptDecision` reports it as unscanned.
+  const refuses = dialect === 'vscode' && capture.event === 'submitted';
   const runtime = createPluginRuntime(gateway, config.settings, {
     dataDir: config.dataDir,
-    largeInput: largeInputBound(HOOK_SCAN_DEADLINE_MS, false),
+    largeInput: largeInputBound(HOOK_SCAN_DEADLINE_MS, refuses),
     ...(options.scanWorkerUrl === undefined
       ? {}
       : { scanIsolation: { workerUrl: options.scanWorkerUrl } }),
@@ -161,8 +155,8 @@ export const runUserPromptSubmit: HookHandler = async (event, stdin, options = {
         persist: promptPersist(capture.event),
         // There is no prompt-rewrite channel on either host that this
         // repository has confirmed, so a redact cannot be carried out — the
-        // runtime resolves it to the configured fallback rather than this hook
-        // reporting a masking that never happened.
+        // runtime resolves it to the configured fallback (which may be block)
+        // rather than this hook reporting a masking that never happened.
         rewritable: false,
       },
     );
@@ -170,9 +164,9 @@ export const runUserPromptSubmit: HookHandler = async (event, stdin, options = {
     await runtime.close();
   }
 
-  // Neither host can stop a prompt, so one whose scan did not finish was sent
-  // with no verdict on it — counted like any fail-open.
-  if (result.scanIncomplete !== undefined) countFailOpen(options.countFailOpen);
+  // A prompt whose scan did not finish and that was not refused was sent with
+  // no verdict on it — counted like any fail-open. A refused one was stopped.
+  if (result.scanIncomplete !== undefined && !refuses) countFailOpen(options.countFailOpen);
 
   const decision = promptDecision(capture.event, dialect, result);
   // Set only on a dialect whose stdout has no field to carry it, so this never

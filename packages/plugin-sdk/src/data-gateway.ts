@@ -15,6 +15,7 @@ import type {
   IngestEvent,
   InventoryContext,
   InventoryFacets,
+  LlmCallAttributes,
   LlmCallInput,
   PolicyBundle,
   ProjectFilesScan,
@@ -26,6 +27,7 @@ import type {
   SessionTokenReport,
   SimpleDetectionPolicy,
   ToolCallInput,
+  UsageChannel,
 } from '@akasecurity/schema';
 
 // One unit of the atomic capture write: the event plus its already-masked
@@ -151,6 +153,20 @@ export interface ProjectEgressContext {
   readonly deletedFileKeys?: (() => Promise<readonly (string | undefined)[]>) | undefined;
 }
 
+/** The usage channel a session start recorded on a session root; absent on older roots. */
+export interface SessionBillingRead {
+  usageChannel?: UsageChannel;
+}
+
+/** `attrs` with the session's usage channel copied onto it. */
+export function withBilling(
+  attrs: LlmCallAttributes,
+  billing: SessionBillingRead,
+): LlmCallAttributes {
+  if (billing.usageChannel !== undefined) attrs.usage_channel = billing.usageChannel;
+  return attrs;
+}
+
 /**
  * The single data port the plugin runtime depends on.
  * `@akasecurity/plugin-runtime` resolves the concrete implementation from PluginConfig:
@@ -224,6 +240,10 @@ export interface DataGateway {
   // undefined when the root/attribute is absent — the caller falls back to the
   // model-id heuristic.
   readSessionProvider(sessionId: string): Promise<string | undefined>;
+  // The usage channel and subscription plan the session start recorded on the
+  // root, read the same way as the provider. A gateway without it leaves every
+  // leaf's channel unset, which reads as 'unknown'.
+  readSessionBilling?(sessionId: string): Promise<SessionBillingRead>;
   // Filter-facet values for the read surfaces, read from the small Inventory
   // dimension, never the audit fact.
   facets(): Promise<InventoryFacets>;

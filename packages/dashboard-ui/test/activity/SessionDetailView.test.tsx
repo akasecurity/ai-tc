@@ -40,6 +40,8 @@ function session(over: Partial<ActivitySession> = {}): ActivitySession {
       cacheRead: 0,
       totalTokens: 300,
       estimatedCostUsd: null,
+      channel: 'unknown',
+      costBasis: null,
     },
     tools: {},
     files: [],

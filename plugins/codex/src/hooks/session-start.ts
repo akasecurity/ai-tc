@@ -28,6 +28,7 @@ import { readFileSync } from 'node:fs';
 
 import { handleSessionStart, sessionStartNotice } from '@akasecurity/plugin-runtime';
 import { loadConfig, resolveCodexProvider } from '@akasecurity/plugin-sdk';
+import { resolveCodexBilling } from '@akasecurity/plugin-sdk/account';
 import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { PLUGIN_PACKAGE, pluginBuild } from '../build-info.ts';
@@ -101,6 +102,7 @@ async function main(): Promise<void> {
       harnessInterface,
       pluginBuild: version === undefined ? undefined : { package: PLUGIN_PACKAGE, version },
       ...account,
+      billing: resolveCodexBilling(config.provider.provider),
     },
     config,
   );

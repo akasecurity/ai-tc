@@ -137,7 +137,13 @@ export function toLlmCallInput(
   // Never gateway.readSessionProvider() here: the session root carries the
   // vendor id (openai/anthropic) for a separate display purpose, and reading
   // it back would undo this on the very next line.
-  const attrs: LlmCallAttributes = { provider: tool, message_id: messageId };
+  // Web chat is never metered per call, on a free plan or a paid one, so every
+  // exchange is recorded on the subscription channel: outside spend, whatever the tier.
+  const attrs: LlmCallAttributes = {
+    provider: tool,
+    message_id: messageId,
+    usage_channel: 'subscription',
+  };
 
   const model = trimmed(exchange.model);
   if (model !== undefined) attrs.model = model;

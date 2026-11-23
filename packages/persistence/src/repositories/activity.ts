@@ -352,6 +352,7 @@ interface LlmUsageRow {
   provider: string | null;
   model: string | null;
   serviceTier: string | null;
+  usageChannel: string | null;
   inputTokens: number;
   outputTokens: number;
   cacheCreationTokens: number;
@@ -400,6 +401,7 @@ const LLM_USAGE_SELECT = `
          provider,
          model,
          service_tier AS serviceTier,
+         usage_channel AS usageChannel,
          coalesce(sum(input_tokens), 0) AS inputTokens,
          coalesce(sum(output_tokens), 0) AS outputTokens,
          coalesce(sum(cache_creation_input_tokens), 0) AS cacheCreationTokens,
@@ -422,6 +424,7 @@ const LLM_USAGE_GROUP = `GROUP BY ${[
   'provider',
   'model',
   'service_tier',
+  'usage_channel',
   ...(CALL_BAND.length === 0 ? [] : [CALL_BAND.join(' + ')]),
   ...CALL_USAGE_SHAPE,
 ].join(', ')}`;
@@ -445,6 +448,7 @@ function usageLeaves(rows: readonly LlmUsageRow[]): LlmCallLeaf[] {
     if (row.provider !== null) attributes.provider = row.provider;
     if (row.model !== null) attributes.model = row.model;
     if (row.serviceTier !== null) attributes.service_tier = row.serviceTier;
+    if (row.usageChannel !== null) attributes.usage_channel = row.usageChannel;
     return { sessionId: row.sessionId, attributes, promptTokens: row.promptTokens };
   });
 }
@@ -844,6 +848,8 @@ export class SqliteActivityRepository implements ActivityReadPort {
       cacheRead: tokenRow.cache_read,
       totalTokens: tokenRow.input + tokenRow.output + tokenRow.cache_creation + tokenRow.cache_read,
       estimatedCostUsd: null,
+      channel: 'unknown',
+      costBasis: null,
     };
 
     const session: ActivitySession = {

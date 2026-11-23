@@ -475,6 +475,10 @@ export const auditEvents = sqliteTable(
       sql`json_extract(attributes, '$.web_search_requests')`,
       { mode: 'virtual' },
     ),
+    usageChannel: text(COL.usageChannel).generatedAlwaysAs(
+      sql`json_extract(attributes, '$.usage_channel')`,
+      { mode: 'virtual' },
+    ),
   },
   (t) => [
     index('idx_audit_parent').on(t.parentId),
@@ -513,6 +517,7 @@ export const auditEvents = sqliteTable(
         t.provider,
         t.model,
         t.serviceTier,
+        t.usageChannel,
         t.inputTokens,
         t.outputTokens,
         t.cacheCreationInputTokens,

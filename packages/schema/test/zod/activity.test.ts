@@ -220,6 +220,8 @@ const validTokens = {
   cacheRead: 486000,
   totalTokens: 687600,
   estimatedCostUsd: null,
+  channel: 'subscription',
+  costBasis: null,
 };
 
 const validSession = {

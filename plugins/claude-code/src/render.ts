@@ -19,6 +19,7 @@ import {
   aggregateTokenUsage,
   buildRecommendations,
   findingStatus,
+  formatApiEquivalentTotal,
   formatCostTotal,
   formatModelCost,
   hasApiEquivalent,
@@ -895,7 +896,7 @@ export function renderTokens(reports: SessionTokenReport[]): string {
 
   const totalCost = formatCostTotal(summary.estimatedCostUsd, summary.costIsPartial);
   const apiEquivalent = hasApiEquivalent(summary.models)
-    ? `, ${formatCostTotal(summary.apiEquivalentUsd, summary.apiEquivalentIsPartial)} API-equivalent`
+    ? `, ${formatApiEquivalentTotal(summary.apiEquivalentUsd, summary.apiEquivalentIsPartial)}`
     : '';
   const sessions =
     summary.sessionCount === 1 ? '1 session' : `${String(summary.sessionCount)} sessions`;

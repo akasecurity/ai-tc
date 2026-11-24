@@ -128,6 +128,7 @@ export function tokenLabel(n: number): string {
 // Activity page, the plugin's `/aka:tokens`, and the CLI/TUI print the same figure
 // AND the same qualifier convention (`$X` / `≥ $X`) — no local `~`/`—` drift.
 export {
+  formatApiEquivalentTotal,
   formatCostTotal,
   formatModelCost,
   formatUsd,

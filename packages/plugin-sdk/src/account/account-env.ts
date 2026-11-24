@@ -21,11 +21,20 @@ export const CLAUDE_CREDENTIAL_ENV = [
   'ANTHROPIC_UNIX_SOCKET',
 ] as const;
 
-/** The credential variables that carry a claude.ai plan's own token rather than a key. */
-export const CLAUDE_SUBSCRIPTION_TOKEN_ENV: readonly string[] = [
-  'CLAUDE_CODE_OAUTH_TOKEN',
-  'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
-];
+/** Whether a credential variable carries a key, billed per token, or a plan's own sign-in token. */
+export type CredentialKind = 'key' | 'plan_token';
+
+/** Every Claude Code credential variable's kind; the Record makes a new name fail to compile until classified. */
+export const CLAUDE_CREDENTIAL_KIND: Readonly<
+  Record<(typeof CLAUDE_CREDENTIAL_ENV)[number], CredentialKind>
+> = {
+  ANTHROPIC_API_KEY: 'key',
+  ANTHROPIC_AUTH_TOKEN: 'key',
+  CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR: 'key',
+  CLAUDE_CODE_OAUTH_TOKEN: 'plan_token',
+  CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR: 'plan_token',
+  ANTHROPIC_UNIX_SOCKET: 'key',
+};
 
 /** Flags that route Claude Code to a provider other than its claude.ai login. */
 export const CLAUDE_PROVIDER_FLAG_ENV = [
@@ -134,9 +143,11 @@ export function readClaudeAccountEnv(): ClaudeAccountEnv {
       email: isPresent(email) ? normalizeAccountEmail(email) : undefined,
       credentialEnv: CLAUDE_CREDENTIAL_ENV.some((name) => isPresent(env[name])),
       keyEnv: CLAUDE_CREDENTIAL_ENV.some(
-        (name) => !CLAUDE_SUBSCRIPTION_TOKEN_ENV.includes(name) && isPresent(env[name]),
+        (name) => CLAUDE_CREDENTIAL_KIND[name] === 'key' && isPresent(env[name]),
       ),
-      tokenEnv: CLAUDE_SUBSCRIPTION_TOKEN_ENV.some((name) => isPresent(env[name])),
+      tokenEnv: CLAUDE_CREDENTIAL_ENV.some(
+        (name) => CLAUDE_CREDENTIAL_KIND[name] === 'plan_token' && isPresent(env[name]),
+      ),
       providerFlag: CLAUDE_PROVIDER_FLAG_ENV.some((name) => isTruthyFlag(env[name])),
       baseUrlVeto: isNonDefaultBaseUrl(env[CLAUDE_BASE_URL_ENV]),
       envScrub: isTruthyFlag(env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB),
@@ -148,6 +159,14 @@ export function readClaudeAccountEnv(): ClaudeAccountEnv {
 
 /** Variables whose non-empty value bills a Codex thread to a key or token. */
 export const CODEX_CREDENTIAL_ENV = ['CODEX_API_KEY', 'CODEX_ACCESS_TOKEN'] as const;
+
+/** Every Codex credential variable's kind; `CODEX_ACCESS_TOKEN` is a ChatGPT sign-in token. */
+export const CODEX_CREDENTIAL_KIND: Readonly<
+  Record<(typeof CODEX_CREDENTIAL_ENV)[number], CredentialKind>
+> = {
+  CODEX_API_KEY: 'key',
+  CODEX_ACCESS_TOKEN: 'plan_token',
+};
 
 /** Every variable readCodexAccountEnv reads, its provider resolution included. */
 export const CODEX_ACCOUNT_ENV_NAMES = [
@@ -161,9 +180,9 @@ export interface CodexAccountEnv {
   /** The Codex home override when it is set and non-empty, unresolved. */
   readonly codexHome: string | undefined;
   readonly credentialEnv: boolean;
-  /** `CODEX_API_KEY` is set. */
+  /** A credential variable classed as a key is set. */
   readonly keyEnv: boolean;
-  /** `CODEX_ACCESS_TOKEN` is set: a ChatGPT sign-in token, as `codex login --with-access-token` takes. */
+  /** A credential variable classed as a plan token is set. */
   readonly tokenEnv: boolean;
   /** True when the provider resolution names a gateway rather than the default API. */
   readonly gateway: boolean;
@@ -184,8 +203,12 @@ export function readCodexAccountEnv(): CodexAccountEnv {
     return {
       codexHome: isPresent(home) ? home : undefined,
       credentialEnv: CODEX_CREDENTIAL_ENV.some((name) => isPresent(env[name])),
-      keyEnv: isPresent(env.CODEX_API_KEY),
-      tokenEnv: isPresent(env.CODEX_ACCESS_TOKEN),
+      keyEnv: CODEX_CREDENTIAL_ENV.some(
+        (name) => CODEX_CREDENTIAL_KIND[name] === 'key' && isPresent(env[name]),
+      ),
+      tokenEnv: CODEX_CREDENTIAL_ENV.some(
+        (name) => CODEX_CREDENTIAL_KIND[name] === 'plan_token' && isPresent(env[name]),
+      ),
       gateway: resolveCodexProvider().provider === 'gateway',
     };
   } catch {

@@ -161,6 +161,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'findSecretSpans',
   'findingStatus',
   'fingerprintValue',
+  'formatApiEquivalentTotal',
   'formatCostTotal',
   'formatModelCost',
   'formatUsd',

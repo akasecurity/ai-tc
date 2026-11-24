@@ -2,31 +2,9 @@
 // against each plugin's own `renderTokens`.
 import { describe, expect, it } from 'vitest';
 
-interface Rollup {
-  readonly sessionId: string;
-  readonly provider: string;
-  readonly model: string;
-  readonly inputTokens: number;
-  readonly outputTokens: number;
-  readonly cacheCreation: number;
-  readonly cacheRead: number;
-  readonly totalTokens: number;
-  readonly estimatedCostUsd: number | null;
-  readonly channel: 'api_key' | 'subscription';
-  readonly costBasis: 'estimated' | null;
-}
+import type { SessionTokenReport, TokenRollup } from '../../packages/schema/src/zod/meta.ts';
 
-interface Report {
-  readonly sessionId: string;
-  readonly rollups: Rollup[];
-  readonly totalTokens: number;
-  readonly estimatedCostUsd: number | null;
-  readonly costIsPartial: boolean;
-  readonly apiEquivalentUsd: number | null;
-  readonly apiEquivalentIsPartial: boolean;
-}
-
-function rollup(over: Partial<Rollup>): Rollup {
+function rollup(over: Partial<TokenRollup>): TokenRollup {
   return {
     sessionId: 's1',
     provider: 'anthropic',
@@ -43,7 +21,7 @@ function rollup(over: Partial<Rollup>): Rollup {
   };
 }
 
-function report(over: Partial<Report>): Report {
+function report(over: Partial<SessionTokenReport>): SessionTokenReport {
   return {
     sessionId: 's1',
     rollups: [],
@@ -57,7 +35,7 @@ function report(over: Partial<Report>): Report {
 }
 
 export function describeTokenNotes(
-  renderTokens: (reports: Report[]) => string,
+  renderTokens: (reports: SessionTokenReport[]) => string,
   notes: { readonly spend: string; readonly apiEquivalent: string },
 ): void {
   describe('renderTokens lower-bound notes', () => {

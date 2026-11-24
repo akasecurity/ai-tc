@@ -70,6 +70,11 @@ export function formatModelCost(costUsd: number | null, costBasis: CostBasis | n
   return costBasis === 'api_equivalent' ? `${formatUsd(costUsd)} API-eq.` : formatUsd(costUsd);
 }
 
+/** The API-equivalent total, labelled the same on every surface. */
+export function formatApiEquivalentTotal(usd: number, isPartial: boolean): string {
+  return `${formatCostTotal(usd, isPartial)} API-equivalent`;
+}
+
 /** True when any row of a token summary is subscription usage priced at list rates. */
 export function hasApiEquivalent(models: readonly { costBasis: CostBasis | null }[]): boolean {
   return models.some((m) => m.costBasis === 'api_equivalent');

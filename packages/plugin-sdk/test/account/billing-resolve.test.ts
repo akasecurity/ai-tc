@@ -2,7 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   CLAUDE_ACCOUNT_ENV_NAMES,
+  CLAUDE_CREDENTIAL_ENV,
+  CLAUDE_CREDENTIAL_KIND,
   CODEX_ACCOUNT_ENV_NAMES,
+  CODEX_CREDENTIAL_ENV,
+  CODEX_CREDENTIAL_KIND,
+  readClaudeAccountEnv,
+  readCodexAccountEnv,
 } from '../../src/account/account-env.ts';
 import { resolveClaudeBilling, resolveCodexBilling } from '../../src/account/billing.ts';
 import type * as ClaudeLogin from '../../src/account/claude-login.ts';
@@ -110,5 +116,35 @@ describe('resolveCodexBilling', () => {
     machine.writeAuth({ plan: 'plus' });
     failing.reads = true;
     expect(resolveCodexBilling('openai')).toEqual({ usageChannel: 'unknown' });
+  });
+});
+
+describe('credential variable kinds', () => {
+  beforeEach(() => {
+    for (const name of [...CLAUDE_ACCOUNT_ENV_NAMES, ...CODEX_ACCOUNT_ENV_NAMES]) {
+      vi.stubEnv(name, undefined);
+    }
+  });
+
+  it.each(CLAUDE_CREDENTIAL_ENV)('reads Claude Code %s by its kind', (name) => {
+    vi.stubEnv(name, 'fixture-value');
+    const env = readClaudeAccountEnv();
+    const kind = CLAUDE_CREDENTIAL_KIND[name];
+    expect({ key: env.keyEnv, token: env.tokenEnv }).toEqual({
+      key: kind === 'key',
+      token: kind === 'plan_token',
+    });
+    expect(env.credentialEnv).toBe(true);
+  });
+
+  it.each(CODEX_CREDENTIAL_ENV)('reads Codex %s by its kind', (name) => {
+    vi.stubEnv(name, 'fixture-value');
+    const env = readCodexAccountEnv();
+    const kind = CODEX_CREDENTIAL_KIND[name];
+    expect({ key: env.keyEnv, token: env.tokenEnv }).toEqual({
+      key: kind === 'key',
+      token: kind === 'plan_token',
+    });
+    expect(env.credentialEnv).toBe(true);
   });
 });

@@ -1,6 +1,7 @@
 import type { FindingView, ModelTokenUsage, TokenUsageSummary } from '@akasecurity/schema';
 import {
   findingMatchLabel,
+  formatApiEquivalentTotal,
   formatModelCost,
   hasApiEquivalent,
   tokenCostNotes,
@@ -253,7 +254,7 @@ function TokenUsageSection({ usage }: { usage: TokenUsageSummary }): ReactElemen
   const sessions = `${String(usage.sessionCount)} session${usage.sessionCount === 1 ? '' : 's'}`;
   const cost = totalCostLabel(usage.estimatedCostUsd, usage.costIsPartial);
   const apiEquivalent = hasApiEquivalent(usage.models)
-    ? ` · ${totalCostLabel(usage.apiEquivalentUsd, usage.apiEquivalentIsPartial)} API-equivalent`
+    ? ` · ${formatApiEquivalentTotal(usage.apiEquivalentUsd, usage.apiEquivalentIsPartial)}`
     : '';
   const notes = tokenCostNotes(usage);
   return (

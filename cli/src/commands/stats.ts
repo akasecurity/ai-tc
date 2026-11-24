@@ -4,6 +4,7 @@ import { openLocalDatabase } from '@akasecurity/persistence';
 import { dataDir } from '@akasecurity/plugin-sdk';
 import {
   aggregateTokenUsage,
+  formatApiEquivalentTotal,
   formatModelCost,
   hasApiEquivalent,
   parseTimeRange,
@@ -125,7 +126,7 @@ export function renderTokenUsage(summary: TokenUsageSummary, range: TimeRange): 
   const total = totalCostLabel(summary.estimatedCostUsd, summary.costIsPartial);
   const sessions = `${String(summary.sessionCount)} session${summary.sessionCount === 1 ? '' : 's'}`;
   const apiEquivalent = hasApiEquivalent(summary.models)
-    ? ` · ${totalCostLabel(summary.apiEquivalentUsd, summary.apiEquivalentIsPartial)} API-equivalent`
+    ? ` · ${formatApiEquivalentTotal(summary.apiEquivalentUsd, summary.apiEquivalentIsPartial)}`
     : '';
   const lines = [
     `Token usage (${range}): ${sessions} · ${compactTokens(summary.totalTokens)} tokens · ${total}${apiEquivalent}`,

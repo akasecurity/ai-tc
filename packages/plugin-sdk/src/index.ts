@@ -286,6 +286,7 @@ export {
   aggregateTokenUsage,
   API_EQUIVALENT_NOTE,
   buildTokenReports,
+  formatApiEquivalentTotal,
   formatCostTotal,
   formatModelCost,
   formatUsd,

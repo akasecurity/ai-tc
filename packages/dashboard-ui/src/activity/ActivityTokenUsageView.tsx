@@ -32,6 +32,7 @@ import { useState } from 'react';
 import { AnalyticsIcon } from '../shared/icons.tsx';
 import { WidgetEmpty, WidgetError } from '../shared/widget-state.tsx';
 import {
+  formatApiEquivalentTotal,
   formatCostTotal,
   formatModelCost,
   hasApiEquivalent,
@@ -116,7 +117,7 @@ export function ActivityTokenUsageView({
   const chipLabel = error
     ? 'Token usage'
     : hasUsage
-      ? `${tokenLabel(summary.totalTokens)} tokens · ${formatCostTotal(summary.estimatedCostUsd, summary.costIsPartial)}${hasSubscription(summary) ? ` · ${formatCostTotal(summary.apiEquivalentUsd, summary.apiEquivalentIsPartial)} API-eq.` : ''}`
+      ? `${tokenLabel(summary.totalTokens)} tokens · ${formatCostTotal(summary.estimatedCostUsd, summary.costIsPartial)}${hasSubscription(summary) ? ` · ${formatApiEquivalentTotal(summary.apiEquivalentUsd, summary.apiEquivalentIsPartial)}` : ''}`
       : 'No token usage';
 
   const chipTitle = error
@@ -175,8 +176,10 @@ export function ActivityTokenUsageView({
                   <>
                     <span>·</span>
                     <span className="font-semibold tabular-nums text-text-2">
-                      {formatCostTotal(summary.apiEquivalentUsd, summary.apiEquivalentIsPartial)}{' '}
-                      API-equivalent
+                      {formatApiEquivalentTotal(
+                        summary.apiEquivalentUsd,
+                        summary.apiEquivalentIsPartial,
+                      )}
                     </span>
                   </>
                 )}

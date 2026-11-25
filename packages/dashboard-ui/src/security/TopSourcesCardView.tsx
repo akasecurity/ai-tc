@@ -15,6 +15,14 @@ import type { ReactNode } from 'react';
 import { BranchIcon, TargetIcon, UserIcon } from '../shared/icons.tsx';
 import { formatNumber, WidgetError } from './widget-shared.tsx';
 
+/**
+ * Renders a `user` source's label in place of the plain text. The returned node
+ * is placed inside a truncating span that carries the full label as its
+ * tooltip. When `sourceHrefs` gives the source a link the whole row is an
+ * anchor, so the node must not contain a link or a button there.
+ */
+export type RenderTopSourceUser = (source: TopSource) => ReactNode;
+
 export interface TopSourcesView {
   items: TopSource[];
   isLoading: boolean;
@@ -28,8 +36,8 @@ export interface TopSourcesView {
    * count the row shows.
    */
   sourceHrefs?: Readonly<Record<string, string>> | undefined;
-  /** Renders a `user` source's name; absent ⇒ the plain label. */
-  renderUser?: ((source: TopSource) => ReactNode) | undefined;
+  /** Renders a `user` source's label; absent ⇒ the plain label. */
+  renderUser?: RenderTopSourceUser | undefined;
   /**
    * The locale the counts are formatted in: the one the host resolved for this
    * request. Required — a renderer's own locale is the server's, not the
@@ -92,7 +100,7 @@ function SourceRow({
   source: TopSource;
   href?: string;
   locale: string;
-  renderUser?: ((source: TopSource) => ReactNode) | undefined;
+  renderUser?: RenderTopSourceUser | undefined;
 }) {
   const isUser = source.kind === 'user';
   const Icon = isUser ? UserIcon : BranchIcon;
@@ -118,7 +126,9 @@ function SourceRow({
         {/* `name` is a repo slug (mono reads well) or a person's label (mono looks
             off and truncates awkwardly) — only monospace the repo slug. */}
         {isUser && renderUser ? (
-          <span className="min-w-0 truncate text-sm text-text">{renderUser(source)}</span>
+          <span className="min-w-0 truncate text-sm text-text" title={source.name}>
+            {renderUser(source)}
+          </span>
         ) : (
           <span
             className={cn('truncate text-sm text-text', !isUser && 'font-mono')}

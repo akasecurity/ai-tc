@@ -107,8 +107,9 @@ export function FindingsFlatTableView({
    * single-user store would show a column of dashes.
    */
   showUserColumn?: boolean;
-  /** Renders each row's user in the User column; absent ⇒ the plain label. */
-  renderUser?: RenderFindingUser;
+  /** Renders each attributed user in the User column; absent ⇒ the plain
+   * label. See RenderFindingUser for what the returned node may contain. */
+  renderUser?: RenderFindingUser | undefined;
   /**
    * Render the Deployment column, which reads each row's `delivery`. Off by
    * default: only a machine attached to a deployment has anything to say there.

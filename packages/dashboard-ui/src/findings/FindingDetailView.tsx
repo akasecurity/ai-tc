@@ -76,8 +76,9 @@ export function FindingDetailView({
    * another when the browser hydrates it. See ../lib/relativeTime.ts.
    */
   renderedAt: number;
-  /** Renders the attributed user; absent ⇒ the plain label. */
-  renderUser?: RenderFindingUser;
+  /** Renders the attributed user; absent ⇒ the plain label. See
+   * RenderFindingUser for what the returned node may contain. */
+  renderUser?: RenderFindingUser | undefined;
 }) {
   const { finding, instance } = selection;
   const Icon = CATEGORY_ICON_FALLBACK[finding.category] ?? KeyIcon;

@@ -136,6 +136,17 @@ describe('FindingsFlatTableView', () => {
     expect(count(html, 'td')).toBe(8);
   });
 
+  it('renders the host node in the User column when renderUser is given', () => {
+    const alice = { id: 'u-alice', name: 'Alice Example' };
+    const html = render({
+      showUserColumn: true,
+      items: [instance({ user: alice })],
+      renderUser: (u) => <b data-user={u.id}>person</b>,
+    });
+    expect(html).toContain('<b data-user="u-alice">person</b>');
+    expect(html).not.toContain('>Alice Example<');
+  });
+
   it('renders a dash in the User column for a row with no user', () => {
     const html = render({ showUserColumn: true });
     expect(count(html, 'td')).toBe(8);

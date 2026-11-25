@@ -75,7 +75,7 @@ describe('merging into hooks.json', () => {
     const once = mergeOwnHooks(parseHooksFile(undefined), NODE, '/old/scripts');
     const twice = mergeOwnHooks(once, NODE, SCRIPTS);
     expect(twice.hooks.preToolUse).toHaveLength(1);
-    expect(twice.hooks.preToolUse?.[0]?.command).toContain(SCRIPTS);
+    expect(twice.hooks.preToolUse?.[0]?.command).toBe(hookCommand(NODE, SCRIPTS, 'preToolUse'));
   });
 
   it('removes only its own entries, and drops events left empty', () => {

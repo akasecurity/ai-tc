@@ -18,6 +18,7 @@ plugins/claude-code/scripts/
 plugins/codex/scripts/
 plugins/antigravity/scripts/
 plugins/copilot/scripts/
+plugins/cursor/scripts/
 plugins/browser-extension/native-host/
 # `package:zip`'s output. A bare `dist` above matches a path component named
 # exactly that, so it does not reach this one.

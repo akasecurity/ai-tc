@@ -87,6 +87,7 @@ export const COL = {
   ephemeral1hInputTokens: 'ephemeral_1h_input_tokens',
   ephemeral5mInputTokens: 'ephemeral_5m_input_tokens',
   webSearchRequests: 'web_search_requests',
+  usageChannel: 'usage_channel',
   // Meta data model — Source / Project
   url: 'url',
   // Meta data model — Inventory API (asset/file/override tables)

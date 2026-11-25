@@ -31,6 +31,7 @@ import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import {
   unscannedPastWalkLimitsMessage,
   unscannedWorkerUnavailableMessage,
+  workerUnavailableBlockedMessage,
 } from '../../src/exception-guidance.ts';
 import { readCliStdout } from '../helpers/cli-stdout.ts';
 
@@ -188,7 +189,8 @@ describe.each(DIALECTS)(
       await expectTallySettlesAt(1);
     });
 
-    it('counts one for a prompt too large to scan, and none for one scanned in full', async () => {
+    // On VS Code the large prompt is refused (exit 2), which is not a fail-open.
+    it('counts a prompt too large to scan only where it went out, and none scanned in full', async () => {
       const envelope = isCli ? d.envelope : { ...d.envelope, hook_event_name: d.promptEvent };
       const scriptsDir = scriptsWithoutWorker();
 
@@ -212,12 +214,17 @@ describe.each(DIALECTS)(
         },
         scriptsDir,
       );
-      expectNotice(
-        large,
-        unscannedWorkerUnavailableMessage('prompt', 'it was sent to the model unchanged'),
-      );
-
-      await expectTallySettlesAt(1);
+      if (isCli) {
+        expectNotice(
+          large,
+          unscannedWorkerUnavailableMessage('prompt', 'it was sent to the model unchanged'),
+        );
+        await expectTallySettlesAt(1);
+      } else {
+        expect(large.status, large.stderr).toBe(2);
+        expect(large.stderr).toContain(workerUnavailableBlockedMessage('prompt'));
+        await expectTallySettlesAt(0);
+      }
     });
   },
   120_000,

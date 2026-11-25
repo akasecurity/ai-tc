@@ -1,0 +1,41 @@
+import { fileURLToPath } from 'node:url';
+
+import { defineConfig } from 'vitest/config';
+
+import { coverageOptions } from '../../test/vitest/coverage.ts';
+import { unfinishedModulesReporter } from '../../test/vitest/unfinished-modules-reporter.ts';
+
+// Every test file runs behind the no-network guard: it refuses any outbound
+// connection that is not loopback and names the call site that made it.
+const noNetworkGuard = fileURLToPath(new URL('../../test/setup/no-network.ts', import.meta.url));
+// And on a machine with no ADMINISTRATOR, declared for the same reason: the
+// managed overlay is read from absolute system paths that a temp home cannot
+// redirect, so without this a suite reads whatever the developer's own laptop
+// is enrolled in. See the guard for why a per-call override cannot cover it.
+const noManagedSettingsGuard = fileURLToPath(
+  new URL('../../test/setup/no-managed-settings.ts', import.meta.url),
+);
+
+// And with wasm code GC off on Node 24: this suite can terminate a worker, and
+// on that line freeing code after a termination can abort the test process.
+// See the setup file; no-wasm-code-gc-guard.test.js derives which packages owe it.
+const noWasmCodeGc = fileURLToPath(new URL('../../test/setup/no-wasm-code-gc.ts', import.meta.url));
+
+// globalSetup builds scripts/*.js once, in the main process, before any worker
+// runs — the e2e suites drive those built scripts.
+//
+// Those tests spawn the built scripts as real child processes, which runs
+// slowly under Turbo's parallel task load, so raise the per-test AND per-hook
+// timeouts above vitest's 5s/10s defaults (mirrors plugins/codex). The package
+// is in the ratchet's TIMEOUTS map for exactly these two literals.
+export default defineConfig({
+  plugins: [unfinishedModulesReporter()],
+  test: {
+    setupFiles: [noNetworkGuard, noManagedSettingsGuard, noWasmCodeGc],
+    coverage: coverageOptions(import.meta.url),
+    environment: 'node',
+    globalSetup: ['./test/global-setup.ts'],
+    testTimeout: 20_000,
+    hookTimeout: 20_000,
+  },
+});

@@ -31,7 +31,19 @@ import { useState } from 'react';
 
 import { AnalyticsIcon } from '../shared/icons.tsx';
 import { WidgetEmpty, WidgetError } from '../shared/widget-state.tsx';
-import { formatCostTotal, formatUsd, tokenLabel } from './format.ts';
+import {
+  formatApiEquivalentTotal,
+  formatCostTotal,
+  formatModelCost,
+  hasApiEquivalent,
+  tokenCostNotes,
+  tokenLabel,
+  usageChannelLabel,
+} from './format.ts';
+
+function hasSubscription(summary: TokenUsageSummary): boolean {
+  return hasApiEquivalent(summary.models);
+}
 
 /** Per-model rows table — the slide-over body. Token counts are compact; a model
  * with no known price shows `—` in the cost column. */
@@ -42,6 +54,7 @@ function ModelTable({ summary }: { summary: TokenUsageSummary }) {
         <TableRow>
           <TableHead>Provider</TableHead>
           <TableHead>Model</TableHead>
+          <TableHead>Paid via</TableHead>
           <TableHead className="text-right">Input</TableHead>
           <TableHead className="text-right">Output</TableHead>
           <TableHead className="text-right">Cache</TableHead>
@@ -51,11 +64,12 @@ function ModelTable({ summary }: { summary: TokenUsageSummary }) {
       </TableHeader>
       <TableBody>
         {summary.models.map((m) => (
-          <TableRow key={`${m.provider} ${m.model}`}>
+          <TableRow key={`${m.provider} ${m.model} ${m.channel}`}>
             <TableCell className="text-text-2">{m.provider}</TableCell>
             <TableCell className="max-w-40 truncate font-mono text-text" title={m.model}>
               {m.model}
             </TableCell>
+            <TableCell className="text-text-2">{usageChannelLabel(m.channel)}</TableCell>
             <TableCell className="text-right tabular-nums text-text-2">
               {tokenLabel(m.inputTokens)}
             </TableCell>
@@ -69,7 +83,7 @@ function ModelTable({ summary }: { summary: TokenUsageSummary }) {
               {tokenLabel(m.totalTokens)}
             </TableCell>
             <TableCell className="text-right tabular-nums text-text">
-              {m.estimatedCostUsd !== null ? formatUsd(m.estimatedCostUsd) : '—'}
+              {formatModelCost(m.estimatedCostUsd, m.costBasis)}
             </TableCell>
           </TableRow>
         ))}
@@ -103,7 +117,7 @@ export function ActivityTokenUsageView({
   const chipLabel = error
     ? 'Token usage'
     : hasUsage
-      ? `${tokenLabel(summary.totalTokens)} tokens · ${formatCostTotal(summary.estimatedCostUsd, summary.costIsPartial)}`
+      ? `${tokenLabel(summary.totalTokens)} tokens · ${formatCostTotal(summary.estimatedCostUsd, summary.costIsPartial)}${hasSubscription(summary) ? ` · ${formatApiEquivalentTotal(summary.apiEquivalentUsd, summary.apiEquivalentIsPartial)}` : ''}`
       : 'No token usage';
 
   const chipTitle = error
@@ -156,8 +170,19 @@ export function ActivityTokenUsageView({
                 </span>
                 <span>·</span>
                 <span className="font-semibold tabular-nums text-text-2">
-                  {formatCostTotal(summary.estimatedCostUsd, summary.costIsPartial)}
+                  {formatCostTotal(summary.estimatedCostUsd, summary.costIsPartial)} estimated spend
                 </span>
+                {hasSubscription(summary) && (
+                  <>
+                    <span>·</span>
+                    <span className="font-semibold tabular-nums text-text-2">
+                      {formatApiEquivalentTotal(
+                        summary.apiEquivalentUsd,
+                        summary.apiEquivalentIsPartial,
+                      )}
+                    </span>
+                  </>
+                )}
               </div>
             )}
           </SheetHeader>
@@ -169,12 +194,11 @@ export function ActivityTokenUsageView({
             ) : hasUsage ? (
               <>
                 <ModelTable summary={summary} />
-                {summary.costIsPartial && (
-                  <p className="px-3 pb-1 pt-2 text-xs text-text-3">
-                    — = unknown pricing (a local or non-Anthropic model); the cost total is a lower
-                    bound.
+                {tokenCostNotes(summary).map((note) => (
+                  <p key={note} className="px-3 pb-1 pt-2 text-xs text-text-3">
+                    {note}
                   </p>
-                )}
+                ))}
               </>
             ) : (
               <div className="p-3">

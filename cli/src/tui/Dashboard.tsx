@@ -1,10 +1,16 @@
 import type { FindingView, ModelTokenUsage, TokenUsageSummary } from '@akasecurity/schema';
-import { findingMatchLabel } from '@akasecurity/schema';
+import {
+  findingMatchLabel,
+  formatApiEquivalentTotal,
+  formatModelCost,
+  hasApiEquivalent,
+  tokenCostNotes,
+} from '@akasecurity/schema';
 import { Box, Text, useApp, useInput } from 'ink';
 import type { ReactElement } from 'react';
 import { useState } from 'react';
 
-import { compactTokens, totalCostLabel, usdCost } from '../lib/tokens.ts';
+import { compactTokens, totalCostLabel } from '../lib/tokens.ts';
 import { gaugeFill, padEnd, padStart, stackedBar, wrapText } from './bars.ts';
 import type {
   FindingStatus,
@@ -225,9 +231,10 @@ function Legend(): ReactElement {
 }
 
 // One per-model row in the token-usage block: provider/model · total tokens ·
-// derived cost (— for unknown pricing). Colour mirrors the DataTable rows.
+// derived cost (— for unknown pricing; subscription rows are API-equivalent, not
+// spend). Colour mirrors the DataTable rows.
 function TokenRow({ m }: { m: ModelTokenUsage }): ReactElement {
-  const cost = m.estimatedCostUsd !== null ? usdCost(m.estimatedCostUsd) : '—';
+  const cost = formatModelCost(m.estimatedCostUsd, m.costBasis);
   return (
     <Text>
       <Text color={COLOR.dim}>{padEnd(`${m.provider}/${m.model}`, TOKEN_LABEL_W)}</Text>
@@ -246,6 +253,10 @@ function TokenUsageSection({ usage }: { usage: TokenUsageSummary }): ReactElemen
   if (usage.models.length === 0) return null;
   const sessions = `${String(usage.sessionCount)} session${usage.sessionCount === 1 ? '' : 's'}`;
   const cost = totalCostLabel(usage.estimatedCostUsd, usage.costIsPartial);
+  const apiEquivalent = hasApiEquivalent(usage.models)
+    ? ` · ${formatApiEquivalentTotal(usage.apiEquivalentUsd, usage.apiEquivalentIsPartial)}`
+    : '';
+  const notes = tokenCostNotes(usage);
   return (
     <Box flexDirection="column" marginTop={1}>
       <Box paddingLeft={2}>
@@ -254,12 +265,17 @@ function TokenUsageSection({ usage }: { usage: TokenUsageSummary }): ReactElemen
       </Box>
       <Box paddingLeft={2}>
         <Text color={COLOR.dim}>
-          {`${sessions} · ${compactTokens(usage.totalTokens)} tokens · ${cost}`}
+          {`${sessions} · ${compactTokens(usage.totalTokens)} tokens · ${cost}${apiEquivalent}`}
         </Text>
       </Box>
       {usage.models.slice(0, TOKEN_ROWS).map((m) => (
-        <Box key={`${m.provider} ${m.model}`} paddingLeft={2}>
+        <Box key={`${m.provider} ${m.model} ${m.channel}`} paddingLeft={2}>
           <TokenRow m={m} />
+        </Box>
+      ))}
+      {notes.map((note) => (
+        <Box key={note} paddingLeft={2}>
+          <Text color={COLOR.dim}>{note}</Text>
         </Box>
       ))}
     </Box>

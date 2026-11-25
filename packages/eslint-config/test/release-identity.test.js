@@ -47,12 +47,17 @@ const THIS_REPO_SOURCE = 'akasecurity/ai-tc';
 // for any two of them — these are the paths the conventions doc's Releasing
 // section names as the pairs a bump has to move together. A released plugin
 // whose directory is not here fails rather than being skipped: a host manifest
-// this guard cannot find is a version pair nothing checks.
+// this guard cannot find is a version pair nothing checks. `null` states that
+// the host reads no manifest from the package at all — Cursor runs the hook
+// scripts its installer wrote into ~/.cursor/hooks.json — so there is no pair,
+// and it is still listed so that an unlisted plugin keeps failing.
+/** @type {Readonly<Record<string, string | null>>} */
 const HOST_MANIFESTS = Object.freeze({
   'plugins/claude-code': '.claude-plugin/plugin.json',
   'plugins/codex': '.codex-plugin/plugin.json',
   'plugins/antigravity': 'plugin.json',
   'plugins/copilot': 'plugin.json',
+  'plugins/cursor': null,
 });
 
 // A marketplace name and a plugin entry name both reach a host's command line
@@ -472,6 +477,7 @@ describe('every plugin is released or private, never half of each', () => {
       `${dir} is released but this guard knows no host manifest path for it, so its version pair ` +
         'is checked by nothing',
     ).toBeDefined();
+    if (manifest === null) return;
     expect(
       readJson(`${dir}/${manifest}`).version,
       `${dir}/${manifest} reports a different version from ${dir}/package.json — the host reads ` +
@@ -492,7 +498,9 @@ describe('this task hashes the files this audit reads', () => {
     REGISTRY,
     'turbo.json',
     ...PACKAGES.map((p) => `${p.dir}/package.json`),
-    ...Object.entries(HOST_MANIFESTS).map(([dir, manifest]) => `${dir}/${manifest}`),
+    ...Object.entries(HOST_MANIFESTS)
+      .filter(([, manifest]) => manifest !== null)
+      .map(([dir, manifest]) => `${dir}/${manifest}`),
     ...WORKFLOWS,
   ];
 

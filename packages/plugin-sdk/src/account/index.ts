@@ -21,14 +21,16 @@ export {
   isLearned,
   isManual,
 } from './account-check.ts';
-export type { ClaudeAccountEnv, CodexAccountEnv } from './account-env.ts';
+export type { ClaudeAccountEnv, CodexAccountEnv, CredentialKind } from './account-env.ts';
 export {
   CLAUDE_ACCOUNT_ENV_NAMES,
   CLAUDE_BASE_URL_ENV,
   CLAUDE_CREDENTIAL_ENV,
+  CLAUDE_CREDENTIAL_KIND,
   CLAUDE_PROVIDER_FLAG_ENV,
   CODEX_ACCOUNT_ENV_NAMES,
   CODEX_CREDENTIAL_ENV,
+  CODEX_CREDENTIAL_KIND,
   codexEnvVetoed,
   codexHomeDir,
   isNonDefaultBaseUrl,
@@ -54,6 +56,13 @@ export {
   holdDecision,
   NO_ATTRIBUTION_CARRY,
 } from './attribution.ts';
+export type { ClaudeBillingInput, CodexBillingInput, SessionBilling } from './billing.ts';
+export {
+  claudeBilling,
+  codexBilling,
+  resolveClaudeBilling,
+  resolveCodexBilling,
+} from './billing.ts';
 export type { ClaudeLogin, ClaudeLoginPaths, ClaudeLoginRead } from './claude-login.ts';
 export {
   CLAUDE_CONFIG_MAX_BYTES,

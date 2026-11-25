@@ -28,6 +28,7 @@ import {
   sessionRootScopeKey,
   toolCallScopeKey,
   truncateTarget,
+  withBilling,
 } from '@akasecurity/plugin-sdk';
 import type {
   AuditEventInput,
@@ -131,6 +132,7 @@ export async function reconcileSession(
   );
 
   const provider = (await gateway.readSessionProvider(sessionId)) ?? heuristicProvider;
+  const billing = (await gateway.readSessionBilling?.(sessionId)) ?? {};
 
   // Each leaf is keyed by its own record's running cwd, never by the root's.
   const scopeKeyOf = opts.scopeKeyOf ?? scopeKeyMemo();
@@ -148,12 +150,15 @@ export async function reconcileSession(
     // A record with no in-chunk turn_context (a tail chunk that starts
     // mid-turn) falls back to the seeded promptId carried by the offset
     // checkpoint, so its run_key attribution survives the chunk boundary.
-    attributes: buildAttributes(
-      rec.runKey === undefined && opts.seedPromptId !== undefined
-        ? { ...rec, runKey: opts.seedPromptId }
-        : rec,
-      provider,
-      keyAt(rec.cwd, rec.occurredAt),
+    attributes: withBilling(
+      buildAttributes(
+        rec.runKey === undefined && opts.seedPromptId !== undefined
+          ? { ...rec, runKey: opts.seedPromptId }
+          : rec,
+        provider,
+        keyAt(rec.cwd, rec.occurredAt),
+      ),
+      billing,
     ),
   }));
 

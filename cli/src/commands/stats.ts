@@ -4,15 +4,19 @@ import { openLocalDatabase } from '@akasecurity/persistence';
 import { dataDir } from '@akasecurity/plugin-sdk';
 import {
   aggregateTokenUsage,
+  formatApiEquivalentTotal,
+  formatModelCost,
+  hasApiEquivalent,
   parseTimeRange,
   RANGE_DAYS,
   type SeveritySummaryResponse,
   type TimeRange,
+  tokenCostNotes,
   type TokenUsageSummary,
 } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
-import { compactTokens, totalCostLabel, usdCost } from '../lib/tokens.ts';
+import { compactTokens, totalCostLabel } from '../lib/tokens.ts';
 
 const DAY_MS = 86_400_000;
 
@@ -121,14 +125,17 @@ export function renderTokenUsage(summary: TokenUsageSummary, range: TimeRange): 
   }
   const total = totalCostLabel(summary.estimatedCostUsd, summary.costIsPartial);
   const sessions = `${String(summary.sessionCount)} session${summary.sessionCount === 1 ? '' : 's'}`;
+  const apiEquivalent = hasApiEquivalent(summary.models)
+    ? ` · ${formatApiEquivalentTotal(summary.apiEquivalentUsd, summary.apiEquivalentIsPartial)}`
+    : '';
   const lines = [
-    `Token usage (${range}): ${sessions} · ${compactTokens(summary.totalTokens)} tokens · ${total}`,
+    `Token usage (${range}): ${sessions} · ${compactTokens(summary.totalTokens)} tokens · ${total}${apiEquivalent}`,
   ];
 
   const shown = summary.models.slice(0, TOP_MODELS);
   const labelWidth = Math.max(...shown.map((m) => `${m.provider}/${m.model}`.length));
   for (const m of shown) {
-    const cost = m.estimatedCostUsd !== null ? usdCost(m.estimatedCostUsd) : '—';
+    const cost = formatModelCost(m.estimatedCostUsd, m.costBasis);
     lines.push(
       `  ${`${m.provider}/${m.model}`.padEnd(labelWidth)}  ${compactTokens(m.totalTokens).padStart(7)}  ${cost}`,
     );
@@ -136,8 +143,6 @@ export function renderTokenUsage(summary: TokenUsageSummary, range: TimeRange): 
   if (summary.models.length > TOP_MODELS) {
     lines.push(`  … and ${String(summary.models.length - TOP_MODELS)} more model(s)`);
   }
-  if (summary.costIsPartial) {
-    lines.push('  — = unknown pricing (local / non-Anthropic); cost is a lower bound.');
-  }
+  for (const note of tokenCostNotes(summary)) lines.push(`  ${note}`);
   return lines.join('\n');
 }

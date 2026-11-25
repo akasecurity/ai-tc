@@ -38,6 +38,7 @@ import {
   sessionRootScopeKey,
   toolCallScopeKey,
   truncateTarget,
+  withBilling,
 } from '@akasecurity/plugin-sdk';
 import type { AttributionResult } from '@akasecurity/plugin-sdk/account';
 import {
@@ -232,6 +233,7 @@ export async function reconcileSession(
   // Read the EFFECTIVE provider back off the ensured root: env-provider
   // if SessionStart won, else our just-written heuristic. Denormalized onto each leaf.
   const provider = (await gateway.readSessionProvider(sessionId)) ?? heuristicProvider;
+  const billing = (await gateway.readSessionBilling?.(sessionId)) ?? {};
 
   // Build every leaf for this pass first, then write them in ONE transaction
   // one lock acquisition + WAL fsync, minimal contention. run_key
@@ -254,7 +256,10 @@ export async function reconcileSession(
       parentId: sessionId,
       rootSessionId: sessionId,
       startedAt: rec.occurredAt,
-      attributes: buildAttributes(rec, provider, runKey, stamp(scopeKeyOf(rec.cwd), rec.uuid)),
+      attributes: withBilling(
+        buildAttributes(rec, provider, runKey, stamp(scopeKeyOf(rec.cwd), rec.uuid)),
+        billing,
+      ),
     };
   });
 
@@ -800,6 +805,11 @@ function buildSessionRoot(
   // relative or empty cwd, a remoteless repository and a record that names no cwd,
   // when no account applies.
   if (scopeKey !== undefined) attributes.scope_key = scopeKey;
+  // An agent key is stamped only for a work login the account check confirmed, and
+  // that check is vetoed by a key or token in the environment, a Console key, an API
+  // key helper, a cloud provider flag and a gateway base URL. So a root it keys is
+  // on a work plan's subscription.
+  if (isAgentScopeKey(scopeKey)) attributes.usage_channel = 'subscription';
 
   const event: AuditEventInput = {
     id: sessionId,

@@ -28,7 +28,7 @@
     "@radix-ui/react-toggle-group": "^1.2.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "tailwind-merge": "^3.7.0"
+    "tailwind-merge": "^3.7.1"
   },
   "devDependencies": {
     "@akasecurity/eslint-config": "workspace:*",

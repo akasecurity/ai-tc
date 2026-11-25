@@ -103,19 +103,21 @@ const validClaims = (): Record<string, unknown> =>
   codexClaims({ accountId: machine.accountId, email: machine.email, plan: 'team' });
 
 describe('inspectCodexLogin', () => {
-  it('reads the account, the email match, the plan state and the fingerprint, and nothing else', () => {
+  it('reads the account, the email match, the plan and its state and the fingerprint, and nothing else', () => {
     machine.writeAuth({ accountId: machine.accountId.toUpperCase() });
     const read = login();
     expect(read).toEqual({
       accountId: machine.accountId,
       emailMatchesAttached: true,
       planState: 'company',
+      plan: 'team',
       fingerprint: fingerprint(),
     });
     expect(Object.keys(read).sort()).toEqual([
       'accountId',
       'emailMatchesAttached',
       'fingerprint',
+      'plan',
       'planState',
     ]);
   });
@@ -196,7 +198,15 @@ describe('inspectCodexLogin', () => {
     expect(inspect()).toEqual({ status: 'mode' });
     for (const field of FIXTURE_PRESENCE_FIELDS.slice(1)) {
       machine.writeAuth({ authMode: null, extra: { [field]: { id: randomUUID() } } });
-      expect(inspect(), field).toEqual({ status: 'mode' });
+      const cloud = field.startsWith('bedrock_');
+      const accessToken = field === 'personal_access_token' || field === 'agent_identity';
+      expect(inspect(), field).toEqual(
+        cloud
+          ? { status: 'mode', cloud: true }
+          : accessToken
+            ? { status: 'mode', accessToken: true }
+            : { status: 'mode' },
+      );
     }
   });
 

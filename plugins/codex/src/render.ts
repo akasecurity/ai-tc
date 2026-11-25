@@ -19,10 +19,14 @@ import {
   aggregateTokenUsage,
   buildRecommendations,
   findingStatus,
+  formatApiEquivalentTotal,
   formatCostTotal,
-  formatUsd,
+  formatModelCost,
+  hasApiEquivalent,
   offersCaptureStatusReader,
   severityWeight,
+  tokenCostNotes,
+  usageChannelLabel,
   WEB_CAPTURE_DRIFT_RULE,
   webCaptureReport,
 } from '@akasecurity/plugin-sdk';
@@ -867,24 +871,26 @@ export function renderTokens(reports: SessionTokenReport[]): string {
   const rows = summary.models.map((m) => [
     m.provider,
     m.model,
+    usageChannelLabel(m.channel),
     num(m.inputTokens),
     num(m.outputTokens),
     num(m.cacheTokens),
     num(m.totalTokens),
-    m.estimatedCostUsd !== null ? formatUsd(m.estimatedCostUsd) : '—',
+    formatModelCost(m.estimatedCostUsd, m.costBasis),
   ]);
 
   const totalCost = formatCostTotal(summary.estimatedCostUsd, summary.costIsPartial);
+  const apiEquivalent = hasApiEquivalent(summary.models)
+    ? `, ${formatApiEquivalentTotal(summary.apiEquivalentUsd, summary.apiEquivalentIsPartial)}`
+    : '';
   const sessions =
     summary.sessionCount === 1 ? '1 session' : `${String(summary.sessionCount)} sessions`;
   const lines = [
-    `Token usage — ${sessions}, ${num(summary.totalTokens)} tokens, ${totalCost}`,
+    `Token usage — ${sessions}, ${num(summary.totalTokens)} tokens, ${totalCost} estimated spend${apiEquivalent}`,
     '',
-    table(['Provider', 'Model', 'Input', 'Output', 'Cache', 'Total', 'Cost'], rows),
+    table(['Provider', 'Model', 'Paid via', 'Input', 'Output', 'Cache', 'Total', 'Cost'], rows),
   ];
-  if (summary.costIsPartial) {
-    lines.push('', '— = unknown pricing (local / non-Anthropic model); cost is a lower bound.');
-  }
+  for (const note of tokenCostNotes(summary)) lines.push('', note);
   return lines.join('\n');
 }
 

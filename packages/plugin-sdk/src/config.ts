@@ -16,6 +16,7 @@ import { resolveProvider } from './provider.ts';
 import type { ResolvedAntigravityProvider } from './provider-antigravity.ts';
 import type { ResolvedCodexProvider } from './provider-codex.ts';
 import type { ResolvedCopilotProvider } from './provider-copilot.ts';
+import type { ResolvedCursorProvider } from './provider-cursor.ts';
 
 // The settings file readers and writer live in @akasecurity/persistence
 // (shared with the CLI and the web-ui); re-exported so the SDK's public
@@ -45,7 +46,8 @@ export interface PluginConfig {
     | ResolvedProvider
     | ResolvedCodexProvider
     | ResolvedAntigravityProvider
-    | ResolvedCopilotProvider;
+    | ResolvedCopilotProvider
+    | ResolvedCursorProvider;
 }
 
 /**
@@ -60,7 +62,8 @@ export interface PluginConfig {
  * the session root — `resolveCodexProvider` from
  * plugins/codex/src/hooks/session-start.ts, `resolveAntigravityProvider` from
  * plugins/antigravity/src/hooks/pre-invocation.ts, `resolveCopilotProvider`
- * from plugins/copilot/src/hooks/session-start-run.ts. Every other hook loads
+ * from plugins/copilot/src/hooks/session-start-run.ts, `resolveCursorProvider`
+ * from plugins/cursor/src/hooks/session-start-run.ts. Every other hook loads
  * config for its data dir / settings only and never reads `.provider`, so the
  * default is harmless there even though it's Claude-shaped.
  */
@@ -70,7 +73,8 @@ export function loadConfig(
     | ResolvedProvider
     | ResolvedCodexProvider
     | ResolvedAntigravityProvider
-    | ResolvedCopilotProvider = resolveProvider,
+    | ResolvedCopilotProvider
+    | ResolvedCursorProvider = resolveProvider,
 ): PluginConfig {
   // Self-heal the store's at-rest modes on the plugin's entry path, so a
   // group/other-readable base or settings.json left by an older release (or the
@@ -102,13 +106,14 @@ export function loadConfig(
 }
 
 /**
- * Run the given resolver fail-safe. All four resolvers (`resolveProvider`,
+ * Run the given resolver fail-safe. All five resolvers (`resolveProvider`,
  * `resolveCodexProvider`, `resolveAntigravityProvider`,
- * `resolveCopilotProvider`) are already total — the first three parse {} on a
- * bad env and the fourth reads no env at all — but we wrap once more so a
- * config load — on the fail-open hook path — can never throw on an unexpected
- * error; default to Anthropic-direct, matching the module's original fail-open
- * default (harmless for a Codex, Antigravity or Copilot caller too, since this
+ * `resolveCopilotProvider`, `resolveCursorProvider`) are already total — the
+ * first three parse {} on a bad env and the fourth and fifth read no env at all
+ * — but we wrap once more so a config load — on the fail-open hook path — can
+ * never throw on an unexpected error; default to Anthropic-direct, matching the
+ * module's original fail-open default (harmless for a Codex, Antigravity,
+ * Copilot or Cursor caller too, since this
  * branch is only reached on a genuinely unexpected resolver bug).
  */
 function resolveProviderSafe(
@@ -116,9 +121,14 @@ function resolveProviderSafe(
     | ResolvedProvider
     | ResolvedCodexProvider
     | ResolvedAntigravityProvider
-    | ResolvedCopilotProvider,
+    | ResolvedCopilotProvider
+    | ResolvedCursorProvider,
 ):
-  ResolvedProvider | ResolvedCodexProvider | ResolvedAntigravityProvider | ResolvedCopilotProvider {
+  | ResolvedProvider
+  | ResolvedCodexProvider
+  | ResolvedAntigravityProvider
+  | ResolvedCopilotProvider
+  | ResolvedCursorProvider {
   try {
     return resolveProviderFn();
   } catch {

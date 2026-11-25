@@ -127,7 +127,15 @@ export function tokenLabel(n: number): string {
 // (re-exported so the Activity views keep importing from './format.ts'), so the
 // Activity page, the plugin's `/aka:tokens`, and the CLI/TUI print the same figure
 // AND the same qualifier convention (`$X` / `≥ $X`) — no local `~`/`—` drift.
-export { formatCostTotal, formatUsd } from '@akasecurity/schema';
+export {
+  formatApiEquivalentTotal,
+  formatCostTotal,
+  formatModelCost,
+  formatUsd,
+  hasApiEquivalent,
+  tokenCostNotes,
+  usageChannelLabel,
+} from '@akasecurity/schema';
 
 /**
  * Buckets a flat, most-recent-first session list into day groups, preserving

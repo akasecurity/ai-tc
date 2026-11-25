@@ -1,7 +1,12 @@
 import type { DatabaseSync, StatementSync } from 'node:sqlite';
 
-import type { AuditEventInput, LlmCallInput, ToolCallInput } from '@akasecurity/schema';
-import { isoToEpochMillis, toAuditEventRow } from '@akasecurity/schema';
+import type {
+  AuditEventInput,
+  LlmCallInput,
+  ToolCallInput,
+  UsageChannel,
+} from '@akasecurity/schema';
+import { isoToEpochMillis, toAuditEventRow, usageChannelOf } from '@akasecurity/schema';
 
 import { llmCallId, toolCallId } from '../ids.ts';
 import { parseJsonObject } from '../internal/json.ts';
@@ -313,6 +318,15 @@ export class SqliteAuditEventsRepository {
     return getRow<AuditEventRow>(this.db.prepare('SELECT * FROM audit_events WHERE id = :id'), {
       id,
     });
+  }
+
+  // The usage channel recorded on a session's root; absent when the root or the
+  // attribute is.
+  sessionBilling(sessionId: string): { usageChannel?: UsageChannel } {
+    const row = this.findById(sessionId);
+    const attributes = row?.attributes ? parseJsonObject(row.attributes) : undefined;
+    const channel = attributes?.usage_channel;
+    return channel === undefined ? {} : { usageChannel: usageChannelOf(channel) };
   }
 
   // Read the `provider` snapshotted onto a session root's attributes.

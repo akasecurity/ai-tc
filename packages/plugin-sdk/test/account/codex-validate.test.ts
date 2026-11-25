@@ -117,7 +117,14 @@ function sessionCheck(
   return codexSessionAccount({
     source: options.source ?? 'startup',
     sessionId: machine.sessionId,
-    env: { codexHome: undefined, credentialEnv: false, gateway: false, ...options.env },
+    env: {
+      codexHome: undefined,
+      credentialEnv: false,
+      keyEnv: false,
+      accessTokenEnv: false,
+      gateway: false,
+      ...options.env,
+    },
     head: readCodexHead(machine.rollout),
     login: inspectCodexLogin(machine.codexHome, ctx.attachedUserDigest),
     ctx,
@@ -246,7 +253,13 @@ describe('codexSessionAccount', () => {
       codexSessionAccount({
         source: 'startup',
         sessionId: machine.sessionId,
-        env: { codexHome: undefined, credentialEnv: false, gateway: false },
+        env: {
+          codexHome: undefined,
+          credentialEnv: false,
+          keyEnv: false,
+          accessTokenEnv: false,
+          gateway: false,
+        },
         head: readCodexHead(machine.rollout),
         login: inspectCodexLogin(machine.codexHome, ctx.attachedUserDigest),
         ctx,

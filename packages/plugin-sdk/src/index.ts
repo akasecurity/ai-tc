@@ -25,7 +25,9 @@ export type {
   RuleProbeVerdictEntry,
   ScanLedgerEntry,
   ScanLedgerState,
+  SessionBillingRead,
 } from './data-gateway.ts';
+export { withBilling } from './data-gateway.ts';
 export {
   hasLocalStoreMaintenance,
   offersCaptureStatusReader,
@@ -172,6 +174,8 @@ export type {
 export { codexProviderFromModelId, resolveCodexProvider } from './provider-codex.ts';
 export type { CopilotProvider, ResolvedCopilotProvider } from './provider-copilot.ts';
 export { resolveCopilotProvider } from './provider-copilot.ts';
+export type { CursorProvider, ResolvedCursorProvider } from './provider-cursor.ts';
+export { resolveCursorProvider } from './provider-cursor.ts';
 export type { EgressHit } from './raw-egress.ts';
 export {
   assertRawFree,
@@ -282,9 +286,15 @@ export type { LlmCallLeaf } from '@akasecurity/schema';
 export { defaultCostModel } from '@akasecurity/schema';
 export {
   aggregateTokenUsage,
+  API_EQUIVALENT_NOTE,
   buildTokenReports,
+  formatApiEquivalentTotal,
   formatCostTotal,
+  formatModelCost,
   formatUsd,
+  hasApiEquivalent,
+  tokenCostNotes,
+  usageChannelLabel,
 } from '@akasecurity/schema';
 // The recommendation rollup and the posture score, also from `@akasecurity/schema`
 // and re-exported for the same reason: each plugin's `render.ts` reaches the shared

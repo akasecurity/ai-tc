@@ -102,7 +102,10 @@ describe('FindingDetailView', () => {
       <Sheet open>
         <SheetContent>
           <FindingDetailView
-            selection={{ finding, instance: { ...instance, user: { id: 'u-alice', name: 'Alice Example' } } }}
+            selection={{
+              finding,
+              instance: { ...instance, user: { id: 'u-alice', name: 'Alice Example' } },
+            }}
             renderedAt={RENDERED_AT}
             renderUser={(u) => <b data-user={u.id}>person</b>}
           />

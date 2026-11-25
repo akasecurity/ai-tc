@@ -61,7 +61,9 @@ describe('UsersCell', () => {
 
   it('routes the one-person row through render, and not the count row', () => {
     const host = () => <b>host</b>;
-    expect(renderToStaticMarkup(<UsersCell users={[alice]} render={host} />)).toContain('<b>host</b>');
+    expect(renderToStaticMarkup(<UsersCell users={[alice]} render={host} />)).toContain(
+      '<b>host</b>',
+    );
     const several = renderToStaticMarkup(<UsersCell users={[alice, bob]} render={host} />);
     expect(several).toContain('2 users');
     expect(several).not.toContain('<b>host</b>');

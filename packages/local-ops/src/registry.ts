@@ -113,6 +113,26 @@ export const AGENT_PLUGINS: readonly AgentPlugin[] = [
       '  node package/scripts/vscode-install.js\n' +
       'and reload VS Code. It adds the folder to `chat.pluginLocations` in your user settings.',
   },
+  {
+    id: 'cursor',
+    name: 'Cursor',
+    sourceTool: SOURCE_TOOL.Cursor,
+    description:
+      'Hooks Cursor agent sessions to record and scan prompts, tool calls, and tool results, and to block prompts and tool calls.',
+    npmPackage: '@akasecurity/ai-tc-cursor',
+    // NO pluginName/marketplace/cliBin: Cursor has no plugin marketplace. Its
+    // installer writes user-level entries into ~/.cursor/hooks.json that point
+    // at the unpacked folder, and an entry with no ref is skipped by the update
+    // notice's `npm view` lookups.
+    installHint:
+      'Cursor runs this plugin from a local directory rather than a marketplace:\n' +
+      '  mkdir -p aka-cursor && cd aka-cursor\n' +
+      '  tar -xzf "$(npm pack @akasecurity/ai-tc-cursor --silent)"\n' +
+      '  node package/scripts/install.js\n' +
+      'Then restart Cursor and run `aka init` to set up the local store.\n' +
+      'To update, unpack the new version over `package` in that same folder and run the installer again.\n' +
+      'To remove the hooks: node package/scripts/install.js --uninstall',
+  },
 ];
 
 export function findAgent(id: string): AgentPlugin | undefined {

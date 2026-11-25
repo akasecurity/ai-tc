@@ -58,6 +58,7 @@ const KNOWN_PLUGIN_WORKFLOWS = [
   '.github/workflows/release-plugin-claude.yml',
   '.github/workflows/release-plugin-codex.yml',
   '.github/workflows/release-plugin-copilot.yml',
+  '.github/workflows/release-plugin-cursor.yml',
 ];
 
 const ON_MAIN_CHECK = 'Verify a stable tag is on main';

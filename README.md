@@ -87,6 +87,13 @@ The two commands in the [quick start](#install) above add the marketplace and in
 
 Claude Desktop is supported too; the [installation guide](https://akasecurity.github.io/ai-tc-docs/getting-started/installation/) covers both. `ai-tc` runs locally alongside your agent. Standalone by default: there's no backend to stand up, and no scanning happens off your machine.[^egress]
 
+### Cursor
+
+The Cursor plugin (beta) is a separate npm package with no marketplace. Unpack it into a folder you
+keep and run `node package/scripts/install.js`, which registers its hooks in
+`~/.cursor/hooks.json`; the [plugin's README](plugins/cursor/README.md) has the steps. It has not
+been verified against a live Cursor install yet.
+
 ### In VS Code
 
 Three agents run inside VS Code, and each reaches AKA a different way. None of the three has

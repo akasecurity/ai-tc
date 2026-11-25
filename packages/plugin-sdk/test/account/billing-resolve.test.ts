@@ -126,6 +126,22 @@ describe('credential variable kinds', () => {
     }
   });
 
+  it('classifies every credential variable as written here, not as the table says', () => {
+    expect(CLAUDE_CREDENTIAL_KIND).toEqual({
+      ANTHROPIC_API_KEY: 'key',
+      ANTHROPIC_AUTH_TOKEN: 'key',
+      CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR: 'key',
+      CLAUDE_CODE_OAUTH_TOKEN: 'plan_token',
+      CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR: 'plan_token',
+      ANTHROPIC_UNIX_SOCKET: 'key',
+      ANTHROPIC_PROFILE: 'key',
+    });
+    expect(CODEX_CREDENTIAL_KIND).toEqual({
+      CODEX_API_KEY: 'key',
+      CODEX_ACCESS_TOKEN: 'access_token',
+    });
+  });
+
   it.each(CLAUDE_CREDENTIAL_ENV)('reads Claude Code %s by its kind', (name) => {
     vi.stubEnv(name, 'fixture-value');
     const env = readClaudeAccountEnv();
@@ -141,10 +157,31 @@ describe('credential variable kinds', () => {
     vi.stubEnv(name, 'fixture-value');
     const env = readCodexAccountEnv();
     const kind = CODEX_CREDENTIAL_KIND[name];
-    expect({ key: env.keyEnv, token: env.tokenEnv }).toEqual({
+    expect({ key: env.keyEnv, accessToken: env.accessTokenEnv }).toEqual({
       key: kind === 'key',
-      token: kind === 'plan_token',
+      accessToken: kind === 'access_token',
     });
     expect(env.credentialEnv).toBe(true);
+  });
+});
+
+describe('a named Anthropic profile beside a claude.ai sign-in', () => {
+  let machine: ClaudeMachine;
+
+  beforeEach(() => {
+    for (const name of CLAUDE_ACCOUNT_ENV_NAMES) vi.stubEnv(name, undefined);
+    machine = claudeMachine();
+    vi.stubEnv('CLAUDE_CONFIG_DIR', machine.home);
+  });
+
+  afterEach(() => {
+    machine.dispose();
+  });
+
+  it('is read as a key, so the session is unknown rather than a subscription', () => {
+    machine.writeConfig({ oauthAccount: { organizationType: 'claude_max' } });
+    vi.stubEnv('ANTHROPIC_PROFILE', 'fixture-profile');
+    expect(readClaudeAccountEnv()).toMatchObject({ keyEnv: true, tokenEnv: false });
+    expect(resolveClaudeBilling('anthropic', machine.cwd)).toEqual({ usageChannel: 'unknown' });
   });
 });

@@ -4,6 +4,7 @@ import {
   API_EQUIVALENT_LOWER_BOUND_NOTE,
   API_EQUIVALENT_NOTE,
   compactNumber,
+  formatApiEquivalentTotal,
   formatCostTotal,
   formatModelCost,
   formatTokenCount,
@@ -59,6 +60,19 @@ describe('formatModelCost', () => {
     expect(formatModelCost(2.5, 'estimated')).toBe('$2.50');
     expect(formatModelCost(2.5, 'api_equivalent')).toBe('$2.50 API-eq.');
     expect(formatModelCost(null, null)).toBe('—');
+  });
+});
+
+describe('the shared token labels', () => {
+  it('keeps the wording every token surface prints', () => {
+    expect(SPEND_LOWER_BOUND_NOTE).toBe(
+      '— = unknown pricing (a local or non-Anthropic model); the spend total is a lower bound.',
+    );
+    expect(API_EQUIVALENT_LOWER_BOUND_NOTE).toBe(
+      '— on a subscription row = unknown pricing; the API-equivalent total is a lower bound.',
+    );
+    expect(formatApiEquivalentTotal(12, false)).toBe('$12.00 API-equivalent');
+    expect(formatApiEquivalentTotal(12, true)).toBe('≥ $12.00 API-equivalent');
   });
 });
 

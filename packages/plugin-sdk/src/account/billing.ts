@@ -84,29 +84,28 @@ export function claudeBilling(input: ClaudeBillingInput): SessionBilling {
 
 export interface CodexBillingInput {
   readonly provider: string;
-  readonly env: Pick<CodexAccountEnv, 'keyEnv' | 'tokenEnv'>;
+  readonly env: Pick<CodexAccountEnv, 'keyEnv' | 'accessTokenEnv'>;
   readonly login: CodexLoginRead;
 }
 
 /**
- * Codex, read the same way as Claude Code. A key in the environment beside a ChatGPT sign-in or
- * an access token may or may not be the one in use, so that pair is `unknown`. An access token
- * is a ChatGPT sign-in, so on its own it is a subscription whose plan the token does not name.
+ * Codex. A ChatGPT sign-in is a subscription unless a credential in the environment competes with
+ * it. An access token, from the environment or `auth.json`, is a personal ChatGPT token or an
+ * agent identity, and only its value says which, so it is `unknown` wherever it arrives.
  */
 export function codexBilling(input: CodexBillingInput): SessionBilling {
   const { provider, env, login } = input;
   if (provider === 'gateway') return GATEWAY;
   switch (login.status) {
     case 'ok':
-      if (env.keyEnv) return UNKNOWN;
-      return env.tokenEnv
-        ? { usageChannel: 'subscription' }
+      return env.keyEnv || env.accessTokenEnv
+        ? UNKNOWN
         : subscription(login.login.plan, CHATGPT_PLANS);
     case 'mode':
-      return login.cloud === true ? CLOUD : API_KEY;
+      if (login.cloud === true) return CLOUD;
+      return login.accessToken === true ? UNKNOWN : API_KEY;
     case 'absent':
-      if (env.keyEnv) return env.tokenEnv ? UNKNOWN : API_KEY;
-      return env.tokenEnv ? { usageChannel: 'subscription' } : UNKNOWN;
+      return env.keyEnv && !env.accessTokenEnv ? API_KEY : UNKNOWN;
     case 'malformed':
       return UNKNOWN;
   }

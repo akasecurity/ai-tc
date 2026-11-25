@@ -108,7 +108,10 @@ describe('claudeBilling', () => {
 });
 
 describe('codexBilling', () => {
-  const base = { provider: 'openai', env: noKey };
+  const none = { keyEnv: false, accessTokenEnv: false };
+  const codexKey = { keyEnv: true, accessTokenEnv: false };
+  const access = { keyEnv: false, accessTokenEnv: true };
+  const base = { provider: 'openai', env: none };
 
   it('reads a ChatGPT sign-in with its plan, folding workspace aliases', () => {
     expect(codexBilling({ ...base, login: codexLogin() })).toEqual({
@@ -127,32 +130,31 @@ describe('codexBilling', () => {
     );
   });
 
-  it('reads an access token as a ChatGPT subscription with no plan named, as Claude reads its plan token', () => {
-    expect(codexBilling({ ...base, env: token, login: { status: 'absent' } })).toEqual({
-      usageChannel: 'subscription',
-    });
-    expect(codexBilling({ ...base, env: token, login: codexLogin() })).toEqual({
-      usageChannel: 'subscription',
-    });
-    expect(
-      claudeBilling({
-        provider: 'anthropic',
-        settingsVeto: false,
-        env: token,
-        login: { status: 'absent' },
-      }).usageChannel,
-    ).toBe(codexBilling({ ...base, env: token, login: { status: 'absent' } }).usageChannel);
+  it('reads an access token as unknown whether it arrives in the environment or in auth.json', () => {
+    const fromEnv = codexBilling({ ...base, env: access, login: { status: 'absent' } });
+    const fromFile = codexBilling({ ...base, login: { status: 'mode', accessToken: true } });
+    expect(fromEnv).toEqual({ usageChannel: 'unknown' });
+    expect(fromFile).toEqual(fromEnv);
+    expect(codexBilling({ ...base, env: access, login: codexLogin() }).usageChannel).toBe(
+      'unknown',
+    );
   });
 
   it('reads a key beside an access token as unknown', () => {
     expect(
-      codexBilling({ ...base, env: { keyEnv: true, tokenEnv: true }, login: { status: 'absent' } }),
+      codexBilling({
+        ...base,
+        env: { keyEnv: true, accessTokenEnv: true },
+        login: { status: 'absent' },
+      }),
     ).toEqual({ usageChannel: 'unknown' });
   });
 
   it('reads a key beside a ChatGPT sign-in as unknown, and a key alone as api_key', () => {
-    expect(codexBilling({ ...base, env: key, login: codexLogin() }).usageChannel).toBe('unknown');
-    expect(codexBilling({ ...base, env: key, login: { status: 'absent' } }).usageChannel).toBe(
+    expect(codexBilling({ ...base, env: codexKey, login: codexLogin() }).usageChannel).toBe(
+      'unknown',
+    );
+    expect(codexBilling({ ...base, env: codexKey, login: { status: 'absent' } }).usageChannel).toBe(
       'api_key',
     );
   });

@@ -19,10 +19,14 @@ export const CLAUDE_CREDENTIAL_ENV = [
   'CLAUDE_CODE_OAUTH_TOKEN',
   'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
   'ANTHROPIC_UNIX_SOCKET',
+  'ANTHROPIC_PROFILE',
 ] as const;
 
-/** Whether a credential variable carries a key, billed per token, or a plan's own sign-in token. */
-export type CredentialKind = 'key' | 'plan_token';
+/**
+ * What a credential variable carries: a key billed per token, a plan's own sign-in token, or an
+ * access token whose value alone says which (the variable is read for presence, never its value).
+ */
+export type CredentialKind = 'key' | 'plan_token' | 'access_token';
 
 /** Every Claude Code credential variable's kind; the Record makes a new name fail to compile until classified. */
 export const CLAUDE_CREDENTIAL_KIND: Readonly<
@@ -33,7 +37,11 @@ export const CLAUDE_CREDENTIAL_KIND: Readonly<
   CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR: 'key',
   CLAUDE_CODE_OAUTH_TOKEN: 'plan_token',
   CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR: 'plan_token',
+  // A transport override that carries no credential of its own; counted as a key so a session
+  // through it stays in spend, the safe direction, as it did before kinds existed.
   ANTHROPIC_UNIX_SOCKET: 'key',
+  // A named `ant` profile, billed to its organization, which outranks the OAuth token and /login.
+  ANTHROPIC_PROFILE: 'key',
 };
 
 /** Flags that route Claude Code to a provider other than its claude.ai login. */
@@ -160,12 +168,13 @@ export function readClaudeAccountEnv(): ClaudeAccountEnv {
 /** Variables whose non-empty value bills a Codex thread to a key or token. */
 export const CODEX_CREDENTIAL_ENV = ['CODEX_API_KEY', 'CODEX_ACCESS_TOKEN'] as const;
 
-/** Every Codex credential variable's kind; `CODEX_ACCESS_TOKEN` is a ChatGPT sign-in token. */
+/** Every Codex credential variable's kind. Codex reads `CODEX_ACCESS_TOKEN` as a personal (ChatGPT)
+ * token or an agent identity by its value, so it is an access token here. */
 export const CODEX_CREDENTIAL_KIND: Readonly<
   Record<(typeof CODEX_CREDENTIAL_ENV)[number], CredentialKind>
 > = {
   CODEX_API_KEY: 'key',
-  CODEX_ACCESS_TOKEN: 'plan_token',
+  CODEX_ACCESS_TOKEN: 'access_token',
 };
 
 /** Every variable readCodexAccountEnv reads, its provider resolution included. */
@@ -182,8 +191,8 @@ export interface CodexAccountEnv {
   readonly credentialEnv: boolean;
   /** A credential variable classed as a key is set. */
   readonly keyEnv: boolean;
-  /** A credential variable classed as a plan token is set. */
-  readonly tokenEnv: boolean;
+  /** A credential variable classed as an access token is set. */
+  readonly accessTokenEnv: boolean;
   /** True when the provider resolution names a gateway rather than the default API. */
   readonly gateway: boolean;
 }
@@ -192,7 +201,7 @@ const UNREADABLE_CODEX_ENV: CodexAccountEnv = {
   codexHome: undefined,
   credentialEnv: true,
   keyEnv: true,
-  tokenEnv: false,
+  accessTokenEnv: false,
   gateway: true,
 };
 
@@ -206,8 +215,8 @@ export function readCodexAccountEnv(): CodexAccountEnv {
       keyEnv: CODEX_CREDENTIAL_ENV.some(
         (name) => CODEX_CREDENTIAL_KIND[name] === 'key' && isPresent(env[name]),
       ),
-      tokenEnv: CODEX_CREDENTIAL_ENV.some(
-        (name) => CODEX_CREDENTIAL_KIND[name] === 'plan_token' && isPresent(env[name]),
+      accessTokenEnv: CODEX_CREDENTIAL_ENV.some(
+        (name) => CODEX_CREDENTIAL_KIND[name] === 'access_token' && isPresent(env[name]),
       ),
       gateway: resolveCodexProvider().provider === 'gateway',
     };

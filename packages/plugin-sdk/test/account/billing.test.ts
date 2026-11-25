@@ -140,6 +140,15 @@ describe('codexBilling', () => {
     );
   });
 
+  it('reads an API-key login in auth.json beside an environment access token as unknown', () => {
+    expect(codexBilling({ ...base, env: access, login: { status: 'mode' } })).toEqual({
+      usageChannel: 'unknown',
+    });
+    expect(codexBilling({ ...base, env: access, login: { status: 'mode', cloud: true } })).toEqual({
+      usageChannel: 'cloud',
+    });
+  });
+
   it('reads a key beside an access token as unknown', () => {
     expect(
       codexBilling({

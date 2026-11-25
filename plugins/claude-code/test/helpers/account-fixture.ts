@@ -36,7 +36,7 @@ import {
 } from '@akasecurity/plugin-runtime';
 import type { PluginConfig } from '@akasecurity/plugin-sdk';
 import { loadConfig, throttled } from '@akasecurity/plugin-sdk';
-import { appendObservation } from '@akasecurity/plugin-sdk/account';
+import { appendObservation, CLAUDE_ACCOUNT_ENV_NAMES } from '@akasecurity/plugin-sdk/account';
 import { defaultWorkspaceSettings } from '@akasecurity/schema';
 import { vi } from 'vitest';
 
@@ -57,27 +57,11 @@ const WORK_ORIGIN = 'https://github.com/example-org/work.git';
 const PERSONAL_ORIGIN = 'https://github.com/example-dev/notes.git';
 const CLAUDE_VERSION = '2.1.300';
 
-// The variables the Claude Code readers consult. Each is blanked so the host
-// running this suite (a terminal inside Claude Code, say) cannot veto a login
-// or disagree with the login file.
-const CLAUDE_ENV = [
-  'ANTHROPIC_API_KEY',
-  'ANTHROPIC_AUTH_TOKEN',
-  'ANTHROPIC_BASE_URL',
-  'ANTHROPIC_UNIX_SOCKET',
-  'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR',
-  'CLAUDE_CODE_OAUTH_TOKEN',
-  'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
-  'CLAUDE_CODE_USE_BEDROCK',
-  'CLAUDE_CODE_USE_VERTEX',
-  'CLAUDE_CODE_USE_FOUNDRY',
-  'CLAUDE_CODE_USE_ANTHROPIC_AWS',
-  'CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD',
-  'CLAUDE_CODE_USE_MANTLE',
-  'CLAUDE_CODE_ORGANIZATION_UUID',
-  'CLAUDE_CODE_USER_EMAIL',
-  'CLAUDE_CODE_SUBPROCESS_ENV_SCRUB',
-] as const;
+// The variables the Claude Code readers consult, derived from the readers' own list so a new
+// credential is blanked too. Each is blanked so the host running this suite (a terminal inside
+// Claude Code, say) cannot veto a login or disagree with the login file. CLAUDE_CONFIG_DIR is
+// stubbed to the fixture's home below instead.
+const CLAUDE_ENV = CLAUDE_ACCOUNT_ENV_NAMES.filter((name) => name !== 'CLAUDE_CONFIG_DIR');
 
 /** One row of the local store's audit_events, as the assertions read it. */
 export interface StoredRow {

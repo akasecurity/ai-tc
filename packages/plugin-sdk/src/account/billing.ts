@@ -91,7 +91,8 @@ export interface CodexBillingInput {
 /**
  * Codex. A ChatGPT sign-in is a subscription unless a credential in the environment competes with
  * it. An access token, from the environment or `auth.json`, is a personal ChatGPT token or an
- * agent identity, and only its value says which, so it is `unknown` wherever it arrives.
+ * agent identity, and only its value says which, so it is `unknown` wherever it arrives, beside
+ * an API-key login in `auth.json` too. Only a Bedrock login in `auth.json` outranks it.
  */
 export function codexBilling(input: CodexBillingInput): SessionBilling {
   const { provider, env, login } = input;
@@ -103,7 +104,7 @@ export function codexBilling(input: CodexBillingInput): SessionBilling {
         : subscription(login.login.plan, CHATGPT_PLANS);
     case 'mode':
       if (login.cloud === true) return CLOUD;
-      return login.accessToken === true ? UNKNOWN : API_KEY;
+      return login.accessToken === true || env.accessTokenEnv ? UNKNOWN : API_KEY;
     case 'absent':
       return env.keyEnv && !env.accessTokenEnv ? API_KEY : UNKNOWN;
     case 'malformed':

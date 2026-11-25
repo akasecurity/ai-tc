@@ -14,7 +14,10 @@ import type { CaptureResult } from '@akasecurity/plugin-sdk';
 import { POINTER_TOKEN_ANCHORED } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import { tooLargeToScanMessage } from '../../src/exception-guidance.ts';
+import {
+  tooLargeToScanMessage,
+  workerUnavailableBlockedMessage,
+} from '../../src/exception-guidance.ts';
 import type { Dialect } from '../../src/hooks/dialect.ts';
 import type { PreToolUseDecision, ScannableField } from '../../src/hooks/pre-tool-use-decision.ts';
 import {
@@ -580,17 +583,28 @@ describe.each(DIALECTS)(
       scanIncomplete,
     });
 
-    it.each(['timeout', 'unavailable'] as const)(
-      'denies the call in this dialect’s shape with the too-large reason (%s)',
-      (scanIncomplete) => {
+    it.each([
+      ['timeout', tooLargeToScanMessage],
+      ['unavailable', workerUnavailableBlockedMessage],
+    ] as const)(
+      'denies the call in this dialect’s shape, naming the cause (%s)',
+      (scanIncomplete, reason) => {
         const decision = decidePreToolUse(c.dialect, c.writer, { [c.writerField.field]: 'x' }, [
           { spec: c.writerField, result: refused(scanIncomplete) },
         ]);
-        expect(c.denyReason(decision)).toBe(tooLargeToScanMessage(`${c.writer} call`));
+        expect(c.denyReason(decision)).toBe(reason(`${c.writer} call`));
         // Nothing for stderr either: the reason rides the deny itself.
         expect(decision.notice).toBeUndefined();
       },
     );
+
+    it('names the worker when one field timed out and another found no worker', () => {
+      const decision = decidePreToolUse(c.dialect, c.writer, { [c.writerField.field]: 'x' }, [
+        { spec: c.writerField, result: refused('timeout') },
+        { spec: c.writerField, result: refused('unavailable') },
+      ]);
+      expect(c.denyReason(decision)).toBe(workerUnavailableBlockedMessage(`${c.writer} call`));
+    });
 
     it('denies even when the other field alone would be redacted and let through', () => {
       const text = `mail ${EMAIL}`;

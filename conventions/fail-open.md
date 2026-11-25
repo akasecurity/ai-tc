@@ -60,12 +60,24 @@ deadline. Each sits inside whatever would otherwise answer for that path first:
 - **Copilot preToolUse** (`plugins/copilot/src/hooks/large-input.ts`): 15 s from process
   start, inside its 24 s watchdog, which resolves with silence — the no-opinion on both
   dialects.
-- **Copilot userPromptSubmitted and postToolUse** (the same `largeInputBound` and the same
-  15 s deadline, inside the same 24 s watchdog): bounded, with **no refusal half**. Neither
-  event has a prompt-stop or result-withhold channel this package has confirmed, so a field
-  that comes back `scanIncomplete` is reported on the notice channel as too large to scan
+- **Copilot UserPromptSubmit under VS Code** (the same `largeInputBound` and the same 15 s
+  deadline, inside the same 24 s watchdog): refused by exit 2, VS Code's documented blocking
+  exit — see the exit-2 exception below.
+- **Copilot userPromptSubmitted on the CLI, and postToolUse on both dialects** (the same
+  bound and deadline): bounded, with **no refusal half**. Neither has a prompt-stop or
+  result-withhold channel this package has confirmed, so a field that comes back
+  `scanIncomplete` is reported on the notice channel as too large to scan
   (`unscannedTooLargeMessage` in `plugins/copilot/src/exception-guidance.ts`) — never
   refused, never treated as clean, and counted in the hook fail-open tally.
+- **Cursor preToolUse and beforeSubmitPrompt** (`plugins/cursor/src/hooks/large-input.ts`):
+  15 s from process start, inside its 24 s watchdog, which resolves with silence — Cursor's
+  no-opinion — inside the 30 s `timeout` its installer registers. preToolUse refuses with a
+  `permission: "deny"`, beforeSubmitPrompt with `continue: false`. preToolUse also counts MCP
+  arguments left past the walk bounds in `plugins/cursor/src/hooks/tool-response.ts` in the
+  hook fail-open tally, and reports them on stderr; it does not refuse the call for them.
+- **Cursor postToolUse** (the same bound and deadline): no refusal half, because the tool has
+  already run. A field that comes back `scanIncomplete`, or tool output left past the walk
+  bounds, is reported on stderr as unscanned and counted in the hook fail-open tally.
 - **The browser extension's native host** (`captureLargeInput` in
   `plugins/browser-extension/src/native-host/host.ts`): 2 s from when it receives a prompt
   capture, with a 500 ms worker start budget drawn from it, because `background.ts`
@@ -76,12 +88,13 @@ A field whose bounded scan times out or finds no worker comes back as a `block` 
 `CaptureResult.scanIncomplete` set and empty `findings`, and the caller REFUSES it wherever
 its host has a channel to refuse on: UserPromptSubmit blocks the prompt, PreToolUse denies
 the call — Antigravity with an explicit `{"decision":"deny"}`, Copilot in each dialect's own
-deny shape — PostToolUse withholds the output, and the native host answers `action: 'block'`
+deny shape, Cursor with `permission: "deny"` — PostToolUse withholds the output, and the native host answers `action: 'block'`
 with `CaptureResponse.scanIncomplete`, which the interceptor shows as a too-large banner
-with no exception route, leaving the message unsent in the composer. Copilot's
-userPromptSubmitted and postToolUse are the exception named above: the host sends the prompt
-and delivers the result whatever the hook answers, so they REPORT the field as unscanned
-instead. Why: `scan()` cannot be interrupted (§5), so without the bound a large enough field
+with no exception route, leaving the message unsent in the composer; Copilot's VS Code
+prompt exits 2. Copilot's CLI userPromptSubmitted and its postToolUse, and Cursor's
+postToolUse, are the exceptions named above: the host sends the prompt or delivers the
+result whatever the hook answers, so they
+REPORT the field as unscanned instead. Why: `scan()` cannot be interrupted (§5), so without the bound a large enough field
 keeps the hook busy past whatever answers for it — the host's timeout, a watchdog, the relay
 — and every one of those passes the call through unscanned, except Antigravity's kill, which
 denies it with no reason. Failing open there IS the gap. The refusal is a RETURNED decision,
@@ -93,11 +106,29 @@ on a flagged rule, must read `scanIncomplete` first, because a refused field and
 both have no findings — Antigravity's and Copilot's decisions keyed their deny on a flagged
 rule, and read a refused field as clean until they did. The Claude Code, Codex, Antigravity
 and Copilot `fail-open.e2e.test.ts` drive the refusal through the built hooks with the scan
-worker removed (Copilot's also drive the unscanned report on its two capture hooks), and the
+worker removed (Copilot's also drive the VS Code prompt's exit 2 and the unscanned report on
+its CLI prompt and its tool result), Cursor's `test/hooks/pre-tool-use-run.test.ts` and
+`before-submit-prompt-run.test.ts` drive it through the handlers with the worker pointed at
+an empty location, and the
 extension's `test/native-host/scan-worker-bundle.e2e.test.ts` drives it through the built
 native host — so every bundle that runs this path also has to SHIP the worker, since a
-missing one refuses every large field (or, on those two Copilot hooks, reports every one as
+missing one refuses every large field (or, on those Copilot hooks, reports every one as
 unscanned).
+
+**One hook exits non-zero on purpose: a VS Code prompt the Copilot plugin stops.** VS Code
+agent mode documents exit 2 as a blocking error and has no stdout field that stops a
+prompt, so the Copilot plugin's `runHookFailOpen` (`plugins/copilot/src/hooks/shared.ts`)
+writes the reason to stderr and exits `PROMPT_BLOCK_EXIT_CODE` (2) when the VS Code-dialect
+prompt handler RETURNS a `VsCodePromptBlock`: on a `block` verdict (a `redact` whose
+workspace `redactFallback` is `block` included) and on a prompt that could not be scanned.
+No vendor page says what exit 2 does to `UserPromptSubmit` in particular, and the prompt
+being withheld has not been observed on a live install; row 4 of
+`plugins/copilot/test/fixtures/RECORDING.md` is the recording that would settle it. It is a returned decision,
+exactly like a deny: `failOpen` takes a `HookOutput`, so a throw, a decline and the watchdog
+still write nothing and exit 0, and the CLI dialect never returns one, because a non-zero
+exit there is a deny. `plugins/copilot/test/hook-output-shapes.test.ts` holds the source to a
+single non-zero exit behind that check, and `test/hooks/fail-open-wrapper.test.ts` drives the
+throw and watchdog paths around it.
 
 **What "fall back to allow" means is the HOST's convention, not a fixed payload.** Claude Code
 and Codex read "exited 0, said nothing" as "no opinion" — so a silent `catch` is genuinely

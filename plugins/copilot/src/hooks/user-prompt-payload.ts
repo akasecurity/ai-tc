@@ -26,13 +26,16 @@ import type { BlockedDetectionRef, CaptureResult } from '@akasecurity/plugin-sdk
 import { uniqueRuleIds } from '@akasecurity/plugin-sdk';
 
 import {
+  blockMessage,
   exceptionPointer,
+  tooLargeToScanMessage,
   unscannedTooLargeMessage,
   unscannedWorkerUnavailableMessage,
+  workerUnavailableBlockedMessage,
 } from '../exception-guidance.ts';
 import type { Dialect } from './dialect.ts';
 import type { HookEvent } from './event-name.ts';
-import type { HookOutput } from './shared.ts';
+import type { HookVerdict } from './shared.ts';
 import { getString } from './shared.ts';
 
 /** Which of the two prompt events a payload is. */
@@ -95,34 +98,41 @@ export function promptPersist(event: PromptEvent): 'always' | 'with-findings' {
  * line with a stderr copy (see `writeNotice` in ./shared.ts).
  */
 export interface PromptDecision {
-  /** The payload for stdout, or null to write nothing. */
-  output: HookOutput | null;
+  /** The verdict for the wrapper (a payload, or VS Code's prompt block), or null for none. */
+  output: HookVerdict | null;
   /** Notice text, set only where the dialect's payload cannot carry it. */
   notice?: string;
 }
 
 /**
+ * The note on a stopped prompt whose policy said redact and whose workspace
+ * `redactFallback` is `block`: there is no rewrite channel for a prompt, so the
+ * runtime resolved the redact to that fallback and the prompt is stopped
+ * rather than sent unmasked.
+ */
+export const PROMPT_REDACT_NOTE =
+  'This surface cannot rewrite a prompt, so the mask was not applied and the prompt was stopped instead.';
+
+/**
  * What the hook says about a prompt scan.
  *
- * **NOTHING HERE STOPS A PROMPT, and the wording must never imply it does.**
- * Neither host has a prompt-stop channel this repository has observed. The
- * CLI's `userPromptSubmitted.modifiedPrompt` is listed under "Not measured" in
- * `test/fixtures/cli/README.md`; VS Code's block channel is **exit 2**, and
- * ./shared.ts guarantees no path here exits non-zero and none exits 2 — a
- * guarantee `test/hook-output-shapes.test.ts` pins against CLAUDE.md. Emitting
- * a block the host ignores is worse than emitting none: the user reads an
- * enforcement claim and the prompt reaches the model anyway.
+ * **ONLY THE VS CODE DIALECT STOPS A PROMPT.** VS Code's block channel is exit
+ * 2, which `runHookFailOpen` writes when this returns a `VsCodePromptBlock`:
+ * on a `block` verdict (including a `redact` whose workspace `redactFallback`
+ * is `block`), and on a
+ * prompt too large to scan in time — the large-input refusal every other host
+ * with a prompt-stop channel already makes. The Copilot CLI has no prompt-stop
+ * channel this repository has observed (`userPromptSubmitted.modifiedPrompt` is
+ * listed under "Not measured" in `test/fixtures/cli/README.md`), so there a
+ * `block` or `redact` is reported as what actually happened: flagged,
+ * recorded, and sent unchanged.
  *
- * So the capture is taken with `rewritable: false`, which resolves a `redact`
- * policy to `settings.redactFallback` INSIDE the runtime — where the recorded
+ * The capture is taken with `rewritable: false`, which resolves a `redact`
+ * policy to `settings.redactFallback` INSIDE the runtime, where the recorded
  * `findings.actionTaken` and the ledger read the one answer this function then
- * reports. The hook never escalates for itself.
- *
- * A `block` or `redact` is therefore reported as what actually happened: the
- * value was flagged and recorded, and the prompt went out unchanged. That is a
- * different sentence from the `warn` one, deliberately — a user whose policy
- * says block has to be able to tell that it did not take effect here.
- * `skills/setup/SKILL.md`'s Known limitations carries the same fact.
+ * acts on. With the default fallback, `warn`, a redact policy is reported and
+ * the prompt is sent; `redactDegradedTo` says when a block came from a redact,
+ * which is what the note on the stop keys off.
  *
  * The transformed event never speaks about a finding: the submitted one owns
  * the message, and the user's own words are inside both, so a second copy for
@@ -130,16 +140,7 @@ export interface PromptDecision {
  *
  * A REFUSED scan (`scanIncomplete`) is read FIRST, on both events. A field too
  * large to scan within the hook's deadline comes back with `action: 'block'`
- * and NO findings — which every check below would read as clean and say
- * nothing about. It is not refused here either: neither host has a prompt-stop
- * channel, so the prompt went out, and the sentence says it went out without
- * being checked. The transformed event speaks here too, because its text is the
- * larger of the two and can be the only one that did not finish.
- *
- * IT TAKES THE DIALECT ONLY TO CHOOSE THE CHANNEL, never to change the words.
- * On VS Code `systemMessage` is a documented top-level key; the Copilot CLI's
- * reference documents no message field on this event, so the same object there
- * is a payload the host drops and the user is told nothing at all.
+ * and NO findings, which every check below would read as clean.
  */
 export function promptDecision(
   event: PromptEvent,
@@ -147,9 +148,20 @@ export function promptDecision(
   result: Pick<CaptureResult, 'action' | 'findings'> & {
     blockedReferences?: readonly BlockedDetectionRef[] | undefined;
     scanIncomplete?: CaptureResult['scanIncomplete'];
+    redactDegradedTo?: CaptureResult['redactDegradedTo'];
   },
 ): PromptDecision {
   if (result.scanIncomplete !== undefined) {
+    if (dialect === 'vscode' && event === 'submitted') {
+      return {
+        output: {
+          promptBlock:
+            result.scanIncomplete === 'unavailable'
+              ? workerUnavailableBlockedMessage('prompt')
+              : tooLargeToScanMessage('prompt'),
+        },
+      };
+    }
     // A worker that could not run is an install fault, not a prompt that was
     // too big, so the two causes get different advice.
     const delivered = 'it was sent to the model unchanged';
@@ -165,6 +177,19 @@ export function promptDecision(
 
   const ruleIds = uniqueRuleIds([...result.findings]);
   const pointer = exceptionPointer(result.blockedReferences);
+
+  if (dialect === 'vscode' && result.action === 'block') {
+    return {
+      output: {
+        promptBlock: blockMessage({
+          subject: 'prompt',
+          ruleIds,
+          blockedRef: result.blockedReferences?.[0],
+          note: result.redactDegradedTo === 'block' ? PROMPT_REDACT_NOTE : undefined,
+        }),
+      },
+    };
+  }
 
   let message: string | undefined;
   if (result.action === 'block' || result.action === 'redact') {

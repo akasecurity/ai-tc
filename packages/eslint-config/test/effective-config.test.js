@@ -695,6 +695,7 @@ const EXPECTED_NON_PACKAGE_FILES = [
   'test/helpers/runtime-locale.ts',
   'test/helpers/sighting-sender-guard.ts',
   'test/helpers/store-template.ts',
+  'test/helpers/token-notes.ts',
   'test/helpers/turbo-inputs.ts',
   'test/setup/no-host-claude-config.ts',
   'test/setup/no-host-codex-config.ts',

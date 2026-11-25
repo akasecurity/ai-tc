@@ -199,8 +199,13 @@ describe('inspectCodexLogin', () => {
     for (const field of FIXTURE_PRESENCE_FIELDS.slice(1)) {
       machine.writeAuth({ authMode: null, extra: { [field]: { id: randomUUID() } } });
       const cloud = field.startsWith('bedrock_');
+      const accessToken = field === 'personal_access_token' || field === 'agent_identity';
       expect(inspect(), field).toEqual(
-        cloud ? { status: 'mode', cloud: true } : { status: 'mode' },
+        cloud
+          ? { status: 'mode', cloud: true }
+          : accessToken
+            ? { status: 'mode', accessToken: true }
+            : { status: 'mode' },
       );
     }
   });

@@ -805,7 +805,10 @@ function buildSessionRoot(
   // relative or empty cwd, a remoteless repository and a record that names no cwd,
   // when no account applies.
   if (scopeKey !== undefined) attributes.scope_key = scopeKey;
-  // A root keyed by an agent key belongs to a recognised work subscription.
+  // An agent key is stamped only for a work login the account check confirmed, and
+  // that check is vetoed by a key or token in the environment, a Console key, an API
+  // key helper, a cloud provider flag and a gateway base URL. So a root it keys is
+  // on a work plan's subscription.
   if (isAgentScopeKey(scopeKey)) attributes.usage_channel = 'subscription';
 
   const event: AuditEventInput = {

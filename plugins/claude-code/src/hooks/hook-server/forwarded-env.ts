@@ -30,6 +30,7 @@ export const PRESENCE_ONLY_ENV: readonly string[] = [
   'CLAUDE_CODE_OAUTH_TOKEN',
   'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
   'ANTHROPIC_UNIX_SOCKET',
+  'ANTHROPIC_PROFILE',
 ];
 
 /** Every forwarded variable. */

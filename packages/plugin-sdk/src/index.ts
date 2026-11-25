@@ -288,8 +288,12 @@ export {
   aggregateTokenUsage,
   API_EQUIVALENT_NOTE,
   buildTokenReports,
+  formatApiEquivalentTotal,
   formatCostTotal,
+  formatModelCost,
   formatUsd,
+  hasApiEquivalent,
+  tokenCostNotes,
   usageChannelLabel,
 } from '@akasecurity/schema';
 // The recommendation rollup and the posture score, also from `@akasecurity/schema`

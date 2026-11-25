@@ -370,6 +370,7 @@ describe('reconcileSessionTail — a work-subscription session', () => {
     await stopAt(t, 5);
     expect(isWrittenRoot(rootAttributes(t))).toBe(true);
     expect(isAgentKeyFor(keysOf(t, 'session')[0], dev.workOrg)).toBe(true);
+    expect(rootAttributes(t)?.usage_channel).toBe('subscription');
     for (const key of [...keysOf(t, 'llm_call'), ...keysOf(t, 'tool_call')]) {
       expect(isAgentKeyFor(key, dev.workOrg)).toBe(true);
     }
@@ -512,6 +513,22 @@ describe('reconcileSessionTail — a work-subscription session', () => {
 });
 
 describe('reconcileSessionTail — sessions that are not work subscriptions', () => {
+  it('a work login beside an API key in the environment is not recorded as a subscription', async () => {
+    dev.attach();
+    dev.login({ org: dev.workOrg });
+    vi.stubEnv('ANTHROPIC_API_KEY', 'fixture-key');
+    try {
+      const t = dev.transcript(randomUUID());
+      await start(t, 0);
+      await turn(t, 1, dev.workOrg);
+      await stopAt(t, 5);
+      expect(isAgentKeyFor(keysOf(t, 'session')[0], dev.workOrg)).toBe(false);
+      expect(rootAttributes(t)?.usage_channel).not.toBe('subscription');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("a personal session's root is written at session start, and its rows stay local", async () => {
     dev.attach();
     dev.login({ org: dev.personalOrg, organizationType: 'claude_pro' });

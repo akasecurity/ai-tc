@@ -58,6 +58,6 @@ describe('ActivityTokenUsageView chip', () => {
         },
       ],
     });
-    expect(chip(s)).toContain('$0.50 · $12.00 API-eq.');
+    expect(chip(s)).toContain('$0.50 · $12.00 API-equivalent');
   });
 });

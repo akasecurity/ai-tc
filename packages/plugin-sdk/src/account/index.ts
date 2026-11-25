@@ -21,14 +21,16 @@ export {
   isLearned,
   isManual,
 } from './account-check.ts';
-export type { ClaudeAccountEnv, CodexAccountEnv } from './account-env.ts';
+export type { ClaudeAccountEnv, CodexAccountEnv, CredentialKind } from './account-env.ts';
 export {
   CLAUDE_ACCOUNT_ENV_NAMES,
   CLAUDE_BASE_URL_ENV,
   CLAUDE_CREDENTIAL_ENV,
+  CLAUDE_CREDENTIAL_KIND,
   CLAUDE_PROVIDER_FLAG_ENV,
   CODEX_ACCOUNT_ENV_NAMES,
   CODEX_CREDENTIAL_ENV,
+  CODEX_CREDENTIAL_KIND,
   codexEnvVetoed,
   codexHomeDir,
   isNonDefaultBaseUrl,

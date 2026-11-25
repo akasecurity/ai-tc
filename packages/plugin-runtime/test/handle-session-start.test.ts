@@ -196,7 +196,7 @@ describe('handleSessionStart (standalone)', () => {
     db.close();
   });
 
-  it('records the usage channel and plan on the root, and neither when none is given', async () => {
+  it('records the usage channel on the root, never the plan, and no channel when none is given', async () => {
     await handleSessionStart(
       { ...start('sb'), billing: { usageChannel: 'subscription', subscriptionPlan: 'claude_max' } },
       config(dir),
@@ -210,10 +210,8 @@ describe('handleSessionStart (standalone)', () => {
       };
       return JSON.parse(row.attributes) as Record<string, unknown>;
     };
-    expect(attrsOf('sb')).toMatchObject({
-      usage_channel: 'subscription',
-      subscription_plan: 'claude_max',
-    });
+    expect(attrsOf('sb')).toMatchObject({ usage_channel: 'subscription' });
+    expect(attrsOf('sb')).not.toHaveProperty('subscription_plan');
     expect(attrsOf('sn')).not.toHaveProperty('usage_channel');
     expect(attrsOf('sn')).not.toHaveProperty('subscription_plan');
     db.close();

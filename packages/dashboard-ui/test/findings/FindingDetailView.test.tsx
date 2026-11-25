@@ -96,6 +96,26 @@ describe('FindingDetailView', () => {
     expect(named?.textContent).toBe('inst-0f3a');
   });
 
+  it('renders the attributed user through renderUser when the host gives one', () => {
+    renderRoot(
+      mounted.root,
+      <Sheet open>
+        <SheetContent>
+          <FindingDetailView
+            selection={{
+              finding,
+              instance: { ...instance, user: { id: 'u-alice', name: 'Alice Example' } },
+            }}
+            renderedAt={RENDERED_AT}
+            renderUser={(u) => <b data-user={u.id}>person</b>}
+          />
+        </SheetContent>
+      </Sheet>,
+    );
+    expect(document.querySelector('[data-user="u-alice"]')?.textContent).toBe('person');
+    expect(document.body.textContent).not.toContain('Alice Example');
+  });
+
   it('renders the single-instance detail, not a locations list', () => {
     render();
     const text = document.body.textContent;

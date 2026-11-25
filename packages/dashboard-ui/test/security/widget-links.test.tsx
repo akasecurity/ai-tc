@@ -128,6 +128,21 @@ describe('TopSourcesCardView', () => {
     expect(html).toContain('a@example.com');
   });
 
+  it('hands a user row to renderUser and leaves repo rows as plain labels', () => {
+    const html = render({
+      items: [repo, user],
+      renderUser: (source) => <b data-user={source.id}>person</b>,
+    });
+    expect(html).toContain('<b data-user="user_a">person</b>');
+    expect(html).toContain('acme/api');
+    expect(html).not.toContain('data-user="repo_api"');
+    // The host node replaces the plain label; the label survives only as the tooltip.
+    expect(html).not.toContain(`>${user.name}<`);
+    expect(html).toContain(
+      `<span class="min-w-0 truncate text-sm text-text" title="${user.name}"><b data-user="user_a">person</b></span>`,
+    );
+  });
+
   it('renders no anchor at all when the prop is omitted', () => {
     expect(anchors(render({ items: [repo, user] }))).toBe(0);
   });

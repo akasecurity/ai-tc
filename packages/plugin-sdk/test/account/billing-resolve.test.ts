@@ -2,7 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   CLAUDE_ACCOUNT_ENV_NAMES,
+  CLAUDE_CREDENTIAL_ENV,
+  CLAUDE_CREDENTIAL_KIND,
   CODEX_ACCOUNT_ENV_NAMES,
+  CODEX_CREDENTIAL_ENV,
+  CODEX_CREDENTIAL_KIND,
+  readClaudeAccountEnv,
+  readCodexAccountEnv,
 } from '../../src/account/account-env.ts';
 import { resolveClaudeBilling, resolveCodexBilling } from '../../src/account/billing.ts';
 import type * as ClaudeLogin from '../../src/account/claude-login.ts';
@@ -67,6 +73,13 @@ describe('resolveClaudeBilling', () => {
     expect(resolveClaudeBilling('anthropic', machine.cwd).usageChannel).toBe('api_key');
   });
 
+  it('reads a plan token in the environment as a subscription', () => {
+    vi.stubEnv('CLAUDE_CODE_OAUTH_TOKEN', 'fixture-token');
+    expect(resolveClaudeBilling('anthropic', machine.cwd)).toEqual({
+      usageChannel: 'subscription',
+    });
+  });
+
   it('answers unknown when reading the login throws', () => {
     machine.writeConfig({ oauthAccount: { organizationType: 'claude_max' } });
     failing.reads = true;
@@ -103,5 +116,72 @@ describe('resolveCodexBilling', () => {
     machine.writeAuth({ plan: 'plus' });
     failing.reads = true;
     expect(resolveCodexBilling('openai')).toEqual({ usageChannel: 'unknown' });
+  });
+});
+
+describe('credential variable kinds', () => {
+  beforeEach(() => {
+    for (const name of [...CLAUDE_ACCOUNT_ENV_NAMES, ...CODEX_ACCOUNT_ENV_NAMES]) {
+      vi.stubEnv(name, undefined);
+    }
+  });
+
+  it('classifies every credential variable as written here, not as the table says', () => {
+    expect(CLAUDE_CREDENTIAL_KIND).toEqual({
+      ANTHROPIC_API_KEY: 'key',
+      ANTHROPIC_AUTH_TOKEN: 'key',
+      CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR: 'key',
+      CLAUDE_CODE_OAUTH_TOKEN: 'plan_token',
+      CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR: 'plan_token',
+      ANTHROPIC_UNIX_SOCKET: 'key',
+      ANTHROPIC_PROFILE: 'key',
+    });
+    expect(CODEX_CREDENTIAL_KIND).toEqual({
+      CODEX_API_KEY: 'key',
+      CODEX_ACCESS_TOKEN: 'access_token',
+    });
+  });
+
+  it.each(CLAUDE_CREDENTIAL_ENV)('reads Claude Code %s by its kind', (name) => {
+    vi.stubEnv(name, 'fixture-value');
+    const env = readClaudeAccountEnv();
+    const kind = CLAUDE_CREDENTIAL_KIND[name];
+    expect({ key: env.keyEnv, token: env.tokenEnv }).toEqual({
+      key: kind === 'key',
+      token: kind === 'plan_token',
+    });
+    expect(env.credentialEnv).toBe(true);
+  });
+
+  it.each(CODEX_CREDENTIAL_ENV)('reads Codex %s by its kind', (name) => {
+    vi.stubEnv(name, 'fixture-value');
+    const env = readCodexAccountEnv();
+    const kind = CODEX_CREDENTIAL_KIND[name];
+    expect({ key: env.keyEnv, accessToken: env.accessTokenEnv }).toEqual({
+      key: kind === 'key',
+      accessToken: kind === 'access_token',
+    });
+    expect(env.credentialEnv).toBe(true);
+  });
+});
+
+describe('a named Anthropic profile beside a claude.ai sign-in', () => {
+  let machine: ClaudeMachine;
+
+  beforeEach(() => {
+    for (const name of CLAUDE_ACCOUNT_ENV_NAMES) vi.stubEnv(name, undefined);
+    machine = claudeMachine();
+    vi.stubEnv('CLAUDE_CONFIG_DIR', machine.home);
+  });
+
+  afterEach(() => {
+    machine.dispose();
+  });
+
+  it('is read as a key, so the session is unknown rather than a subscription', () => {
+    machine.writeConfig({ oauthAccount: { organizationType: 'claude_max' } });
+    vi.stubEnv('ANTHROPIC_PROFILE', 'fixture-profile');
+    expect(readClaudeAccountEnv()).toMatchObject({ keyEnv: true, tokenEnv: false });
+    expect(resolveClaudeBilling('anthropic', machine.cwd)).toEqual({ usageChannel: 'unknown' });
   });
 });

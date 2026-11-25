@@ -1,4 +1,5 @@
 import type { ModelTokenUsage, TokenUsageSummary } from '@akasecurity/schema';
+import { API_EQUIVALENT_LOWER_BOUND_NOTE, SPEND_LOWER_BOUND_NOTE } from '@akasecurity/schema';
 import { renderToString } from 'ink';
 import { createElement } from 'react';
 import { describe, expect, it } from 'vitest';
@@ -87,7 +88,7 @@ describe('aka tui — token usage', () => {
         model({ channel: 'subscription', estimatedCostUsd: null, costBasis: null }),
       ],
     });
-    expect(out).toContain('cost is a lower bound');
-    expect(out).toContain('API-equivalent is a lower bound');
+    expect(out).toContain(SPEND_LOWER_BOUND_NOTE);
+    expect(out).toContain(API_EQUIVALENT_LOWER_BOUND_NOTE);
   });
 });

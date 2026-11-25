@@ -57,7 +57,7 @@ function subscription(
 
 export interface ClaudeBillingInput {
   readonly provider: string;
-  readonly env: Pick<ClaudeAccountEnv, 'credentialEnv'>;
+  readonly env: Pick<ClaudeAccountEnv, 'keyEnv' | 'tokenEnv'>;
   readonly login: ClaudeLoginRead;
   /** Any settings layer sets an API key helper or a billing env block. */
   readonly settingsVeto: boolean;
@@ -66,8 +66,9 @@ export interface ClaudeBillingInput {
 /**
  * Claude Code. A Console sign-in stores `primaryApiKey` next to its `oauthAccount`,
  * so that key, not the account, is what decides an API-key session; a key from the
- * environment or a settings helper beside a subscription sign-in may or may not be
- * the one in use, so that pair is `unknown`.
+ * environment or a settings helper beside a subscription sign-in or a plan token may
+ * or may not be the one in use, so that pair is `unknown`. A plan token on its own
+ * is a subscription whose plan the token does not name.
  */
 export function claudeBilling(input: ClaudeBillingInput): SessionBilling {
   const { provider, env, login, settingsVeto } = input;
@@ -76,27 +77,36 @@ export function claudeBilling(input: ClaudeBillingInput): SessionBilling {
   const account = login.status === 'ok' ? login.login : undefined;
   if (account?.primaryApiKey === true) return API_KEY;
   const signedIn = account?.hasOauthAccount === true;
-  if (env.credentialEnv || settingsVeto) return signedIn ? UNKNOWN : API_KEY;
+  if (env.keyEnv || settingsVeto) return signedIn || env.tokenEnv ? UNKNOWN : API_KEY;
+  if (env.tokenEnv) return { usageChannel: 'subscription' };
   return signedIn ? subscription(account.plan, CLAUDE_PLANS) : UNKNOWN;
 }
 
 export interface CodexBillingInput {
   readonly provider: string;
-  readonly env: Pick<CodexAccountEnv, 'credentialEnv'>;
+  readonly env: Pick<CodexAccountEnv, 'keyEnv' | 'accessTokenEnv'>;
   readonly login: CodexLoginRead;
 }
 
-/** Codex. A ChatGPT sign-in is a subscription unless a key in the environment competes with it. */
+/**
+ * Codex. A ChatGPT sign-in is a subscription unless a credential in the environment competes with
+ * it. An access token, from the environment or `auth.json`, is a personal ChatGPT token or an
+ * agent identity, and only its value says which, so it is `unknown` wherever it arrives, beside
+ * an API-key login in `auth.json` too. Only a Bedrock login in `auth.json` outranks it.
+ */
 export function codexBilling(input: CodexBillingInput): SessionBilling {
   const { provider, env, login } = input;
   if (provider === 'gateway') return GATEWAY;
   switch (login.status) {
     case 'ok':
-      return env.credentialEnv ? UNKNOWN : subscription(login.login.plan, CHATGPT_PLANS);
+      return env.keyEnv || env.accessTokenEnv
+        ? UNKNOWN
+        : subscription(login.login.plan, CHATGPT_PLANS);
     case 'mode':
-      return login.cloud === true ? CLOUD : API_KEY;
+      if (login.cloud === true) return CLOUD;
+      return login.accessToken === true || env.accessTokenEnv ? UNKNOWN : API_KEY;
     case 'absent':
-      return env.credentialEnv ? API_KEY : UNKNOWN;
+      return env.keyEnv && !env.accessTokenEnv ? API_KEY : UNKNOWN;
     case 'malformed':
       return UNKNOWN;
   }

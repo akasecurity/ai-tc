@@ -67,13 +67,15 @@ export interface CodexLogin {
 
 export type CodexLoginRead =
   | { readonly status: 'ok'; readonly login: CodexLogin }
-  | { readonly status: 'mode'; readonly cloud?: true }
+  | { readonly status: 'mode'; readonly cloud?: true; readonly accessToken?: true }
   | { readonly status: 'absent' | 'malformed' };
 
 const ABSENT: CodexLoginRead = { status: 'absent' };
 const MODE: CodexLoginRead = { status: 'mode' };
 const CLOUD_MODE: CodexLoginRead = { status: 'mode', cloud: true };
+const ACCESS_TOKEN_MODE: CodexLoginRead = { status: 'mode', accessToken: true };
 const CLOUD_FIELDS = ['bedrock_api_key', 'bedrock_access_keys'] as const;
+const ACCESS_TOKEN_FIELDS = ['personal_access_token', 'agent_identity'] as const;
 const MALFORMED: CodexLoginRead = { status: 'malformed' };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -175,7 +177,11 @@ function parseAuth(
   const otherLogin = CODEX_PRESENCE_FIELDS.some((field) => pick(parsed, field) === true);
   const chatgpt = mode === 'chatgpt' || ((mode === undefined || mode === null) && !otherLogin);
   if (!chatgpt) {
-    return CLOUD_FIELDS.some((field) => pick(parsed, field) === true) ? CLOUD_MODE : MODE;
+    if (CLOUD_FIELDS.some((field) => pick(parsed, field) === true)) return CLOUD_MODE;
+    if (pick(parsed, 'OPENAI_API_KEY') === true) return MODE;
+    return ACCESS_TOKEN_FIELDS.some((field) => pick(parsed, field) === true)
+      ? ACCESS_TOKEN_MODE
+      : MODE;
   }
   const saved = pick(parsed, 'tokens');
   if (!isRecord(saved)) return MALFORMED;

@@ -117,8 +117,8 @@ export interface SessionStartInput {
   // the thread's next check can change.
   threadAccountPending?: boolean | undefined;
   // How this session's model calls are paid for, read by the adapter from the
-  // agent's login. Recorded on the root as `usage_channel` and
-  // `subscription_plan`; the token reconcilers copy the channel onto every call.
+  // agent's login. Recorded on the root as `usage_channel`; the token reconcilers
+  // copy it onto every call.
   billing?: SessionBilling | undefined;
 }
 
@@ -532,12 +532,7 @@ function buildSessionRoot(
   if (typeof harnessInterface === 'string') attributes.harness_interface = harnessInterface;
   attributes.provider = provider.provider;
   if (provider.gatewayHost !== undefined) attributes.gateway_host = provider.gatewayHost;
-  if (input.billing !== undefined) {
-    attributes.usage_channel = input.billing.usageChannel;
-    if (input.billing.subscriptionPlan !== undefined) {
-      attributes.subscription_plan = input.billing.subscriptionPlan;
-    }
-  }
+  if (input.billing !== undefined) attributes.usage_channel = input.billing.usageChannel;
 
   // Activity-display attributes (read verbatim by the Activity page).
   attributes.harness = harnessFromTool(input.tool);

@@ -1,10 +1,16 @@
 import type { FindingView, ModelTokenUsage, TokenUsageSummary } from '@akasecurity/schema';
-import { API_EQUIVALENT_NOTE, findingMatchLabel } from '@akasecurity/schema';
+import {
+  findingMatchLabel,
+  formatApiEquivalentTotal,
+  formatModelCost,
+  hasApiEquivalent,
+  tokenCostNotes,
+} from '@akasecurity/schema';
 import { Box, Text, useApp, useInput } from 'ink';
 import type { ReactElement } from 'react';
 import { useState } from 'react';
 
-import { compactTokens, totalCostLabel, usdCost } from '../lib/tokens.ts';
+import { compactTokens, totalCostLabel } from '../lib/tokens.ts';
 import { gaugeFill, padEnd, padStart, stackedBar, wrapText } from './bars.ts';
 import type {
   FindingStatus,
@@ -228,12 +234,7 @@ function Legend(): ReactElement {
 // derived cost (— for unknown pricing; subscription rows are API-equivalent, not
 // spend). Colour mirrors the DataTable rows.
 function TokenRow({ m }: { m: ModelTokenUsage }): ReactElement {
-  const cost =
-    m.estimatedCostUsd === null
-      ? '—'
-      : m.costBasis === 'api_equivalent'
-        ? `${usdCost(m.estimatedCostUsd)} API-eq.`
-        : usdCost(m.estimatedCostUsd);
+  const cost = formatModelCost(m.estimatedCostUsd, m.costBasis);
   return (
     <Text>
       <Text color={COLOR.dim}>{padEnd(`${m.provider}/${m.model}`, TOKEN_LABEL_W)}</Text>
@@ -252,19 +253,10 @@ function TokenUsageSection({ usage }: { usage: TokenUsageSummary }): ReactElemen
   if (usage.models.length === 0) return null;
   const sessions = `${String(usage.sessionCount)} session${usage.sessionCount === 1 ? '' : 's'}`;
   const cost = totalCostLabel(usage.estimatedCostUsd, usage.costIsPartial);
-  const hasSubscription = usage.models.some((m) => m.costBasis === 'api_equivalent');
-  const apiEquivalent = hasSubscription
-    ? ` · ${totalCostLabel(usage.apiEquivalentUsd, usage.apiEquivalentIsPartial)} API-equivalent`
+  const apiEquivalent = hasApiEquivalent(usage.models)
+    ? ` · ${formatApiEquivalentTotal(usage.apiEquivalentUsd, usage.apiEquivalentIsPartial)}`
     : '';
-  const notes = [
-    ...(usage.costIsPartial
-      ? ['— = unknown pricing (local / non-Anthropic); cost is a lower bound.']
-      : []),
-    ...(usage.apiEquivalentIsPartial
-      ? ['— on a subscription row = unknown pricing; API-equivalent is a lower bound.']
-      : []),
-    ...(hasSubscription ? [API_EQUIVALENT_NOTE] : []),
-  ];
+  const notes = tokenCostNotes(usage);
   return (
     <Box flexDirection="column" marginTop={1}>
       <Box paddingLeft={2}>

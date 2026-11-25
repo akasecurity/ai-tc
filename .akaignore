@@ -67,6 +67,7 @@
 /plugins/codex/scripts/
 /plugins/antigravity/scripts/
 /plugins/copilot/scripts/
+/plugins/cursor/scripts/
 /plugins/claude-code/hooks/engine.js
 /plugins/browser-extension/native-host/
 # The CLI's packed copies of the same bundles, left behind by its `prepack`

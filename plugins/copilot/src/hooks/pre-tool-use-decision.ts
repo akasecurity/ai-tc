@@ -20,7 +20,12 @@
 import type { BlockedDetectionRef, CaptureResult } from '@akasecurity/plugin-sdk';
 import { pointerTokenScanner } from '@akasecurity/schema';
 
-import { blockMessage, exceptionPointer, tooLargeToScanMessage } from '../exception-guidance.ts';
+import {
+  blockMessage,
+  exceptionPointer,
+  tooLargeToScanMessage,
+  workerUnavailableBlockedMessage,
+} from '../exception-guidance.ts';
 import type { Dialect } from './dialect.ts';
 
 /**
@@ -299,7 +304,14 @@ export function decidePreToolUse(
   // the host's own permission flow with a field nothing scanned. The reason
   // rides the deny on both dialects, so there is no notice to split off.
   if (scanned.some(({ result }) => result.scanIncomplete !== undefined)) {
-    return { output: denyOutput(dialect, tooLargeToScanMessage(`${toolName} call`)) };
+    const subject = `${toolName} call`;
+    const workerDown = scanned.some(({ result }) => result.scanIncomplete === 'unavailable');
+    return {
+      output: denyOutput(
+        dialect,
+        workerDown ? workerUnavailableBlockedMessage(subject) : tooLargeToScanMessage(subject),
+      ),
+    };
   }
 
   const blockedRules = new Set<string>();

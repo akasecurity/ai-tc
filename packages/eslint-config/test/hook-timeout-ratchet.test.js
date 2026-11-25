@@ -48,6 +48,7 @@ const TIMEOUTS = {
   '@akasecurity/ai-tc-claude-code': { testTimeout: 20_000, hookTimeout: 20_000 },
   '@akasecurity/ai-tc-codex': { testTimeout: 20_000, hookTimeout: 20_000 },
   '@akasecurity/ai-tc-copilot': { testTimeout: 20_000, hookTimeout: 20_000 },
+  '@akasecurity/ai-tc-cursor': { testTimeout: 20_000, hookTimeout: 20_000 },
   '@akasecurity/web-ui': { testTimeout: 20_000, hookTimeout: 20_000 },
   // The installer suite drives the real `install.sh`/`install.ps1` end to end
   // against a loopback fixture release — a genuinely long operation, and not a

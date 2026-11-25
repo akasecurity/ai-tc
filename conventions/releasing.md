@@ -1,14 +1,14 @@
 ## Releasing (CLI / plugin versioning)
 
-All five shippable artifacts are **self-contained bundles of the workspace** — their `tsup.config.ts`
+All six shippable artifacts are **self-contained bundles of the workspace** — their `tsup.config.ts`
 sets `noExternal: [/^@akasecurity\//]`, so every `@akasecurity/*` package they use is inlined into
 the published output (the user's machine has no `node_modules`). So a change to a _bundled_ package
 changes the shipped artifact **even when the app's own `src/` is untouched**:
 
-- **`plugins/claude-code`**, **`plugins/codex`**, **`plugins/antigravity`** and
-  **`plugins/copilot`** each bundle `@akasecurity/plugin-runtime` + `plugin-sdk` and
-  everything they pull in — `@akasecurity/schema`, `persistence`, `detections`. A change to
-  any of those changes ALL FOUR plugins' `scripts/*.js`.
+- **`plugins/claude-code`**, **`plugins/codex`**, **`plugins/antigravity`**,
+  **`plugins/copilot`** and **`plugins/cursor`** each bundle `@akasecurity/plugin-runtime` +
+  `plugin-sdk` and everything they pull in — `@akasecurity/schema`, `persistence`,
+  `detections`. A change to any of those changes ALL FIVE plugins' `scripts/*.js`.
 - **`cli`** bundles the same `@akasecurity/*` packages **and** ships the OSS web-ui
   (`web-ui` is `external` to the CLI JS but copied in by `prepack`'s `bundle:web-ui` and
   spawned as a separate Next server). So a web-ui change — or any bundled-package change — changes the CLI.
@@ -21,6 +21,14 @@ changes the shipped artifact **even when the app's own `src/` is untouched**:
   Windows CI coverage comes from the derived "every package npm publishes" check in
   `required-checks.test.js`, so the `ci.yml` filter line that names it is required rather than
   pinned by hand.
+- **`plugins/cursor` is the sixth.** It publishes to npm from `release-plugin-cursor.yml` on a
+  `plugin-cursor-v*` tag, and its `test/identity-consistency.test.ts` fails when its
+  `package.json` differs from the CLI's version. Cursor reads no manifest from the package — a
+  user unpacks it and runs `scripts/install.js`, which writes user-level entries into
+  `~/.cursor/hooks.json` pointing at that folder — so it has no host-manifest pair, and
+  `release-identity.test.js`'s `HOST_MANIFESTS` lists it as `null` rather than leaving it out.
+  The release's smoke test runs that packed installer against a throwaway home, drives every
+  hook it wrote with junk input, and checks that `--uninstall` removes them.
 
 When a change touches the web-ui or any bundled package and the user wants to publish:
 
@@ -28,13 +36,13 @@ When a change touches the web-ui or any bundled package and the user wants to pu
    - web-ui / `local-ops` / `dashboard-ui` / `ui-kit` change → `cli` (bundled into the CLI JS
      and/or the web-ui it ships; the plugins bundle none of these).
    - `schema` / `persistence` / `plugin-runtime` / `plugin-sdk` / `detections`
-     change → **all five** of `cli`, `plugins/claude-code`, `plugins/codex`,
-     `plugins/antigravity` **and** `plugins/copilot` (all bundle them).
+     change → **all six** of `cli`, `plugins/claude-code`, `plugins/codex`,
+     `plugins/antigravity`, `plugins/copilot` **and** `plugins/cursor` (all bundle them).
    - `setup-wizard` change → `plugins/claude-code`, `plugins/codex` **and**
      `plugins/antigravity` (all three bundle it; the CLI does not). `plugins/copilot` bundles
      none of its code but its build copies `setup-wizard`'s `assets/triage-rubric.md` into
      `scripts/`, so a change to that asset moves `plugins/copilot` too.
-   - The CLI and all four plugins normally move together on one shared version line.
+   - The CLI and all five plugins normally move together on one shared version line.
    - **Any `cli` bump → `plugins/browser-extension` too, to the SAME version.** The extension
      ships inside the CLI tarball, its `package.json` is the one place its version lives
      (`scripts/build.mjs` stamps it into `dist/manifest.json`, and the native host records it as
@@ -57,7 +65,7 @@ When a change touches the web-ui or any bundled package and the user wants to pu
    `plugins/antigravity/package.json`, and `plugins/copilot/plugin.json` (also at the plugin
    root) in sync with `plugins/copilot/package.json` (identical version within each pair)
    whenever that plugin is bumped. `release-identity.test.js`'s `HOST_MANIFESTS` names all four
-   pairs.
+   pairs, and Cursor, which has none, as `null`.
 
 **The bump is not a decision to surface during feature work, because it is not made there.**
 Pre-1.0.0 the version numbers are chosen **ad hoc**, at the **scheduled release** (twice a week)
@@ -69,11 +77,11 @@ cuts it.
 
 Versions are bumped by hand in a `chore(release):` commit (no changesets). A stable release is
 a bare `X.Y.Z` on the one shared version line; a pre-release carries a suffix and is routed by
-it (below). The CLI and all four plugins currently share the `0.9.x` line.
+it (below). The CLI and all five plugins currently share the `0.9.x` line.
 
 ### Release channels — the suffix decides the dist-tag
 
-Every npm publish step in `release-cli.yml` and the four `release-plugin-*.yml` routes on the
+Every npm publish step in `release-cli.yml` and the five `release-plugin-*.yml` routes on the
 version it is publishing, with one shell `case`: a `-beta.*` version goes to the `beta` dist-tag,
 `-nightly.*` to `nightly`, any other suffixed version to `rc`, and a bare `X.Y.Z` to `latest`.
 **On npm, only a bare version moves `latest`** — and only a bare `cli-v*` tag moves the
@@ -92,11 +100,11 @@ and only running it shows that. It reaches the workflows through one shared read
 `test/helpers/release-workflows.js`, which `release-identity.test.js` uses too: two readers of
 one shell string are free to disagree about what a workflow publishes.
 
-**A pre-release moves the whole shared line.** `release-identity.test.js` puts the five
+**A pre-release moves the whole shared line.** `release-identity.test.js` puts the six
 published artifacts on one version and each plugin's identity suite pins it to the CLI's; the
 extension is private, so it is outside that audit's set and is pinned to `cli/package.json` by
 its own `test/manifest.test.ts`. So `0.10.0-beta.1` is a `chore(release):` commit
-moving all five published manifests, the four host manifests and the extension together. Cut
+moving all six published manifests, the four host manifests and the extension together. Cut
 that commit on `dev` or a release branch, never on `main`: there it would sit in front of the next
 stable cut until the matching stable shipped.
 
@@ -257,7 +265,7 @@ and the internal-path guard still run post-merge for `main` only, and CodeQL for
 and opens an issue for a rebase that conflicts.
 
 **Where a stable plugin tag goes.** A bare `plugin-<name>-v<X.Y.Z>` (Claude Code, Codex,
-Antigravity or Copilot) is cut only after its release pull request merges, on the commit that
+Antigravity, Copilot or Cursor) is cut only after its release pull request merges, on the commit that
 merge put on `main` (the merge commit, or the squash or rebase commit when the pull request used
 one), never on the release branch before the merge. The commit a stable version's npm provenance
 names is then one `main` holds, which is what verifying a release against reviewed code needs; a
@@ -268,7 +276,7 @@ check comes before the npm publish and the GitHub Release in that job, it runs o
 can publish (the tag push, and in the Codex and Antigravity workflows a dispatch with `publish`
 set, which publishes from whatever branch it started on), and the GitHub Packages job waits for
 that job. `release-plugin-tags-on-main.test.js` (in `packages/eslint-config/test/`) derives the
-workflow set, pins that placement and gating, requires the four checks to be one script, and
+workflow set, pins that placement and gating, requires the five checks to be one script, and
 executes each against a scratch repository. `release-plugin-claude.yml` additionally publishes
 only on the tag push: its manual dispatch has no publish input and is always a dry run, its npm
 publish sits behind the tag-to-manifest check, and its GitHub Packages job waits for that check's

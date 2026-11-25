@@ -422,9 +422,10 @@ describe('AttachedDataGateway.governanceAppliesTo — the attachment it holds de
 describe('the gateway a hook opens, from the configuration on disk', () => {
   // Opened through resolveDataGateway, the call each plugin's openGateway makes,
   // so a wrapper added between the factory and resolveDataGateway's return could
-  // not hide the capability and silently govern every repository again. Each
-  // plugin's own openGateway is past this package's reach, so these cases do not
-  // pin it.
+  // not hide the capability and silently govern every repository again. The
+  // openGateway the plugins share is this package's own, and
+  // test/store-health.test.ts pins it for a scoped attachment; Claude Code's
+  // wrapper around it is pinned in that plugin's suite.
 
   it('opens the local gateway on a machine with no attachment, and it governs every event', async () => {
     const gateway = resolveDataGateway(configWith(defaultWorkspaceSettings()));

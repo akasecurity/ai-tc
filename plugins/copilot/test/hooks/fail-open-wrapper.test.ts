@@ -33,11 +33,12 @@ import { readFileSync } from 'node:fs';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { HookOutput } from '../../src/hooks/shared.ts';
+import type { HookOutput, HookVerdict } from '../../src/hooks/shared.ts';
 import {
   emit,
   noticeWriter,
   progressLine,
+  PROMPT_BLOCK_EXIT_CODE,
   runHookFailOpen,
   takeQueuedProgress,
   WATCHDOG_MS,
@@ -723,3 +724,81 @@ function collectTimeouts(node: unknown): number[] {
   const here = typeof record.timeoutSec === 'number' ? [record.timeoutSec] : [];
   return [...here, ...Object.values(record).flatMap(collectTimeouts)];
 }
+
+// VS Code's prompt block is the one non-zero exit, and only a RETURNED
+// decision reaches it: a body that throws or outruns the watchdog while about
+// to block still exits 0 with nothing written.
+describe('runHookFailOpen — VS Code prompt block', () => {
+  async function drivePromptBlock(
+    main: () => Promise<HookVerdict | undefined>,
+    watchdogMs?: number,
+  ): Promise<{ stdout: string[]; stderr: string[]; exits: (number | undefined)[] }> {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const exits: (number | undefined)[] = [];
+    vi.spyOn(process, 'exit').mockImplementation(((code?: string | number | null): undefined => {
+      exits.push(typeof code === 'number' ? code : undefined);
+      return undefined;
+    }) as unknown as (code?: string | number | null) => never);
+    vi.spyOn(process.stdout, 'write').mockImplementation(
+      (chunk: string | Uint8Array, cb?: unknown): boolean => {
+        stdout.push(String(chunk));
+        if (typeof cb === 'function') (cb as () => void)();
+        return true;
+      },
+    );
+    vi.spyOn(process.stderr, 'write').mockImplementation(
+      (chunk: string | Uint8Array, cb?: unknown): boolean => {
+        stderr.push(String(chunk));
+        if (typeof cb === 'function') (cb as () => void)();
+        return true;
+      },
+    );
+    await runHookFailOpen(main, undefined, watchdogMs, () => undefined);
+    return { stdout, stderr, exits };
+  }
+
+  it('exits 2 with the reason on stderr and nothing on stdout', async () => {
+    const run = await drivePromptBlock(() => Promise.resolve({ promptBlock: 'stopped: r1' }));
+    expect(run.exits[0]).toBe(PROMPT_BLOCK_EXIT_CODE);
+    expect(PROMPT_BLOCK_EXIT_CODE).toBe(2);
+    expect(run.stderr.join('')).toBe('stopped: r1\n');
+    expect(run.stdout).toEqual([]);
+  });
+
+  // The recording kit writes its file synchronously after the handler decides,
+  // inside the raced body. A stalled write blocks the loop, so the watchdog's
+  // timer cannot run until the body has already settled with its block.
+  it('still exits 2 when a synchronous stall after the decision outlasts the watchdog', async () => {
+    const run = await drivePromptBlock(() => {
+      const until = Date.now() + 40;
+      while (Date.now() < until) {
+        /* a synchronous write to a stalled home directory */
+      }
+      return Promise.resolve({ promptBlock: 'stopped: r1' });
+    }, 2);
+    expect(run.exits[0]).toBe(PROMPT_BLOCK_EXIT_CODE);
+    expect(run.stderr.join('')).toBe('stopped: r1\n');
+  });
+
+  it('exits 0 with nothing written when the body throws instead', async () => {
+    const run = await drivePromptBlock(() => Promise.reject(new Error('boom')));
+    expect(run.exits).toEqual([0]);
+    expect(run.stdout).toEqual([]);
+    expect(run.stderr).toEqual([]);
+  });
+
+  it('exits 0 with nothing written when the watchdog wins over a late block', async () => {
+    const run = await drivePromptBlock(
+      () =>
+        new Promise((resolve) => {
+          setTimeout(() => {
+            resolve({ promptBlock: 'too late' });
+          }, 50);
+        }),
+      5,
+    );
+    expect(run.exits[0]).toBe(0);
+    expect(run.stderr.join('')).not.toContain('too late');
+  });
+});

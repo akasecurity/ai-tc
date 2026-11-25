@@ -1,0 +1,366 @@
+name: Release plugin (Cursor)
+
+# Publishes the Cursor plugin package to the public npm registry AND to the
+# repo's GitHub Packages registry, and attaches the packed tarball to a GitHub
+# Release. The plugin's hook scripts are a build artifact
+# (plugins/cursor/scripts/, git-ignored): they are generated here and shipped
+# inside the package, never committed. There is no marketplace for this plugin:
+# end users unpack the public npm package into a folder they keep and run its
+# installer, which writes user-level entries into ~/.cursor/hooks.json pointing
+# at that folder. plugins/cursor/README.md carries the install steps. GitHub
+# Packages requires auth even for public reads, so it is a secondary artifact,
+# not the install source.
+#
+# Release flow: bump version in package.json in the release pull request (Cursor
+# reads no plugin manifest from the package, so there is no second file). After
+# it merges, push a tag `plugin-cursor-v<version>` (e.g. plugin-cursor-v0.9.26)
+# on the commit that merge put on `main`. A pre-release is the one exception: it
+# is tagged on its release branch.
+
+on:
+  push:
+    tags:
+      - 'plugin-cursor-v*'
+  # A manual run is a dry run and nothing else: it builds, packs and smoke-tests
+  # the packed package. There is deliberately no input that turns a dispatch into
+  # a publish. A dispatch can start from any branch, and it skips the
+  # tag-matches-manifest check, which only a tag push has a tag for, so every
+  # publish below is gated on the tag push alone.
+  workflow_dispatch:
+
+# One release per tag at a time. A single tag push can start more than one run.
+# Once a run has published the Release, a duplicate stops at the draft upload, because a
+# published Release is locked, and never reaches npm. A duplicate of a run that failed
+# carries on from that run's draft, as a re-run does. This group stops two runs
+# overlapping; it does not make a duplicate disappear. cancel-in-progress is false so a
+# run is never interrupted midway through publishing to either registry.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Tag pushes get no run of the main CI workflow (it triggers only on main
+  # pushes/PRs), so the release re-verifies the tagged commit itself — nothing
+  # publishes from a commit that would fail CI.
+  verify:
+    name: Lint · Typecheck · Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          version: 10.30.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      # --concurrency: see the Test step in ci.yml's lint job. Bounded here for
+      # the same reason, and spelled on the turbo call rather than through
+      # `pnpm test` — `pnpm test -- --concurrency=2` would forward the flag to
+      # each TASK's own command (`vitest run --concurrency=2`), not to turbo.
+      - name: Test
+        run: pnpm turbo run test --concurrency=2
+
+  release:
+    name: Build · Verify · Publish
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub Release
+      id-token: write # OIDC trusted publishing to npm (provenance attestation)
+    steps:
+      # Full history and every branch, so the on-main check below can ask
+      # whether `main` holds the tagged commit.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          version: 10.30.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build plugin (Turbo)
+        run: pnpm turbo run build --filter=@akasecurity/ai-tc-cursor
+
+      - name: Verify tag matches manifest versions
+        id: manifest
+        if: github.event_name == 'push'
+        run: |
+          tag="${GITHUB_REF_NAME#plugin-cursor-v}"
+          pkg=$(node -p "require('./plugins/cursor/package.json').version")
+          echo "tag=$tag  package.json=$pkg"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::Version mismatch — tag plugin-cursor-v$tag must equal package.json ($pkg)"
+            exit 1
+          fi
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
+
+      # A stable version is published only from a commit `main` already holds:
+      # the one the release pull request's merge put there, tagged after it
+      # merged. That keeps the commit a stable version's npm provenance names a
+      # reviewed, merged one, which is what anyone verifying a release against
+      # `main` checks. A pre-release is tagged on its release branch before that
+      # branch merges, so a suffixed version skips the check. This refuses an
+      # honest mistake before anything publishes; it is not a control, since
+      # whoever pushes a tag also chooses what this file says at the commit
+      # they tag.
+      - name: Verify a stable tag is on main
+        if: github.event_name == 'push'
+        env:
+          PKG_VERSION: ${{ steps.manifest.outputs.version }}
+        run: |
+          case "$PKG_VERSION" in
+            *-*)
+              echo "pre-release ${PKG_VERSION}: tagged on its release branch, not required to be on main"
+              exit 0
+              ;;
+          esac
+          if ! git rev-parse --verify --quiet refs/remotes/origin/main >/dev/null; then
+            echo "::error::origin/main is not fetched; the release job's checkout needs fetch-depth: 0"
+            exit 1
+          fi
+          if git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+            echo "${GITHUB_SHA} is on main"
+          else
+            echo "::error::${GITHUB_REF_NAME} is at ${GITHUB_SHA}, which main does not contain, so stable ${PKG_VERSION} cannot publish from it. Do not move or delete a release tag. If the release pull request merges with a merge commit, re-run this run's failed jobs after it merges; otherwise release the next patch version, tagged on the commit that merge puts on main."
+            exit 1
+          fi
+
+      # Packed BEFORE the smoke test, because the smoke test reads the tarball
+      # rather than the build directory: a script the build emitted and the
+      # package `files` list left out is present in one and absent from the
+      # other, and only the tarball is what a user installs.
+      - name: Pack tarball (release asset)
+        run: pnpm --filter @akasecurity/ai-tc-cursor pack --pack-destination "$RUNNER_TEMP"
+
+      - name: Smoke-test the packed package (self-contained, fail-open)
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          tarballs=("$RUNNER_TEMP"/akasecurity-ai-tc-cursor-*.tgz)
+          if [ "${#tarballs[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one packed akasecurity-ai-tc-cursor tarball in $RUNNER_TEMP, found ${#tarballs[@]}"
+            exit 1
+          fi
+          smoke="$RUNNER_TEMP/cursor-smoke"
+          rm -rf "$smoke"
+          mkdir -p "$smoke/home"
+          tar -xzf "${tarballs[0]}" -C "$smoke"
+          package="$smoke/package"
+
+          # Started by path from a running hook rather than named by hooks.json:
+          # the isolated scan's worker, the fail-open counter, and the three
+          # detached children sessionStart spawns. Each is resolved as a sibling
+          # of the running script, so a missing one is a spawn of a file that
+          # does not exist. install.js is what a user runs to register the hooks.
+          for f in install scan-worker fail-open-count sync history-sync content-retention; do
+            test -f "$package/scripts/$f.js" || { echo "::error::packed package is missing scripts/$f.js"; exit 1; }
+          done
+
+          # Run the PACKED installer against a throwaway home, as a user would,
+          # and read the hook commands back out of the hooks.json it wrote. The
+          # commands are therefore the installer's own, and every script one
+          # names must exist in the packed package, or Cursor silently runs
+          # nothing.
+          HOME="$smoke/home" USERPROFILE="$smoke/home" node "$package/scripts/install.js"
+          hooks_file="$smoke/home/.cursor/hooks.json"
+          test -f "$hooks_file" || { echo "::error::install.js wrote no $hooks_file"; exit 1; }
+          # shellcheck disable=SC2016 # the JS template literals inside must reach node unexpanded
+          node -e '
+            const fs = require("node:fs");
+            const manifest = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            const missing = [];
+            const commands = [];
+            for (const [event, entries] of Object.entries(manifest.hooks ?? {})) {
+              if (!Array.isArray(entries)) continue;
+              for (const entry of entries) {
+                const command = entry.command ?? "";
+                const m = /"([^"]+[\/\\]scripts[\/\\][a-z-]+\.js)"/.exec(command);
+                if (!m) { missing.push(`${event}: no scripts/*.js in command`); continue; }
+                if (!fs.existsSync(m[1])) missing.push(`${event}: ${m[1]}`);
+                commands.push(command);
+              }
+            }
+            if (missing.length) {
+              console.error(`::error::hooks.json references scripts the packed package does not carry: ${missing.join(", ")}`);
+              process.exit(1);
+            }
+            if (commands.length === 0) {
+              console.error("::error::hooks.json names no hook commands, so the fail-open drive below would assert nothing");
+              process.exit(1);
+            }
+            fs.writeFileSync(process.argv[2], commands.join("\n") + "\n");
+            console.log(`hooks.json -> scripts OK (${commands.length} hooks)`);
+          ' "$hooks_file" "$smoke/commands.txt"
+
+          # THE FAIL-OPEN CONTRACT HERE IS SILENCE. The plugin never emits an
+          # allow: an empty stdout leaves the call to Cursor's own permission
+          # settings. So a hook fed junk must print NOTHING and exit 0. Each
+          # command runs as the installer wrote it, with HOME at the throwaway
+          # directory, so the drive never touches the runner's own home.
+          driven=0
+          while IFS= read -r command; do
+            for input in 'not json' '{"hook_event_name":'; do
+              if ! out=$(printf '%s' "$input" | HOME="$smoke/home" USERPROFILE="$smoke/home" sh -c "$command"); then
+                echo "::error::hook exited non-zero on junk input ($input): $command"
+                exit 1
+              fi
+              if [ -n "$out" ]; then
+                echo "::error::hook printed to stdout on junk input ($input): $command"
+                echo "$out"
+                exit 1
+              fi
+              driven=$((driven + 1))
+            done
+          done < "$smoke/commands.txt"
+          if [ "$driven" -eq 0 ]; then
+            echo "::error::no hook was driven"
+            exit 1
+          fi
+          echo "fail-open OK ($driven runs, all silent)"
+
+          # The uninstall path a user is told about must leave no entry behind.
+          HOME="$smoke/home" USERPROFILE="$smoke/home" node "$package/scripts/install.js" --uninstall
+          if grep -q 'aka-cursor' "$hooks_file"; then
+            echo "::error::install.js --uninstall left aka-cursor entries in hooks.json"
+            cat "$hooks_file"
+            exit 1
+          fi
+          echo "uninstall OK"
+
+      # A Release locks when published, so this uploads to a draft that a later step
+      # publishes. See "GitHub Releases are immutable" in conventions/releasing.md.
+      - name: Create GitHub Release
+        id: draft
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
+        with:
+          draft: true
+          files: ${{ runner.temp }}/*.tgz
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          prerelease: ${{ startsWith(github.ref_name, 'plugin-cursor-v0.') }}
+          body: |
+            Install into Cursor from a local directory; there is no marketplace install for this plugin. Run these from a folder of their own, and keep it: the hooks point at it.
+
+            ```sh
+            mkdir -p aka-cursor && cd aka-cursor
+            tar -xzf "$(npm pack @akasecurity/ai-tc-cursor@${{ steps.manifest.outputs.version }} --silent)"
+            node package/scripts/install.js
+            aka init
+            ```
+
+            Restart Cursor after installing. To update, from that same folder, unpack the new version over `package` and run `node package/scripts/install.js` again. To remove the hooks, run `node package/scripts/install.js --uninstall`. The hook behaviour is built from Cursor's published hooks reference; see `plugins/cursor/README.md` for what is and is not verified.
+
+      # OIDC trusted publishing: the id-token: write permission above lets npm
+      # exchange this job's OIDC token for a short-lived publish credential — no
+      # NPM_TOKEN needed. NPM_CONFIG_PROVENANCE has npm attach a Sigstore
+      # attestation binding the published package to this repository and workflow.
+      # A `-beta.*` version publishes under the `beta` dist-tag, a `-nightly.*`
+      # version under `nightly`, any other pre-release under `rc`, and a bare
+      # X.Y.Z under `latest`.
+      - name: Publish to npm
+        if: github.event_name == 'push'
+        run: |
+          version=$(node -p "require('./plugins/cursor/package.json').version")
+          if [ "$(npm view "@akasecurity/ai-tc-cursor@$version" version --@akasecurity:registry=https://registry.npmjs.org 2>/dev/null)" = "$version" ]; then
+            echo "::notice::@akasecurity/ai-tc-cursor@$version is already on npm, so this run does not publish it again."
+            exit 0
+          fi
+          case "$version" in
+            *-beta.*)    dist_tag="beta" ;;
+            *-nightly.*) dist_tag="nightly" ;;
+            *-*)         dist_tag="rc" ;;
+            *)           dist_tag="latest" ;;
+          esac
+          pnpm --filter @akasecurity/ai-tc-cursor publish --no-git-checks --tag "$dist_tag"
+        env:
+          NPM_CONFIG_PROVENANCE: 'true'
+
+      - name: Publish GitHub Release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
+        with:
+          draft: false
+          prerelease: ${{ startsWith(github.ref_name, 'plugin-cursor-v0.') }}
+
+      - name: Explain a draft Release left unpublished
+        if: failure() && steps.draft.outcome == 'success'
+        run: |
+          echo "::error::The draft Release for ${GITHUB_REF_NAME} is not published, and npm may already hold this version. Re-run this job: it skips npm if the version is there, replaces the draft's files and publishes the draft."
+
+  # Publish the same package to the repo's GitHub Packages registry (requirement:
+  # packages land in the org's GitHub registry). Kept a separate job so its GitHub
+  # Packages .npmrc/auth never collides with the public-npm publish above. The
+  # @akasecurity scope must match the akasecurity org that owns this repo.
+  #
+  # It waits for `release`, so it runs only after that job's tag-matches-manifest
+  # check, its smoke test and its npm publish have passed: GitHub Packages never
+  # receives a version the tag does not name, or one npm does not also hold.
+  github-packages:
+    name: Publish to GitHub Packages
+    needs: [verify, release]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          version: 10.30.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://npm.pkg.github.com
+          scope: '@akasecurity'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build plugin (Turbo)
+        run: pnpm turbo run build --filter=@akasecurity/ai-tc-cursor
+
+      # publishConfig.registry pins public npm, so override the target here. The
+      # built-in GITHUB_TOKEN can publish to this repo's Packages; setup-node wrote
+      # the matching auth token into .npmrc.
+      - name: Publish to GitHub Packages
+        run: |
+          version=$(node -p "require('./plugins/cursor/package.json').version")
+          case "$version" in
+            *-beta.*)    dist_tag="beta" ;;
+            *-nightly.*) dist_tag="nightly" ;;
+            *-*)         dist_tag="rc" ;;
+            *)           dist_tag="latest" ;;
+          esac
+          pnpm --filter @akasecurity/ai-tc-cursor publish --registry https://npm.pkg.github.com --no-git-checks --tag "$dist_tag"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

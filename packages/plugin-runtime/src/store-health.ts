@@ -1,0 +1,433 @@
+// Store-health degradation surfacing for the hook adapters.
+//
+// Every hook is fail-open: a store that cannot open must never break the
+// user's session, so enforcement errors collapse to "allow". But silence has a
+// cost of its own — with an unopenable store (corrupt/locked aka.db) NOTHING
+// is scanned, enforced, or recorded, and without a signal the session looks
+// protected while it is not. This module is the middle ground the adapters
+// share: opening the gateway stays fail-open (null instead of a throw), and
+// the user is told that detection is off and how to recover.
+//
+// Every plugin reaches it through its own `src/hooks/store-health.ts`, which
+// re-exports it and adds only what that host needs. Pure logic and a small,
+// session-id-keyed fs marker; nothing runs on import.
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+
+import type { SymlinkedStorePath } from '@akasecurity/persistence';
+import { StoreAheadOfBuildError, symlinkedStorePaths } from '@akasecurity/persistence';
+import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
+import { DATA_DIR_MODE, DATA_FILE_MODE } from '@akasecurity/plugin-sdk';
+
+import { resolveDataGateway } from './resolve.ts';
+
+// A marker holding the recent session ids warned, one per line and newest last,
+// capped at RECENT_SESSIONS so it never accumulates (same scheme as the
+// onboarding nudge marker). Holding several ids rather than the last one keeps
+// concurrent sessions from displacing each other's claims.
+const STORE_WARNING_MARKER = 'store-warning-last-session';
+
+// The redirect warning's own marker. Separate from the one above rather than
+// shared: the two conditions are independent, and a session that has already
+// been told the store cannot open must still be told WHERE it was being written
+// once it can. One marker would let whichever fired first silence the other.
+const STORE_REDIRECT_MARKER = 'store-redirect-last-session';
+
+// How many recent session ids each marker remembers.
+const RECENT_SESSIONS = 32;
+
+/** A gateway, or the reason there is none. */
+export type GatewayOpen =
+  | { readonly gateway: DataGateway; readonly error?: undefined }
+  | { readonly gateway: null; readonly error: unknown };
+
+/**
+ * Open the data gateway, fail-open: any store-open failure (corrupt aka.db,
+ * bad permissions, a held lock, a store written by a NEWER AKA build) yields a
+ * null gateway instead of a throw, so the caller can both keep the session
+ * alive AND know that detection is off — a silent catch at the hook entry
+ * can't tell those apart.
+ *
+ * The reason is carried out rather than swallowed, because it decides what the
+ * user is told: see `storeDegradedMessage`. A bare catch made every cause read
+ * as the same one, and the advice that generic message gives is wrong — and
+ * destructive — for the newer-store case.
+ */
+export function openGateway(config: PluginConfig): GatewayOpen {
+  try {
+    return { gateway: resolveDataGateway(config) };
+  } catch (error) {
+    return { gateway: null, error };
+  }
+}
+
+/**
+ * The same open, for the callers that only branch on whether they got one.
+ * A caller that WARNS wants `openGateway` — it cannot say anything true about
+ * the failure from a null alone.
+ */
+export function openGatewayOrNull(config: PluginConfig): DataGateway | null {
+  return openGateway(config).gateway;
+}
+
+/**
+ * The once-per-session degradation warning, chosen by what actually failed.
+ *
+ * Two causes, two opposite remedies. A store this build cannot READ is a file
+ * problem, and moving it aside is a real (if costly) repair. A store written by
+ * a NEWER AKA build is intact — every up-to-date surface on the machine reads
+ * it correctly — so moving it aside would destroy the corpus to work around a
+ * binary that is merely behind. The skew branch therefore names the version gap
+ * and says nothing about the file.
+ *
+ * A third cause, a lock that kept the open from completing, is also intact,
+ * and gets its own message for the same reason. Unlike the other two it lasts
+ * only for the event that hit it, so `subject` names that event. Every other
+ * failure keeps the generic message, naming the SQLite or filesystem code
+ * when the error carries one.
+ */
+export function storeDegradedMessage(
+  dbPath: string,
+  error: unknown,
+  subject: StoreEventSubject,
+): string {
+  if (error instanceof StoreAheadOfBuildError) return storeAheadMessage(dbPath, error);
+  const cause = storeOpenCause(error);
+  if (cause?.lock !== undefined) return storeBusyMessage(dbPath, cause, subject);
+  return storeUnavailableMessage(dbPath, cause?.text);
+}
+
+/**
+ * Whether to show the degradation warning for this open failure. A lock lasts
+ * only for the event that hit it, so its warning is shown each time and does
+ * not spend the once-per-session claim, which a later corrupt or newer store
+ * in the same session still needs.
+ */
+export function claimStoreDegradedWarning(
+  dataDir: string,
+  sessionId: string | undefined,
+  error: unknown,
+): boolean {
+  if (!(error instanceof StoreAheadOfBuildError) && storeOpenCause(error)?.lock !== undefined) {
+    return true;
+  }
+  return claimStoreUnavailableWarning(dataDir, sessionId);
+}
+
+/** What a hook was handling when the store could not be opened. */
+export type StoreEventSubject = 'tool call' | 'prompt' | 'tool result';
+
+/**
+ * Which lock stopped the open. `busy` is SQLITE_BUSY: another connection held
+ * the file past the busy timeout. `locked` is SQLITE_LOCKED: a conflict inside
+ * this process's own connection, for which SQLite runs no busy handler.
+ */
+export type StoreLock = 'busy' | 'locked';
+
+// SQLite's primary result codes for "another connection holds a lock".
+const SQLITE_BUSY = 5;
+const SQLITE_LOCKED = 6;
+
+// SQLite's fixed descriptions are short lowercase prose. A value of any other
+// shape is not one of them and is left out.
+const SQLITE_ERRSTR_SHAPE = /^[a-z0-9 ,()'-]{1,80}$/i;
+
+/**
+ * What the open failure was, in terms that carry no user data.
+ *
+ * Only three fields are read, and none is the error's message. A node:sqlite
+ * error carries `errcode` (the extended result code) and `errstr`, SQLite's own
+ * fixed description of that code, so the pair names the failure without
+ * repeating anything the statement or the path contained. A filesystem error
+ * from creating the data dir carries a `code` such as `EACCES`, which is read
+ * only when it has that shape. Anything else yields nothing, and the message
+ * says what it said before.
+ */
+export function storeOpenCause(
+  error: unknown,
+): { readonly text: string; readonly lock: StoreLock | undefined } | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const { errcode, errstr, code } = error as {
+    errcode?: unknown;
+    errstr?: unknown;
+    code?: unknown;
+  };
+  if (typeof errcode === 'number' && Number.isSafeInteger(errcode)) {
+    const primary = errcode & 0xff;
+    const described = typeof errstr === 'string' && SQLITE_ERRSTR_SHAPE.test(errstr);
+    const description = described ? `: ${errstr}` : '';
+    return {
+      text: `SQLite error ${String(errcode)}${description}`,
+      lock: primary === SQLITE_BUSY ? 'busy' : primary === SQLITE_LOCKED ? 'locked' : undefined,
+    };
+  }
+  if (typeof code === 'string' && /^E[A-Z0-9]{1,15}$/.test(code)) {
+    return { text: code, lock: undefined };
+  }
+  return undefined;
+}
+
+/**
+ * The degradation warning for a store a lock kept from opening. The file is
+ * intact, so the repair advice the generic message gives would be wrong here;
+ * and every hook opens the store afresh, so the condition lasts only as long
+ * as the lock does. Only SQLITE_BUSY is narrated as another connection holding
+ * the file; SQLITE_LOCKED is named by its code alone.
+ */
+export function storeBusyMessage(
+  dbPath: string,
+  cause: { readonly text: string; readonly lock: StoreLock | undefined },
+  subject: StoreEventSubject,
+): string {
+  const reason =
+    cause.lock === 'busy'
+      ? `because another connection held it locked longer than AKA waits (${cause.text})`
+      : `because it was locked (${cause.text})`;
+  // A tool result arrives after the call ran, so only its scan and recording
+  // were skipped; the call itself was decided before it.
+  const skipped =
+    subject === 'tool result'
+      ? 'Scanning and recording were skipped for this tool result'
+      : `Detection, enforcement, and recording were skipped for this ${subject}`;
+  return (
+    `AKA could not open its local store (${dbPath}) ${reason}. ` +
+    `${skipped} (fails open, so your session keeps working). ` +
+    'The store is not damaged and needs no repair; the next hook opens it again.'
+  );
+}
+
+/** The degradation warning for a store written by a newer AKA build. */
+export function storeAheadMessage(dbPath: string, skew: StoreAheadOfBuildError): string {
+  return (
+    `AKA could not open its local store (${dbPath}) because this AKA build is older than the store: ` +
+    `it carries migration(s) ${skew.unknownTags.join(', ')} that this build does not define ` +
+    `(store schema ${String(skew.storeVersion)}, this build ${String(skew.buildVersion)}). ` +
+    'Detection, enforcement, and recording are OFF for this session (fails open, so your session keeps working). ' +
+    'The store is intact and needs no repair — update AKA so every surface on this machine is on one version line.'
+  );
+}
+
+/**
+ * The degradation warning shown when the store itself cannot be opened. `cause`
+ * is `storeOpenCause`'s text, named when there is one so the warning says which
+ * failure it was.
+ */
+export function storeUnavailableMessage(dbPath: string, cause?: string): string {
+  const reason = cause === undefined ? '' : ` (${cause})`;
+  return (
+    `AKA could not open its local store (${dbPath})${reason} — detection, enforcement, and recording are OFF for this session (fails open, so your session keeps working). ` +
+    'To restore protection, check the file and its permissions; a corrupt store can be moved aside and AKA will recreate it.'
+  );
+}
+
+/**
+ * Gate the store-unavailable warning to once per session instead
+ * of once per hook fire. Records the current session id into a marker file of recent ids
+ * and returns true only the first time a given session asks. Fail-open
+ * toward WARNING: with no session id (can't dedupe), or on any fs error, it
+ * returns true — repeating the warning is noise; hiding that detection is off
+ * is not.
+ *
+ * The marker is line-based (one id per line), so an id carrying a control
+ * character, a newline above all, cannot be stored faithfully. Such an id is
+ * never recorded and is treated like a missing one: the warning is shown.
+ */
+export function claimStoreUnavailableWarning(
+  dataDir: string,
+  sessionId: string | undefined,
+): boolean {
+  if (!sessionId || hasControlChar(sessionId)) return true; // can't dedupe, warn anyway
+  const dirs = markerDirs(dataDir);
+  if (alreadyClaimed(dirs, STORE_WARNING_MARKER, sessionId)) return false;
+  recordClaim(dirs, STORE_WARNING_MARKER, sessionId);
+  return true;
+}
+
+/**
+ * Marks a session under `marker`, and tells whether a session carries it. The
+ * same recent-sessions scheme as the store warning: best-effort, capped at the
+ * newest RECENT_SESSIONS ids, and a session id the marker cannot store faithfully
+ * is never marked.
+ */
+export function markSession(dataDir: string, marker: string, sessionId: string): void {
+  recordClaim(markerDirs(dataDir), marker, sessionId);
+}
+
+export function isSessionMarked(
+  dataDir: string,
+  marker: string,
+  sessionId: string | undefined,
+): boolean {
+  if (!sessionId) return false;
+  return alreadyClaimed(markerDirs(dataDir), marker, sessionId);
+}
+
+// True when the text holds a C0 control character or DEL.
+function hasControlChar(text: string): boolean {
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code < 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}
+
+// Where a session marker may live, in preference order.
+//
+// data/ is its natural home, but data/ is exactly what a store path pointing at
+// something unresolvable makes unwritable — and that is a configuration these
+// warnings exist to report. With only data/ to write to, both the mkdir and the
+// write fail, the claim is never recorded, and "once per session" silently
+// becomes "once per hook fire": a fresh warning on every tool call for the rest
+// of the session. Falling back to the base keeps the dedupe wherever the home
+// itself is intact. When nothing under the home can be written there is no
+// cross-process memory to be had, and repeating is the honest failure.
+function markerDirs(dataDir: string): string[] {
+  return [dataDir, dirname(dataDir)];
+}
+
+// Has this session already been warned? Every candidate is consulted, so a
+// marker recorded in the fallback is still found once data/ is writable again.
+function alreadyClaimed(dirs: readonly string[], marker: string, sessionId: string): boolean {
+  if (hasControlChar(sessionId)) return false; // never stored, so never found
+  return dirs.some((dir) => readRecent(dir, marker).includes(sessionId));
+}
+
+// The session ids a marker holds; empty when it is absent or unreadable.
+function readRecent(dir: string, marker: string): string[] {
+  try {
+    return readFileSync(join(dir, marker), 'utf8').split('\n').filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+// Record the claim in the first candidate that accepts it. Best-effort: with
+// none writable the caller has already warned, and the next fire warns again.
+function recordClaim(dirs: readonly string[], marker: string, sessionId: string): void {
+  if (hasControlChar(sessionId)) return; // the marker is line-based; see claimStoreUnavailableWarning
+  for (const dir of dirs) {
+    try {
+      mkdirSync(dir, { recursive: true, mode: DATA_DIR_MODE });
+      const recent = [...readRecent(dir, marker), sessionId].slice(-RECENT_SESSIONS);
+      writeFileSync(join(dir, marker), recent.join('\n'), { mode: DATA_FILE_MODE });
+      return;
+    } catch {
+      // This candidate is unusable — try the next.
+    }
+  }
+}
+
+/**
+ * The once-per-session warning shown when a store path is a symlink.
+ *
+ * A symlinked store path is not a failure: the store opens, and everything is
+ * scanned, enforced and recorded exactly as it should be. What is wrong is
+ * WHERE — the store, including the prompt corpus in `aka.db`, is written inside
+ * the link's target, under whatever permissions that target already carries,
+ * because a chmod is never applied through a symlink and `mkdir` does not follow
+ * the final link. Both facts are invisible from the outside, so the only thing
+ * separating a home a user symlinked on purpose (a dotfiles manager, another
+ * volume) from a link someone else planted is being told the path is there.
+ *
+ * One line, naming each redirected path, its target, and the inherited mode when
+ * that mode is not owner-only — the half a reader has to act on.
+ *
+ * The trailing clauses are built from what is actually true of THESE paths, not
+ * fixed, for the same reason `symlinkWarnings` renders three shapes rather than
+ * one: a link resolving NOWHERE has received nothing and inherited nothing, so
+ * saying the store "is written there under the target's own permissions" is
+ * false twice over; and on Windows no mode is ever applied, so claiming the
+ * target's own is kept describes a control that does not exist there. `platform`
+ * is a parameter so both branches are reachable from any host.
+ */
+export function storeRedirectedMessage(
+  paths: readonly SymlinkedStorePath[],
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const where = paths
+    .map(({ path, target, holds, missing, mode }) => {
+      if (missing) return `${path} -> ${target} (which does not exist; ${holds} cannot land there)`;
+      const loose = mode !== undefined && (mode & 0o077) !== 0 ? ', NOT owner-only' : '';
+      const inherited = mode === undefined ? '' : ` (${formatMode(mode)}${loose})`;
+      return `${path} -> ${target}${inherited}, holding ${holds}`;
+    })
+    .join('; ');
+  // Plural only when it is: a reader who is told "a store path" and handed three
+  // may repair the first and stop.
+  const subject =
+    paths.length === 1
+      ? 'a store path is a symlink'
+      : `${String(paths.length)} store paths are symlinks`;
+  // Every path resolving nowhere means nothing has been redirected yet, so the
+  // "writing into the target" framing would be false for all of them.
+  const anyResolves = paths.some(({ missing }) => !missing);
+  const lead = anyResolves
+    ? `${subject}, so AKA is writing into the target instead: ${where}. `
+    : `${subject} resolving nowhere, so AKA cannot write there: ${where}. `;
+  // Only claim the inheritance where a mode is actually applied and something
+  // actually landed.
+  const kept =
+    anyResolves && platform !== 'win32'
+      ? 'Permissions are never changed through a symlink, so the store keeps whatever the target already had. '
+      : '';
+  return (
+    `[aka] ${lead}${kept}` +
+    'If you did not create that link, treat it as untrusted and run `aka init` for the full report.\n'
+  );
+}
+
+function formatMode(mode: number): string {
+  return `0${mode.toString(8).padStart(3, '0')}`;
+}
+
+/**
+ * Say once per session that a store path is redirected through a symlink.
+ *
+ * On stderr rather than through `emit()`: a hook's stdout carries at most one
+ * JSON object, and this warning has to reach hooks that are also emitting a real
+ * decision — a second write there would concatenate into something that does not
+ * parse, which the host reads as no opinion and would cost the very enforcement
+ * this is warning about. stderr has no such contract and is the channel the rule
+ * quarantine already warns on.
+ *
+ * Call it from every hook that loads config, so a redirect is reported at the
+ * earliest event of a session the host fires.
+ *
+ * Wholly best-effort: every step is inside the try, so a hostile or unreadable
+ * home makes this a no-op rather than an exception on the hook's entry path.
+ * The store home is derived from `dataDir` — the layout puts `data/` directly
+ * under the base, and `plugin-sdk`'s `PluginConfig` resolves the leaves rather
+ * than carrying the base. `store-health.test.ts` pins that derivation, so a
+ * layout change fails there instead of silently reporting the wrong home.
+ */
+export function warnIfStoreRedirected(
+  config: Pick<PluginConfig, 'dataDir'>,
+  sessionId: string | undefined,
+  write: (message: string) => void = (message) => void process.stderr.write(message),
+): void {
+  try {
+    const paths = symlinkedStorePaths(dirname(config.dataDir));
+    if (paths.length === 0) return;
+    if (!sessionId) {
+      write(storeRedirectedMessage(paths)); // no session id → can't dedupe, warn anyway
+      return;
+    }
+    const dirs = markerDirs(config.dataDir);
+    if (alreadyClaimed(dirs, STORE_REDIRECT_MARKER, sessionId)) return;
+    // Write BEFORE recording the claim, so a writer that THROWS does not consume
+    // it: the throw reaches the catch below, `recordClaim` never runs, and the
+    // next hook fire warns again. That is the whole of what the ordering buys,
+    // and it is worth stating narrowly rather than as flush-safety. The default
+    // writer discards `process.stderr.write`'s return, so a write that is merely
+    // QUEUED and then dropped by `process.exit(0)` still consumes the claim.
+    // Measured on a pipe, that begins only above the buffer: 65,000 bytes
+    // returns true and arrives whole, while 200,000 returns FALSE and delivers
+    // 65,536. This message tops out near 3 KB across the six store paths, so the
+    // queued case is unreachable — if it ever stops being, that false return is
+    // the signal to gate on.
+    write(storeRedirectedMessage(paths));
+    recordClaim(dirs, STORE_REDIRECT_MARKER, sessionId);
+  } catch {
+    // Never break a hook over a warning — this path is advisory by construction.
+  }
+}

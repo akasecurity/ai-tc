@@ -56,7 +56,7 @@ import {
 } from './shared.ts';
 import { captureStamped, stampFor } from './stamped-capture.ts';
 import {
-  claimStoreUnavailableWarning,
+  claimStoreDegradedWarning,
   openGateway,
   storeDegradedMessage,
   warnIfStoreRedirected,
@@ -81,8 +81,8 @@ async function main(): Promise<void> {
 
   const opened = openGateway(config);
   if (opened.gateway === null) {
-    if (claimStoreUnavailableWarning(config.dataDir, sessionId)) {
-      await emit({ systemMessage: storeDegradedMessage(config.dbPath, opened.error) });
+    if (claimStoreDegradedWarning(config.dataDir, sessionId, opened.error)) {
+      await emit({ systemMessage: storeDegradedMessage(config.dbPath, opened.error, 'prompt') });
     }
     return;
   }

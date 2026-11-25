@@ -186,7 +186,7 @@ export type RecentlyResolvedResponse = z.infer<typeof RecentlyResolvedResponse>;
 //
 // Repos & people ranked by findings in the window. `repo` sources come from
 // events.metadata.repo; `user` sources from the event's userId (name resolved to
-// the user's email via the catalog). Sorted by findingsCount desc.
+// a label for the person). Sorted by findingsCount desc.
 // SOURCE_KINDS is the single source of values: SourceKind (with id) is echoed in
 // the response, the query re-declares an inline enum from the same const so the
 // two can't drift (and the query enum stays id-less to avoid a $ref-in-param).
@@ -198,7 +198,7 @@ export const TopSource = z
   .object({
     // Stable id for linking to the source's detail view (e.g. `repo_payments-api`).
     id: z.string(),
-    // Display name: repo slug, or the user's email.
+    // Display name: repo slug, or a label for the person.
     name: z.string(),
     kind: SourceKind,
     findingsCount: z.number().int().nonnegative(),

@@ -10,6 +10,7 @@ import {
   cn,
   Skeleton,
 } from '@akasecurity/ui-kit';
+import type { ReactNode } from 'react';
 
 import { BranchIcon, TargetIcon, UserIcon } from '../shared/icons.tsx';
 import { formatNumber, WidgetError } from './widget-shared.tsx';
@@ -27,6 +28,8 @@ export interface TopSourcesView {
    * count the row shows.
    */
   sourceHrefs?: Readonly<Record<string, string>> | undefined;
+  /** Renders a `user` source's name; absent ⇒ the plain label. */
+  renderUser?: ((source: TopSource) => ReactNode) | undefined;
   /**
    * The locale the counts are formatted in: the one the host resolved for this
    * request. Required — a renderer's own locale is the server's, not the
@@ -40,6 +43,7 @@ export function TopSourcesCardView({
   isLoading,
   error,
   sourceHrefs,
+  renderUser,
   locale,
 }: TopSourcesView) {
   return (
@@ -63,7 +67,15 @@ export function TopSourcesCardView({
         ) : (
           items.map((s) => {
             const href = sourceHrefs?.[s.id];
-            return <SourceRow key={s.id} source={s} locale={locale} {...(href ? { href } : {})} />;
+            return (
+              <SourceRow
+                key={s.id}
+                source={s}
+                locale={locale}
+                renderUser={renderUser}
+                {...(href ? { href } : {})}
+              />
+            );
           })
         )}
       </CardContent>
@@ -71,7 +83,17 @@ export function TopSourcesCardView({
   );
 }
 
-function SourceRow({ source, href, locale }: { source: TopSource; href?: string; locale: string }) {
+function SourceRow({
+  source,
+  href,
+  locale,
+  renderUser,
+}: {
+  source: TopSource;
+  href?: string;
+  locale: string;
+  renderUser?: ((source: TopSource) => ReactNode) | undefined;
+}) {
   const isUser = source.kind === 'user';
   const Icon = isUser ? UserIcon : BranchIcon;
   const Row = href ? 'a' : 'div';
@@ -93,14 +115,18 @@ function SourceRow({ source, href, locale }: { source: TopSource; href?: string;
         <Icon aria-hidden focusable={false} className="size-3.5" />
       </span>
       <div className="min-w-0 flex-1 flex items-center justify-between gap-2">
-        {/* `name` is a repo slug (mono reads well) or a user's email (mono looks
+        {/* `name` is a repo slug (mono reads well) or a person's label (mono looks
             off and truncates awkwardly) — only monospace the repo slug. */}
-        <span
-          className={cn('truncate text-sm text-text', !isUser && 'font-mono')}
-          title={source.name}
-        >
-          {source.name}
-        </span>
+        {isUser && renderUser ? (
+          <span className="min-w-0 truncate text-sm text-text">{renderUser(source)}</span>
+        ) : (
+          <span
+            className={cn('truncate text-sm text-text', !isUser && 'font-mono')}
+            title={source.name}
+          >
+            {source.name}
+          </span>
+        )}
         <span className="text-sm font-bold text-text shrink-0">
           {formatNumber(source.findingsCount, locale)}
         </span>

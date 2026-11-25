@@ -128,6 +128,16 @@ describe('TopSourcesCardView', () => {
     expect(html).toContain('a@example.com');
   });
 
+  it('hands a user row to renderUser and leaves repo rows as plain labels', () => {
+    const html = render({
+      items: [repo, user],
+      renderUser: (source) => <b data-user={source.id}>person</b>,
+    });
+    expect(html).toContain('<b data-user="user_a">person</b>');
+    expect(html).toContain('acme/api');
+    expect(html).not.toContain('data-user="repo_api"');
+  });
+
   it('renders no anchor at all when the prop is omitted', () => {
     expect(anchors(render({ items: [repo, user] }))).toBe(0);
   });

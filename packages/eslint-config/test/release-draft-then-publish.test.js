@@ -38,6 +38,7 @@ const KNOWN = [
   '.github/workflows/release-plugin-claude.yml',
   '.github/workflows/release-plugin-codex.yml',
   '.github/workflows/release-plugin-copilot.yml',
+  '.github/workflows/release-plugin-cursor.yml',
 ];
 const RELEASE_ACTION = 'softprops/action-gh-release@';
 const UPLOAD = 'Create GitHub Release';

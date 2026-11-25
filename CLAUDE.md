@@ -5,8 +5,9 @@ Read this before generating any code in this repository. These conventions are e
 AI Traffic Control (`ai-tc`, by AKA Security — the `aka` CLI and plugin names come from
 the company) is a **local-first** security control plane for AI coding agents. The whole surface
 runs on one machine with **no server, no Docker, and no database engine**: the Claude Code
-plugin, the Codex CLI plugin, the Antigravity plugin, the browser extension (ChatGPT +
-Claude.ai web chat, bridged over Chrome native messaging — no port, no listener), and the
+plugin, the Codex CLI plugin, the Antigravity plugin, the GitHub Copilot plugin, the Cursor
+plugin, the browser extension (ChatGPT + Claude.ai web chat, bridged over Chrome native
+messaging — no port, no listener), and the
 `aka` CLI capture agent activity into a local SQLite store at `~/.aka/data/aka.db`, and the
 web dashboard reads that same store directly. There is no
 account and no AKA backend — nothing is sent to a service AKA runs. (Narrow outbound paths
@@ -25,7 +26,7 @@ deployment the customer operates, not one AKA does.)
 - **Validation:** Zod schemas in `@akasecurity/schema` — the single source of truth
 - **Web dashboard:** Next.js 16 + React 19 (Server Components read the store; Server Actions mutate it); built with `--webpack` because Turbopack cannot resolve the scan worker started by path
 - **Testing:** Vitest
-- **Packaging:** the `aka` CLI and the Claude Code / Codex CLI / Antigravity plugins, published to npm as self-contained bundles
+- **Packaging:** the `aka` CLI and the Claude Code / Codex CLI / Antigravity / GitHub Copilot / Cursor plugins, published to npm as self-contained bundles
 
 ## Architecture principles
 
@@ -117,7 +118,7 @@ plugins/antigravity/  the Antigravity plugin (hooks + skills; self-contained npm
 plugins/copilot/      the GitHub Copilot plugin — the Copilot CLI, VS Code agent mode and
                       the cloud coding agent, one package over two payload dialects
 plugins/cursor/       the Cursor plugin (agent hooks + an installer for ~/.cursor/hooks.json;
-                      private until released)
+                      self-contained npm bundle)
 plugins/browser-extension/  the Chrome extension for ChatGPT + Claude.ai web chat (MV3
                       content scripts + a native-messaging host; private — bundled into
                       the CLI by `bundle:extension`, installed via `aka extension install`)

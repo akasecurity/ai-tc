@@ -3,13 +3,13 @@ import type { ReactNode } from 'react';
 
 /**
  * Renders an attributed person in place of the plain label. The returned node
- * is placed inside the cell's own span, which supplies the typography and
- * wrapping; any tooltip is the host's to add. It is not called for a row with
+ * is placed inside the cell's own span, which supplies the typography, the
+ * wrapping and the full label as its tooltip. It is not called for a row with
  * no user, nor for a group row naming several people.
  *
- * The node sits inside a table row that opens the finding on click, so a click
- * the node does not stop also opens the finding, and the node must not be an
- * anchor. Pass it from a client component: a function cannot cross into a
+ * The node sits inside a table row that opens the finding on click. A link or
+ * button in it must stop the click's propagation, or the finding opens as
+ * well. Pass it from a client component: a function cannot cross into a
  * client component from a server one.
  */
 export type RenderFindingUser = (user: FindingUser) => ReactNode;
@@ -25,7 +25,13 @@ export function UserCell({
   render?: RenderFindingUser | undefined;
 }) {
   if (!user) return <span className="text-text-3">—</span>;
-  if (render) return <span className="text-xs text-text-2 wrap-anywhere">{render(user)}</span>;
+  if (render) {
+    return (
+      <span className="text-xs text-text-2 wrap-anywhere" title={user.name}>
+        {render(user)}
+      </span>
+    );
+  }
   return (
     <span className="text-xs text-text-2 wrap-anywhere" title={user.name}>
       {user.name}

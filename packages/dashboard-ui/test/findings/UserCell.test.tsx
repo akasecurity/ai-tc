@@ -15,8 +15,10 @@ describe('UserCell', () => {
 
   it('renders the host node in place of the label, inside the cell wrapping span', () => {
     const html = renderToStaticMarkup(<UserCell user={alice} render={() => <b>host</b>} />);
-    expect(html).toBe('<span class="text-xs text-text-2 wrap-anywhere"><b>host</b></span>');
-    expect(html).not.toContain(alice.name);
+    expect(html).toBe(
+      `<span class="text-xs text-text-2 wrap-anywhere" title="${alice.name}"><b>host</b></span>`,
+    );
+    expect(html).not.toContain(`>${alice.name}<`);
   });
 
   it('hands the host the attributed user', () => {

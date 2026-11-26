@@ -171,9 +171,10 @@ describe('mergeCatalog', () => {
         },
       ]);
 
-    const bedrock = byId(mergeCatalog(bundled(), offering()).entries, 'claude-test-1').platforms.get(
-      'bedrock',
-    );
+    const bedrock = byId(
+      mergeCatalog(bundled(), offering()).entries,
+      'claude-test-1',
+    ).platforms.get('bedrock');
     expect(bedrock).toMatchObject({
       platform: 'bedrock',
       hosting: 'api',
@@ -219,9 +220,7 @@ describe('mergeCatalog', () => {
   });
 
   it('rejects an unsupported format version', () => {
-    expect(() => mergeCatalog(bundled(), overlayOf([], 2))).toThrow(
-      UnsupportedOverlayFormatError,
-    );
+    expect(() => mergeCatalog(bundled(), overlayOf([], 2))).toThrow(UnsupportedOverlayFormatError);
   });
 
   it('is deterministic', () => {
@@ -401,7 +400,9 @@ describe('longContextThresholdsOf', () => {
         {
           id: 'claude-opus-5',
           vendor: 'anthropic',
-          offerings: [{ platform: 'anthropic', prices: [{ effectiveFrom: '2026-12-01', price: banded }] }],
+          offerings: [
+            { platform: 'anthropic', prices: [{ effectiveFrom: '2026-12-01', price: banded }] },
+          ],
           provenance: { offerings: SOURCE },
         },
       ]),

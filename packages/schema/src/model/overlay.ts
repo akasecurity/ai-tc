@@ -127,7 +127,10 @@ function mergePriceRows(
   const byDay = new Map<string | null, PricePoint>();
   for (const row of existing) byDay.set(row.effectiveFrom, row);
   for (const row of added) {
-    byDay.set(row.effectiveFrom, { effectiveFrom: row.effectiveFrom, price: freezePrice(row.price) });
+    byDay.set(row.effectiveFrom, {
+      effectiveFrom: row.effectiveFrom,
+      price: freezePrice(row.price),
+    });
   }
   return [...byDay.values()];
 }
@@ -170,10 +173,7 @@ function mergeOffering(
   });
 }
 
-function lifecycleValue(
-  stated: string | null | undefined,
-  bundled: string | null,
-): string | null {
+function lifecycleValue(stated: string | null | undefined, bundled: string | null): string | null {
   return stated === undefined ? bundled : stated;
 }
 

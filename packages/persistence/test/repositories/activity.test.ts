@@ -925,7 +925,13 @@ describe('tokenReports', () => {
   it('prices calls on different UTC days apart and folds them into one rollup', async () => {
     insertSession({ id: 'D', startedAt: NOW - 2 * DAY_MS, attributes: {} });
     const bag = { provider: 'anthropic', model: 'claude-sonnet-4-6', input_tokens: 1_000_000 };
-    insertEvent({ id: 'D1', sessionId: 'D', type: 'llm_call', startedAt: NOW - DAY_MS, attributes: bag });
+    insertEvent({
+      id: 'D1',
+      sessionId: 'D',
+      type: 'llm_call',
+      startedAt: NOW - DAY_MS,
+      attributes: bag,
+    });
     insertEvent({ id: 'D2', sessionId: 'D', type: 'llm_call', startedAt: NOW, attributes: bag });
 
     const report = await activity().tokenReportForSession('D');

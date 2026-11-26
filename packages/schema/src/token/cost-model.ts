@@ -167,7 +167,12 @@ function utcDayOf(at: string | undefined): string {
  * is the substitution this module exists to prevent — the one Bedrock pair
  * anyone has checked bills at 2x first-party.
  */
-function priceFor(index: ModelIndex, provider: string, model: string, day: string): ModelPrice | null {
+function priceFor(
+  index: ModelIndex,
+  provider: string,
+  model: string,
+  day: string,
+): ModelPrice | null {
   if (isLocalProvider(provider)) return ZERO_PRICE;
 
   const resolved = resolveModel(model, index);

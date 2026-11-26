@@ -223,6 +223,8 @@ export const SubscriptionPlan = z.enum([
   'chatgpt_business',
   'chatgpt_enterprise',
   'chatgpt_edu',
+  'grok_business',
+  'grok_enterprise',
   'other',
 ]);
 export type SubscriptionPlan = z.infer<typeof SubscriptionPlan>;

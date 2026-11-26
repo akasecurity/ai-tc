@@ -244,10 +244,10 @@ function checkPriceHistory(id: string, rows: readonly { from: string }[]): void 
   const seen = new Set<string>();
   for (const { from } of rows) {
     if (!isIsoDate(from)) {
-      throw new Error(`${id}: price history row from '${from}' is not a YYYY-MM-DD date`);
+      throw new Error(`${id}: price history row dated '${from}' is not a YYYY-MM-DD date`);
     }
     if (seen.has(from)) {
-      throw new Error(`${id}: two price history rows share from '${from}'`);
+      throw new Error(`${id}: two price history rows are dated '${from}'`);
     }
     seen.add(from);
   }

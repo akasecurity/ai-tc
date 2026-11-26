@@ -826,10 +826,16 @@ cohere.model('command-r-plus-04-2024', {
 // platform.kimi.ai/docs/pricing/chat (K3 series 1,048,576; K2 series 262,144).
 // Max output: the settable ceiling of `max_completion_tokens` (1,048,576; the
 // default is 131,072), stated on both platform.kimi.ai/docs/guide/kimi-k3-1-pro-quickstart
-// and .../kimi-k3-quickstart. Prices are not declared: the rate table on the
+// and .../kimi-k3-quickstart. Those pages state no ceiling for the high-speed
+// variants, so they declare none. Prices are not declared: the rate table on the
 // pricing page is not present in the page's published text. K2 series ids are
 // listed as deprecated on the model list page. Display names for the high-speed
 // and K2 entries are not given on those pages and follow the API id.
+// Open weights: Moonshot publishes weights for K3.1 Pro, K3, K2.7 Code and K2.6
+// (huggingface.co/moonshotai/Kimi-K3.1-Pro, /Kimi-K3, /Kimi-K2.7-Code,
+// /Kimi-K2.6); no weights are published for the high-speed variants. An
+// open-weight entry declares `local` only: third-party hosts are not listed
+// until their own pages are read.
 // Training, API: the Open Platform terms (platform.kimi.ai/docs/agreement/modeluse,
 // section 4) say content may be used to improve models unless agreed otherwise in
 // writing. Consumer: platform.kimi.ai/docs/agreement/userprivacy offers an opt-out
@@ -853,6 +859,7 @@ moonshot.model('kimi-k3.1-pro', {
   maxOut: 1_048_576,
   capability: 'reasoning',
   openWeights: true,
+  on: ['local'],
 });
 
 moonshot.model('kimi-k3.1-pro-highspeed', {
@@ -867,6 +874,7 @@ moonshot.model('kimi-k3', {
   maxOut: 1_048_576,
   capability: 'reasoning',
   openWeights: true,
+  on: ['local'],
 });
 
 // Deprecated: unavailable to newly registered users.
@@ -874,6 +882,8 @@ moonshot.model('kimi-k2.7-code', {
   name: 'Kimi K2.7 Code',
   seen: 'discovered',
   ctx: 262_144,
+  openWeights: true,
+  on: ['local'],
 });
 
 moonshot.model('kimi-k2.7-code-highspeed', {
@@ -886,6 +896,8 @@ moonshot.model('kimi-k2.6', {
   name: 'Kimi K2.6',
   seen: 'discovered',
   ctx: 262_144,
+  openWeights: true,
+  on: ['local'],
 });
 
 // ─── Open-weight vendors ─────────────────────────────────────────────────────

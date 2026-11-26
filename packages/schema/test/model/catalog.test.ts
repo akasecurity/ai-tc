@@ -180,6 +180,21 @@ describe('id resolution', () => {
     ).toBe('api');
   });
 
+  it('marks the Kimi models with published weights as open and self-hostable', () => {
+    const open = ['kimi-k3.1-pro', 'kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6'];
+    const apiOnly = ['kimi-k3.1-pro-highspeed', 'kimi-k2.7-code-highspeed'];
+    for (const id of open) {
+      const entry = resolveModel(id, MODEL_INDEX).entry;
+      expect(entry?.openWeights, id).toBe(true);
+      expect(entry?.platforms.get('local')?.hosting, id).toBe('local');
+    }
+    for (const id of apiOnly) {
+      const entry = resolveModel(id, MODEL_INDEX).entry;
+      expect(entry?.openWeights, id).toBe(false);
+      expect(entry?.platforms.has('local'), id).toBe(false);
+    }
+  });
+
   it('returns no entry for an unknown model rather than a lookalike', () => {
     const resolved = resolveModel('claude-nonexistent-9', MODEL_INDEX);
     expect(resolved.entry).toBeNull();

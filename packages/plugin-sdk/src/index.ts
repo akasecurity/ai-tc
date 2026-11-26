@@ -63,6 +63,8 @@ export {
   readHookFailOpens,
   recordHookFailOpen,
 } from './hook-fail-opens.ts';
+export type { HookRecordingBase, RecordHookRunOptions } from './hook-recordings.ts';
+export { HOOK_RECORDINGS_DIR_NAME, recordHookRun } from './hook-recordings.ts';
 export type {
   AntigravityHostFeature,
   CodexHostFeature,

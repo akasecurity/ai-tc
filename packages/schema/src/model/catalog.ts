@@ -824,13 +824,18 @@ cohere.model('command-r-plus-04-2024', {
 // ─── Moonshot ────────────────────────────────────────────────────────────────
 // Model ids: platform.kimi.ai/docs/models. Context windows:
 // platform.kimi.ai/docs/pricing/chat (K3 series 1,048,576; K2 series 262,144).
-// Max output: the `max_completion_tokens` ceiling (1,048,576) on the K3.1 Pro and
-// K3 quickstarts, platform.kimi.ai/docs/guide/kimi-k3-1-pro-quickstart and
-// .../kimi-k3-quickstart. Prices are not declared: the rate table on the pricing
-// page is not present in the page's published text. K2 series ids are listed as
-// deprecated on the model list page.
-// Training: platform.kimi.ai/docs/agreement/userprivacy and .../modeluse — content
-// may be used to improve models, with an opt-out by contacting Moonshot.
+// Max output: the settable ceiling of `max_completion_tokens` (1,048,576; the
+// default is 131,072), stated on both platform.kimi.ai/docs/guide/kimi-k3-1-pro-quickstart
+// and .../kimi-k3-quickstart. Prices are not declared: the rate table on the
+// pricing page is not present in the page's published text. K2 series ids are
+// listed as deprecated on the model list page. Display names for the high-speed
+// and K2 entries are not given on those pages and follow the API id.
+// Training, API: the Open Platform terms (platform.kimi.ai/docs/agreement/modeluse,
+// section 4) say content may be used to improve models unless agreed otherwise in
+// writing. Consumer: platform.kimi.ai/docs/agreement/userprivacy offers an opt-out
+// by contacting Moonshot; that policy does not apply to enterprise-customer
+// processing on the Open Platform, so it backs the consumer values only; `source`
+// is the terms page.
 
 const moonshot = vendor('moonshot', {
   family: { id: 'kimi', name: 'Kimi' },
@@ -838,7 +843,7 @@ const moonshot = vendor('moonshot', {
     apiDefault: 'yes',
     consumerDefault: 'yes',
     consumerControl: 'opt-out',
-    source: 'https://platform.kimi.ai/docs/agreement/userprivacy',
+    source: 'https://platform.kimi.ai/docs/agreement/modeluse',
   },
 });
 

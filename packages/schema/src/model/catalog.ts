@@ -835,7 +835,8 @@ cohere.model('command-r-plus-04-2024', {
 // (huggingface.co/moonshotai/Kimi-K3.1-Pro, /Kimi-K3, /Kimi-K2.7-Code,
 // /Kimi-K2.6); no weights are published for the high-speed variants. An
 // open-weight entry declares `local` only: third-party hosts are not listed
-// until their own pages are read.
+// until their own pages are read. Their default hosting stays `api`: Moonshot's
+// own endpoint serves the same weights, so a bare id most likely means that API.
 // Training, API: the Open Platform terms (platform.kimi.ai/docs/agreement/modeluse,
 // section 4) say content may be used to improve models unless agreed otherwise in
 // writing. Consumer: platform.kimi.ai/docs/agreement/userprivacy offers an opt-out

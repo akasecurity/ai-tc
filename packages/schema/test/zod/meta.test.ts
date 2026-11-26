@@ -18,6 +18,7 @@ import {
   InventoryObjectType,
   LlmCallAttributes,
   SessionTokenReport,
+  SubscriptionPlan,
   TokenRollup,
 } from '../../src/zod/meta.ts';
 
@@ -386,5 +387,14 @@ describe('CaptureAttributes', () => {
     // declaration. Refusing a wrong type is the only thing declaring it buys
     // at runtime, so that is what pins it.
     expect(CaptureAttributes.safeParse({ scope_key: 42 }).success).toBe(false);
+  });
+});
+
+describe('SubscriptionPlan', () => {
+  it('accepts the Grok workplace plans', () => {
+    expect(SubscriptionPlan.parse('grok_business')).toBe('grok_business');
+    expect(SubscriptionPlan.parse('grok_enterprise')).toBe('grok_enterprise');
+    // Consumer Grok tiers are left out on purpose: only workplace plans are named.
+    expect(SubscriptionPlan.safeParse('supergrok').success).toBe(false);
   });
 });

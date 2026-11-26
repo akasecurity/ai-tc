@@ -82,6 +82,7 @@ const PROVIDER_PLATFORM: ReadonlyMap<string, ModelPlatform> = new Map([
   ['deepseek', 'deepseek'],
   ['xai', 'xai'],
   ['cohere', 'cohere'],
+  ['moonshot', 'moonshot'],
   ['together', 'together'],
   ['fireworks', 'fireworks'],
   ['groq', 'groq'],

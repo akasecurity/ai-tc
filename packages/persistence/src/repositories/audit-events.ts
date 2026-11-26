@@ -361,10 +361,10 @@ export class SqliteAuditEventsRepository {
   // cost model — we stay a thin reader here (no business logic, no cost). `root_session_id`
   // is the leaf's session (the reconciler sets parent_id = root_session_id = sessionId);
   // rows whose attributes blob is NULL are skipped (nothing to roll up).
-  llmCallLeaves(): { sessionId: string; attributes: string }[] {
-    return allRows<{ sessionId: string; attributes: string }>(
+  llmCallLeaves(): { sessionId: string; attributes: string; startedAt: number }[] {
+    return allRows<{ sessionId: string; attributes: string; startedAt: number }>(
       this.db.prepare(
-        `SELECT root_session_id AS sessionId, attributes
+        `SELECT root_session_id AS sessionId, attributes, started_at AS startedAt
            FROM audit_events
           WHERE event_type = 'llm_call' AND attributes IS NOT NULL`,
       ),

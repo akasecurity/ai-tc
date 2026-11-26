@@ -349,6 +349,7 @@ const TIMELINE_COLUMNS = `
  */
 interface LlmUsageRow {
   sessionId: string;
+  day: string;
   provider: string | null;
   model: string | null;
   serviceTier: string | null;
@@ -369,6 +370,9 @@ interface LlmUsageRow {
 const CALL_WRITE_SPLIT = `(coalesce(ephemeral_1h_input_tokens, 0) + coalesce(ephemeral_5m_input_tokens, 0))`;
 const CALL_PROMPT_TOKENS = `(coalesce(input_tokens, 0) + coalesce(cache_read_input_tokens, 0)
      + max(coalesce(cache_creation_input_tokens, 0), ${CALL_WRITE_SPLIT}))`;
+
+// The call's UTC day, which selects the price row in effect.
+const CALL_DAY = `strftime('%Y-%m-%d', started_at / 1000, 'unixepoch')`;
 
 // How many band thresholds the call's prompt crossed, or none when the
 // catalog declares no band: a bare `0` in a GROUP BY is read as a column ordinal
@@ -398,6 +402,7 @@ const CALL_USAGE_SHAPE = [
 
 const LLM_USAGE_SELECT = `
   SELECT root_session_id AS sessionId,
+         ${CALL_DAY} AS day,
          provider,
          model,
          service_tier AS serviceTier,
@@ -421,6 +426,7 @@ const LLM_USAGE_SCOPE = `event_type = 'llm_call' AND attributes IS NOT NULL AND 
 
 const LLM_USAGE_GROUP = `GROUP BY ${[
   'root_session_id',
+  CALL_DAY,
   'provider',
   'model',
   'service_tier',
@@ -449,7 +455,7 @@ function usageLeaves(rows: readonly LlmUsageRow[]): LlmCallLeaf[] {
     if (row.model !== null) attributes.model = row.model;
     if (row.serviceTier !== null) attributes.service_tier = row.serviceTier;
     if (row.usageChannel !== null) attributes.usage_channel = row.usageChannel;
-    return { sessionId: row.sessionId, attributes, promptTokens: row.promptTokens };
+    return { sessionId: row.sessionId, attributes, promptTokens: row.promptTokens, at: row.day };
   });
 }
 

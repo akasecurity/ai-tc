@@ -12,11 +12,12 @@
 //
 // Prices are USD per million tokens and are a REFERENCE snapshot, not billing.
 // Re-verify against the cited page when updating.
-import type { ModelEntry } from './builder.ts';
+import type { ModelEntry, ModelVendorBuilder, VendorDefaults } from './builder.ts';
 import { vendor } from './builder.ts';
 import type { VendorTrainingPolicy } from './governance.ts';
 import type { ModelPrice } from './pricing.ts';
 import { anthropicBand, anthropicPrice, scaledBand, tokenPrice } from './pricing.ts';
+import type { ModelVendor } from './providers.ts';
 import { buildModelIndex } from './resolve.ts';
 
 // ─── Anthropic ───────────────────────────────────────────────────────────────
@@ -1062,37 +1063,49 @@ mistral.model('mixtral-8x7b', {
   on: [...OPEN_WEIGHT_HOSTS],
 });
 
+const VENDORS: readonly ModelVendorBuilder[] = [
+  anthropic,
+  openai,
+  google,
+  xai,
+  deepseek,
+  cohere,
+  moonshot,
+  mistral,
+  meta,
+  alibaba,
+  amazon,
+];
+
 /** Every declared model, in vendor order. */
-export const MODEL_ENTRIES: readonly ModelEntry[] = Object.freeze([
-  ...anthropic.models(),
-  ...openai.models(),
-  ...google.models(),
-  ...xai.models(),
-  ...deepseek.models(),
-  ...cohere.models(),
-  ...moonshot.models(),
-  ...mistral.models(),
-  ...meta.models(),
-  ...alibaba.models(),
-  ...amazon.models(),
-]);
+export const MODEL_ENTRIES: readonly ModelEntry[] = Object.freeze(
+  VENDORS.flatMap((builder) => builder.models()),
+);
+
+/** The defaults each catalog vendor declares its models with. */
+export const VENDOR_DEFAULTS: ReadonlyMap<ModelVendor, VendorDefaults> = new Map(
+  VENDORS.map((builder) => [builder.vendor, builder.defaults]),
+);
 
 /**
- * Every distinct long-context threshold any declared price carries, ascending.
- * A read that sums several requests before pricing them groups by which of
- * these each request's prompt crossed, so a sum never decides a band.
+ * Every distinct long-context threshold any price row of `entries` carries,
+ * ascending. A read that sums several requests before pricing them groups by
+ * which of these each request's prompt crossed, so a sum never decides a band.
  */
-export const LONG_CONTEXT_THRESHOLDS: readonly number[] = Object.freeze(
-  [
-    ...new Set(
-      MODEL_ENTRIES.flatMap((entry) =>
-        [...entry.platforms.values()].flatMap((offering) =>
-          offering.price?.longContext ? [offering.price.longContext.thresholdInputTokens] : [],
-        ),
-      ),
-    ),
-  ].sort((a, b) => a - b),
-);
+export function longContextThresholdsOf(entries: readonly ModelEntry[]): readonly number[] {
+  const thresholds = new Set<number>();
+  for (const entry of entries) {
+    for (const offering of entry.platforms.values()) {
+      for (const row of offering.prices) {
+        if (row.price.longContext) thresholds.add(row.price.longContext.thresholdInputTokens);
+      }
+    }
+  }
+  return Object.freeze([...thresholds].sort((a, b) => a - b));
+}
+
+/** `longContextThresholdsOf` over the bundled catalog. */
+export const LONG_CONTEXT_THRESHOLDS: readonly number[] = longContextThresholdsOf(MODEL_ENTRIES);
 
 /** The lookup index over `MODEL_ENTRIES`, keyed by canonical id and alias. */
 export const MODEL_INDEX = buildModelIndex(MODEL_ENTRIES);

@@ -9,6 +9,7 @@ import {
   hostingFor,
   isFirstParty,
   LONG_CONTEXT_THRESHOLDS,
+  longContextThresholdsOf,
   MODEL_ENTRIES,
   MODEL_INDEX,
   ModelPlatform,
@@ -166,6 +167,14 @@ describe('id resolution', () => {
       usage: { inputTokens: 1_000_000, outputTokens: 0 },
     });
     expect(cost).toBeCloseTo(0.02, 10);
+  });
+
+  it('declares models for every named vendor', () => {
+    const declared = new Set(MODEL_ENTRIES.map((entry) => entry.vendor));
+    for (const vendor of ModelVendor.options) {
+      if (vendor === 'unknown') continue;
+      expect(declared.has(vendor), vendor).toBe(true);
+    }
   });
 
   it('resolves the Kimi models to the moonshot vendor', () => {
@@ -744,5 +753,10 @@ describe('long-context pricing', () => {
     }
     expect(declared.size).toBeGreaterThan(0);
     expect(LONG_CONTEXT_THRESHOLDS).toEqual([...declared].sort((a, b) => a - b));
+  });
+
+  it('derives the bundled thresholds from the entry list', () => {
+    expect(LONG_CONTEXT_THRESHOLDS).toEqual([100_000, 200_000, 272_000]);
+    expect(longContextThresholdsOf(MODEL_ENTRIES)).toEqual(LONG_CONTEXT_THRESHOLDS);
   });
 });

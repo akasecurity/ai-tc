@@ -171,6 +171,25 @@ describe('buildTokenReports', () => {
     expect(reports.map((r) => r.sessionId)).toEqual(['big', 'small']);
   });
 
+  it("passes each leaf's call time to the cost model", () => {
+    const seen: (string | undefined)[] = [];
+    const recording: CostModel = {
+      normalizeModelId: (provider, model) => ({ provider, model }),
+      costFor: ({ at }) => {
+        seen.push(at);
+        return 1;
+      },
+    };
+    buildTokenReports(
+      [
+        { sessionId: 's1', attributes: { provider: 'anthropic' }, at: '2026-11-30' },
+        leaf('s1', { provider: 'anthropic' }),
+      ],
+      recording,
+    );
+    expect(seen).toEqual(['2026-11-30', undefined]);
+  });
+
   it('returns an empty array when there are no leaves', () => {
     expect(buildTokenReports([], fakeCost)).toEqual([]);
   });

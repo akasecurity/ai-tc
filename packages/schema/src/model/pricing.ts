@@ -73,6 +73,13 @@ export interface PricePoint {
   price: ModelPrice;
 }
 
+/** True for a `YYYY-MM-DD` string that names a real calendar date. */
+export function isIsoDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const ms = Date.parse(`${value}T00:00:00Z`);
+  return !Number.isNaN(ms) && new Date(ms).toISOString().slice(0, 10) === value;
+}
+
 /** Orders price rows ascending by `effectiveFrom`, with the undated row first. */
 export function comparePricePoints(a: PricePoint, b: PricePoint): number {
   if (a.effectiveFrom === b.effectiveFrom) return 0;

@@ -26,7 +26,7 @@
 // credits.
 import { MODEL_INDEX } from '../model/catalog.ts';
 import type { ModelPrice } from '../model/pricing.ts';
-import { costOf, priceAt, ZERO_PRICE } from '../model/pricing.ts';
+import { costOf, isIsoDate, priceAt, ZERO_PRICE } from '../model/pricing.ts';
 import type { ModelPlatform } from '../model/providers.ts';
 import { hostingFor } from '../model/providers.ts';
 import type { ModelIndex } from '../model/resolve.ts';
@@ -50,7 +50,10 @@ export interface CostModel {
     provider: string;
     model: string;
     usage: CostUsage;
-    /** ISO timestamp or date of the call; its UTC day selects the price row. Defaults to today (UTC). */
+    /**
+     * ISO timestamp or date of the call; its UTC day selects the price row. Defaults to today (UTC)
+     * when absent; a value that is present but not a valid date prices nothing (`null`).
+     */
     at?: string;
   }): number | null;
 
@@ -147,13 +150,14 @@ function isLocalProvider(provider: string): boolean {
 }
 
 /**
- * The UTC day (`YYYY-MM-DD`) of an ISO timestamp or date, or today's UTC day
- * when `at` is absent or unparseable.
+ * The UTC day (`YYYY-MM-DD`) of an ISO timestamp or date, today's UTC day when
+ * `at` is absent, or `null` when `at` is present but not a valid date.
  */
-function utcDayOf(at: string | undefined): string {
-  if (at !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(at)) return at;
-  const ms = at === undefined ? Number.NaN : Date.parse(at);
-  return new Date(Number.isNaN(ms) ? Date.now() : ms).toISOString().slice(0, 10);
+function utcDayOf(at: string | undefined): string | null {
+  if (at === undefined) return new Date().toISOString().slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(at)) return isIsoDate(at) ? at : null;
+  const ms = Date.parse(at);
+  return Number.isNaN(ms) ? null : new Date(ms).toISOString().slice(0, 10);
 }
 
 /**
@@ -202,7 +206,9 @@ export function createCostModel(index: ModelIndex): CostModel {
     },
 
     costFor({ provider, model, usage, at }) {
-      const price = priceFor(index, provider, model, utcDayOf(at));
+      const day = utcDayOf(at);
+      if (day === null) return null;
+      const price = priceFor(index, provider, model, day);
       if (price === null) return null; // unknown (provider, model) — never guess
       return costOf(price, usage);
     },

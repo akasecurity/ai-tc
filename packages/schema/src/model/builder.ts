@@ -34,7 +34,7 @@ import type {
   VendorTrainingPolicy,
 } from './governance.ts';
 import type { ModelPrice, PricePoint } from './pricing.ts';
-import { comparePricePoints, ZERO_PRICE } from './pricing.ts';
+import { comparePricePoints, isIsoDate, ZERO_PRICE } from './pricing.ts';
 import type { ModelHosting, ModelPlatform, ModelVendor } from './providers.ts';
 import { firstPartyPlatformFor, hostingFor, isFirstParty } from './providers.ts';
 
@@ -161,7 +161,10 @@ export interface ModelSpec {
    * list it.
    */
   firstParty?: boolean;
-  /** Dated FIRST-PARTY price rows, each in effect from its `from` day (UTC); `price` stays undated. */
+  /**
+   * Dated FIRST-PARTY price rows, each in effect from its `from` day (UTC); `price` stays undated.
+   * Each `from` is a `YYYY-MM-DD` calendar date, and no two rows share one.
+   */
   priceHistory?: readonly { from: string; price: ModelPrice }[];
   deprecatedAt?: string;
   retiresAt?: string;
@@ -237,6 +240,19 @@ export function freezeModelEntry(entry: ModelEntry): ModelEntry {
   return Object.freeze(entry);
 }
 
+function checkPriceHistory(id: string, rows: readonly { from: string }[]): void {
+  const seen = new Set<string>();
+  for (const { from } of rows) {
+    if (!isIsoDate(from)) {
+      throw new Error(`${id}: price history row from '${from}' is not a YYYY-MM-DD date`);
+    }
+    if (seen.has(from)) {
+      throw new Error(`${id}: two price history rows share from '${from}'`);
+    }
+    seen.add(from);
+  }
+}
+
 /** Builds one model's entry from its declaration and its vendor's defaults. */
 export function buildModelEntry(
   modelVendor: ModelVendor,
@@ -247,6 +263,7 @@ export function buildModelEntry(
   const family = spec.family ?? defaults.family ?? { id, name: spec.name };
   const ownPlatform = spec.firstParty === false ? null : firstPartyPlatformFor(modelVendor);
   const openWeights = spec.openWeights ?? defaults.openWeights ?? false;
+  checkPriceHistory(id, spec.priceHistory ?? []);
   const inherited: InheritedTerms = {
     firstPartyPrices: [
       ...(spec.price === undefined ? [] : [{ effectiveFrom: null, price: spec.price }]),

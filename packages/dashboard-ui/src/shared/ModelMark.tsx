@@ -27,6 +27,7 @@ export const MODEL_FAMILY_MARKS: Readonly<Record<string, ModelMarkGlyph>> = {
   grok: { letter: 'X', tone: 'neutral' },
   command: { letter: 'C', tone: 'teal' },
   nova: { letter: 'N', tone: 'neutral' },
+  kimi: { letter: 'K', tone: 'teal' },
 };
 
 /** The family each catalog vendor's mark is drawn from; `null` has none. */
@@ -41,6 +42,7 @@ const VENDOR_FAMILY = {
   xai: 'grok',
   amazon: 'nova',
   cohere: 'command',
+  moonshot: 'kimi',
   unknown: null,
 } satisfies Record<ModelVendor, string | null>;
 

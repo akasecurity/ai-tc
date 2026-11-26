@@ -821,6 +821,86 @@ cohere.model('command-r-plus-04-2024', {
   on: ['bedrock'],
 });
 
+// ─── Moonshot ────────────────────────────────────────────────────────────────
+// Model ids: platform.kimi.ai/docs/models. Context windows:
+// platform.kimi.ai/docs/pricing/chat (K3 series 1,048,576; K2 series 262,144).
+// Max output: the settable ceiling of `max_completion_tokens` (1,048,576; the
+// default is 131,072), stated on both platform.kimi.ai/docs/guide/kimi-k3-1-pro-quickstart
+// and .../kimi-k3-quickstart. Those pages state no ceiling for the high-speed
+// variants, so they declare none. Prices are not declared: the rate table on the
+// pricing page is not present in the page's published text. K2 series ids are
+// listed as deprecated on the model list page. Display names for the high-speed
+// and K2 entries are not given on those pages and follow the API id.
+// Open weights: Moonshot publishes weights for K3.1 Pro, K3, K2.7 Code and K2.6
+// (huggingface.co/moonshotai/Kimi-K3.1-Pro, /Kimi-K3, /Kimi-K2.7-Code,
+// /Kimi-K2.6); no weights are published for the high-speed variants. An
+// open-weight entry declares `local` only: third-party hosts are not listed
+// until their own pages are read. Their default hosting stays `api`: Moonshot's
+// own endpoint serves the same weights, so a bare id most likely means that API.
+// Training, API: the Open Platform terms (platform.kimi.ai/docs/agreement/modeluse,
+// section 4) say content may be used to improve models unless agreed otherwise in
+// writing. Consumer: platform.kimi.ai/docs/agreement/userprivacy offers an opt-out
+// by contacting Moonshot; that policy does not apply to enterprise-customer
+// processing on the Open Platform, so it backs the consumer values only; `source`
+// is the terms page.
+
+const moonshot = vendor('moonshot', {
+  family: { id: 'kimi', name: 'Kimi' },
+  training: {
+    apiDefault: 'yes',
+    consumerDefault: 'yes',
+    consumerControl: 'opt-out',
+    source: 'https://platform.kimi.ai/docs/agreement/modeluse',
+  },
+});
+
+moonshot.model('kimi-k3.1-pro', {
+  name: 'Kimi K3.1 Pro',
+  ctx: 1_048_576,
+  maxOut: 1_048_576,
+  capability: 'reasoning',
+  openWeights: true,
+  on: ['local'],
+});
+
+moonshot.model('kimi-k3.1-pro-highspeed', {
+  name: 'Kimi K3.1 Pro High-Speed',
+  ctx: 1_048_576,
+  capability: 'reasoning',
+});
+
+moonshot.model('kimi-k3', {
+  name: 'Kimi K3',
+  ctx: 1_048_576,
+  maxOut: 1_048_576,
+  capability: 'reasoning',
+  openWeights: true,
+  on: ['local'],
+});
+
+// Deprecated: unavailable to newly registered users.
+moonshot.model('kimi-k2.7-code', {
+  name: 'Kimi K2.7 Code',
+  seen: 'discovered',
+  ctx: 262_144,
+  openWeights: true,
+  on: ['local'],
+});
+
+moonshot.model('kimi-k2.7-code-highspeed', {
+  name: 'Kimi K2.7 Code High-Speed',
+  seen: 'discovered',
+  ctx: 262_144,
+});
+
+moonshot.model('kimi-k2.6', {
+  name: 'Kimi K2.6',
+  seen: 'discovered',
+  ctx: 262_144,
+  openWeights: true,
+  on: ['local'],
+});
+
 // ─── Open-weight vendors ─────────────────────────────────────────────────────
 // Meta and Alibaba publish weights without running a first-party inference API,
 // so every offering is a third-party host or self-hosted. Host rates vary and
@@ -990,6 +1070,7 @@ export const MODEL_ENTRIES: readonly ModelEntry[] = Object.freeze([
   ...xai.models(),
   ...deepseek.models(),
   ...cohere.models(),
+  ...moonshot.models(),
   ...mistral.models(),
   ...meta.models(),
   ...alibaba.models(),

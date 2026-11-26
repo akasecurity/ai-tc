@@ -27,6 +27,7 @@ export const ModelVendor = z.enum([
   'xai',
   'amazon',
   'cohere',
+  'moonshot',
   'unknown',
 ]);
 export type ModelVendor = z.infer<typeof ModelVendor>;
@@ -56,6 +57,7 @@ export const ModelPlatform = z.enum([
   'deepseek',
   'xai',
   'cohere',
+  'moonshot',
   // cloud resellers
   'bedrock',
   'vertex',
@@ -90,6 +92,7 @@ const PLATFORM_HOSTING: ReadonlyMap<ModelPlatform, ModelHosting> = new Map([
   ['deepseek', 'api'],
   ['xai', 'api'],
   ['cohere', 'api'],
+  ['moonshot', 'api'],
   ['bedrock', 'api'],
   ['vertex', 'api'],
   ['azure', 'api'],
@@ -124,6 +127,7 @@ const FIRST_PARTY: ReadonlyMap<ModelVendor, ModelPlatform> = new Map([
   ['deepseek', 'deepseek'],
   ['xai', 'xai'],
   ['cohere', 'cohere'],
+  ['moonshot', 'moonshot'],
 ]);
 
 /**

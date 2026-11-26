@@ -53,6 +53,16 @@ aka init
 node plugins/cursor/scripts/install.js --uninstall
 ```
 
+## Recording hook runs
+
+To see exactly what Cursor sends and what the plugin answers, create the recordings directory:
+
+```sh
+mkdir -p ~/.aka/data/hook-recordings
+```
+
+While it exists, every hook run writes one JSON file there with the event, the payload as Cursor sent it, and the output written back (`null` when the hook said nothing). Notices written to stderr are not recorded. Remove the directory to stop. A recording holds prompts, tool arguments and tool output verbatim, secrets included, so each file is readable by its owner only; record with throwaway values.
+
 ## License
 
 [Apache-2.0](https://github.com/akasecurity/ai-tc/blob/main/LICENSE)

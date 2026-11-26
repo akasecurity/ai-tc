@@ -26,9 +26,10 @@
 // credits.
 import { MODEL_INDEX } from '../model/catalog.ts';
 import type { ModelPrice } from '../model/pricing.ts';
-import { costOf, ZERO_PRICE } from '../model/pricing.ts';
+import { costOf, priceAt, ZERO_PRICE } from '../model/pricing.ts';
 import type { ModelPlatform } from '../model/providers.ts';
 import { hostingFor } from '../model/providers.ts';
+import type { ModelIndex } from '../model/resolve.ts';
 import { resolveModel } from '../model/resolve.ts';
 import type { CostUsage } from './cost-usage.ts';
 
@@ -45,7 +46,13 @@ export interface CostModel {
    *   the price map. A known-but-local entry (e.g. ollama) returns `0`, never
    *   `null` — local inference is free, not unknown.
    */
-  costFor(input: { provider: string; model: string; usage: CostUsage }): number | null;
+  costFor(input: {
+    provider: string;
+    model: string;
+    usage: CostUsage;
+    /** ISO timestamp or date of the call; its UTC day selects the price row. Defaults to today (UTC). */
+    at?: string;
+  }): number | null;
 
   /**
    * Fold a gateway/Bedrock/Vertex-specific `(provider, model)` onto the canonical
@@ -140,8 +147,18 @@ function isLocalProvider(provider: string): boolean {
 }
 
 /**
- * The price for a `(provider, model)` pair, or `null` when the catalog carries
- * no verified rate for that platform.
+ * The UTC day (`YYYY-MM-DD`) of an ISO timestamp or date, or today's UTC day
+ * when `at` is absent or unparseable.
+ */
+function utcDayOf(at: string | undefined): string {
+  if (at !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(at)) return at;
+  const ms = at === undefined ? Number.NaN : Date.parse(at);
+  return new Date(Number.isNaN(ms) ? Date.now() : ms).toISOString().slice(0, 10);
+}
+
+/**
+ * The price for a `(provider, model)` pair on a UTC day, or `null` when the
+ * catalog carries no verified rate for that platform on that day.
  *
  * When the model ID ITSELF names a platform, that wins over the provider
  * string. A Bedrock-shaped id (`us.anthropic.claude-opus-5`) says where the
@@ -150,37 +167,42 @@ function isLocalProvider(provider: string): boolean {
  * is the substitution this module exists to prevent — the one Bedrock pair
  * anyone has checked bills at 2x first-party.
  */
-function priceFor(provider: string, model: string): ModelPrice | null {
+function priceFor(index: ModelIndex, provider: string, model: string, day: string): ModelPrice | null {
   if (isLocalProvider(provider)) return ZERO_PRICE;
 
-  const resolved = resolveModel(model, MODEL_INDEX);
+  const resolved = resolveModel(model, index);
   if (resolved.entry === null) return null;
 
   const platform = resolved.platform ?? platformForProvider(provider);
   if (platform === null) return null;
 
-  return resolved.entry.platforms.get(platform)?.price ?? null;
+  const offering = resolved.entry.platforms.get(platform);
+  return offering === undefined ? null : priceAt(offering, day);
 }
 
-const defaultCostModel: CostModel = {
-  normalizeModelId(provider, model) {
-    const p = provider.trim().toLowerCase();
-    // Local providers: collapse any model onto the wildcard zero-cost key.
-    if (isLocalProvider(p)) {
-      return { provider: p, model: '*' };
-    }
-    // Everything else: canonicalize the model id, preserving the provider. An
-    // id the catalog does not carry is returned unchanged — decorations are
-    // stripped to attempt a match, never to rewrite an unrecognised id.
-    const resolved = resolveModel(model, MODEL_INDEX);
-    return { provider: p, model: resolved.entry?.id ?? model };
-  },
+/** A cost model over the entries `index` was built from. */
+export function createCostModel(index: ModelIndex): CostModel {
+  return {
+    normalizeModelId(provider, model) {
+      const p = provider.trim().toLowerCase();
+      // Local providers: collapse any model onto the wildcard zero-cost key.
+      if (isLocalProvider(p)) {
+        return { provider: p, model: '*' };
+      }
+      // Everything else: canonicalize the model id, preserving the provider. An
+      // id the catalog does not carry is returned unchanged — decorations are
+      // stripped to attempt a match, never to rewrite an unrecognised id.
+      const resolved = resolveModel(model, index);
+      return { provider: p, model: resolved.entry?.id ?? model };
+    },
 
-  costFor({ provider, model, usage }) {
-    const price = priceFor(provider, model);
-    if (price === null) return null; // unknown (provider, model) — never guess
-    return costOf(price, usage);
-  },
-};
+    costFor({ provider, model, usage, at }) {
+      const price = priceFor(index, provider, model, utcDayOf(at));
+      if (price === null) return null; // unknown (provider, model) — never guess
+      return costOf(price, usage);
+    },
+  };
+}
 
-export { defaultCostModel };
+/** The cost model over the bundled catalog. */
+export const defaultCostModel: CostModel = createCostModel(MODEL_INDEX);

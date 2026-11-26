@@ -9,6 +9,7 @@ import {
   hostingFor,
   isFirstParty,
   LONG_CONTEXT_THRESHOLDS,
+  longContextThresholdsOf,
   MODEL_ENTRIES,
   MODEL_INDEX,
   ModelPlatform,
@@ -676,5 +677,10 @@ describe('long-context pricing', () => {
     }
     expect(declared.size).toBeGreaterThan(0);
     expect(LONG_CONTEXT_THRESHOLDS).toEqual([...declared].sort((a, b) => a - b));
+  });
+
+  it('derives the bundled thresholds from the entry list', () => {
+    expect(LONG_CONTEXT_THRESHOLDS).toEqual([100_000, 200_000, 272_000]);
+    expect(longContextThresholdsOf(MODEL_ENTRIES)).toEqual(LONG_CONTEXT_THRESHOLDS);
   });
 });

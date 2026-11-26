@@ -19,8 +19,18 @@ import {
 
 const SOURCE = { source: 'https://example.com/pricing', readAt: '2026-11-20' };
 
+/** An overlay built through the schema, so every merge test also passes validation. */
 function overlayOf(models: OverlayModel[], formatVersion = 1): CatalogOverlay {
-  return { formatVersion, version: 1, publishedAt: '2026-11-25T00:00:00Z', models };
+  return CatalogOverlaySchema.parse({
+    formatVersion,
+    version: 1,
+    publishedAt: '2026-11-25T00:00:00Z',
+    models,
+  });
+}
+
+function rawOverlayOf(models: unknown[]): unknown {
+  return { formatVersion: 1, version: 1, publishedAt: '2026-11-25T00:00:00Z', models };
 }
 
 function bundled(): readonly ModelEntry[] {
@@ -137,7 +147,7 @@ describe('mergeCatalog', () => {
               prices: [{ effectiveFrom: '2026-12-01', price: anthropicPrice(4, 20, 0.4) }],
             },
           ],
-          provenance: { prices: SOURCE },
+          provenance: { offerings: SOURCE },
         },
       ]),
     );
@@ -255,6 +265,31 @@ describe('mergeCatalog', () => {
     expect(merged.replacement).toBe('claude-new');
   });
 
+  it('clears a lifecycle field stated as null and keeps an omitted one', () => {
+    const anthropic = vendor('anthropic', {});
+    anthropic.model('claude-retiring', {
+      name: 'R',
+      deprecatedAt: '2026-10-01',
+      retiresAt: '2027-01-01',
+      replacement: 'claude-next',
+    });
+    const { entries } = mergeCatalog(
+      anthropic.models(),
+      overlayOf([
+        {
+          id: 'claude-retiring',
+          vendor: 'anthropic',
+          lifecycle: { retiresAt: null, replacement: null },
+          provenance: { lifecycle: SOURCE },
+        },
+      ]),
+    );
+    const merged = byId(entries, 'claude-retiring');
+    expect(merged.deprecatedAt).toBe('2026-10-01');
+    expect(merged.retiresAt).toBeNull();
+    expect(merged.replacement).toBeNull();
+  });
+
   it('unions aliases rather than dropping a bundled one', () => {
     const anthropic = vendor('anthropic', {});
     anthropic.model('claude-aliased', { name: 'A', aliases: ['claude-aliased-0'] });
@@ -289,12 +324,67 @@ describe('CatalogOverlay', () => {
 
   it('keeps an unknown vendor and platform through parsing', () => {
     const parsed = CatalogOverlaySchema.safeParse(
-      overlayOf([
+      rawOverlayOf([
         {
           id: 'x',
           vendor: 'nonesuch',
           offerings: [{ platform: 'nowhere' }],
-          provenance: { name: SOURCE },
+          provenance: { offerings: SOURCE },
+        },
+      ]),
+    );
+    expect(parsed.success).toBe(true);
+  });
+});
+
+describe('provenance', () => {
+  it('rejects a stated field with no provenance entry', () => {
+    const parsed = CatalogOverlaySchema.safeParse(
+      rawOverlayOf([
+        { id: 'claude-x', vendor: 'anthropic', ctx: 1_000_000, provenance: { name: SOURCE } },
+      ]),
+    );
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues.map((issue) => issue.path)).toEqual([
+      ['models', 0, 'provenance', 'ctx'],
+    ]);
+  });
+
+  it('rejects a provenance key that is not a model field', () => {
+    const parsed = CatalogOverlaySchema.safeParse(
+      rawOverlayOf([
+        {
+          id: 'claude-x',
+          vendor: 'anthropic',
+          offerings: [{ platform: 'anthropic' }],
+          provenance: { offerings: SOURCE, prices: SOURCE },
+        },
+      ]),
+    );
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues.map((issue) => issue.path)).toEqual([
+      ['models', 0, 'provenance', 'prices'],
+    ]);
+  });
+
+  it('accepts a model that states only its id and vendor with empty provenance', () => {
+    expect(
+      CatalogOverlaySchema.safeParse(
+        rawOverlayOf([{ id: 'claude-x', vendor: 'anthropic', provenance: {} }]),
+      ).success,
+    ).toBe(true);
+  });
+
+  it('requires provenance for every stated field, a null capability included', () => {
+    const parsed = CatalogOverlaySchema.safeParse(
+      rawOverlayOf([
+        {
+          id: 'claude-x',
+          vendor: 'anthropic',
+          name: 'X',
+          capability: null,
+          lifecycle: { retiresAt: null },
+          provenance: { name: SOURCE, capability: SOURCE, lifecycle: SOURCE },
         },
       ]),
     );
@@ -312,7 +402,7 @@ describe('longContextThresholdsOf', () => {
           id: 'claude-opus-5',
           vendor: 'anthropic',
           offerings: [{ platform: 'anthropic', prices: [{ effectiveFrom: '2026-12-01', price: banded }] }],
-          provenance: { prices: SOURCE },
+          provenance: { offerings: SOURCE },
         },
       ]),
     );

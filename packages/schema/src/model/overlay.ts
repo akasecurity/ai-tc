@@ -39,19 +39,15 @@ export const OverlayOffering = z.object({
 });
 export type OverlayOffering = z.infer<typeof OverlayOffering>;
 
+/** Lifecycle facts. An omitted field keeps the bundled value; `null` clears it. */
 export const OverlayLifecycle = z.object({
-  deprecatedAt: z.iso.date().optional(),
-  retiresAt: z.iso.date().optional(),
-  replacement: z.string().min(1).optional(),
+  deprecatedAt: z.iso.date().nullable().optional(),
+  retiresAt: z.iso.date().nullable().optional(),
+  replacement: z.string().min(1).nullable().optional(),
 });
 export type OverlayLifecycle = z.infer<typeof OverlayLifecycle>;
 
-/**
- * One model's facts. An omitted field keeps the bundled value. `vendor` is a
- * plain string for the same reason as `OverlayOffering.platform`.
- * `provenance` names, per stated field, the page it was read from and when.
- */
-export const OverlayModel = z.object({
+const OverlayModelFields = z.object({
   id: z.string().min(1),
   vendor: z.string().min(1),
   name: z.string().min(1).optional(),
@@ -64,6 +60,40 @@ export const OverlayModel = z.object({
   lifecycle: OverlayLifecycle.optional(),
   offerings: z.array(OverlayOffering).optional(),
   provenance: z.record(z.string(), z.object({ source: z.url(), readAt: z.iso.date() })),
+});
+
+/** The overlay fields that state a fact and so need a provenance entry. */
+const SOURCED_FIELDS: ReadonlySet<string> = new Set(
+  Object.keys(OverlayModelFields.shape).filter(
+    (key) => key !== 'id' && key !== 'vendor' && key !== 'provenance',
+  ),
+);
+
+/**
+ * One model's facts. An omitted field keeps the bundled value. `vendor` is a
+ * plain string for the same reason as `OverlayOffering.platform`.
+ * `provenance` names, for every stated field, the page it was read from and
+ * when; its keys are limited to the model's field names.
+ */
+export const OverlayModel = OverlayModelFields.superRefine((model, ctx) => {
+  for (const key of Object.keys(model.provenance)) {
+    if (!SOURCED_FIELDS.has(key)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['provenance', key],
+        message: `provenance names '${key}', which is not a model field`,
+      });
+    }
+  }
+  for (const key of SOURCED_FIELDS) {
+    if (model[key as keyof typeof model] !== undefined && !Object.hasOwn(model.provenance, key)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['provenance', key],
+        message: `stated field '${key}' has no provenance`,
+      });
+    }
+  }
 });
 export type OverlayModel = z.infer<typeof OverlayModel>;
 
@@ -140,6 +170,13 @@ function mergeOffering(
   });
 }
 
+function lifecycleValue(
+  stated: string | null | undefined,
+  bundled: string | null,
+): string | null {
+  return stated === undefined ? bundled : stated;
+}
+
 function applyModel(
   entry: ModelEntry,
   model: OverlayModel,
@@ -165,9 +202,9 @@ function applyModel(
     openWeights: model.openWeights ?? entry.openWeights,
     aliases: [...new Set([...entry.aliases, ...(model.aliases ?? [])])],
     platforms: offerings,
-    deprecatedAt: model.lifecycle?.deprecatedAt ?? entry.deprecatedAt,
-    retiresAt: model.lifecycle?.retiresAt ?? entry.retiresAt,
-    replacement: model.lifecycle?.replacement ?? entry.replacement,
+    deprecatedAt: lifecycleValue(model.lifecycle?.deprecatedAt, entry.deprecatedAt),
+    retiresAt: lifecycleValue(model.lifecycle?.retiresAt, entry.retiresAt),
+    replacement: lifecycleValue(model.lifecycle?.replacement, entry.replacement),
   });
 }
 

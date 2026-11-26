@@ -631,4 +631,14 @@ describe('cost model by day', () => {
       }),
     ).toBeNull();
   });
+
+  it('prices a local run at zero whatever its at', () => {
+    const usage = { inputTokens: 1_000_000 };
+    for (const at of [undefined, '2026-12-01T00:00:00Z', 'yesterday']) {
+      expect(
+        defaultCostModel.costFor({ provider: 'ollama', model: 'llama-3-1-70b', usage, at }),
+        String(at),
+      ).toBe(0);
+    }
+  });
 });

@@ -206,6 +206,8 @@ export function createCostModel(index: ModelIndex): CostModel {
     },
 
     costFor({ provider, model, usage, at }) {
+      // A local run costs zero on any day, so a bad timestamp must not make it unknown.
+      if (isLocalProvider(provider)) return costOf(ZERO_PRICE, usage);
       const day = utcDayOf(at);
       if (day === null) return null;
       const price = priceFor(index, provider, model, day);

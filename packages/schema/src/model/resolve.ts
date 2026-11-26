@@ -67,7 +67,7 @@ const PLATFORM_PREFIXES: readonly PlatformPrefix[] = [
   {
     pattern: /^openrouter\//iu,
     platform: 'openrouter',
-    variant: /:[a-z][a-z-]*$/u,
+    variant: /:[a-z][a-z-]*$/iu,
     retries: [dotBetweenDigitsToHyphen],
   },
 ];
@@ -88,7 +88,8 @@ function stripDecorations(model: string): {
 
 /**
  * Strip the decorations a serving platform adds, in the order they nest: a
- * platform prefix and its routing variant first, then the rest. Returns the bare id plus the platform its decorations implied, if any.
+ * platform prefix and its routing variant first, then the rest. Returns the
+ * bare id plus the platform its decorations implied, if any.
  */
 export function stripPlatformDecorations(model: string): {
   id: string;
@@ -108,7 +109,7 @@ function stripPlatformSuffixes(
   // A geo prefix is unambiguously Bedrock cross-region/global inference.
   if (GEO_PREFIX_RE.test(id)) {
     id = id.replace(GEO_PREFIX_RE, '');
-    platform = 'bedrock';
+    platform ??= 'bedrock';
   }
 
   // A dotted vendor namespace is the Bedrock base-id form.

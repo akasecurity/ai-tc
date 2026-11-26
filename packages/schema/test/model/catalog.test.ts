@@ -191,6 +191,7 @@ describe('OpenRouter spellings', () => {
     ['openrouter/openai/gpt-4.1', 'gpt-4.1'],
     ['openrouter/anthropic/claude-sonnet-4.5:nitro', 'claude-sonnet-4-5'],
     ['OpenRouter/openai/gpt-4.1:free', 'gpt-4.1'],
+    ['openrouter/openai/gpt-4.1:FREE', 'gpt-4.1'],
   ])('resolves %s on platform openrouter', (raw, id) => {
     const resolved = resolveModel(raw, MODEL_INDEX);
     expect(resolved.entry?.id).toBe(id);
@@ -207,6 +208,11 @@ describe('OpenRouter spellings', () => {
     const resolved = resolveModel('openrouter/openrouter/auto', MODEL_INDEX);
     expect(resolved.entry).toBeNull();
     expect(resolved.platform).toBe('openrouter');
+  });
+
+  it('keeps the prefix platform over a geo prefix in the slug', () => {
+    expect(resolveModel('openrouter/us.anthropic.x', MODEL_INDEX).platform).toBe('openrouter');
+    expect(stripPlatformDecorations('openrouter/us.anthropic.x').platform).toBe('openrouter');
   });
 
   it('strips the prefix and a routing variant without other rewrites', () => {

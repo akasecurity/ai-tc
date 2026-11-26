@@ -10,6 +10,7 @@
 //   claude-haiku-4-5@20251001            Vertex, dated
 //   amazon.nova-2-lite-v1:0              Bedrock, versioned
 //   meta-llama/llama-3-3-70b             gateway namespace
+//   openrouter/anthropic/claude-opus-5   OpenRouter, with an optional `:variant`
 //
 // Resolution is tolerant on READ: decorations are stripped in a fixed order and
 // the remainder is matched against canonical ids and their aliases. Ids are
@@ -44,21 +45,71 @@ const VERTEX_VERSION_RE = /@[\w-]+$/u;
 // A trailing snapshot date: `-20251001` (Anthropic) or `-2024-08-06` (OpenAI).
 const DATED_SUFFIX_RE = /-(?:\d{8}|\d{4}-\d{2}-\d{2})$/u;
 
+/** Rewrites one stripped id into another spelling to look up. */
+type IdRetry = (id: string) => string;
+
 /**
- * Strip the decorations a serving platform adds, in the order they nest.
- * Returns the bare id plus the platform its decorations implied, if any.
+ * A leading prefix that names the serving platform. Behind it, `variant`
+ * matches a trailing routing suffix to strip, and `retries` run in order on a
+ * miss, each applied to the result of the one before.
+ */
+interface PlatformPrefix {
+  pattern: RegExp;
+  platform: ModelPlatform;
+  variant: RegExp | null;
+  retries: readonly IdRetry[];
+}
+
+/** `claude-sonnet-4.5` → `claude-sonnet-4-5`. */
+const dotBetweenDigitsToHyphen: IdRetry = (id) => id.replace(/(?<=\d)\.(?=\d)/gu, '-');
+
+const PLATFORM_PREFIXES: readonly PlatformPrefix[] = [
+  {
+    pattern: /^openrouter\//iu,
+    platform: 'openrouter',
+    variant: /:[a-z][a-z-]*$/iu,
+    retries: [dotBetweenDigitsToHyphen],
+  },
+];
+
+function stripDecorations(model: string): {
+  id: string;
+  platform: ModelPlatform | null;
+  retries: readonly IdRetry[];
+} {
+  let id = model.trim();
+  const prefix = PLATFORM_PREFIXES.find(({ pattern }) => pattern.test(id));
+  if (prefix === undefined) return { ...stripPlatformSuffixes(id, null), retries: [] };
+
+  id = id.replace(prefix.pattern, '');
+  if (prefix.variant !== null) id = id.replace(prefix.variant, '');
+  return { ...stripPlatformSuffixes(id, prefix.platform), retries: prefix.retries };
+}
+
+/**
+ * Strip the decorations a serving platform adds, in the order they nest: a
+ * platform prefix and its routing variant first, then the rest. Returns the
+ * bare id plus the platform its decorations implied, if any.
  */
 export function stripPlatformDecorations(model: string): {
   id: string;
   platform: ModelPlatform | null;
 } {
-  let id = model.trim();
-  let platform: ModelPlatform | null = null;
+  const { id, platform } = stripDecorations(model);
+  return { id, platform };
+}
+
+function stripPlatformSuffixes(
+  model: string,
+  prefixPlatform: ModelPlatform | null,
+): { id: string; platform: ModelPlatform | null } {
+  let id = model;
+  let platform = prefixPlatform;
 
   // A geo prefix is unambiguously Bedrock cross-region/global inference.
   if (GEO_PREFIX_RE.test(id)) {
     id = id.replace(GEO_PREFIX_RE, '');
-    platform = 'bedrock';
+    platform ??= 'bedrock';
   }
 
   // A dotted vendor namespace is the Bedrock base-id form.
@@ -125,7 +176,7 @@ export function buildModelIndex(entries: readonly ModelEntry[]): ModelIndex {
  * `-YYYY-MM-DD` form. The dated form is tried LAST so a model whose canonical
  * id or alias carries a date (Anthropic's `claude-haiku-4-5-20251001` is one,
  * OpenAI's `gpt-4o-2024-05-13` another) matches itself before the shorter form
- * is considered.
+ * is considered. Behind a platform prefix, that prefix's retries run last.
  *
  * `entry` is `null` when nothing matched, and `canonicalId` is then the raw
  * string unchanged. That is the honest answer for a model this catalog does not
@@ -138,18 +189,15 @@ export function resolveModel(raw: string, index: ModelIndex): ResolvedModel {
     return { entry: exact, canonicalId: raw, platform: null, raw };
   }
 
-  const { id, platform } = stripPlatformDecorations(raw);
-  const stripped = index.byId.get(id);
-  if (stripped !== undefined) {
-    return { entry: stripped, canonicalId: id, platform, raw };
-  }
+  const { id, platform, retries } = stripDecorations(raw);
+  const found = lookupStripped(id, index);
+  if (found !== null) return { ...found, platform, raw };
 
-  if (DATED_SUFFIX_RE.test(id)) {
-    const undated = id.replace(DATED_SUFFIX_RE, '');
-    const byDate = index.byId.get(undated);
-    if (byDate !== undefined) {
-      return { entry: byDate, canonicalId: undated, platform, raw };
-    }
+  let candidate = id;
+  for (const retry of retries) {
+    candidate = retry(candidate);
+    const retried = lookupStripped(candidate, index);
+    if (retried !== null) return { ...retried, platform, raw };
   }
 
   // Nothing matched. Report the id exactly as it arrived rather than the
@@ -157,4 +205,19 @@ export function resolveModel(raw: string, index: ModelIndex): ResolvedModel {
   // stripped id for a model the catalog does not carry is a rewrite nothing
   // justifies.
   return { entry: null, canonicalId: raw, platform, raw };
+}
+
+function lookupStripped(
+  id: string,
+  index: ModelIndex,
+): { entry: ModelEntry; canonicalId: string } | null {
+  const stripped = index.byId.get(id);
+  if (stripped !== undefined) return { entry: stripped, canonicalId: id };
+
+  if (DATED_SUFFIX_RE.test(id)) {
+    const undated = id.replace(DATED_SUFFIX_RE, '');
+    const byDate = index.byId.get(undated);
+    if (byDate !== undefined) return { entry: byDate, canonicalId: undated };
+  }
+  return null;
 }

@@ -185,6 +185,44 @@ describe('id resolution', () => {
   });
 });
 
+describe('OpenRouter spellings', () => {
+  it.each([
+    ['openrouter/anthropic/claude-sonnet-4.5', 'claude-sonnet-4-5'],
+    ['openrouter/openai/gpt-4.1', 'gpt-4.1'],
+    ['openrouter/anthropic/claude-sonnet-4.5:nitro', 'claude-sonnet-4-5'],
+    ['OpenRouter/openai/gpt-4.1:free', 'gpt-4.1'],
+    ['openrouter/openai/gpt-4.1:FREE', 'gpt-4.1'],
+  ])('resolves %s on platform openrouter', (raw, id) => {
+    const resolved = resolveModel(raw, MODEL_INDEX);
+    expect(resolved.entry?.id).toBe(id);
+    expect(resolved.platform).toBe('openrouter');
+  });
+
+  it('leaves spellings without the prefix as they were', () => {
+    expect(resolveModel('openai/gpt-4.1', MODEL_INDEX).platform).toBeNull();
+    expect(resolveModel('anthropic/claude-sonnet-4.5', MODEL_INDEX).entry).toBeNull();
+    expect(resolveModel('claude-3.7-sonnet', MODEL_INDEX).canonicalId).toBe('claude-3.7-sonnet');
+  });
+
+  it('keeps the platform on a miss', () => {
+    const resolved = resolveModel('openrouter/openrouter/auto', MODEL_INDEX);
+    expect(resolved.entry).toBeNull();
+    expect(resolved.platform).toBe('openrouter');
+  });
+
+  it('keeps the prefix platform over a geo prefix in the slug', () => {
+    expect(resolveModel('openrouter/us.anthropic.x', MODEL_INDEX).platform).toBe('openrouter');
+    expect(stripPlatformDecorations('openrouter/us.anthropic.x').platform).toBe('openrouter');
+  });
+
+  it('strips the prefix and a routing variant without other rewrites', () => {
+    expect(stripPlatformDecorations('openrouter/anthropic/claude-sonnet-4.5:nitro')).toEqual({
+      id: 'claude-sonnet-4.5',
+      platform: 'openrouter',
+    });
+  });
+});
+
 describe('builder', () => {
   const acme = vendor('anthropic', {
     family: { id: 'acme', name: 'Acme' },

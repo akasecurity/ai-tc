@@ -226,6 +226,7 @@ describe('the built hooks enforce', () => {
         .map(
           (name) => JSON.parse(readFileSync(join(dir, name), 'utf8')) as Record<string, unknown>,
         );
+      expect(recordings.map((r) => r.harness)).toEqual(['cursor', 'cursor']);
       expect(recordings.map((r) => [r.event, r.output])).toEqual([
         ['preToolUse', output],
         ['preToolUse', null],

@@ -90,7 +90,7 @@ To see exactly what the host sends and what the plugin answers, create the recor
 mkdir -p ~/.aka/data/hook-recordings
 ```
 
-While it exists, every hook run writes one JSON file there with the event, the payload as the host sent it, the verdict the hook returned (`null` when it said nothing) and the exit code that verdict ends in. Remove the directory to stop. A recording holds prompts, tool arguments and tool output verbatim, secrets included, so each file is readable by its owner only; record with throwaway values. [`test/fixtures/RECORDING.md`](test/fixtures/RECORDING.md) is the runbook for turning a live VS Code session into fixtures.
+While it exists, every hook run writes one JSON file there with the harness (`copilot`), the event, the payload as the host sent it, the verdict the hook returned (`null` when it said nothing) and the exit code that verdict ends in. Remove the directory to stop. A recording holds prompts, tool arguments and tool output verbatim, secrets included, so each file is readable by its owner only; record with throwaway values. [`test/fixtures/RECORDING.md`](test/fixtures/RECORDING.md) is the runbook for turning a live VS Code session into fixtures.
 
 ## Where your data lives
 

@@ -4,6 +4,7 @@
 // notices written to stderr are not recorded either.
 import type { HookRecordingBase } from '@akasecurity/plugin-sdk';
 import { recordHookRun as writeRecording } from '@akasecurity/plugin-sdk';
+import { HARNESS } from '@akasecurity/schema';
 
 import type { HookHandler, HookOutput } from './shared.ts';
 
@@ -24,7 +25,13 @@ export function recordHookRun(
   recordingsDir?: string,
   now?: Date,
 ): string | undefined {
-  return writeRecording(event, stdin, { output: output ?? null }, { dir: recordingsDir, now });
+  return writeRecording(
+    HARNESS.Cursor,
+    event,
+    stdin,
+    { output: output ?? null },
+    { dir: recordingsDir, now },
+  );
 }
 
 /** Run the handler, record its answer when recording is on, and return the answer. */

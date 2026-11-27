@@ -3,6 +3,7 @@
 // handler returned and the exit code `runHookFailOpen` ends it with.
 import type { HookRecordingBase } from '@akasecurity/plugin-sdk';
 import { recordHookRun as writeRecording } from '@akasecurity/plugin-sdk';
+import { HARNESS } from '@akasecurity/schema';
 
 import type { HookVerdict } from './shared.ts';
 import { PROMPT_BLOCK_EXIT_CODE } from './shared.ts';
@@ -32,6 +33,7 @@ export function recordHookRun(
   now?: Date,
 ): string | undefined {
   return writeRecording(
+    HARNESS.Copilot,
     event,
     stdin,
     { verdict: verdict ?? null, exitCode: exitCodeFor(verdict) },

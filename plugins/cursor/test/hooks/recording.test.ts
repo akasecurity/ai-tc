@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { HARNESS } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
@@ -43,6 +44,7 @@ describe('recordHookRun', () => {
     expect(file).toContain('preToolUse');
     expect(only()).toEqual({
       recordedAt: AT.toISOString(),
+      harness: HARNESS.Cursor,
       event: 'preToolUse',
       stdin: { tool_name: 'Shell' },
       output,

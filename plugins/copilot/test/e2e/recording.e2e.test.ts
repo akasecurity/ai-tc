@@ -56,6 +56,7 @@ describe('hook recordings, through a built hook', () => {
       readFileSync(join(recordings, files[0] ?? ''), 'utf8'),
     ) as HookRecording;
     expect(recording.event).toBe('preToolUse');
+    expect(recording.harness).toBe('copilot');
     expect((recording.stdin as Record<string, unknown>).tool_name).toBe(PAYLOAD.tool_name);
     expect(recording.exitCode).toBe(0);
   });

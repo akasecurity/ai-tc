@@ -9,6 +9,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { HARNESS } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTrees } from '../../../test/helpers/remove-tree.ts';
@@ -41,13 +42,14 @@ function all(): (HookRecordingBase & Record<string, unknown>)[] {
 
 describe('recordHookRun', () => {
   it('records nothing, and creates nothing, while the directory is absent', () => {
-    expect(recordHookRun('preToolUse', '{}', {}, { dir, now: AT })).toBeUndefined();
+    expect(recordHookRun(HARNESS.Cursor, 'preToolUse', '{}', {}, { dir, now: AT })).toBeUndefined();
     expect(readdirSync(root)).toEqual([]);
   });
 
   it('records the time, event and parsed payload with the answer fields beside them', () => {
     mkdirSync(dir);
     const file = recordHookRun(
+      HARNESS.Cursor,
       'preToolUse',
       '{"tool_name":"Shell"}',
       { output: null },
@@ -60,6 +62,7 @@ describe('recordHookRun', () => {
     expect(all()).toEqual([
       {
         recordedAt: AT.toISOString(),
+        harness: HARNESS.Cursor,
         event: 'preToolUse',
         stdin: { tool_name: 'Shell' },
         output: null,
@@ -69,16 +72,36 @@ describe('recordHookRun', () => {
 
   it('keeps a payload that is not JSON as text, and a missing event as null', () => {
     mkdirSync(dir);
-    recordHookRun(undefined, 'not json', {}, { dir, now: AT });
+    recordHookRun(HARNESS.Cursor, undefined, 'not json', {}, { dir, now: AT });
     const [recording] = all();
     expect(recording?.stdin).toBe('not json');
     expect(recording?.event).toBeNull();
   });
 
+  it('never lets an answer field overwrite a base field', () => {
+    mkdirSync(dir);
+    recordHookRun(
+      HARNESS.Cursor,
+      'preToolUse',
+      '{"n":1}',
+      { harness: 'other', event: 'other', stdin: 'other', recordedAt: 'other', output: null },
+      { dir, now: AT },
+    );
+    expect(all()).toEqual([
+      {
+        recordedAt: AT.toISOString(),
+        harness: HARNESS.Cursor,
+        event: 'preToolUse',
+        stdin: { n: 1 },
+        output: null,
+      },
+    ]);
+  });
+
   it('keeps every run of the same event in the same millisecond', () => {
     mkdirSync(dir);
-    const first = recordHookRun('preToolUse', '{"n":1}', {}, { dir, now: AT });
-    const second = recordHookRun('preToolUse', '{"n":2}', {}, { dir, now: AT });
+    const first = recordHookRun(HARNESS.Cursor, 'preToolUse', '{"n":1}', {}, { dir, now: AT });
+    const second = recordHookRun(HARNESS.Cursor, 'preToolUse', '{"n":2}', {}, { dir, now: AT });
     expect(first).toBeDefined();
     expect(second).toBeDefined();
     expect(first).not.toBe(second);
@@ -87,14 +110,14 @@ describe('recordHookRun', () => {
 
   it.skipIf(process.platform === 'win32')('writes each recording owner-only', () => {
     mkdirSync(dir);
-    const file = recordHookRun('preToolUse', '{}', {}, { dir, now: AT }) ?? '';
+    const file = recordHookRun(HARNESS.Cursor, 'preToolUse', '{}', {}, { dir, now: AT }) ?? '';
     expect(statSync(file).mode & 0o077).toBe(0);
   });
 
   it('swallows a failed write rather than failing the hook', () => {
     // A file where the directory should be: it exists, and nothing can be written under it.
     writeFileSync(dir, '');
-    expect(recordHookRun('preToolUse', '{}', {}, { dir, now: AT })).toBeUndefined();
+    expect(recordHookRun(HARNESS.Cursor, 'preToolUse', '{}', {}, { dir, now: AT })).toBeUndefined();
   });
 });
 
@@ -111,7 +134,7 @@ describe('recordHookRun with a home it cannot resolve', () => {
     }));
     try {
       const fresh = await import('../src/hook-recordings.ts');
-      expect(fresh.recordHookRun('preToolUse', '{}', {})).toBeUndefined();
+      expect(fresh.recordHookRun(HARNESS.Cursor, 'preToolUse', '{}', {})).toBeUndefined();
     } finally {
       vi.doUnmock('../src/data-dir.ts');
       vi.resetModules();

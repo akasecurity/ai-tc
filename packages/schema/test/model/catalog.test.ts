@@ -9,6 +9,7 @@ import {
   hostingFor,
   isFirstParty,
   LONG_CONTEXT_THRESHOLDS,
+  longContextThresholdsOf,
   MODEL_ENTRIES,
   MODEL_INDEX,
   ModelPlatform,
@@ -38,6 +39,7 @@ describe('platform vocabulary', () => {
     deepseek: 'api',
     xai: 'api',
     cohere: 'api',
+    moonshot: 'api',
     bedrock: 'api',
     vertex: 'api',
     azure: 'api',
@@ -63,6 +65,8 @@ describe('platform vocabulary', () => {
     expect(isFirstParty('anthropic', 'anthropic')).toBe(true);
     expect(isFirstParty('anthropic', 'bedrock')).toBe(false);
     expect(isFirstParty('anthropic', 'vertex')).toBe(false);
+    expect(firstPartyPlatformFor('moonshot')).toBe('moonshot');
+    expect(isFirstParty('moonshot', 'moonshot')).toBe(true);
     // Meta publishes weights and runs no first-party API.
     expect(isFirstParty('meta', 'together')).toBe(false);
   });
@@ -163,6 +167,41 @@ describe('id resolution', () => {
       usage: { inputTokens: 1_000_000, outputTokens: 0 },
     });
     expect(cost).toBeCloseTo(0.02, 10);
+  });
+
+  it('declares models for every named vendor', () => {
+    const declared = new Set(MODEL_ENTRIES.map((entry) => entry.vendor));
+    for (const vendor of ModelVendor.options) {
+      if (vendor === 'unknown') continue;
+      expect(declared.has(vendor), vendor).toBe(true);
+    }
+  });
+
+  it('resolves the Kimi models to the moonshot vendor', () => {
+    for (const id of ['kimi-k3.1-pro', 'kimi-k3.1-pro-highspeed', 'kimi-k3', 'kimi-k2.6']) {
+      const { entry, platform } = resolveModel(id, MODEL_INDEX);
+      expect(entry?.vendor, id).toBe('moonshot');
+      expect(entry?.familyId, id).toBe('kimi');
+      expect(platform ?? 'moonshot', id).toBe('moonshot');
+    }
+    expect(
+      resolveModel('kimi-k3.1-pro', MODEL_INDEX).entry?.platforms.get('moonshot')?.hosting,
+    ).toBe('api');
+  });
+
+  it('marks the Kimi models with published weights as open and self-hostable', () => {
+    const open = ['kimi-k3.1-pro', 'kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6'];
+    const apiOnly = ['kimi-k3.1-pro-highspeed', 'kimi-k2.7-code-highspeed'];
+    for (const id of open) {
+      const entry = resolveModel(id, MODEL_INDEX).entry;
+      expect(entry?.openWeights, id).toBe(true);
+      expect(entry?.platforms.get('local')?.hosting, id).toBe('local');
+    }
+    for (const id of apiOnly) {
+      const entry = resolveModel(id, MODEL_INDEX).entry;
+      expect(entry?.openWeights, id).toBe(false);
+      expect(entry?.platforms.has('local'), id).toBe(false);
+    }
   });
 
   it('returns no entry for an unknown model rather than a lookalike', () => {
@@ -714,5 +753,10 @@ describe('long-context pricing', () => {
     }
     expect(declared.size).toBeGreaterThan(0);
     expect(LONG_CONTEXT_THRESHOLDS).toEqual([...declared].sort((a, b) => a - b));
+  });
+
+  it('derives the bundled thresholds from the entry list', () => {
+    expect(LONG_CONTEXT_THRESHOLDS).toEqual([100_000, 200_000, 272_000]);
+    expect(longContextThresholdsOf(MODEL_ENTRIES)).toEqual(LONG_CONTEXT_THRESHOLDS);
   });
 });

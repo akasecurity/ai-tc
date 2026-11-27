@@ -64,6 +64,46 @@ export const ModelPrice = z.object({
 });
 export type ModelPrice = z.infer<typeof ModelPrice>;
 
+/**
+ * One dated row of an offering's price history. `effectiveFrom` is an ISO date
+ * (`YYYY-MM-DD`, UTC); `null` means the row applies from the start.
+ */
+export interface PricePoint {
+  effectiveFrom: string | null;
+  price: ModelPrice;
+}
+
+/** True for a `YYYY-MM-DD` string that names a real calendar date. */
+export function isIsoDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const ms = Date.parse(`${value}T00:00:00Z`);
+  return !Number.isNaN(ms) && new Date(ms).toISOString().slice(0, 10) === value;
+}
+
+/** Orders price rows ascending by `effectiveFrom`, with the undated row first. */
+export function comparePricePoints(a: PricePoint, b: PricePoint): number {
+  if (a.effectiveFrom === b.effectiveFrom) return 0;
+  if (a.effectiveFrom === null) return -1;
+  if (b.effectiveFrom === null) return 1;
+  return a.effectiveFrom < b.effectiveFrom ? -1 : 1;
+}
+
+/**
+ * The price in effect on `day` (`YYYY-MM-DD`, UTC): the latest row dated on or
+ * before it, or `null` when every row starts later or there is none.
+ */
+export function priceAt(
+  offering: { readonly prices: readonly PricePoint[] },
+  day: string,
+): ModelPrice | null {
+  let current: ModelPrice | null = null;
+  for (const row of offering.prices) {
+    if (row.effectiveFrom !== null && row.effectiveFrom > day) break;
+    current = row.price;
+  }
+  return current;
+}
+
 /** $10 per 1,000 web-search requests = $0.01 per request. */
 export const WEB_SEARCH_PER_REQUEST = 0.01;
 

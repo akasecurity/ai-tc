@@ -561,6 +561,7 @@ export class StandaloneDataGateway
         leaves.push({
           sessionId: row.sessionId,
           attributes: JSON.parse(row.attributes) as LlmCallAttributes,
+          at: new Date(row.startedAt).toISOString(),
         });
       } catch {
         // Corrupt attribute blob → skip this leaf (best-effort read).

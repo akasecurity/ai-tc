@@ -6,7 +6,14 @@
  * its message: exit 0, and stdout either empty or exactly one JSON object.
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -200,6 +207,36 @@ describe('the built hooks enforce', () => {
     } finally {
       removeTrees([home]);
     }
+  });
+
+  it('records each run while hook-recordings/ exists, and none once it is gone', () => {
+    withTempHome((home) => {
+      seedPolicy(home, 'block');
+      const dir = join(home, '.aka', 'data', 'hook-recordings');
+      const deny = JSON.stringify(
+        payload('preToolUse', { cwd: home, tool_input: { command: `echo ${FIXTURE.example}` } }),
+      );
+      const clean = JSON.stringify(payload('preToolUse', { cwd: home }));
+
+      mkdirSync(dir);
+      const output = soleObject(runHook('pre-tool-use.js', 'preToolUse', home, deny));
+      silent(runHook('pre-tool-use.js', 'preToolUse', home, clean));
+      const recordings = readdirSync(dir)
+        .sort()
+        .map(
+          (name) => JSON.parse(readFileSync(join(dir, name), 'utf8')) as Record<string, unknown>,
+        );
+      expect(recordings.map((r) => r.harness)).toEqual(['cursor', 'cursor']);
+      expect(recordings.map((r) => [r.event, r.output])).toEqual([
+        ['preToolUse', output],
+        ['preToolUse', null],
+      ]);
+      expect(recordings[0]?.stdin).toEqual(JSON.parse(deny));
+
+      removeTrees([dir]);
+      silent(runHook('pre-tool-use.js', 'preToolUse', home, clean));
+      expect(existsSync(dir)).toBe(false);
+    });
   });
 
   it('a clean call writes nothing', () => {

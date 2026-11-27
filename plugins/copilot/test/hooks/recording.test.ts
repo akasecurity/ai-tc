@@ -1,9 +1,11 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync } from 'node:fs';
+// The SDK owns when a recording is written and how (see plugin-sdk's
+// hook-recordings suite); these cases pin what this plugin puts in one.
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type * as PluginSdkModule from '@akasecurity/plugin-sdk';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { HARNESS } from '@akasecurity/schema';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
 import type { HookRecording } from '../../src/hooks/recording.ts';
@@ -30,7 +32,7 @@ function only(): HookRecording {
 }
 
 describe('recordHookRun', () => {
-  it('records nothing, and creates nothing, while the directory is absent', () => {
+  it('records nothing while the directory is absent', () => {
     expect(recordHookRun('preToolUse', '{}', undefined, dir, AT)).toBeUndefined();
     expect(readdirSync(root)).toEqual([]);
   });
@@ -42,6 +44,7 @@ describe('recordHookRun', () => {
     expect(file).toContain('PreToolUse');
     expect(only()).toEqual({
       recordedAt: AT.toISOString(),
+      harness: HARNESS.Copilot,
       event: 'PreToolUse',
       stdin: { tool_name: 'run_in_terminal' },
       verdict,
@@ -55,26 +58,10 @@ describe('recordHookRun', () => {
     expect(only().exitCode).toBe(PROMPT_BLOCK_EXIT_CODE);
   });
 
-  it('keeps a payload that is not JSON as text, and a silent hook as a null verdict', () => {
+  it('records a silent hook as a null verdict', () => {
     mkdirSync(dir);
-    recordHookRun(undefined, 'not json', undefined, dir, AT);
-    const recording = only();
-    expect(recording.stdin).toBe('not json');
-    expect(recording.verdict).toBeNull();
-    expect(recording.event).toBeNull();
-  });
-
-  it.skipIf(process.platform === 'win32')('writes each recording owner-only', () => {
-    mkdirSync(dir);
-    const file = recordHookRun('preToolUse', '{}', undefined, dir, AT) ?? '';
-    expect(statSync(file).mode & 0o077).toBe(0);
-  });
-
-  it('swallows a failed write rather than failing the hook', () => {
-    mkdirSync(dir);
-    expect(recordHookRun('preToolUse', '{}', undefined, dir, AT)).toBeDefined();
-    // The same name again: the exclusive create fails, and nothing is thrown.
-    expect(recordHookRun('preToolUse', '{}', undefined, dir, AT)).toBeUndefined();
+    recordHookRun('sessionStart', '{}', undefined, dir, AT);
+    expect(only().verdict).toBeNull();
   });
 });
 
@@ -83,28 +70,5 @@ describe('exitCodeFor', () => {
     expect(exitCodeFor({ promptBlock: 'x' })).toBe(2);
     expect(exitCodeFor({ systemMessage: 'x' })).toBe(0);
     expect(exitCodeFor(undefined)).toBe(0);
-  });
-});
-
-// The hook calls this after it has decided, inside the body its watchdog races,
-// so a throw here would replace the decision with the fail-open default.
-describe('recordHookRun with a home it cannot resolve', () => {
-  it('swallows the failure and records nothing', async () => {
-    vi.resetModules();
-    vi.doMock('@akasecurity/plugin-sdk', async (importOriginal) => ({
-      ...(await importOriginal<typeof PluginSdkModule>()),
-      dataDir: () => {
-        throw new Error('no home');
-      },
-    }));
-    try {
-      const fresh = await import('../../src/hooks/recording.ts');
-      expect(fresh.recordHookRun('userPromptSubmitted', '{}', { promptBlock: 'stopped' })).toBe(
-        undefined,
-      );
-    } finally {
-      vi.doUnmock('@akasecurity/plugin-sdk');
-      vi.resetModules();
-    }
   });
 });

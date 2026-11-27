@@ -82,6 +82,16 @@ The setup skill's [Known limitations](https://github.com/akasecurity/ai-tc/blob/
 - **AKA's notices may not be shown to you.** On the Copilot CLI they are sent as hook progress lines, which the Copilot hooks reference documents as shown in the CLI timeline; that has not yet been observed on a real install, and an earlier build's notices appeared only in the debug log in `-p` mode. In VS Code they appear only in the "GitHub Copilot Chat Hooks" output channel. A deny is the one message that carries its own reason, so set `redactFallback` to `block` where a flagged command must not pass silently.
 - **No setup wizard and no history backfill yet.** Use the `aka` CLI directly (`aka init`, `aka detections`, `aka scan`), and nothing reads the sessions that happened before the plugin was installed.
 
+## Recording hook runs
+
+To see exactly what the host sends and what the plugin answers, create the recordings directory:
+
+```sh
+mkdir -p ~/.aka/data/hook-recordings
+```
+
+While it exists, every hook run writes one JSON file there with the harness (`copilot`), the event, the payload as the host sent it, the verdict the hook returned (`null` when it said nothing) and the exit code that verdict ends in. Remove the directory to stop. A recording holds prompts, tool arguments and tool output verbatim, secrets included, so each file is readable by its owner only; record with throwaway values. [`test/fixtures/RECORDING.md`](test/fixtures/RECORDING.md) is the runbook for turning a live VS Code session into fixtures.
+
 ## Where your data lives
 
 Everything is under `~/.aka`: settings in `~/.aka/settings`, the store at `~/.aka/data/aka.db`. Run `aka dashboard` to browse findings in the local web dashboard.

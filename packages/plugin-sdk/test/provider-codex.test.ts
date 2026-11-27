@@ -1,9 +1,9 @@
 /**
  * Unit tests for Codex CLI provider resolution.
  *
- *   - resolveCodexProvider(): Azure from config.toml's active provider, then the
- *       OPENAI_BASE_URL cascade (azure > gateway > openai). Env is injected with
- *       vi.stubEnv, and CODEX_HOME points at a fresh temporary directory per case.
+ *   - resolveCodexProvider(): the base URL from config.toml or OPENAI_BASE_URL,
+ *       classified as azure, gateway or openai. Env is injected with vi.stubEnv,
+ *       and CODEX_HOME points at a fresh temporary directory per case.
  *   - codexProviderFromModelId(): the pure model-id heuristic (no env).
  */
 
@@ -90,6 +90,21 @@ describe('resolveCodexProvider', () => {
   });
 
   it.each([
+    'https://x.openai.azure.com/openai/v1',
+    'https://x.services.ai.azure.com/openai/v1',
+    'https://x.cognitiveservices.azure.com/openai/v1',
+    'https://x.openai.azure.us/openai/v1',
+    'https://x.services.ai.azure.us/openai/v1',
+    'https://x.cognitiveservices.azure.us/openai/v1',
+  ])('returns azure for %s', (url) => {
+    clearProviderEnv();
+    vi.stubEnv('OPENAI_BASE_URL', url);
+    expect(resolveCodexProvider()).toEqual({ provider: 'azure' });
+  });
+
+  it.each([
+    ['https://x.openai.azure.cn/openai/v1', 'x.openai.azure.cn'],
+    ['https://x.cognitiveservices.azure.us.evil.io/v1', 'x.cognitiveservices.azure.us.evil.io'],
     ['https://azure.example.com/v1', 'azure.example.com'],
     ['https://openai.azure.com.evil.io/v1', 'openai.azure.com.evil.io'],
     ['https://x.openai.azure.com.evil.io/v1', 'x.openai.azure.com.evil.io'],
@@ -149,6 +164,47 @@ describe('resolveCodexProvider', () => {
       'base_url = "https://x.openai.azure.com/openai/v1"',
     ]);
     expect(resolveCodexProvider()).toEqual({ provider: 'azure' });
+  });
+
+  it('returns azure when openai_base_url is on Azure', () => {
+    clearProviderEnv();
+    writeCodexConfig(['openai_base_url = "https://x.openai.azure.com/openai/v1"']);
+    expect(resolveCodexProvider()).toEqual({ provider: 'azure' });
+  });
+
+  it('returns gateway when openai_base_url is another host', () => {
+    clearProviderEnv();
+    writeCodexConfig([
+      'model_provider = "openai"',
+      'openai_base_url = "https://proxy.internal/v1"',
+    ]);
+    expect(resolveCodexProvider()).toEqual({
+      provider: 'gateway',
+      gatewayHost: 'proxy.internal',
+    });
+  });
+
+  it('prefers openai_base_url over OPENAI_BASE_URL', () => {
+    clearProviderEnv();
+    vi.stubEnv('OPENAI_BASE_URL', 'https://x.openai.azure.com/openai/v1');
+    writeCodexConfig(['openai_base_url = "https://proxy.internal/v1"']);
+    expect(resolveCodexProvider()).toEqual({
+      provider: 'gateway',
+      gatewayHost: 'proxy.internal',
+    });
+    writeCodexConfig(['openai_base_url = "https://x.openai.azure.com/openai/v1"']);
+    vi.stubEnv('OPENAI_BASE_URL', 'https://proxy.internal/v1');
+    expect(resolveCodexProvider()).toEqual({ provider: 'azure' });
+  });
+
+  it('ignores a [model_providers.openai] base_url, which Codex does not let a user override', () => {
+    clearProviderEnv();
+    writeCodexConfig([
+      'model_provider = "openai"',
+      '[model_providers.openai]',
+      'base_url = "https://x.openai.azure.com/openai/v1"',
+    ]);
+    expect(resolveCodexProvider()).toEqual({ provider: 'openai' });
   });
 
   it('ignores an Azure provider entry that is not the active provider', () => {

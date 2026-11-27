@@ -1,9 +1,6 @@
-import { realpathSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-
 import { normalizeAccountEmail } from '@akasecurity/schema';
 
+import { resolveCodexHome } from '../codex-config.ts';
 import { resolveCodexProvider } from '../provider-codex.ts';
 import { DEFAULT_ANTHROPIC_HOST } from '../provider-env.ts';
 
@@ -230,19 +227,7 @@ export function codexEnvVetoed(env: CodexAccountEnv = readCodexAccountEnv()): bo
   return env.credentialEnv || env.gateway;
 }
 
-/** The Codex home override, resolved and required to be a directory, else the default under `home`. */
-export function resolveCodexHome(
-  env: Pick<CodexAccountEnv, 'codexHome'>,
-  home: string = homedir(),
-): string | undefined {
-  if (env.codexHome === undefined) return join(home, '.codex');
-  try {
-    const real = realpathSync(env.codexHome);
-    return statSync(real).isDirectory() ? real : undefined;
-  } catch {
-    return undefined;
-  }
-}
+export { resolveCodexHome };
 
 /** The Codex home this process's environment names, resolved; undefined when the override is unusable. */
 export function codexHomeDir(home?: string): string | undefined {

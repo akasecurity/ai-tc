@@ -1,10 +1,17 @@
-import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
-import { join } from 'node:path';
+import { closeSync, fstatSync, openSync, readSync, realpathSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join, posix, win32 } from 'node:path';
 
-// Reads the string values of Codex's `config.toml` with a small TOML reader:
+// Reads which model provider Codex is configured to use, from two `config.toml`
+// layers: the system file (`/etc/codex/config.toml`, or
+// `C:\ProgramData\OpenAI\Codex\config.toml` on Windows) and, over it key by key,
+// the user file under the Codex home. macOS managed preferences, cloud-delivered
+// fragments, `--profile` and `-c` overrides are not read.
+//
+// Each file is parsed with a small TOML reader that keeps string values:
 // tables, dotted and quoted keys, the four string forms, arrays and inline
-// tables. Other scalars are skipped. Any syntax it cannot follow makes the
-// whole read undefined.
+// tables. Other scalars are skipped. A file with syntax it cannot follow is
+// treated as absent.
 
 export const CODEX_CONFIG_MAX_BYTES = 1024 * 1024;
 
@@ -247,7 +254,8 @@ function readBoundedText(path: string): string | undefined {
       if (n === 0) break;
       read += n;
     }
-    return buffer.subarray(0, read).toString('utf8');
+    const text = buffer.subarray(0, read).toString('utf8');
+    return text.startsWith('\uFEFF') ? text.slice(1) : text;
   } catch {
     return undefined;
   } finally {
@@ -259,23 +267,81 @@ function readBoundedText(path: string): string | undefined {
   }
 }
 
+/** The Codex home override, resolved and required to be a directory, else the default under `home`. */
+export function resolveCodexHome(
+  env: { readonly codexHome: string | undefined },
+  home: string = homedir(),
+): string | undefined {
+  if (env.codexHome === undefined) return join(home, '.codex');
+  try {
+    const real = realpathSync(env.codexHome);
+    return statSync(real).isDirectory() ? real : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The system-wide `config.toml` for a platform. */
+export function codexSystemConfigPath(platform: NodeJS.Platform = process.platform): string {
+  if (platform === 'win32')
+    return win32.join('C:\\', 'ProgramData', 'OpenAI', 'Codex', 'config.toml');
+  return posix.join('/etc', 'codex', 'config.toml');
+}
+
+/** Null, the shipped value, reads the platform's system file. */
+let testOnlySystemConfigPath: string | null = null;
+
 /**
- * The `base_url` of the model provider `<codexHome>/config.toml` selects: the
- * active profile's `model_provider`, else the top-level one. Undefined when the
- * file is missing, unreadable, over 1 MiB or not readable as TOML, or when the
- * selected provider has no `base_url`.
+ * TEST-ONLY: point the system-layer read at another file. A suite sets this so
+ * its result does not depend on the machine's `/etc/codex/config.toml`.
  */
-export function readCodexActiveProviderBaseUrl(codexHome: string): string | undefined {
-  const text = readBoundedText(join(codexHome, 'config.toml'));
-  if (text === undefined) return undefined;
-  const values = parseTomlStrings(text);
-  if (values === undefined) return undefined;
+export function UNSAFE_TEST_ONLY_setCodexSystemConfigPath(path: string | null): void {
+  testOnlySystemConfigPath = path;
+}
+
+/** Provider ids built into Codex, whose `[model_providers.<id>]` entries Codex ignores. */
+export const CODEX_BUILT_IN_PROVIDERS: readonly string[] = ['openai', 'ollama', 'lmstudio'];
+
+export interface CodexProviderConfig {
+  /** The selected provider id: the active profile's, else the top-level one, else `openai`. */
+  readonly provider: string;
+  /**
+   * `openai_base_url` for `openai`, the entry's `base_url` for any other
+   * configured provider, and undefined for the other built-in providers.
+   */
+  readonly baseUrl: string | undefined;
+}
+
+function readLayer(path: string): ReadonlyMap<string, string> {
+  const text = readBoundedText(path);
+  if (text === undefined) return new Map();
+  return parseTomlStrings(text) ?? new Map();
+}
+
+const nonEmpty = (value: string | undefined): string | undefined =>
+  value === undefined || value.trim() === '' ? undefined : value;
+
+/** The provider Codex's system and user `config.toml` select, and its base URL. */
+export function readCodexProviderConfig(codexHome: string | undefined): CodexProviderConfig {
+  const values = new Map(readLayer(testOnlySystemConfigPath ?? codexSystemConfigPath()));
+  if (codexHome !== undefined) {
+    for (const [key, value] of readLayer(join(codexHome, 'config.toml'))) values.set(key, value);
+  }
   const profile = values.get(pathKey(['profile']));
-  const active =
-    (profile === undefined
-      ? undefined
-      : values.get(pathKey(['profiles', profile, 'model_provider']))) ??
-    values.get(pathKey(['model_provider']));
-  if (active === undefined) return undefined;
-  return values.get(pathKey(['model_providers', active, 'base_url']));
+  const provider =
+    nonEmpty(
+      profile === undefined
+        ? undefined
+        : values.get(pathKey(['profiles', profile, 'model_provider'])),
+    ) ??
+    nonEmpty(values.get(pathKey(['model_provider']))) ??
+    'openai';
+  if (provider === 'openai') {
+    return { provider, baseUrl: nonEmpty(values.get(pathKey(['openai_base_url']))) };
+  }
+  if (CODEX_BUILT_IN_PROVIDERS.includes(provider)) return { provider, baseUrl: undefined };
+  return {
+    provider,
+    baseUrl: nonEmpty(values.get(pathKey(['model_providers', provider, 'base_url']))),
+  };
 }

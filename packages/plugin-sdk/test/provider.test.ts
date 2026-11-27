@@ -2,7 +2,7 @@
  * Unit tests for provider resolution.
  *
  *   - resolveProvider(): the env priority cascade
- *       (Bedrock > Vertex > gateway-via-ANTHROPIC_BASE_URL > anthropic).
+ *       (Bedrock > Vertex > Foundry > gateway-via-ANTHROPIC_BASE_URL > anthropic).
  *       Env is injected with vi.stubEnv so each branch is exercised in isolation.
  *   - providerFromModelId(): the pure model-id heuristic (no env).
  */
@@ -11,11 +11,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { providerFromModelId, resolveProvider } from '../src/provider.ts';
 
-// Clear the three provider env vars before each case so a stub from one test
+// Clear the provider env vars before each case so a stub from one test
 // never leaks into the next (and so the host's real env doesn't bleed in).
 function clearProviderEnv(): void {
   vi.stubEnv('CLAUDE_CODE_USE_BEDROCK', '');
   vi.stubEnv('CLAUDE_CODE_USE_VERTEX', '');
+  vi.stubEnv('CLAUDE_CODE_USE_FOUNDRY', '');
   vi.stubEnv('ANTHROPIC_BASE_URL', '');
 }
 
@@ -56,6 +57,41 @@ describe('resolveProvider', () => {
     vi.stubEnv('CLAUDE_CODE_USE_BEDROCK', '1');
     vi.stubEnv('CLAUDE_CODE_USE_VERTEX', '1');
     expect(resolveProvider()).toEqual({ provider: 'bedrock' });
+  });
+
+  it('returns foundry when CLAUDE_CODE_USE_FOUNDRY is truthy', () => {
+    clearProviderEnv();
+    vi.stubEnv('CLAUDE_CODE_USE_FOUNDRY', '1');
+    expect(resolveProvider()).toEqual({ provider: 'foundry' });
+  });
+
+  it('prefers Bedrock over Foundry when both flags are set', () => {
+    clearProviderEnv();
+    vi.stubEnv('CLAUDE_CODE_USE_BEDROCK', '1');
+    vi.stubEnv('CLAUDE_CODE_USE_FOUNDRY', '1');
+    expect(resolveProvider()).toEqual({ provider: 'bedrock' });
+  });
+
+  it('prefers Vertex over Foundry when both flags are set', () => {
+    clearProviderEnv();
+    vi.stubEnv('CLAUDE_CODE_USE_VERTEX', '1');
+    vi.stubEnv('CLAUDE_CODE_USE_FOUNDRY', '1');
+    expect(resolveProvider()).toEqual({ provider: 'vertex' });
+  });
+
+  it('prefers the Foundry flag over a gateway base URL', () => {
+    clearProviderEnv();
+    vi.stubEnv('CLAUDE_CODE_USE_FOUNDRY', '1');
+    vi.stubEnv('ANTHROPIC_BASE_URL', 'https://litellm.internal:4000');
+    expect(resolveProvider()).toEqual({ provider: 'foundry' });
+  });
+
+  it('treats a "false"/"0" Foundry flag as not set', () => {
+    clearProviderEnv();
+    vi.stubEnv('CLAUDE_CODE_USE_FOUNDRY', 'false');
+    expect(resolveProvider()).toEqual({ provider: 'anthropic' });
+    vi.stubEnv('CLAUDE_CODE_USE_FOUNDRY', '0');
+    expect(resolveProvider()).toEqual({ provider: 'anthropic' });
   });
 
   it('prefers the Bedrock flag over a gateway base URL', () => {

@@ -15,7 +15,7 @@ export default [
   ...rootConfigFiles,
   {
     // provider.ts resolves the LLM provider from the host process env at
-    // SessionStart (Bedrock/Vertex flags + ANTHROPIC_BASE_URL). The opt-out is
+    // SessionStart (Bedrock/Vertex/Foundry flags + ANTHROPIC_BASE_URL). The opt-out is
     // scoped to that one file so every other module in this package still fails
     // lint on a process.env read.
     files: ['src/provider.ts'],
@@ -25,7 +25,8 @@ export default [
   },
   {
     // provider-codex.ts is the Codex CLI counterpart: resolves the LLM
-    // provider from the host process env at SessionStart (OPENAI_BASE_URL).
+    // provider from the host process env at SessionStart (OPENAI_BASE_URL and
+    // the CODEX_HOME that holds config.toml).
     // Same file-scoped opt-out as provider.ts above.
     files: ['src/provider-codex.ts'],
     rules: {

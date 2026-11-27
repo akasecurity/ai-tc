@@ -1,8 +1,8 @@
 /**
  * Provider resolution for Claude Code sessions.
  *
- * Claude Code can run against Anthropic-direct, AWS Bedrock, Google Vertex, or
- * any Anthropic-compatible gateway (`ANTHROPIC_BASE_URL` → LiteLLM, OpenRouter,
+ * Claude Code can run against Anthropic-direct, AWS Bedrock, Google Vertex,
+ * Microsoft Foundry, or any Anthropic-compatible gateway (`ANTHROPIC_BASE_URL` → LiteLLM, OpenRouter,
  * an Ollama shim, …). The same `model` id costs a different amount per provider,
  * so token-usage cost attribution needs the provider as a per-session fact.
  *
@@ -19,7 +19,7 @@
 import { DEFAULT_ANTHROPIC_HOST, ProviderEnvSchema } from './provider-env.ts';
 
 /** Provider backend a Claude Code session talks to. */
-export type Provider = 'anthropic' | 'bedrock' | 'vertex' | 'gateway';
+export type Provider = 'anthropic' | 'bedrock' | 'vertex' | 'foundry' | 'gateway';
 
 /** `providerFromModelId` adds 'unknown' for ids it cannot classify. */
 export type ProviderOrUnknown = Provider | 'unknown';
@@ -56,22 +56,23 @@ function hostOf(url: string): string | undefined {
 }
 
 /**
- * Resolve the provider from the host process env (Bedrock/Vertex flags +
+ * Resolve the provider from the host process env (Bedrock/Vertex/Foundry flags +
  * `ANTHROPIC_BASE_URL`). Called once at SessionStart, where the env is
  * contemporaneous, to snapshot the provider onto the session root.
  *
  * Priority cascade:
  *   1. `CLAUDE_CODE_USE_BEDROCK` truthy → 'bedrock'
  *   2. else `CLAUDE_CODE_USE_VERTEX` truthy → 'vertex'
- *   3. else `ANTHROPIC_BASE_URL` set AND its host ≠ api.anthropic.com → 'gateway'
+ *   3. else `CLAUDE_CODE_USE_FOUNDRY` truthy → 'foundry'
+ *   4. else `ANTHROPIC_BASE_URL` set AND its host ≠ api.anthropic.com → 'gateway'
  *      (+ `gatewayHost`)
- *   4. else → 'anthropic'
+ *   5. else → 'anthropic'
  */
 export function resolveProvider(): ResolvedProvider {
   // Lenient parse — every field is optional and total (`.catch(undefined)`), so a
   // default Anthropic-direct session (none set) yields an all-undefined object and
   // a single malformed value (e.g. a bad ANTHROPIC_BASE_URL) degrades that one
-  // field to undefined instead of failing the whole parse — the Bedrock/Vertex
+  // field to undefined instead of failing the whole parse — the provider
   // flags resolve independently of URL validity. Fall back to a parse of {}
   // (all-undefined, same shape) on the unexpected failure rather than throwing in
   // a hook path (n/no-process-env is off for this package).
@@ -80,6 +81,7 @@ export function resolveProvider(): ResolvedProvider {
 
   if (env.CLAUDE_CODE_USE_BEDROCK === true) return { provider: 'bedrock' };
   if (env.CLAUDE_CODE_USE_VERTEX === true) return { provider: 'vertex' };
+  if (env.CLAUDE_CODE_USE_FOUNDRY === true) return { provider: 'foundry' };
 
   const baseUrl = env.ANTHROPIC_BASE_URL;
   if (baseUrl !== undefined && baseUrl !== '') {
@@ -103,6 +105,10 @@ export function resolveProvider(): ResolvedProvider {
  *   - `…:<tag>` (e.g. `llama3:70b`, Ollama-style)        → gateway
  *   - plain `claude-…`                                   → anthropic
  *   - anything else                                      → unknown
+ *
+ * Foundry has no model-id spelling of its own: its deployments are named by the
+ * user, commonly with the plain `claude-…` id, so a Foundry session is
+ * recognised only by its flag.
  */
 export function providerFromModelId(modelId: string): ProviderOrUnknown {
   const id = modelId.trim();

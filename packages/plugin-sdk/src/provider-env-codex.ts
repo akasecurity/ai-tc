@@ -1,19 +1,15 @@
 import * as z from 'zod';
 
-// Default OpenAI-direct API host. OPENAI_BASE_URL pointing anywhere else means a
-// gateway/proxy is in front of the model (Azure OpenAI, LiteLLM, OpenRouter, a
-// self-hosted shim, …). Kept here so resolveCodexProvider() and the schema
-// agree on the baseline.
+// Default OpenAI-direct API host. OPENAI_BASE_URL pointing anywhere else means
+// Azure OpenAI or a gateway/proxy is in front of the model (LiteLLM, OpenRouter,
+// a self-hosted shim, …).
 export const DEFAULT_OPENAI_HOST = 'api.openai.com';
 
 // Codex CLI provider/backend selection, inherited from the host process env.
-// Unlike Claude Code (CLAUDE_CODE_USE_BEDROCK / CLAUDE_CODE_USE_VERTEX booleans),
-// Codex has no fixed env-var flags for named providers — Azure OpenAI and other
-// `model_providers` entries are selected via ~/.codex/config.toml, which this
-// resolver deliberately does NOT read (same scope as the Claude Code resolver:
-// host env only, read once at SessionStart where it is contemporaneous). The one
-// fixed env var Codex itself reads is OPENAI_BASE_URL, so that is the only
-// signal available for gateway classification without a config-file read.
+// Codex has no env-var flags for named providers: Azure OpenAI and other
+// `model_providers` entries are selected in `config.toml` under CODEX_HOME
+// (default `~/.codex`), which resolveCodexProvider() reads from that directory.
+// OPENAI_BASE_URL is the one env var that overrides the default provider's URL.
 //
 // OPENAI_BASE_URL is parsed leniently as a non-empty string, NOT a strict URL:
 // it is only used to extract a host for gateway classification, and a
@@ -29,12 +25,18 @@ const optionalBaseUrl = z
   }, z.string().optional())
   .catch(undefined);
 
+// CODEX_HOME names the directory holding `config.toml`; empty reads as unset.
+const optionalDir = z
+  .preprocess((v) => (v === '' ? undefined : v), z.string().optional())
+  .catch(undefined);
+
 export const codexProviderEnvShape = {
   OPENAI_BASE_URL: optionalBaseUrl,
+  CODEX_HOME: optionalDir,
 };
 
 // Lenient provider-only schema parsed against the host env by resolveCodexProvider().
 // Every field is optional, so it parses cleanly on a default OpenAI-direct
-// session where OPENAI_BASE_URL isn't set.
+// session where neither is set.
 export const CodexProviderEnvSchema = z.object(codexProviderEnvShape);
 export type CodexProviderEnv = z.infer<typeof CodexProviderEnvSchema>;

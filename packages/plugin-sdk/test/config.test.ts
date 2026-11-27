@@ -55,7 +55,9 @@ describe('loadConfig', () => {
     // only assert loadConfig surfaces a valid ResolvedProvider.
     const cfg = loadConfig(base);
     expect(cfg.provider).toBeDefined();
-    expect(['anthropic', 'bedrock', 'vertex', 'gateway']).toContain(cfg.provider.provider);
+    expect(['anthropic', 'bedrock', 'vertex', 'foundry', 'gateway']).toContain(
+      cfg.provider.provider,
+    );
   });
 
   it('is onboarded once onboardedAt is recorded, and reads saved answers', () => {

@@ -72,7 +72,7 @@ export interface ClaudeBillingInput {
  */
 export function claudeBilling(input: ClaudeBillingInput): SessionBilling {
   const { provider, env, login, settingsVeto } = input;
-  if (provider === 'bedrock' || provider === 'vertex') return CLOUD;
+  if (provider === 'bedrock' || provider === 'vertex' || provider === 'foundry') return CLOUD;
   if (provider === 'gateway') return GATEWAY;
   const account = login.status === 'ok' ? login.login : undefined;
   if (account?.primaryApiKey === true) return API_KEY;
@@ -89,13 +89,15 @@ export interface CodexBillingInput {
 }
 
 /**
- * Codex. A ChatGPT sign-in is a subscription unless a credential in the environment competes with
- * it. An access token, from the environment or `auth.json`, is a personal ChatGPT token or an
- * agent identity, and only its value says which, so it is `unknown` wherever it arrives, beside
- * an API-key login in `auth.json` too. Only a Bedrock login in `auth.json` outranks it.
+ * Codex. An Azure provider is `cloud` and a gateway is `gateway`, whatever the login. A ChatGPT
+ * sign-in is a subscription unless a credential in the environment competes with it. An access
+ * token, from the environment or `auth.json`, is a personal ChatGPT token or an agent identity,
+ * and only its value says which, so it is `unknown` wherever it arrives, beside an API-key login
+ * in `auth.json` too. Only a Bedrock login in `auth.json` outranks it.
  */
 export function codexBilling(input: CodexBillingInput): SessionBilling {
   const { provider, env, login } = input;
+  if (provider === 'azure') return CLOUD;
   if (provider === 'gateway') return GATEWAY;
   switch (login.status) {
     case 'ok':

@@ -694,6 +694,28 @@ describe('reconcileSession — FK-safety & provider inheritance', () => {
     expect(r.byMessageId.get('msg_1')?.provider).toBe('bedrock');
     expect(r.byMessageId.get('msg_2')?.provider).toBe('bedrock');
   });
+
+  it('inherits a SessionStart-written provider (foundry) onto the leaves', async () => {
+    const gateway = resolveDataGateway(config(dataDir));
+    try {
+      await gateway.ensureInventory({
+        host: { objectType: 'host', identityKey: 'm1', attributes: {} },
+      });
+      await gateway.recordAuditEvent({
+        id: SESSION,
+        eventType: 'session',
+        startedAt: '2026-06-20T09:59:00.000Z',
+        attributes: { provider: 'foundry' },
+      });
+      const { parseTranscriptUsage } = await import('../../src/history/transcripts.ts');
+      await reconcileSession(gateway, SESSION, parseTranscriptUsage(transcript()));
+    } finally {
+      await gateway.close();
+    }
+    const r = rows(dataDir);
+    expect(r.byMessageId.get('msg_1')?.provider).toBe('foundry');
+    expect(r.byMessageId.get('msg_2')?.provider).toBe('foundry');
+  });
 });
 
 describe('the reconcilers resolve their gateway with this build as pluginBuild', () => {

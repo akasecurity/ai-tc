@@ -525,9 +525,11 @@ describe('the provider vocabulary the product actually stores', () => {
     'anthropic',
     'bedrock',
     'vertex',
+    'foundry',
     'gateway',
     // provider-codex.ts — CodexProvider
     'openai',
+    'azure',
     // provider-antigravity.ts — AntigravityProvider
     'google',
     // protocol.ts's WEB_SOURCE_TOOLS — written as llm_call.provider by the

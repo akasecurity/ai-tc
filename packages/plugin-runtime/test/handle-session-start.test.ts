@@ -10,8 +10,11 @@ import {
   bundledDetections,
   type DataGateway,
   type PluginConfig,
+  resolveCodexProvider,
+  resolveProvider,
   resolveRepoAttribution,
 } from '@akasecurity/plugin-sdk';
+import { resolveClaudeBilling, resolveCodexBilling } from '@akasecurity/plugin-sdk/account';
 import type { ConfigScanRecord } from '@akasecurity/schema';
 import { agentKey, SOURCE_TOOL } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -194,6 +197,70 @@ describe('handleSessionStart (standalone)', () => {
     expect(attrs.provider).toBe('gateway');
     expect(attrs.gateway_host).toBe('litellm.internal');
     db.close();
+  });
+
+  describe('the provider the host environment selects', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    function rootAttrs(id: string): Record<string, unknown> {
+      const db = open();
+      try {
+        const row = db.prepare('SELECT attributes FROM audit_events WHERE id = ?').get(id) as {
+          attributes: string;
+        };
+        return JSON.parse(row.attributes) as Record<string, unknown>;
+      } finally {
+        db.close();
+      }
+    }
+
+    it('records foundry and the cloud channel for a Claude Code session on Foundry', async () => {
+      vi.stubEnv('CLAUDE_CODE_USE_BEDROCK', '');
+      vi.stubEnv('CLAUDE_CODE_USE_VERTEX', '');
+      vi.stubEnv('ANTHROPIC_BASE_URL', '');
+      vi.stubEnv('CLAUDE_CONFIG_DIR', home);
+      vi.stubEnv('CLAUDE_CODE_USE_FOUNDRY', '1');
+      const provider = resolveProvider();
+
+      await handleSessionStart(
+        { ...start('sf'), billing: resolveClaudeBilling(provider.provider, cwd) },
+        { ...config(dir), provider },
+      );
+
+      expect(rootAttrs('sf')).toMatchObject({ provider: 'foundry', usage_channel: 'cloud' });
+      expect(rootAttrs('sf')).not.toHaveProperty('gateway_host');
+    });
+
+    it('records azure and the cloud channel for a Codex session whose config.toml selects Azure', async () => {
+      const codexHome = join(home, '.codex');
+      mkdirSync(codexHome);
+      writeFileSync(
+        join(codexHome, 'config.toml'),
+        [
+          'model_provider = "azure"',
+          '[model_providers.azure]',
+          'base_url = "https://x.openai.azure.com/openai/v1"',
+        ].join('\n'),
+      );
+      vi.stubEnv('OPENAI_BASE_URL', '');
+      vi.stubEnv('CODEX_API_KEY', '');
+      vi.stubEnv('CODEX_ACCESS_TOKEN', '');
+      vi.stubEnv('CODEX_HOME', codexHome);
+      const provider = resolveCodexProvider();
+
+      await handleSessionStart(
+        {
+          ...start('sa', { tool: SOURCE_TOOL.Codex }),
+          billing: resolveCodexBilling(provider.provider),
+        },
+        { ...config(dir), provider },
+      );
+
+      expect(rootAttrs('sa')).toMatchObject({ provider: 'azure', usage_channel: 'cloud' });
+      expect(rootAttrs('sa')).not.toHaveProperty('gateway_host');
+    });
   });
 
   it('records the usage channel on the root, never the plan, and no channel when none is given', async () => {

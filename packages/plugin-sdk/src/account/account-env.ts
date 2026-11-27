@@ -193,7 +193,7 @@ export interface CodexAccountEnv {
   readonly keyEnv: boolean;
   /** A credential variable classed as an access token is set. */
   readonly accessTokenEnv: boolean;
-  /** True when the provider resolution names a gateway rather than the default API. */
+  /** True when the provider resolution names Azure or a gateway rather than the default API. */
   readonly gateway: boolean;
 }
 
@@ -218,14 +218,14 @@ export function readCodexAccountEnv(): CodexAccountEnv {
       accessTokenEnv: CODEX_CREDENTIAL_ENV.some(
         (name) => CODEX_CREDENTIAL_KIND[name] === 'access_token' && isPresent(env[name]),
       ),
-      gateway: resolveCodexProvider().provider === 'gateway',
+      gateway: resolveCodexProvider().provider !== 'openai',
     };
   } catch {
     return UNREADABLE_CODEX_ENV;
   }
 }
 
-/** True when a key or token is set for Codex, or its provider is a gateway. */
+/** True when a key or token is set for Codex, or its provider is Azure or a gateway. */
 export function codexEnvVetoed(env: CodexAccountEnv = readCodexAccountEnv()): boolean {
   return env.credentialEnv || env.gateway;
 }

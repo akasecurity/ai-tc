@@ -787,6 +787,26 @@ describe('reconcileSession — FK-safety & provider inheritance', () => {
     // root's env-provider wins by first-write — the leaf reads 'gateway' back.
     expect(rows(dataDir).attrsByOrdinal[0]?.provider).toBe('gateway');
   });
+
+  it('inherits a SessionStart-written provider (azure) onto the leaves', async () => {
+    const gateway = resolveDataGateway(config(dataDir));
+    try {
+      await gateway.ensureInventory({
+        host: { objectType: 'host', identityKey: 'm1', attributes: {} },
+      });
+      await gateway.recordAuditEvent({
+        id: SESSION,
+        eventType: 'session',
+        startedAt: '2026-06-20T09:59:00.000Z',
+        attributes: { provider: 'azure' },
+      });
+      const { parseTranscriptUsage } = await import('../../src/history/transcripts.ts');
+      await reconcileSession(gateway, SESSION, parseTranscriptUsage(transcript()));
+    } finally {
+      await gateway.close();
+    }
+    expect(rows(dataDir).attrsByOrdinal[0]?.provider).toBe('azure');
+  });
   it('copies the usage channel and plan on the root onto every leaf', async () => {
     const gateway = resolveDataGateway(config(dataDir));
     try {

@@ -7,11 +7,11 @@ export const DEFAULT_ANTHROPIC_HOST = 'api.anthropic.com';
 
 // Claude Code provider/backend selection, inherited from the host process env.
 // These are NOT the backend service's own config — Claude Code sets them to pick
-// AWS Bedrock / Google Vertex / an Anthropic-compatible gateway as the model
-// backend. They are read here so resolveProvider() can classify the provider for
+// AWS Bedrock / Google Vertex / Microsoft Foundry / an Anthropic-compatible
+// gateway as the model backend. They are read here so resolveProvider() can classify the provider for
 // per-session cost attribution.
 //
-// `CLAUDE_CODE_USE_BEDROCK` / `CLAUDE_CODE_USE_VERTEX` are boolean-ish: Claude
+// `CLAUDE_CODE_USE_BEDROCK` / `CLAUDE_CODE_USE_VERTEX` / `CLAUDE_CODE_USE_FOUNDRY` are boolean-ish: Claude
 // Code sets them to a truthy string (e.g. "1" or "true") when active and leaves
 // them unset otherwise, so any non-empty, non-"false"/"0" value reads as true.
 // All optional — absent on a plain Anthropic-direct session.
@@ -47,6 +47,7 @@ const optionalBaseUrl = z
 export const providerEnvShape = {
   CLAUDE_CODE_USE_BEDROCK: booleanish,
   CLAUDE_CODE_USE_VERTEX: booleanish,
+  CLAUDE_CODE_USE_FOUNDRY: booleanish,
   ANTHROPIC_BASE_URL: optionalBaseUrl,
 };
 

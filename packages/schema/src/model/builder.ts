@@ -33,8 +33,8 @@ import type {
   ModelSeen,
   VendorTrainingPolicy,
 } from './governance.ts';
-import type { ModelPrice } from './pricing.ts';
-import { ZERO_PRICE } from './pricing.ts';
+import type { ModelPrice, PricePoint } from './pricing.ts';
+import { comparePricePoints, isIsoDate, ZERO_PRICE } from './pricing.ts';
 import type { ModelHosting, ModelPlatform, ModelVendor } from './providers.ts';
 import { firstPartyPlatformFor, hostingFor, isFirstParty } from './providers.ts';
 
@@ -44,8 +44,13 @@ export interface PlatformOffering {
   hosting: ModelHosting;
   /** True when this is the vendor's own endpoint. */
   firstParty: boolean;
-  /** `null` means the price is not verified for this platform — never 0, never a guess. */
+  /**
+   * The latest row of `prices`. `null` means the price is not verified for this
+   * platform — never 0, never a guess.
+   */
   price: ModelPrice | null;
+  /** Every dated price row, ascending, with the undated row first. Read one day with `priceAt`. */
+  prices: readonly PricePoint[];
   /** `'unknown'` for any platform whose terms have not been read. */
   retention: DataRetention;
   /** Serving region, or `null` when unpinned/unverified. */
@@ -92,6 +97,12 @@ export interface ModelEntry {
    * not that anyone chose it.
    */
   seen: ModelSeen;
+  /** ISO date the vendor deprecated the model, or `null`. */
+  deprecatedAt: string | null;
+  /** ISO date the vendor stops serving the model, or `null`. */
+  retiresAt: string | null;
+  /** The id the vendor names as this model's successor, or `null`. */
+  replacement: string | null;
 }
 
 /** Vendor-level defaults every model from this vendor inherits. */
@@ -150,10 +161,175 @@ export interface ModelSpec {
    * list it.
    */
   firstParty?: boolean;
+  /**
+   * Dated FIRST-PARTY price rows, each in effect from its `from` day (UTC); `price` stays undated.
+   * Each `from` is a `YYYY-MM-DD` calendar date, and no two rows share one.
+   */
+  priceHistory?: readonly { from: string; price: ModelPrice }[];
+  deprecatedAt?: string;
+  retiresAt?: string;
+  replacement?: string;
 }
 
 function normalizeRef(ref: PlatformRef): PlatformSpec {
   return typeof ref === 'string' ? { platform: ref } : ref;
+}
+
+/** Builds a frozen offering whose `price` is the last of its sorted `prices`. */
+export function platformOffering(fields: Omit<PlatformOffering, 'price'>): PlatformOffering {
+  const prices = Object.freeze(
+    fields.prices.map((row) => Object.freeze({ ...row })).sort(comparePricePoints),
+  );
+  return Object.freeze({
+    platform: fields.platform,
+    hosting: fields.hosting,
+    firstParty: fields.firstParty,
+    price: prices.at(-1)?.price ?? null,
+    prices,
+    retention: fields.retention,
+    region: fields.region,
+  });
+}
+
+/** What a declared platform inherits from the model and its vendor. */
+export interface InheritedTerms {
+  /** First-party price rows, applied only when the platform is the vendor's own. */
+  firstPartyPrices: readonly PricePoint[];
+  /** Retention on the vendor's own endpoint. */
+  retention: DataRetention;
+  /** Region on the vendor's own endpoint. */
+  region: string | null;
+}
+
+/**
+ * The offering for one platform a model lists. A first-party platform takes the
+ * inherited price rows and terms; a self-hosted one is a known zero price on the
+ * caller's infrastructure; any other platform is unpriced with unknown retention
+ * unless the spec states them.
+ */
+export function declaredOffering(
+  modelVendor: ModelVendor,
+  spec: PlatformSpec,
+  inherited: InheritedTerms,
+): PlatformOffering {
+  const { platform, price, retention, region } = spec;
+  const firstParty = isFirstParty(modelVendor, platform);
+  const hosting = hostingFor(platform);
+  const isSelfHosted = hosting === 'local';
+
+  let prices: readonly PricePoint[] = [];
+  if (price !== undefined) prices = [{ effectiveFrom: null, price }];
+  else if (isSelfHosted) prices = [{ effectiveFrom: null, price: ZERO_PRICE }];
+  else if (firstParty) prices = inherited.firstPartyPrices;
+
+  return platformOffering({
+    platform,
+    hosting,
+    firstParty,
+    prices,
+    retention:
+      retention ??
+      (isSelfHosted ? 'on_infrastructure' : firstParty ? inherited.retention : 'unknown'),
+    region: region === undefined ? (firstParty ? inherited.region : null) : region,
+  });
+}
+
+/** Freezes an entry and its aliases. */
+export function freezeModelEntry(entry: ModelEntry): ModelEntry {
+  Object.freeze(entry.aliases);
+  return Object.freeze(entry);
+}
+
+function checkPriceHistory(id: string, rows: readonly { from: string }[]): void {
+  const seen = new Set<string>();
+  for (const { from } of rows) {
+    if (!isIsoDate(from)) {
+      throw new Error(`${id}: price history row dated '${from}' is not a YYYY-MM-DD date`);
+    }
+    if (seen.has(from)) {
+      throw new Error(`${id}: two price history rows are dated '${from}'`);
+    }
+    seen.add(from);
+  }
+}
+
+/** Builds one model's entry from its declaration and its vendor's defaults. */
+export function buildModelEntry(
+  modelVendor: ModelVendor,
+  defaults: VendorDefaults,
+  id: string,
+  spec: ModelSpec,
+): ModelEntry {
+  const family = spec.family ?? defaults.family ?? { id, name: spec.name };
+  const ownPlatform = spec.firstParty === false ? null : firstPartyPlatformFor(modelVendor);
+  const openWeights = spec.openWeights ?? defaults.openWeights ?? false;
+  checkPriceHistory(id, spec.priceHistory ?? []);
+  const inherited: InheritedTerms = {
+    firstPartyPrices: [
+      ...(spec.price === undefined ? [] : [{ effectiveFrom: null, price: spec.price }]),
+      ...(spec.priceHistory ?? []).map((row) => ({ effectiveFrom: row.from, price: row.price })),
+    ],
+    retention: spec.retention ?? defaults.retention ?? 'unknown',
+    region: spec.region ?? defaults.region ?? null,
+  };
+
+  const platforms = new Map<ModelPlatform, PlatformOffering>();
+
+  // The vendor's own endpoint, when it has one. This is the only platform
+  // that may carry the first-party price rows and the vendor's retention posture.
+  if (ownPlatform !== null) {
+    platforms.set(ownPlatform, declaredOffering(modelVendor, { platform: ownPlatform }, inherited));
+  }
+
+  for (const ref of spec.on ?? []) {
+    const platformSpec = normalizeRef(ref);
+    platforms.set(platformSpec.platform, declaredOffering(modelVendor, platformSpec, inherited));
+  }
+
+  // A vendor with a first-party endpoint answers this from that endpoint; a
+  // vendor without one must state it, since the id carries no platform.
+  const defaultHosting: ModelHosting =
+    spec.defaultHosting ??
+    defaults.defaultHosting ??
+    (ownPlatform === null ? 'gateway' : hostingFor(ownPlatform));
+
+  // A stated price that reached no offering would read as "cost unknown"
+  // forever, indistinguishable from a deliberately unpriced reseller, so it is
+  // refused rather than dropped.
+  const [firstRow] = inherited.firstPartyPrices;
+  if (
+    firstRow !== undefined &&
+    ![...platforms.values()].some((o) => o.prices.some((row) => row.price === firstRow.price))
+  ) {
+    throw new Error(
+      `${id}: a first-party price was declared but no platform can carry it — ` +
+        `vendor '${modelVendor}' has no first-party endpoint. Price the serving ` +
+        `platform explicitly via the object form of \`on\`.`,
+    );
+  }
+
+  // Frozen so a consumer cannot rewrite a curated fact for the whole process.
+  // `platforms` is a Map, which `Object.freeze` cannot seal; everything
+  // reachable through it is frozen, so an accidental write fails.
+  return freezeModelEntry({
+    id,
+    vendor: modelVendor,
+    displayName: spec.name,
+    familyId: family.id,
+    familyName: family.name,
+    capability: spec.capability ?? null,
+    contextWindow: spec.ctx ?? null,
+    maxOutputTokens: spec.maxOut ?? null,
+    openWeights,
+    aliases: [...(spec.aliases ?? [])],
+    training: defaults.training ?? null,
+    platforms,
+    defaultHosting,
+    seen: spec.seen ?? 'managed',
+    deprecatedAt: spec.deprecatedAt ?? null,
+    retiresAt: spec.retiresAt ?? null,
+    replacement: spec.replacement ?? null,
+  });
 }
 
 /**
@@ -165,7 +341,7 @@ function normalizeRef(ref: PlatformRef): PlatformSpec {
 export class ModelVendorBuilder {
   readonly vendor: ModelVendor;
 
-  private readonly defaults: VendorDefaults;
+  readonly defaults: VendorDefaults;
 
   private readonly entries: ModelEntry[] = [];
 
@@ -179,100 +355,7 @@ export class ModelVendorBuilder {
    * cross-referencing) and records it for `models()`.
    */
   model(id: string, spec: ModelSpec): ModelEntry {
-    const family = spec.family ?? this.defaults.family ?? { id, name: spec.name };
-    const ownPlatform = spec.firstParty === false ? null : firstPartyPlatformFor(this.vendor);
-    const openWeights = spec.openWeights ?? this.defaults.openWeights ?? false;
-    const vendorRegion = spec.region ?? this.defaults.region ?? null;
-    const vendorRetention = spec.retention ?? this.defaults.retention ?? 'unknown';
-
-    const platforms = new Map<ModelPlatform, PlatformOffering>();
-
-    // The vendor's own endpoint, when it has one. This is the only platform
-    // that may carry `spec.price` and the vendor's retention posture.
-    if (ownPlatform !== null) {
-      platforms.set(
-        ownPlatform,
-        Object.freeze({
-          platform: ownPlatform,
-          hosting: hostingFor(ownPlatform),
-          firstParty: true,
-          price: spec.price ?? null,
-          retention: vendorRetention,
-          region: vendorRegion,
-        }),
-      );
-    }
-
-    for (const ref of spec.on ?? []) {
-      const { platform, price, retention, region } = normalizeRef(ref);
-      const firstParty = isFirstParty(this.vendor, platform);
-      const hosting = hostingFor(platform);
-
-      // Self-hosted weights: cost is a known zero and the data never leaves the
-      // caller's infrastructure. Both are facts about the deployment, so they
-      // are safe to assert without a per-platform price page.
-      const isSelfHosted = hosting === 'local';
-
-      platforms.set(
-        platform,
-        Object.freeze({
-          platform,
-          hosting,
-          firstParty,
-          price: price ?? (isSelfHosted ? ZERO_PRICE : firstParty ? (spec.price ?? null) : null),
-          retention:
-            retention ??
-            (isSelfHosted ? 'on_infrastructure' : firstParty ? vendorRetention : 'unknown'),
-          region: region === undefined ? (firstParty ? vendorRegion : null) : region,
-        }),
-      );
-    }
-
-    // A vendor with a first-party endpoint answers this from that endpoint; a
-    // vendor without one must state it, since the id carries no platform.
-    const defaultHosting: ModelHosting =
-      spec.defaultHosting ??
-      this.defaults.defaultHosting ??
-      (ownPlatform === null ? 'gateway' : hostingFor(ownPlatform));
-
-    // A stated price that reached no offering is a silent loss: the model reads
-    // as "cost unknown" forever, indistinguishable from the deliberate
-    // reseller-unpriced case this builder is built around. That happens when
-    // the vendor has no first-party platform (or was never added to the
-    // first-party table), so it is refused rather than dropped.
-    if (spec.price !== undefined && ![...platforms.values()].some((o) => o.price === spec.price)) {
-      throw new Error(
-        `${id}: a first-party price was declared but no platform can carry it — ` +
-          `vendor '${this.vendor}' has no first-party endpoint. Price the serving ` +
-          `platform explicitly via the object form of \`on\`.`,
-      );
-    }
-
-    const entry: ModelEntry = {
-      id,
-      vendor: this.vendor,
-      displayName: spec.name,
-      familyId: family.id,
-      familyName: family.name,
-      capability: spec.capability ?? null,
-      contextWindow: spec.ctx ?? null,
-      maxOutputTokens: spec.maxOut ?? null,
-      openWeights,
-      aliases: Object.freeze([...(spec.aliases ?? [])]),
-      training: this.defaults.training ?? null,
-      platforms,
-      defaultHosting,
-      seen: spec.seen ?? 'managed',
-    };
-
-    // Frozen so a consumer cannot rewrite a curated fact for the whole process.
-    // `platforms` is a Map, which `Object.freeze` cannot seal — a determined
-    // cast can still call `.set` on it. Everything reachable through it is
-    // frozen, so an accidental write fails; a deliberate one is out of scope
-    // for a value type and would need a wrapper on this read path.
-    Object.freeze(entry);
-    Object.freeze(entry.aliases);
-
+    const entry = buildModelEntry(this.vendor, this.defaults, id, spec);
     this.entries.push(entry);
     return entry;
   }

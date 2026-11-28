@@ -136,6 +136,47 @@ describe('FindingsFlatTableView', () => {
     expect(count(html, 'td')).toBe(8);
   });
 
+  it('puts each row’s own labels in its Type or Value cell, after the masked value', () => {
+    const items = [
+      instance(),
+      instance({ id: 'fnd-2', match: { maskedValue: 'ghp_****', contextPrefix: '' } }),
+    ];
+    const renderLabels = (row: FindingInstanceDetail) => <span>{`labels-${row.id}`}</span>;
+    for (const pinnedType of [false, true]) {
+      const rows = render({ items, renderLabels, pinnedType }).split('<tr').slice(2);
+      expect(rows).toHaveLength(2);
+      for (const [row, id, masked] of [
+        [rows[0] ?? '', 'fnd-1', 'AKIA****'],
+        [rows[1] ?? '', 'fnd-2', 'ghp_****'],
+      ] as const) {
+        const firstCell = row.split('</td>')[pinnedType ? 0 : 1] ?? '';
+        expect(firstCell).toContain(`labels-${id}`);
+        expect(firstCell.indexOf(`labels-${id}`)).toBeGreaterThan(firstCell.lastIndexOf(masked));
+        expect(firstCell).toContain('data-slot="finding-labels"');
+      }
+      expect(count(render({ items, renderLabels, pinnedType }), 'td')).toBe(pinnedType ? 12 : 14);
+    }
+  });
+
+  it('adds nothing to the markup without labels, or when the host returns null', () => {
+    const plain = render();
+    for (const empty of [null, [], '', true, false]) {
+      expect(render({ renderLabels: () => empty })).toBe(plain);
+    }
+    expect(plain).not.toContain('finding-labels');
+  });
+
+  it('renders the host node in the User column when renderUser is given', () => {
+    const alice = { id: 'u-alice', name: 'Alice Example' };
+    const html = render({
+      showUserColumn: true,
+      items: [instance({ user: alice })],
+      renderUser: (u) => <b data-user={u.id}>person</b>,
+    });
+    expect(html).toContain('<b data-user="u-alice">person</b>');
+    expect(html).not.toContain('>Alice Example<');
+  });
+
   it('renders a dash in the User column for a row with no user', () => {
     const html = render({ showUserColumn: true });
     expect(count(html, 'td')).toBe(8);

@@ -699,6 +699,7 @@ const EXPECTED_NON_PACKAGE_FILES = [
   'test/helpers/turbo-inputs.ts',
   'test/setup/no-host-claude-config.ts',
   'test/setup/no-host-codex-config.ts',
+  'test/setup/no-host-home.ts',
   'test/setup/no-managed-settings.ts',
   'test/setup/no-network.ts',
   'test/setup/no-wasm-code-gc.ts',

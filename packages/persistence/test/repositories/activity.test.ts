@@ -922,6 +922,25 @@ describe('tokenReports', () => {
     }
   });
 
+  it('prices calls on different UTC days apart and folds them into one rollup', async () => {
+    insertSession({ id: 'D', startedAt: NOW - 2 * DAY_MS, attributes: {} });
+    const bag = { provider: 'anthropic', model: 'claude-sonnet-4-6', input_tokens: 1_000_000 };
+    insertEvent({
+      id: 'D1',
+      sessionId: 'D',
+      type: 'llm_call',
+      startedAt: NOW - DAY_MS,
+      attributes: bag,
+    });
+    insertEvent({ id: 'D2', sessionId: 'D', type: 'llm_call', startedAt: NOW, attributes: bag });
+
+    const report = await activity().tokenReportForSession('D');
+    const roll = report?.rollups[0];
+    expect(report?.rollups).toHaveLength(1);
+    expect(roll?.inputTokens).toBe(2_000_000);
+    expect(roll?.estimatedCostUsd).toBeCloseTo(6, 9);
+  });
+
   it('windows leaves by fromMs', async () => {
     seedSessionA(); // its single llm_call leaf is stamped at NOW + 6000
     // A lower bound just after the leaf excludes it → no reports.

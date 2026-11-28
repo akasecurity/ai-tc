@@ -26,6 +26,8 @@ export interface LlmCallLeaf {
    * prompt, which selects the long-context band (see `CostUsage.promptTokens`).
    */
   promptTokens?: number;
+  /** ISO timestamp or date of the call; its UTC day selects the price. */
+  at?: string;
 }
 
 interface RollupAcc {
@@ -79,7 +81,7 @@ export function buildTokenReports(
 ): SessionTokenReport[] {
   const bySession = new Map<string, Map<string, RollupAcc>>();
 
-  for (const { sessionId, attributes, promptTokens } of leaves) {
+  for (const { sessionId, attributes, promptTokens, at } of leaves) {
     const provider = attributes.provider ?? 'unknown';
     const model = attributes.model ?? 'unknown';
     const channel = usageChannelOf(attributes.usage_channel);
@@ -116,6 +118,7 @@ export function buildTokenReports(
       provider,
       model,
       usage: costUsageOf(attributes, promptTokens),
+      ...(at === undefined ? {} : { at }),
     });
     if (leafCost === null) {
       acc.partial = true;

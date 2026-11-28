@@ -24,6 +24,10 @@ const noManagedSettingsGuard = fileURLToPath(
 // See the setup file; no-wasm-code-gc-guard.test.js derives which packages owe it.
 const noWasmCodeGc = fileURLToPath(new URL('../../test/setup/no-wasm-code-gc.ts', import.meta.url));
 
+// And with an empty home and no Codex system configuration, so the Codex
+// provider resolution never reads the developer's own `config.toml`.
+const noHostHome = fileURLToPath(new URL('../../test/setup/no-host-home.ts', import.meta.url));
+
 // The session-start and gateway suites exercise real node:sqlite file I/O; those
 // DB-backed tests run well over a second each on the Windows CI runner, so raise
 // the per-test AND per-hook timeouts above vitest's 5s/10s defaults to leave
@@ -32,7 +36,7 @@ const noWasmCodeGc = fileURLToPath(new URL('../../test/setup/no-wasm-code-gc.ts'
 export default defineConfig({
   plugins: [unfinishedModulesReporter()],
   test: {
-    setupFiles: [noNetworkGuard, noManagedSettingsGuard, noWasmCodeGc],
+    setupFiles: [noNetworkGuard, noManagedSettingsGuard, noWasmCodeGc, noHostHome],
     coverage: coverageOptions(import.meta.url),
     environment: 'node',
     testTimeout: 20000,

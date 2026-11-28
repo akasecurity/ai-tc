@@ -111,7 +111,10 @@ export { SessionListView } from './activity/SessionListView.tsx';
 export { ActionTag, AggregateActionTag } from './findings/ActionTag.tsx';
 export { FindingDetailView, formatConfidence } from './findings/FindingDetailView.tsx';
 export { FindingLocationsListView } from './findings/FindingLocationsListView.tsx';
-export { FindingsFlatTableView } from './findings/FindingsFlatTableView.tsx';
+export {
+  FindingsFlatTableView,
+  type RenderFindingLabels,
+} from './findings/FindingsFlatTableView.tsx';
 export { FindingLevelFilters, FindingsToolbarView } from './findings/FindingsToolbarView.tsx';
 export { FindingTypesListView } from './findings/FindingTypesListView.tsx';
 export {
@@ -134,7 +137,7 @@ export {
   USER_COLUMN_TITLE,
 } from './findings/meta.ts';
 export { ProviderChips, ProviderTag } from './findings/ProviderChips.tsx';
-export { UserCell, UsersCell } from './findings/UserCell.tsx';
+export { type RenderFindingUser, UserCell, UsersCell } from './findings/UserCell.tsx';
 
 // Inlined line icons shared with app shells (the OSS web-ui reuses these rather
 // than re-declaring identical SVG paths).
@@ -316,7 +319,11 @@ export {
 export { ScanCoverageCardView, type ScanCoverageView } from './security/ScanCoverageCardView.tsx';
 export { SeverityCardView, type SeveritySummaryView } from './security/SeverityCardView.tsx';
 export { SPLIT_STATUS_COLUMNS, statusHrefKey } from './security/status-columns.ts';
-export { TopSourcesCardView, type TopSourcesView } from './security/TopSourcesCardView.tsx';
+export {
+  type RenderTopSourceUser,
+  TopSourcesCardView,
+  type TopSourcesView,
+} from './security/TopSourcesCardView.tsx';
 export {
   WebCaptureCardView,
   type WebCaptureCardViewProps,

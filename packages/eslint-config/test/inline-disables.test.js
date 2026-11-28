@@ -142,6 +142,10 @@ const EXPECTED_INLINE_DISABLES = {
   // finds no login and no veto from the developer's own environment.
   'test/setup/no-host-codex-config.ts': [ENV_RULE],
 
+  // The home and the Windows profile moved to an empty directory, so a Codex read
+  // that names no home finds no user or system config.
+  'test/setup/no-host-home.ts': [ENV_RULE],
+
   // The guard's own test reads those variables back from the process, which no
   // other seam shows: the account check reads an empty string as unset, so only
   // the environment itself tells a cleared variable from a missing one.

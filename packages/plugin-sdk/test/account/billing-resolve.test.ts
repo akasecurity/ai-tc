@@ -1,3 +1,6 @@
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -13,6 +16,7 @@ import {
 import { resolveClaudeBilling, resolveCodexBilling } from '../../src/account/billing.ts';
 import type * as ClaudeLogin from '../../src/account/claude-login.ts';
 import type * as CodexLogin from '../../src/account/codex-login.ts';
+import { resolveCodexProvider } from '../../src/provider-codex.ts';
 import type { CodexMachine } from '../helpers/fake-jwt.ts';
 import { codexMachine } from '../helpers/fake-jwt.ts';
 import type { ClaudeMachine } from '../helpers/transcript-builder.ts';
@@ -116,6 +120,28 @@ describe('resolveCodexBilling', () => {
     machine.writeAuth({ plan: 'plus' });
     failing.reads = true;
     expect(resolveCodexBilling('openai')).toEqual({ usageChannel: 'unknown' });
+  });
+
+  it('answers cloud for a config.toml provider on Azure, beside a ChatGPT login', () => {
+    machine.writeAuth({ plan: 'plus' });
+    writeFileSync(
+      join(machine.codexHome, 'config.toml'),
+      [
+        'model_provider = "azure"',
+        '[model_providers.azure]',
+        'base_url = "https://x.openai.azure.com/openai/v1"',
+      ].join('\n'),
+    );
+    expect(resolveCodexBilling(resolveCodexProvider().provider)).toEqual({ usageChannel: 'cloud' });
+  });
+
+  it('keeps the ChatGPT subscription when OPENAI_BASE_URL is the default API', () => {
+    machine.writeAuth({ plan: 'plus' });
+    vi.stubEnv('OPENAI_BASE_URL', 'https://api.openai.com/v1');
+    expect(resolveCodexBilling(resolveCodexProvider().provider)).toEqual({
+      usageChannel: 'subscription',
+      subscriptionPlan: 'chatgpt_plus',
+    });
   });
 });
 

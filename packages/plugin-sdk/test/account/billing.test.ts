@@ -76,7 +76,7 @@ describe('claudeBilling', () => {
   });
 
   it('reads the cloud and gateway providers before any login', () => {
-    for (const provider of ['bedrock', 'vertex']) {
+    for (const provider of ['bedrock', 'vertex', 'foundry']) {
       expect(claudeBilling({ ...base, provider, login: claudeLogin() }).usageChannel).toBe('cloud');
     }
     expect(claudeBilling({ ...base, provider: 'gateway', login: claudeLogin() }).usageChannel).toBe(
@@ -166,6 +166,15 @@ describe('codexBilling', () => {
     expect(codexBilling({ ...base, env: codexKey, login: { status: 'absent' } }).usageChannel).toBe(
       'api_key',
     );
+  });
+
+  it('reads an Azure provider as cloud before any login', () => {
+    expect(codexBilling({ ...base, provider: 'azure', login: codexLogin() })).toEqual({
+      usageChannel: 'cloud',
+    });
+    expect(
+      codexBilling({ ...base, provider: 'azure', env: codexKey, login: { status: 'absent' } }),
+    ).toEqual({ usageChannel: 'cloud' });
   });
 
   it('reads a gateway first, and a malformed or missing login as unknown', () => {

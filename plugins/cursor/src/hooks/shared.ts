@@ -32,6 +32,7 @@ import type { EventMetadata } from '@akasecurity/schema';
 import { readEventName } from './event-name.ts';
 import type { ToolCall } from './payload.ts';
 import { readCwd, readSessionId, str } from './payload.ts';
+import { answerAndRecord } from './recording.ts';
 
 /**
  * The watchdog `runHookFailOpen` races the hook body against. `hooks.json`
@@ -240,7 +241,7 @@ export type HookHandler = (
 ) => Promise<HookOutput | undefined>;
 
 export async function runHookEntry(handler: HookHandler): Promise<never> {
-  return runHookFailOpen(async () => handler(readEventName(), await readStdin()));
+  return runHookFailOpen(async () => answerAndRecord(handler, readEventName(), await readStdin()));
 }
 
 // ─── Capture attribution ─────────────────────────────────────────────────────

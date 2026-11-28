@@ -136,16 +136,32 @@ describe('FindingsFlatTableView', () => {
     expect(count(html, 'td')).toBe(8);
   });
 
-  it('renders the host’s labels under the type, and under the value when pinned', () => {
-    const renderLabels = (row: FindingInstanceDetail) => (
-      <span data-labels>{`labels-${row.id}`}</span>
-    );
+  it('puts each row’s own labels in its Type or Value cell, after the masked value', () => {
+    const items = [
+      instance(),
+      instance({ id: 'fnd-2', match: { maskedValue: 'ghp_****', contextPrefix: '' } }),
+    ];
+    const renderLabels = (row: FindingInstanceDetail) => <span>{`labels-${row.id}`}</span>;
     for (const pinnedType of [false, true]) {
-      const html = render({ renderLabels, pinnedType });
-      expect(html).toContain('<span data-labels="true">labels-fnd-1</span>');
-      expect(count(html, 'td')).toBe(pinnedType ? 6 : 7);
+      const rows = render({ items, renderLabels, pinnedType }).split('<tr').slice(2);
+      expect(rows).toHaveLength(2);
+      for (const [row, id, masked] of [
+        [rows[0] ?? '', 'fnd-1', 'AKIA****'],
+        [rows[1] ?? '', 'fnd-2', 'ghp_****'],
+      ] as const) {
+        const firstCell = row.split('</td>')[pinnedType ? 0 : 1] ?? '';
+        expect(firstCell).toContain(`labels-${id}`);
+        expect(firstCell.indexOf(`labels-${id}`)).toBeGreaterThan(firstCell.lastIndexOf(masked));
+        expect(firstCell).toContain('data-slot="finding-labels"');
+      }
+      expect(count(render({ items, renderLabels, pinnedType }), 'td')).toBe(pinnedType ? 12 : 14);
     }
-    expect(render()).not.toContain('data-labels');
+  });
+
+  it('adds nothing to the markup without labels, or when the host returns null', () => {
+    const plain = render();
+    expect(render({ renderLabels: () => null })).toBe(plain);
+    expect(plain).not.toContain('finding-labels');
   });
 
   it('renders the host node in the User column when renderUser is given', () => {

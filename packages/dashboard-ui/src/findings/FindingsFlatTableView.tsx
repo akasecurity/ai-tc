@@ -73,6 +73,31 @@ const FINDING_COLUMN_CLASS: Record<FlatColumnId, string> = {
  * Layout contract: as with FindingTypesListView, the card fills its container and
  * scrolls internally, so it needs a height-constrained parent.
  */
+/**
+ * Renders extra labels for one finding row, under its masked value: in the Type
+ * column, or in the Value column when the type is pinned. The node is placed in
+ * a row that wraps and clips, so it never widens or overflows the column.
+ * Returning null renders nothing.
+ *
+ * The node sits inside a table row that opens the finding on click. A link or
+ * button in it must stop the click's propagation, or the finding opens as
+ * well. Pass it from a client component: a function cannot cross into a
+ * client component from a server one.
+ */
+export type RenderFindingLabels = (instance: FindingInstanceDetail) => ReactNode;
+
+function FindingLabels({ node, indent }: { node: ReactNode; indent: boolean }) {
+  if (node === null || node === undefined || node === false) return null;
+  return (
+    <div
+      data-slot="finding-labels"
+      className={cn('mt-1 flex min-w-0 flex-wrap gap-1 overflow-hidden', indent && 'pl-9.5')}
+    >
+      {node}
+    </div>
+  );
+}
+
 export function FindingsFlatTableView({
   items,
   selectedId,
@@ -111,11 +136,8 @@ export function FindingsFlatTableView({
   /** Renders each attributed user in the User column; absent ⇒ the plain
    * label. See RenderFindingUser for what the returned node may contain. */
   renderUser?: RenderFindingUser | undefined;
-  /**
-   * Extra labels for a row, rendered under its type, or under its value when
-   * the type is pinned. Absent, or returning null, renders nothing there.
-   */
-  renderLabels?: ((instance: FindingInstanceDetail) => ReactNode) | undefined;
+  /** Extra labels for each row; see RenderFindingLabels. */
+  renderLabels?: RenderFindingLabels | undefined;
   /**
    * Render the Deployment column, which reads each row's `delivery`. Off by
    * default: only a machine attached to a deployment has anything to say there.
@@ -233,7 +255,7 @@ export function FindingsFlatTableView({
                           >
                             {instance.match.maskedValue}
                           </span>
-                          {renderLabels?.(instance)}
+                          <FindingLabels node={renderLabels?.(instance)} indent={false} />
                         </>
                       ) : (
                         <div className="flex items-center gap-2.5">
@@ -255,10 +277,10 @@ export function FindingsFlatTableView({
                             >
                               {instance.match.maskedValue}
                             </div>
-                            {renderLabels?.(instance)}
                           </div>
                         </div>
                       )}
+                      {!pinnedType && <FindingLabels node={renderLabels?.(instance)} indent />}
                     </TableCell>
                     <TableCell className={FINDING_COLUMN_CLASS.sources}>
                       <ProviderTag provider={instance.provider} />

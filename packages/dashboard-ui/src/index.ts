@@ -111,7 +111,10 @@ export { SessionListView } from './activity/SessionListView.tsx';
 export { ActionTag, AggregateActionTag } from './findings/ActionTag.tsx';
 export { FindingDetailView, formatConfidence } from './findings/FindingDetailView.tsx';
 export { FindingLocationsListView } from './findings/FindingLocationsListView.tsx';
-export { FindingsFlatTableView } from './findings/FindingsFlatTableView.tsx';
+export {
+  FindingsFlatTableView,
+  type RenderFindingLabels,
+} from './findings/FindingsFlatTableView.tsx';
 export { FindingLevelFilters, FindingsToolbarView } from './findings/FindingsToolbarView.tsx';
 export { FindingTypesListView } from './findings/FindingTypesListView.tsx';
 export {

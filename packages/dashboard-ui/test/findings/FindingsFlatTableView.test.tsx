@@ -136,6 +136,18 @@ describe('FindingsFlatTableView', () => {
     expect(count(html, 'td')).toBe(8);
   });
 
+  it('renders the host’s labels under the type, and under the value when pinned', () => {
+    const renderLabels = (row: FindingInstanceDetail) => (
+      <span data-labels>{`labels-${row.id}`}</span>
+    );
+    for (const pinnedType of [false, true]) {
+      const html = render({ renderLabels, pinnedType });
+      expect(html).toContain('<span data-labels="true">labels-fnd-1</span>');
+      expect(count(html, 'td')).toBe(pinnedType ? 6 : 7);
+    }
+    expect(render()).not.toContain('data-labels');
+  });
+
   it('renders the host node in the User column when renderUser is given', () => {
     const alice = { id: 'u-alice', name: 'Alice Example' };
     const html = render({

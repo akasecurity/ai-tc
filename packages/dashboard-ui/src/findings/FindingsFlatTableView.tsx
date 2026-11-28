@@ -93,6 +93,7 @@ export function FindingsFlatTableView({
   emptyState,
   showUserColumn = false,
   renderUser,
+  renderLabels,
   showDeploymentColumn = false,
   pinnedType = false,
   header,
@@ -110,6 +111,11 @@ export function FindingsFlatTableView({
   /** Renders each attributed user in the User column; absent ⇒ the plain
    * label. See RenderFindingUser for what the returned node may contain. */
   renderUser?: RenderFindingUser | undefined;
+  /**
+   * Extra labels for a row, rendered under its type, or under its value when
+   * the type is pinned. Absent, or returning null, renders nothing there.
+   */
+  renderLabels?: ((instance: FindingInstanceDetail) => ReactNode) | undefined;
   /**
    * Render the Deployment column, which reads each row's `delivery`. Off by
    * default: only a machine attached to a deployment has anything to say there.
@@ -220,12 +226,15 @@ export function FindingsFlatTableView({
                     )}
                     <TableCell className={FINDING_COLUMN_CLASS[pinnedType ? 'value' : 'type']}>
                       {pinnedType ? (
-                        <span
-                          className="block truncate font-mono text-ui text-text"
-                          title={instance.match.maskedValue}
-                        >
-                          {instance.match.maskedValue}
-                        </span>
+                        <>
+                          <span
+                            className="block truncate font-mono text-ui text-text"
+                            title={instance.match.maskedValue}
+                          >
+                            {instance.match.maskedValue}
+                          </span>
+                          {renderLabels?.(instance)}
+                        </>
                       ) : (
                         <div className="flex items-center gap-2.5">
                           <span
@@ -246,6 +255,7 @@ export function FindingsFlatTableView({
                             >
                               {instance.match.maskedValue}
                             </div>
+                            {renderLabels?.(instance)}
                           </div>
                         </div>
                       )}

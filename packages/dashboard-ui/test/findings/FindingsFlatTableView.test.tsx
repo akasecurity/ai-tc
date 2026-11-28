@@ -160,7 +160,9 @@ describe('FindingsFlatTableView', () => {
 
   it('adds nothing to the markup without labels, or when the host returns null', () => {
     const plain = render();
-    expect(render({ renderLabels: () => null })).toBe(plain);
+    for (const empty of [null, [], '', true, false]) {
+      expect(render({ renderLabels: () => empty })).toBe(plain);
+    }
     expect(plain).not.toContain('finding-labels');
   });
 

@@ -13,7 +13,7 @@ import {
   TableHeader,
   TableRow,
 } from '@akasecurity/ui-kit';
-import type { ReactNode } from 'react';
+import { Children, type ReactNode } from 'react';
 
 import { relativeTime } from '../lib/relativeTime.ts';
 import { KeyIcon } from '../shared/icons.tsx';
@@ -61,6 +61,32 @@ const FINDING_COLUMN_CLASS: Record<FlatColumnId, string> = {
 };
 
 /**
+ * Renders extra labels for one finding row, under its masked value: in the Type
+ * column, or in the Value column when the type is pinned. The node is placed in
+ * a row that wraps and clips, so it never widens or overflows the column.
+ * Returning nothing to show (null, an empty array, an empty string or a
+ * boolean) renders nothing, not even the row.
+ *
+ * The node sits inside a table row that opens the finding on click. A link or
+ * button in it must stop the click's propagation, or the finding opens as
+ * well. Pass it from a client component: a function cannot cross into a
+ * client component from a server one.
+ */
+export type RenderFindingLabels = (instance: FindingInstanceDetail) => ReactNode;
+
+function FindingLabels({ node, indent }: { node: ReactNode; indent: boolean }) {
+  if (Children.toArray(node).every((part) => part === '')) return null;
+  return (
+    <div
+      data-slot="finding-labels"
+      className={cn('mt-1 flex min-w-0 flex-wrap gap-1 overflow-hidden', indent && 'pl-9.5')}
+    >
+      {node}
+    </div>
+  );
+}
+
+/**
  * The flat findings table — one row per finding, newest first.
  *
  * The sibling of FindingTypesListView, which lists rules. This one answers "what
@@ -73,31 +99,6 @@ const FINDING_COLUMN_CLASS: Record<FlatColumnId, string> = {
  * Layout contract: as with FindingTypesListView, the card fills its container and
  * scrolls internally, so it needs a height-constrained parent.
  */
-/**
- * Renders extra labels for one finding row, under its masked value: in the Type
- * column, or in the Value column when the type is pinned. The node is placed in
- * a row that wraps and clips, so it never widens or overflows the column.
- * Returning null renders nothing.
- *
- * The node sits inside a table row that opens the finding on click. A link or
- * button in it must stop the click's propagation, or the finding opens as
- * well. Pass it from a client component: a function cannot cross into a
- * client component from a server one.
- */
-export type RenderFindingLabels = (instance: FindingInstanceDetail) => ReactNode;
-
-function FindingLabels({ node, indent }: { node: ReactNode; indent: boolean }) {
-  if (node === null || node === undefined || node === false) return null;
-  return (
-    <div
-      data-slot="finding-labels"
-      className={cn('mt-1 flex min-w-0 flex-wrap gap-1 overflow-hidden', indent && 'pl-9.5')}
-    >
-      {node}
-    </div>
-  );
-}
-
 export function FindingsFlatTableView({
   items,
   selectedId,

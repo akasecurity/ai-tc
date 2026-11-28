@@ -13,7 +13,7 @@ import {
   TableHeader,
   TableRow,
 } from '@akasecurity/ui-kit';
-import type { ReactNode } from 'react';
+import { Children, type ReactNode } from 'react';
 
 import { relativeTime } from '../lib/relativeTime.ts';
 import { KeyIcon } from '../shared/icons.tsx';
@@ -61,6 +61,32 @@ const FINDING_COLUMN_CLASS: Record<FlatColumnId, string> = {
 };
 
 /**
+ * Renders extra labels for one finding row, under its masked value: in the Type
+ * column, or in the Value column when the type is pinned. The node is placed in
+ * a row that wraps and clips, so it never widens or overflows the column.
+ * Returning nothing to show (null, an empty array, an empty string or a
+ * boolean) renders nothing, not even the row.
+ *
+ * The node sits inside a table row that opens the finding on click. A link or
+ * button in it must stop the click's propagation, or the finding opens as
+ * well. Pass it from a client component: a function cannot cross into a
+ * client component from a server one.
+ */
+export type RenderFindingLabels = (instance: FindingInstanceDetail) => ReactNode;
+
+function FindingLabels({ node, indent }: { node: ReactNode; indent: boolean }) {
+  if (Children.toArray(node).every((part) => part === '')) return null;
+  return (
+    <div
+      data-slot="finding-labels"
+      className={cn('mt-1 flex min-w-0 flex-wrap gap-1 overflow-hidden', indent && 'pl-9.5')}
+    >
+      {node}
+    </div>
+  );
+}
+
+/**
  * The flat findings table — one row per finding, newest first.
  *
  * The sibling of FindingTypesListView, which lists rules. This one answers "what
@@ -93,6 +119,7 @@ export function FindingsFlatTableView({
   emptyState,
   showUserColumn = false,
   renderUser,
+  renderLabels,
   showDeploymentColumn = false,
   pinnedType = false,
   header,
@@ -110,6 +137,8 @@ export function FindingsFlatTableView({
   /** Renders each attributed user in the User column; absent ⇒ the plain
    * label. See RenderFindingUser for what the returned node may contain. */
   renderUser?: RenderFindingUser | undefined;
+  /** Extra labels for each row; see RenderFindingLabels. */
+  renderLabels?: RenderFindingLabels | undefined;
   /**
    * Render the Deployment column, which reads each row's `delivery`. Off by
    * default: only a machine attached to a deployment has anything to say there.
@@ -220,12 +249,15 @@ export function FindingsFlatTableView({
                     )}
                     <TableCell className={FINDING_COLUMN_CLASS[pinnedType ? 'value' : 'type']}>
                       {pinnedType ? (
-                        <span
-                          className="block truncate font-mono text-ui text-text"
-                          title={instance.match.maskedValue}
-                        >
-                          {instance.match.maskedValue}
-                        </span>
+                        <>
+                          <span
+                            className="block truncate font-mono text-ui text-text"
+                            title={instance.match.maskedValue}
+                          >
+                            {instance.match.maskedValue}
+                          </span>
+                          <FindingLabels node={renderLabels?.(instance)} indent={false} />
+                        </>
                       ) : (
                         <div className="flex items-center gap-2.5">
                           <span
@@ -249,6 +281,7 @@ export function FindingsFlatTableView({
                           </div>
                         </div>
                       )}
+                      {!pinnedType && <FindingLabels node={renderLabels?.(instance)} indent />}
                     </TableCell>
                     <TableCell className={FINDING_COLUMN_CLASS.sources}>
                       <ProviderTag provider={instance.provider} />
